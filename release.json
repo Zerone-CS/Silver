@@ -1,0 +1,149 @@
+{
+  "status": "pass",
+  "release_id": "20261123-910c-delivery-v1",
+  "skills": 5,
+  "skill_paths": {
+    "vllm-ascend-throughput-optimization": ".",
+    "evaluate": "evaluate",
+    "diagnose": "diagnose",
+    "optimize": "optimize",
+    "knowledge": "knowledge"
+  },
+  "compatibility_entries": 0,
+  "compatibility_aliases": {},
+  "compatibility_paths": {},
+  "packaged_files": 919,
+  "local_links": 124,
+  "manifest_sha256": "7eb308c895268b6aebe723b53c175d02eae8828cc3a4d1c341ca3062296b762a",
+  "external_project_dependencies": [],
+  "state_owner": "vllm-ascend-throughput-optimization",
+  "public_contracts": {
+    "handoff": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "references/suite_contract.md"
+    },
+    "delivery": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "references/delivery.md"
+    },
+    "round_control": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "references/round_control.md"
+    },
+    "round_evidence": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "references/round_evidence.md"
+    },
+    "profile_capture": {
+      "owner": "diagnose",
+      "path": "diagnose/references/profile.md"
+    },
+    "stream_tail": {
+      "owner": "diagnose",
+      "path": "diagnose/references/stream_tail.md"
+    },
+    "step_analysis": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "diagnose/references/step_analysis.md"
+    },
+    "step_sources": {
+      "owner": "diagnose",
+      "path": "diagnose/references/step_sources.md"
+    },
+    "step_timeline": {
+      "owner": "diagnose",
+      "path": "diagnose/references/step_timeline.md"
+    },
+    "single_engine_probe": {
+      "owner": "diagnose",
+      "path": "diagnose/adapters/vllm_023_single_engine/README.md"
+    },
+    "experience": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "knowledge/references/experience.md"
+    },
+    "experience_study": {
+      "owner": "knowledge",
+      "path": "knowledge/references/experience_study.md"
+    },
+    "campaign_state": {
+      "owner": "vllm-ascend-throughput-optimization",
+      "path": "references/campaign_state.md"
+    },
+    "measurement": {
+      "owner": "evaluate",
+      "path": "evaluate/references/measurement_contract.md"
+    },
+    "evaluation": {
+      "owner": "evaluate",
+      "path": "evaluate/references/tool_contract.md"
+    },
+    "diagnosis": {
+      "owner": "diagnose",
+      "path": "diagnose/references/records.md"
+    },
+    "experiment": {
+      "owner": "optimize",
+      "path": "optimize/references/experiment_contract.md"
+    },
+    "knowledge": {
+      "owner": "knowledge",
+      "path": "knowledge/references/records.md"
+    }
+  },
+  "command_entrypoints": {
+    "suite": {
+      "verify_suite": "scripts/verify_suite.py",
+      "register_skills": "scripts/register_skills.py",
+      "setup_runtime": "scripts/setup_runtime.py",
+      "run_tests": "scripts/run_tests.py",
+      "build_release": "scripts/build_release.py",
+      "campaign": "scripts/campaign.py",
+      "drive_campaign": "scripts/drive_campaign.py",
+      "round_evidence": "scripts/round_evidence.py",
+      "trial_plan": "scripts/trial_plan.py",
+      "device_budget": "scripts/device_budget.py",
+      "site_910c": "scripts/site_910c.py",
+      "site_round": "scripts/site_round.py",
+      "evidence_bundle": "scripts/evidence_bundle.py",
+      "experience": "scripts/experience.py",
+      "experience_study": "scripts/experience_study.py",
+      "step_analysis": "scripts/step_analysis.py"
+    },
+    "diagnose": {
+      "profile": "diagnose/scripts/profile.py",
+      "vllm_profile": "diagnose/scripts/vllm_profile.py",
+      "stream_tail": "diagnose/scripts/stream_tail.py",
+      "step_sources": "diagnose/scripts/step_sources.py",
+      "step_timeline": "diagnose/scripts/step_timeline.py",
+      "single_engine_probe": "diagnose/adapters/vllm_023_single_engine/site_export.py"
+    },
+    "evaluate": {
+      "benchmark": "evaluate/scripts/benchmark.py",
+      "prepare_metadata": "evaluate/scripts/prepare_metadata.py",
+      "validate_run": "evaluate/scripts/validate_run.py",
+      "compare_trials": "evaluate/scripts/compare_trials.py",
+      "compare_outputs": "evaluate/scripts/compare_outputs.py"
+    },
+    "knowledge": {
+      "kb": "knowledge/scripts/kb.py",
+      "check_kb_snapshot": "knowledge/scripts/check_kb_snapshot.py"
+    }
+  },
+  "test_suites": {
+    "suite": [
+      "tests"
+    ],
+    "evaluate": [
+      "evaluate/tests"
+    ],
+    "knowledge": [
+      "knowledge/tests",
+      "knowledge/kb/tests"
+    ]
+  },
+  "scope": "file identities, entry names, local links, Python syntax and declared resource paths; not KB semantic accuracy",
+  "commit": "d1048a9a8399f9b4f90ab219c2a6ba6ae8481cd2",
+  "archive": "vllm-ascend-throughput-skills.tar.gz",
+  "archive_sha256": "5650c0a6595118b9479bca1de2a411f269a8c0b5267d46b61d7da94373b6335d"
+}

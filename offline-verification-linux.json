@@ -1,0 +1,64 @@
+{
+  "verifier": {
+    "release_id": "20261123-910c-delivery-v1",
+    "manifest_sha256": "7eb308c895268b6aebe723b53c175d02eae8828cc3a4d1c341ca3062296b762a"
+  },
+  "files_verified": 12418,
+  "checks": [
+    {
+      "name": "seq8-original-discovery",
+      "recommendation": "adopt",
+      "runs": 36
+    },
+    {
+      "name": "seq8-goodput-historical-thresholds-discovery",
+      "recommendation": "adopt",
+      "runs": 36
+    },
+    {
+      "name": "seq8-goodput-tighter-example-discovery",
+      "recommendation": "adopt",
+      "runs": 36
+    },
+    {
+      "name": "seq8-original-confirmation",
+      "recommendation": "adopt",
+      "runs": 36
+    },
+    {
+      "name": "seq8-goodput-historical-thresholds-confirmation",
+      "recommendation": "adopt",
+      "runs": 36
+    },
+    {
+      "name": "seq8-goodput-tighter-example-confirmation",
+      "recommendation": "adopt",
+      "runs": 36
+    },
+    {
+      "name": "seq8-mechanism-formal",
+      "recommendation": "adopt",
+      "runs": 16
+    },
+    {
+      "name": "history-X-seq8-screen",
+      "recommendation": "revert",
+      "runs": 4
+    },
+    {
+      "name": "history-X-prefix-screen",
+      "recommendation": "revert",
+      "runs": 4
+    },
+    {
+      "name": "history-Y-seq8-screen",
+      "recommendation": "revert",
+      "runs": 4
+    },
+    {
+      "name": "history-Y-prefix-screen",
+      "recommendation": "defer",
+      "runs": 4
+    }
+  ]
+}
