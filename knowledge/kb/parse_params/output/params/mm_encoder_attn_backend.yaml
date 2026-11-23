@@ -1,0 +1,87 @@
+name: --mm-encoder-attn-backend
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/multimodal.py:183
+- vllm/config/multimodal.py:280
+- vllm/engine/arg_utils.py:1401
+- vllm/model_executor/models/vision.py:110
+- vllm_ascend/platform.py:758
+value_type: str
+default: null
+valid_choices: Any member of vllm.v1.attention.backends.registry.AttentionBackendEnum (e.g. FLASH_ATTN, FLASHINFER, TRITON_ATTN,
+  FLEX_ATTENTION); XFORMERS is rejected
+cli_example: --mm-encoder-attn-backend FLASH_ATTN
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'In upstream vLLM this parameter selects the attention backend used by the vision
+
+  transformer (ViT) encoder. It is read in vllm/model_executor/models/vision.py:110
+
+  (get_vit_attn_backend) and passed as attn_backend_override into _get_vit_attn_backend,
+
+  which chooses the kernel implementation for encoder self-attention. Different backends
+
+  (FLASH_ATTN vs FLASHINFER vs TRITON_ATTN) have different kernel efficiency and memory
+
+  footprints for the ViT stage, so on GPU it can affect encoder latency and memory.
+
+  On Ascend NPU, however, vllm_ascend/platform.py:758-763 unconditionally resets
+
+  multimodal_config.mm_encoder_attn_backend to None during platform config validation,
+
+  logging a warning that "Ascend uses different mechanism for Multi-Modal attention".
+
+  This means the value is discarded before it can influence any ViT attention kernel
+
+  selection on Ascend; the Ascend ViT path uses its own attention mechanism regardless
+
+  of what the user passes. Consequently the parameter has no runtime performance effect
+
+  on Ascend NPU — it is neutralized. The only observable effect is a startup warning
+
+  when a non-None value is supplied.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:758
+  context: Ascend platform config check resets mm_encoder_attn_backend to None, neutralizing the parameter on NPU
+- file: vllm/model_executor/models/vision.py:110
+  context: Upstream reads mm_encoder_attn_backend as attn_backend_override for ViT attention backend selection
+- file: vllm/config/multimodal.py:280
+  context: Field validator converts string to AttentionBackendEnum and rejects XFORMERS
+- file: vllm/engine/arg_utils.py:1401
+  context: CLI argument registration for --mm-encoder-attn-backend
+related_parameters:
+- name: --mm-encoder-attn-dtype
+  relation: Both configure ViT encoder attention; dtype override is also Ascend-neutralized in the same multimodal config
+    block
+- name: --mm-encoder-tp-mode
+  relation: Sibling multimodal encoder config affecting how the encoder is parallelized
+- name: --mm-encoder-only
+  relation: Related multimodal encoder mode; encoder-only deployments still use Ascend's own attention mechanism
+constraints:
+- The value must be a valid member of AttentionBackendEnum; an unrecognized string raises a KeyError during config validation.
+- The value XFORMERS is explicitly rejected with a ValueError because that backend has been removed.
+- On Ascend NPU the value is always reset to None, so any supplied value has no effect on the actual attention backend used.
+tuning_advice:
+  summary: On Ascend NPU this parameter is neutralized (reset to None), so leave it unset; it only matters on GPU where it
+    selects the ViT attention kernel.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any multimodal model)
+    value: unset
+    reason: vllm_ascend/platform.py resets mm_encoder_attn_backend to None regardless of input, so setting it has no effect
+      and only emits a warning; leave it unset.
+  - scenario: GPU (upstream vLLM) ViT encoder tuning
+    value: FLASH_ATTN
+    reason: On GPU, FLASH_ATTN is a commonly efficient ViT attention backend; this is the value the parameter is designed
+      to override, but it does not apply on Ascend.
+  caveats:
+  - Do not rely on this flag to change ViT attention performance on Ascend — the Ascend platform forcibly clears it.
+  - Supplying an invalid backend name or XFORMERS will fail config validation before the Ascend reset occurs.
+  quick_guide: On Ascend, leave --mm-encoder-attn-backend unset; it is reset to None and has no performance effect.
+analysis_date: '2026-10-27'

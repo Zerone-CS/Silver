@@ -1,0 +1,99 @@
+name: --prefill-schedule-interval
+type: cli
+category: scheduling
+scope: vllm
+source_file:
+- vllm/config/scheduler.py:185
+- vllm/engine/arg_utils.py:651
+- vllm/engine/arg_utils.py:1636
+- vllm/v1/engine/core.py:2015
+- vllm/v1/engine/core.py:2176
+value_type: int
+default: 1
+valid_choices: integer >= 1
+cli_example: --prefill-schedule-interval <N>
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This parameter is defined in vLLM upstream (SchedulerConfig.prefill_schedule_interval,
+
+  Field(default=1, ge=1)) and is only consumed in the data-parallel MoE/EP engine-core
+
+  path (vllm/v1/engine/core.py DPEngineCoreProc). It is read into
+
+  self.prefill_schedule_interval at DPEngineCoreProc.__init__ (line 2015) and used by
+
+  _should_throttle_prefills() (line 2176): when the value is > 1 and
+
+  step_counter % prefill_schedule_interval != 0, new prefills are throttled so that
+
+  admission only happens on cadence-aligned steps. Because step_counter is
+
+  lockstep-synchronized across DP ranks, this aligns prefill admission across ranks,
+
+  smoothing per-step forward-pass times and reducing DP rank imbalance (stragglers).
+
+  The effect is purely on scheduling cadence: "it does not change kernel selection,"
+
+  memory allocation, or communication primitives. On Ascend NPU, the same DP MoE/EP
+
+  engine-core path is used when data-parallel with expert parallel is enabled; the
+
+  parameter has no Ascend-specific override in vllm-ascend (no matching symbol found in
+
+  the provided vllm-ascend context). Its performance effect is indirect: it can improve
+
+  DP load balance and reduce per-step latency variance at the cost of slightly delayed
+
+  prefill admission (higher time-to-first-token for requests that arrive off-cadence).
+
+  For non-DP or non-MoE deployments the value has no effect.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:185
+  context: Field definition with default=1, ge=1 and docstring describing DP prefill cadence throttling.
+- file: vllm/engine/arg_utils.py:651
+  context: EngineArgs field prefill_schedule_interval mapped from SchedulerConfig.
+- file: vllm/engine/arg_utils.py:1636
+  context: CLI argument registration under SchedulerConfig group.
+- file: vllm/v1/engine/core.py:2015
+  context: DPEngineCoreProc reads scheduler_config.prefill_schedule_interval into instance state.
+- file: vllm/v1/engine/core.py:2176
+  context: _should_throttle_prefills gates prefill admission on step_counter % interval.
+related_parameters:
+- name: --data-parallel-size
+  relation: Throttling only engages in the DP MoE/EP engine-core path; without DP this parameter has no effect.
+- name: --enable-expert-parallel
+  relation: DPEngineCoreProc asserts model_config.is_moe and is used with expert parallel; the throttle applies in this MoE/EP
+    DP path.
+- name: --max-num-seqs
+  relation: Controls how many requests can be admitted per step; interacts with cadence-aligned admission batching.
+- name: --enable-chunked-prefill
+  relation: Chunked prefill changes prefill admission granularity, which the cadence throttle modulates.
+constraints:
+- The value must be an integer greater than or equal to 1 (Field(ge=1)); values below 1 are rejected.
+- The throttle only engages when the value is greater than 1; a value of 1 disables throttling entirely.
+- The parameter only takes effect in the data-parallel MoE/expert-parallel engine-core path (DPEngineCoreProc); it has no
+  effect in non-DP or non-MoE deployments.
+tuning_advice:
+  summary: Leave at 1 unless running DP MoE/EP with imbalanced per-step times, then try a small interval (e.g. 2-4) to align
+    prefill admission across DP ranks.
+  suggested_values:
+  - scenario: Single-rank or non-DP deployment
+    value: 1
+    reason: Throttling has no effect outside the DP MoE/EP engine-core path; keep default to avoid unnecessary admission delay.
+  - scenario: DP MoE/EP deployment with uneven per-step forward times across ranks
+    value: 4
+    reason: Aligns prefill admission to every 4th lockstep step across DP ranks, smoothing per-step times and reducing straggler
+      imbalance (matches upstream test parametrization [1, 4]).
+  - scenario: DP MoE/EP deployment sensitive to TTFT
+    value: 2
+    reason: A smaller interval still provides some cadence alignment while limiting added prefill admission latency.
+  caveats:
+  - Increasing the interval trades TTFT for better DP balance; measure both throughput and TTFT before adopting.
+  - Only meaningful with data-parallel MoE/expert-parallel; verify the DP engine-core path is active.
+  quick_guide: Keep 1 by default; for DP MoE/EP with rank imbalance try 2-4 and measure TTFT impact.
+analysis_date: '2026-10-27'

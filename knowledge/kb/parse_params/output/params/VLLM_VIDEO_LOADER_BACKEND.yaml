@@ -1,0 +1,92 @@
+name: VLLM_VIDEO_LOADER_BACKEND
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1049
+- vllm/envs.py:87
+- vllm/config/multimodal.py:514
+- vllm/multimodal/media/video.py:111
+- vllm/multimodal/gpu_ipc_memory.py:208
+value_type: str
+default: opencv
+valid_choices: 'Registered video loader backends: ''opencv'' (uniform sampling), ''opencv_dynamic'' (duration-aware dynamic
+  sampling), plus any custom backend registered via @VIDEO_LOADER_REGISTRY.register(...)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This env var selects the frame-sampling algorithm used by the video media loader
+
+  (vllm/multimodal/media/video.py:113-117). It is read in VideoMediaIO.__init__ as a
+
+  fallback when no per-request `video_backend` kwarg is supplied, and the chosen backend
+
+  is resolved through VIDEO_LOADER_REGISTRY.load(). It is also consulted in
+
+  vllm/config/multimodal.py:514 (use_gpu_video_backend) and
+
+  vllm/multimodal/gpu_ipc_memory.py:208 to decide whether the video loader/codec requires
+
+  GPU memory, which affects the mm_ipc_gpu_memory reservation accounting.
+
+  On Ascend NPU this parameter does NOT touch the NPU compute path: "video decoding and"
+
+  frame sampling run on CPU (OpenCV) in the API server / preprocessing stage, before
+
+  tensors are moved to the NPU. Therefore it does not change NPU kernel throughput or
+
+  HCCL behavior. Its only performance relevance is indirect: the sampling algorithm
+
+  changes how many frames are decoded and how much CPU time / host memory the
+
+  preprocessing step consumes, which can shift end-to-end request latency for
+
+  video-input workloads and, for GPU-requiring backends, the reserved IPC memory budget.
+
+  No vllm-ascend override of this env var was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1049
+  context: Definition of the env var with default 'opencv'
+- file: vllm/envs.py:87
+  context: 'Typed declaration VLLM_VIDEO_LOADER_BACKEND: str = ''opencv'''
+- file: vllm/multimodal/media/video.py:111
+  context: VideoMediaIO selects the loader backend from kwargs or this env var and loads it from VIDEO_LOADER_REGISTRY
+- file: vllm/config/multimodal.py:514
+  context: use_gpu_video_backend() checks whether the configured loader/codec requires GPU
+- file: vllm/multimodal/gpu_ipc_memory.py:208
+  context: Reserves per-process decoder GPU memory when the backend requires GPU
+related_parameters:
+- name: --media-io-kwargs
+  relation: Per-request 'video_backend' kwarg overrides this env var (video.py:113-114)
+- name: mm_ipc_gpu_memory_gb
+  relation: GPU-requiring video backends increase the reserved IPC memory budget
+- name: VLLM_MEDIA_CONNECTOR
+  relation: Sibling media IO env var controlling how media is fetched
+constraints:
+- If a non-existing backend name is used, an AssertionError is thrown (per envs.py comment).
+- The backend must be registered in VIDEO_LOADER_REGISTRY (built-in 'opencv'/'opencv_dynamic' or a custom registered loader)
+  before it can be loaded.
+- A per-request 'video_backend' in --media-io-kwargs takes precedence over this env var.
+tuning_advice:
+  summary: On Ascend NPU keep the default CPU OpenCV backend; only switch to 'opencv_dynamic' when duration-aware sampling
+    is needed for long videos, accepting extra CPU preprocessing cost.
+  suggested_values:
+  - scenario: Default video-input workloads on Ascend NPU
+    value: opencv
+    reason: Uniform sampling with CPU OpenCV is the default, avoids GPU-requiring codecs that are unavailable on Ascend, and
+      keeps preprocessing cost predictable.
+  - scenario: Long videos needing duration-aware frame sampling
+    value: opencv_dynamic
+    reason: Duration-aware dynamic sampling adapts frame selection to video length, improving sampling quality at the cost
+      of more CPU decode work.
+  caveats:
+  - Do not select GPU/NVDEC-based backends on Ascend; they are CUDA-only and will fail or be irrelevant.
+  - 'Prefer per-request --media-io-kwargs ''{"video": {"video_backend": ...}}'' over changing the global env var when only
+    some requests need a different backend.'
+  quick_guide: Leave VLLM_VIDEO_LOADER_BACKEND at 'opencv' on Ascend; use 'opencv_dynamic' only for long-video sampling needs.
+analysis_date: '2026-10-27'

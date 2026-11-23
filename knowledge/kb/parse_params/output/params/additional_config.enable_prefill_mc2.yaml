@@ -1,0 +1,81 @@
+name: additional_config.enable_prefill_mc2
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:577
+- vllm_ascend/ascend_config.py:428
+- tests/ut/test_ascend_config.py:1520
+value_type: bool
+default: false
+valid_choices: 'true / false (lax bool coercion: string "false" resolves to False)'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'enable_prefill_mc2 is a vllm-ascend-only switch (defined in AscendConfig, passed via
+
+  --additional-config JSON). It controls whether the MC2 (Matmul-Communication fusion)
+
+  token capacity buffer is reserved for prefill batches. By default (False), the
+
+  mc2_token_capacity is sized from the decode-only capacity; when enabled, the capacity
+
+  is instead computed from max_num_batched_tokens, so prefill batches can also use the
+
+  fused MC2 dispatch/combine path. This affects the MoE communication path on Ascend NPU:
+
+  enabling it lets prefill-phase MoE all-to-all/dispatch-combine run through the fused MC2
+
+  operators, which can improve prefill throughput by overlapping matmul and HCCL
+
+  communication, at the cost of a larger reserved workspace buffer (memory scales with the
+
+  token capacity). The doc explicitly notes it is a temporary switch that will be removed
+
+  once MC2 operators cover all scenarios and MC2 becomes default. It is read as a typed
+
+  pydantic field with lax bool coercion (test_enable_prefill_mc2_string_false_disables
+
+  confirms "false" -> False).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:577
+  context: Field definition in AscendConfig (pydantic dataclass), default False.
+- file: vllm_ascend/ascend_config.py:428
+  context: Documented in the AscendConfig docstring example JSON for --additional-config.
+- file: tests/ut/test_ascend_config.py:1520
+  context: Unit test verifying string "false" is coerced to False for enable_prefill_mc2.
+related_parameters:
+- name: max_num_batched_tokens
+  relation: When enable_prefill_mc2 is true, mc2_token_capacity is derived from max_num_batched_tokens; recommended max is
+    tp_size * 512.
+- name: enable_fused_mc2
+  relation: Both relate to the fused MC2/MoE path; enable_fused_mc2 selects the fused dispatch-FFN-combine or MegaMoe implementation.
+- name: mc2_comm_alg
+  relation: Selects the dispatch/combine comm_alg used by the MC2 path whose capacity this switch sizes.
+- name: mega_moe_max_tokens
+  relation: Per-rank token capacity for the fused MC2/MegaMoe path; related buffer sizing.
+constraints:
+- enable_prefill_mc2 is only valid as a key inside --additional-config; unknown keys are rejected (extra="forbid").
+- When enable_prefill_mc2 is enabled, max_num_batched_tokens should not exceed tp_size * 512, per the documentation's recommended
+  maximum.
+tuning_advice:
+  summary: Enable only when prefill-phase MoE communication is a bottleneck and max_num_batched_tokens is kept within tp_size
+    * 512.
+  suggested_values:
+  - scenario: MoE model on Ascend NPU where prefill throughput is limited by MoE dispatch/combine communication
+    value: true
+    reason: Lets prefill batches use the fused MC2 path, overlapping matmul and HCCL communication to raise prefill throughput.
+  - scenario: Default / decode-focused or memory-constrained deployments
+    value: false
+    reason: Avoids the larger mc2_token_capacity workspace buffer; decode-only capacity sizing is sufficient.
+  caveats:
+  - Keep max_num_batched_tokens <= tp_size * 512 when enabled to avoid oversized buffers and precision/truncation issues.
+  - Monitor NPU memory after enabling; workspace scales with the token capacity.
+  quick_guide: Set enable_prefill_mc2=true in --additional-config only for MoE prefill-bound workloads, with max_num_batched_tokens
+    <= tp_size * 512.
+analysis_date: '2026-10-27'

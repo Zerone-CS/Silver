@@ -1,0 +1,90 @@
+name: --model-class-overrides
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:942
+- vllm/engine/arg_utils.py:572
+- vllm/engine/arg_utils.py:1837
+- vllm/config/model.py:323
+- vllm/config/model.py:1042
+value_type: dict
+default: {}
+valid_choices: Any mapping of architecture name to a 'module:class' string accepted by ModelRegistry.register_model
+cli_example: '--model-class-overrides ''{"GlmMoeDsaForCausalLM": "vllm.models.deepseek_v32.nvidia.model:DeepseekV32ForCausalLM"}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter does not tune any runtime knob (no scheduling, memory, or
+
+  communication behavior is changed). It only redirects the model class that
+
+  ModelRegistry resolves for a given architecture. In vllm/config/model.py:1042,
+
+  the `registry` property calls `_maybe_register_model_class_overrides()`, which
+
+  iterates `model_class_overrides` and registers each (arch, target) pair into
+
+  `ModelRegistry.models` exactly once per process (guarded by the process-local
+
+  `_REGISTERED_MODEL_CLASS_OVERRIDES` set). This runs in the engine front-end and
+
+  in every worker process, so the registration cost is a one-time dict update at
+
+  startup — negligible.
+
+  The performance effect is therefore indirect: "whichever class you point the"
+
+  architecture at determines the actual model implementation (attention backend
+
+  selection, MoE dispatch, quantization kernels, memory layout). On Ascend, the
+
+  class you register must be compatible with vllm-ascend''s NPU platform and its
+
+  custom ops; if it is not, you may fall back to slower generic paths or fail
+
+  outright. The parameter itself adds no per-token overhead.
+
+  No vllm-ascend override of this parameter was found in the provided context;
+
+  it is an upstream vLLM development/debugging hook.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:942
+  context: Registers the --model-class-overrides CLI flag in the ModelConfig argument group.
+- file: vllm/engine/arg_utils.py:572
+  context: EngineArgs field defaulting to ModelConfig.model_class_overrides.
+- file: vllm/engine/arg_utils.py:1837
+  context: Passes model_class_overrides into the constructed ModelConfig.
+- file: vllm/config/model.py:323
+  context: ModelConfig field definition with docstring describing the module:class mapping.
+- file: vllm/config/model.py:1042
+  context: registry property chokepoint that applies the overrides via _maybe_register_model_class_overrides().
+related_parameters:
+- name: --model
+  relation: The architecture name used as the key in the override map is derived from the model's HF config architectures.
+- name: --trust-remote-code
+  relation: Custom model classes loaded via module:class may require trust_remote_code for import resolution.
+- name: --hf-overrides
+  relation: Both mutate model resolution; hf-overrides changes config fields, model-class-overrides changes the class.
+constraints:
+- Each value must be a string in 'module:class' format accepted by ModelRegistry.register_model, otherwise registration fails.
+- The architecture key must match an architecture name present in the model's HF config for the override to take effect.
+- The target class must be importable in every worker process, since registration happens per-process.
+tuning_advice:
+  summary: Use only for development/debugging to swap a model implementation; it is not a performance tuning knob.
+  suggested_values:
+  - scenario: Debugging or testing an alternative model implementation on Ascend
+    value: '{"<ArchName>": "<module>:<Class>"}'
+    reason: Redirects the architecture to a custom class; verify the class is NPU-compatible before relying on it.
+  - scenario: Production deployment
+    value: {}
+    reason: Leave empty; the default resolves the standard registered class which is already Ascend-adapted.
+  caveats:
+  - Prefer the default (empty) mapping in production; a wrong target class can degrade performance or break NPU execution.
+  - Ensure the target class is importable in all worker processes and compatible with vllm-ascend's platform.
+  quick_guide: Leave empty unless debugging a custom model class; it does not tune runtime performance.
+analysis_date: '2026-10-27'

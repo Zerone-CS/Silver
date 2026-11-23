@@ -1,0 +1,90 @@
+name: VLLM_DISABLE_SHARED_EXPERTS_STREAM
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:2000
+- vllm/envs.py:295
+- vllm/model_executor/layers/fused_moe/runner/shared_experts.py:64
+- vllm/models/kimi_k3/nvidia/latent_moe_runner.py:207
+- vllm/platforms/cpu.py:395
+- vllm_ascend/platform.py:32
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Upstream vLLM uses this flag to disable running MoE shared_experts on a separate
+
+  CUDA stream (aux_stream) in SharedExperts.__init__ (vllm/model_executor/layers/
+
+  fused_moe/runner/shared_experts.py:64). When disabled, self._stream is None and
+
+  the shared-expert GEMM is executed inline on the main stream, removing the
+
+  input-clone + event sync overhead but also removing the overlap opportunity.
+
+  It also gates the Kimi-K3 latent MoE tail tier selection
+
+  (vllm/models/kimi_k3/nvidia/latent_moe_runner.py:207): when set, the
+
+  ALLREDUCE_OVERLAP tier is skipped and the runner falls back to COLUMN_PARALLEL.
+
+  On Ascend, vllm_ascend/platform.py:32 unconditionally sets
+
+  os.environ["VLLM_DISABLE_SHARED_EXPERTS_STREAM"] = "1" at import time (with a
+
+  TODO to remove it once CUDA hard-coding in vLLM is solved). This means the
+
+  separate-stream path is always disabled on Ascend NPU regardless of user input,
+
+  so the parameter has no tunable runtime effect on Ascend — the Ascend MoE
+
+  implementation does not use the CUDA aux_stream overlap mechanism. The only
+
+  residual effect is that any code path keyed on this env var (e.g. the K3 tail
+
+  tier selection) will always take the non-overlap branch on Ascend.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:32
+  context: Module-level override forcing the env var to '1' on Ascend, disabling the shared-experts stream unconditionally
+- file: vllm/model_executor/layers/fused_moe/runner/shared_experts.py:64
+  context: Reads env var to decide whether to allocate an aux CUDA stream for shared experts
+- file: vllm/models/kimi_k3/nvidia/latent_moe_runner.py:207
+  context: Gates selection of the ALLREDUCE_OVERLAP tail tier for Kimi-K3 latent MoE
+- file: vllm/platforms/cpu.py:395
+  context: CPU platform also forces this to '1' since no CUDA streams exist
+related_parameters:
+- name: VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD
+  relation: Token-count cutoff that only matters when the shared-experts stream is enabled; ignored when this flag disables
+    the stream
+- name: VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD
+  relation: Related multi-stream GEMM overlap threshold; both control stream-overlap heuristics
+- name: VLLM_DISABLE_DSV4_MEGAMOE_SHARED_EXPERT_FUSION
+  relation: Sibling flag controlling shared-expert fusion in the DeepSeek-V4 MegaMoE path
+constraints:
+- On Ascend NPU the value is forcibly set to 1 by vllm_ascend/platform.py at import time, so setting it to 0 has no effect.
+- The value is parsed as bool(int(...)), so only integer-like strings such as '0' or '1' are valid.
+tuning_advice:
+  summary: No tuning needed on Ascend — vllm-ascend forces this to 1; leave it unset.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: 1
+    reason: vllm_ascend/platform.py already sets this to 1 unconditionally; explicitly setting it matches the effective behavior
+      and avoids confusion.
+  - scenario: Debugging shared-expert overlap on upstream GPU reference
+    value: 1
+    reason: Upstream comment marks this as a debug switch to disable the separate shared-experts stream; useful for isolating
+      overlap-related issues.
+  caveats:
+  - Setting VLLM_DISABLE_SHARED_EXPERTS_STREAM=0 on Ascend will be silently overridden back to 1 by the platform module.
+  - This flag only affects CUDA-stream overlap logic; Ascend MoE kernels do not use that mechanism, so it does not change
+    NPU kernel scheduling.
+  quick_guide: Leave unset on Ascend; it is hard-coded to 1 by vllm-ascend and has no tunable performance effect.
+analysis_date: '2026-10-27'

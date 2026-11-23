@@ -1,0 +1,107 @@
+name: VLLM_ENABLE_V1_MULTIPROCESSING
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1382
+- vllm/envs.py:155
+- vllm/engine/arg_utils.py:1811
+- vllm/config/parallel.py:963
+- vllm/v1/engine/llm_engine.py:162
+- vllm/v1/executor/uniproc_executor.py:180
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var controls whether the V1 LLMEngine runs the engine core in a
+
+  separate process (multiprocessing) or in-process. It is read in
+
+  vllm/envs.py:1382 as bool(int(os.getenv(..., "1"))), defaulting to enabled.
+
+  In vllm/v1/engine/llm_engine.py:162 it is passed as multiprocess_mode to the
+
+  LLMEngine constructor, and in from_engine_args (line 179) it forces
+
+  enable_multiprocessing=True. When enabled, the engine core (scheduler +
+
+  model runner) runs in a child process and communicates with the frontend via
+
+  ZMQ/IPC; when disabled, everything runs in the launching Python process.
+
+  On Ascend NPU this does not change the actual model compute, HCCL
+
+  communication, or KV-cache allocation — those are governed by vllm-ascend
+
+  worker/executor code and are unaffected by this flag. The only runtime
+
+  effect is process topology: "multiprocessing adds a small IPC hop for"
+
+  request/output passing (slightly higher per-request latency overhead) but
+
+  isolates the engine core from the frontend process. Disabling it removes
+
+  that IPC overhead but couples the engine to the caller process and can
+
+  perturb the caller''s Python random state (see arg_utils.py:1811 warning).
+
+  No vllm-ascend-specific override of this variable was found in the provided
+
+  context; it is an upstream-only knob. Overall impact on Ascend throughput is
+
+  negligible; it is a correctness/determinism and process-isolation knob more
+
+  than a performance knob.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1382
+  context: 'Definition: bool(int(os.getenv(''VLLM_ENABLE_V1_MULTIPROCESSING'', ''1'')))'
+- file: vllm/v1/engine/llm_engine.py:162
+  context: Passed as multiprocess_mode to LLMEngine constructor
+- file: vllm/v1/engine/llm_engine.py:179
+  context: Forces enable_multiprocessing=True in from_engine_args when set
+- file: vllm/config/parallel.py:963
+  context: Forced to '0' when distributed_executor_backend == 'external_launcher'
+- file: vllm/v1/executor/uniproc_executor.py:180
+  context: ExecutorWithExternalLauncher asserts it is disabled for deterministic execution
+- file: vllm/engine/arg_utils.py:1811
+  context: Warns about global random seed affecting caller process when disabled
+related_parameters:
+- name: distributed_executor_backend
+  relation: When set to 'external_launcher', this env var is forcibly set to 0
+- name: VLLM_WORKER_MULTIPROC_METHOD
+  relation: Related multiprocessing spawn method for worker processes
+- name: seed
+  relation: When multiprocessing is disabled, the global random seed may affect the launching process
+constraints:
+- When using the external_launcher distributed executor backend, VLLM_ENABLE_V1_MULTIPROCESSING is forcibly set to 0 and cannot
+  be enabled.
+- ExecutorWithExternalLauncher asserts VLLM_ENABLE_V1_MULTIPROCESSING must be 0; setting it to 1 with that executor raises
+  an assertion error.
+- The value is parsed as bool(int(...)), so only '0' or '1' are valid; other strings raise a ValueError.
+tuning_advice:
+  summary: Leave at default (1) for normal serving; only disable for determinism-sensitive offline runs or external-launcher/torchrun
+    setups.
+  suggested_values:
+  - scenario: Standard online serving / OpenAI-compatible server on Ascend NPU
+    value: 1
+    reason: Default multiprocessing isolates the engine core from the frontend process and is the well-tested path; IPC overhead
+      is negligible relative to NPU compute.
+  - scenario: Offline batch inference with torchrun-compatible external launcher
+    value: 0
+    reason: Required by ExecutorWithExternalLauncher for deterministic execution; upstream forces it to 0 automatically for
+      external_launcher backend.
+  - scenario: Debugging or profiling where you want the engine in-process
+    value: 0
+    reason: Removes the IPC hop and simplifies stack traces, at the cost of coupling engine to the caller process.
+  caveats:
+  - Do not set to 1 when using distributed_executor_backend=external_launcher; it will be overridden to 0 and an assertion
+    will fail if forced.
+  - Disabling multiprocessing may alter the launching process's random state; set an explicit seed if reproducibility matters.
+  quick_guide: Keep VLLM_ENABLE_V1_MULTIPROCESSING=1 unless you need determinism/external-launcher or in-process debugging.
+analysis_date: '2026-10-27'

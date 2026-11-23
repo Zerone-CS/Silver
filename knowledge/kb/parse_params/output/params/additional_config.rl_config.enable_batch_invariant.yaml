@@ -1,0 +1,88 @@
+name: additional_config.rl_config.enable_batch_invariant
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:375
+- vllm_ascend/ascend_config.py:392
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only sub-field of RlConfig (vllm_ascend/ascend_config.py:365-395).
+
+  It is read only inside RlConfig.apply(): when rl_config.enabled is true and
+
+  enable_batch_invariant is true, it sets os.environ["VLLM_BATCH_INVARIANT"] = "1"
+
+  before workers start (line 392-393). Per the docs, worker-side batch-invariant
+
+  initialization then sets HCCL_DETERMINISTIC=strict and LCCL_DETERMINISTIC=1.
+
+  The performance effect is indirect but real: "batch-invariant kernels force"
+
+  deterministic reduction/attention orderings (disabling some fused/fast paths) and
+
+  deterministic HCCL/LCCL communication disables certain collective optimizations,
+
+  which typically lowers throughput and raises per-step latency in exchange for
+
+  bit-reproducible outputs across batch compositions. It does not itself allocate
+
+  memory or change parallelism; the cost is the deterministic execution path it
+
+  activates. When false, an existing VLLM_BATCH_INVARIANT env setting is preserved
+
+  (no override), so the flag only ever turns determinism ON, never off.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:392
+  context: RlConfig.apply() sets VLLM_BATCH_INVARIANT=1 when enabled and this flag is true
+- file: vllm_ascend/ascend_config.py:378
+  context: apply() early-returns when rl_config.enabled is false, so this sub-field is ignored
+related_parameters:
+- name: additional_config.rl_config.enabled
+  relation: Master switch; enable_batch_invariant has no effect unless enabled is true
+- name: VLLM_BATCH_INVARIANT
+  relation: Env var this flag sets to 1; when flag is false an existing value is preserved
+- name: HCCL_DETERMINISTIC
+  relation: Set to strict by worker-side batch-invariant init when VLLM_BATCH_INVARIANT=1
+- name: LCCL_DETERMINISTIC
+  relation: Set to 1 by worker-side batch-invariant init when VLLM_BATCH_INVARIANT=1
+- name: additional_config.rl_config.enable_training_consistency
+  relation: Independent; FA3 consistency does not implicitly enable batch invariance
+- name: additional_config.weight_nz_mode
+  relation: RL mode forces weight_nz_mode=0 regardless of this flag
+constraints:
+- enable_batch_invariant is only applied when rl_config.enabled is true; otherwise it is ignored.
+- Batch-invariant mode requires building vllm-ascend from source with COMPILE_CUSTOM_KERNELS=1.
+- Setting this flag to false does not disable batch invariance if VLLM_BATCH_INVARIANT is already set in the environment;
+  the existing value is preserved.
+- Enabling batch invariance does not implicitly enable FA3 training-consistency mode; enable_training_consistency must be
+  set separately.
+tuning_advice:
+  summary: Enable only for RL/reproducible-rollout workloads that need bit-exact outputs; keep false for throughput-oriented
+    serving.
+  suggested_values:
+  - scenario: RL training rollouts requiring reproducible, batch-invariant outputs
+    value: true
+    reason: Sets VLLM_BATCH_INVARIANT=1 and triggers deterministic HCCL/LCCL settings so results are reproducible across batch
+      compositions.
+  - scenario: Pure online inference / serving where max throughput matters
+    value: false
+    reason: Avoids the deterministic kernel and communication overhead, preserving peak throughput and lower latency.
+  - scenario: FA3 training-consistency mode without needing bit-exact reproducibility
+    value: false
+    reason: Batch invariance is independent of FA3; only enable it if reproducibility is additionally required.
+  caveats:
+  - Expect a throughput/latency penalty from deterministic kernels and strict HCCL/LCCL collectives.
+  - Must be combined with rl_config.enabled=true or it is silently ignored.
+  - Requires a source build with COMPILE_CUSTOM_KERNELS=1.
+  quick_guide: Set true only when you need reproducible RL rollouts; otherwise leave false for best performance.
+analysis_date: '2026-10-27'

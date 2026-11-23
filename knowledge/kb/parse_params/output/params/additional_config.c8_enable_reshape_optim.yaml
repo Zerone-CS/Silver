@@ -1,0 +1,85 @@
+name: additional_config.c8_enable_reshape_optim
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:646
+- vllm_ascend/ascend_config.py:452
+- tests/ut/test_ascend_config.py:1879
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This switch controls whether the StoreKVBlock operator is used to accelerate
+
+  LightningIndexer C8 (int8) KV cache writes on Ascend NPU. In vllm_ascend it is a
+
+  field of AscendConfig (vllm_ascend/ascend_config.py:646, default True) and is
+
+  consumed during init_ascend_config to derive the private flag
+
+  `_c8_reshape_optim_enabled` (ascend_config.py:657). Per the docs, the optimization
+
+  only takes effect when SFA (sparse flash attention) and LightningIndexer C8 are
+
+  both active on a PD prefill (P) node — i.e. it is a narrow, model-specific
+
+  (DeepSeek-V3.2/V4-style sparse attention) write-path optimization. When active it
+
+  replaces a generic reshape+store sequence with a fused StoreKVBlock op, reducing
+
+  per-token KV write overhead on the prefill node, which can slightly improve
+
+  prefill latency/throughput. It does not change memory footprint or scheduling.
+
+  Note: "the release notes state the `store_kv_block` optimization and this switch"
+
+  were removed (#18128), so on newer builds the field may be a no-op or rejected by
+
+  the `extra="forbid"` schema; on builds where it still exists it is a low-impact
+
+  micro-optimization.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:646
+  context: 'Field definition `c8_enable_reshape_optim: bool = True` in AscendConfig, referencing issue #15896.'
+- file: vllm_ascend/ascend_config.py:657
+  context: Private derived flag `_c8_reshape_optim_enabled` computed from this switch during init_ascend_config.
+- file: tests/ut/test_ascend_config.py:1879
+  context: Unit test verifying the derived `c8_reshape_optim_enabled` given reshape_optim, SFA usage, LI C8 and kv_role combinations.
+related_parameters:
+- name: enable_sparse_li_c8
+  relation: The optimization only takes effect when LightningIndexer C8 (int8 indexer KV) is active; derived from indexer_kv_dtype.
+- name: enable_sparse_sfa_c8
+  relation: Requires SFA (sparse flash attention) to be active on the prefill node for the optimization to apply.
+- name: kv_transfer_config.kv_role
+  relation: Only effective on PD prefill (kv_producer / kv_both) nodes; no effect on decode-only (kv_consumer) nodes.
+constraints:
+- The optimization only takes effect when SFA and LightningIndexer C8 are both active on a PD prefill (P) node; otherwise
+  setting it has no effect.
+- Unknown keys in additional_config are rejected (extra="forbid"), so on builds where this switch was removed (#18128) passing
+  it may fail validation.
+tuning_advice:
+  summary: Leave at default true for sparse-attention C8 models on PD prefill nodes; disable only to work around the AICPU
+    pooling conflict on old HDK.
+  suggested_values:
+  - scenario: DeepSeek-V3.2/V4-style sparse attention with LightningIndexer C8 on a PD prefill node, HDK newer than 0.26.0
+    value: true
+    reason: Enables the fused StoreKVBlock write path, reducing prefill KV write overhead.
+  - scenario: Pooling models using AICPU operators on HDK 0.26.0 or earlier
+    value: false
+    reason: 'Avoids the operator conflict described in issue #15896.'
+  - scenario: Dense models or decode-only (kv_consumer) nodes
+    value: true
+    reason: No effect either way; keep default to avoid config churn.
+  caveats:
+  - 'Verify the switch still exists on your vllm-ascend build; it was removed in #18128.'
+  - Only meaningful together with enable_sparse_li_c8 / SFA on prefill nodes.
+  quick_guide: Keep true unless on old HDK with AICPU pooling models, then set false.
+analysis_date: '2026-10-27'

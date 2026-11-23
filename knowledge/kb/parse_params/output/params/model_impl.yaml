@@ -1,0 +1,125 @@
+name: --model-impl
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:361
+- vllm/engine/arg_utils.py:730
+- vllm/engine/arg_utils.py:961
+- vllm/engine/arg_utils.py:1880
+- vllm/model_executor/model_loader/utils.py:227
+- vllm/model_executor/models/registry.py:1265
+value_type: str
+default: auto
+valid_choices:
+- auto
+- vllm
+- transformers
+- terratorch
+cli_example: --model-impl vllm
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--model-impl selects which model class implementation is instantiated at load time.
+
+  In vllm/config/model.py:361 the field defaults to "auto", which resolves to the vLLM
+
+  native implementation when one exists, otherwise falls back to the Transformers
+
+  implementation (vllm/model_executor/models/registry.py:1265,1282 and
+
+  vllm/model_executor/model_loader/utils.py:227-234). The chosen class is cached by a
+
+  hash that includes model_impl (utils.py:258), so it also affects architecture
+
+  resolution caching.
+
+
+  Performance relevance on Ascend: "the vLLM implementation is the one that vllm-ascend"
+
+  patches/registers (e.g. vllm_ascend/models/glm5_dspark.py, AscendQwen3DSparkForCausalLM
+
+  in the spec-decode tests). These Ascend-native model classes are wired to Ascend
+
+  kernels, custom ops, and NPU-optimized attention paths. If --model-impl is forced to
+
+  "transformers", the Transformers reference implementation is used instead, which
+
+  bypasses the vLLM/Ascend-optimized forward path — the upstream code explicitly warns
+
+  "Some features may not be supported and performance may not be optimal"
+
+  (utils.py:229-233). That means slower forward passes, higher latency, potentially
+
+  higher memory (no fused/quantized Ascend kernels), and possible loss of graph capture
+
+  or quantization support. Conversely, forcing "vllm" when no vLLM implementation exists
+
+  triggers an assertion (utils.py:227), so it is not a free performance knob.
+
+
+  The parameter itself does not change runtime scheduling; its impact is indirect but
+
+  significant because it determines whether the Ascend-optimized model code path is
+
+  taken at all.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:361
+  context: ModelConfig field definition with docstring describing auto/vllm/transformers/terratorch
+- file: vllm/engine/arg_utils.py:961
+  context: CLI argument registration --model-impl
+- file: vllm/engine/arg_utils.py:1880
+  context: Passed into ModelConfig construction from EngineArgs
+- file: vllm/model_executor/model_loader/utils.py:227
+  context: Asserts model_impl != 'vllm' when falling back to Transformers backend; warns on auto fallback
+- file: vllm/model_executor/models/registry.py:1265
+  context: Returns None (skip Transformers backend) unless model_impl == 'transformers'
+- file: vllm/model_executor/models/registry.py:1282
+  context: Skips incompatible Transformers backend unless model_impl == 'transformers'
+- file: vllm/model_executor/model_loader/utils.py:258
+  context: model_impl included in architecture-resolution cache key
+- file: vllm_ascend/models/glm5_dspark.py
+  context: Ascend-registered model class resolved via get_model_cls with model_impl='vllm' (per tests/ut/model_executor/test_glm_mla_dspark.py:30)
+related_parameters:
+- name: --trust-remote-code
+  relation: Required for custom/dynamic-module Transformers implementations resolved via auto_map
+- name: --runner
+  relation: Runner type (generate/pooling) interacts with model class resolution and convert_type
+- name: --convert
+  relation: convert_type (none/embed/classify) is applied after model class resolution
+- name: --quantization
+  relation: Quantized Ascend kernels are only available through the vLLM/Ascend implementation, not the Transformers fallback
+- name: --tokenizer-mode
+  relation: model_impl='terratorch' forces tokenizer_mode='terratorch' when tokenizer_mode is auto
+constraints:
+- Setting --model-impl vllm when the architecture has no vLLM implementation causes an assertion failure during model loading.
+- The Transformers fallback is only selected when --model-impl is 'transformers'; with 'auto' it is used only if no vLLM implementation
+  exists.
+- A Transformers implementation that is not backend-compatible with vLLM raises an error when --model-impl is explicitly 'transformers'.
+- When --model-impl is 'terratorch', the tokenizer mode is automatically set to 'terratorch' if --tokenizer-mode is 'auto'.
+tuning_advice:
+  summary: Keep --model-impl at its default 'auto' on Ascend so the vLLM/Ascend-optimized model class is used whenever available;
+    only override to 'transformers' for debugging or unsupported architectures.
+  suggested_values:
+  - scenario: Standard Ascend deployment of a model with a vLLM implementation (Qwen, DeepSeek, GLM, etc.)
+    value: auto
+    reason: Resolves to the vLLM implementation, which vllm-ascend patches with NPU-optimized kernels; best latency/throughput.
+  - scenario: Explicitly pinning the vLLM implementation to avoid accidental Transformers fallback
+    value: vllm
+    reason: Guarantees the Ascend-optimized path; will assert if no vLLM implementation exists, surfacing misconfiguration
+      early.
+  - scenario: Debugging correctness against the reference implementation or running an architecture with no vLLM implementation
+    value: transformers
+    reason: Uses the Transformers reference model; expect slower performance and possible loss of quantization/graph features.
+  caveats:
+  - Do not set 'vllm' for architectures lacking a vLLM implementation — it triggers an assertion at load time.
+  - Avoid 'transformers' in production on Ascend; it bypasses vllm-ascend model registrations and NPU kernel optimizations.
+  - If you see the 'falling back to Transformers implementation' warning with 'auto', performance will be suboptimal — check
+    whether an Ascend/vLLM implementation exists for that architecture.
+  quick_guide: Leave --model-impl at 'auto' on Ascend; only use 'transformers' for debugging or unsupported models.
+analysis_date: '2026-10-27'

@@ -1,0 +1,101 @@
+name: --io-processor-plugin
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:966
+- vllm/engine/arg_utils.py:619
+- vllm/engine/arg_utils.py:1888
+- vllm/config/model.py:373
+- vllm/plugins/io_processors/__init__.py:26
+- vllm/plugins/io_processors/__init__.py:49
+- vllm/entrypoints/pooling/factories.py:75
+- vllm/entrypoints/pooling/pooling/io_processor.py:57
+value_type: str
+default: null
+valid_choices: Any registered IOProcessor plugin name under the 'vllm.io_processor_plugins' entry-point group, or null to
+  fall back to the model's hf_config 'io_processor_plugin' field
+cli_example: --io-processor-plugin <plugin-name>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter selects an IOProcessor plugin that performs pre-/post-processing of
+
+  model input and output for pooling models. It is consumed only on the API-server
+
+  (process0) side: vllm/entrypoints/pooling/factories.py:75 calls has_io_processor()
+
+  with model_config.io_processor_plugin, and if a plugin is present it registers
+
+  PluginWithIOProcessorPlugins (vllm/entrypoints/pooling/pooling/io_processor.py:57),
+
+  which calls get_io_processor() to load the plugin class from the
+
+  ''vllm.io_processor_plugins'' entry-point group (vllm/plugins/io_processors/__init__.py:49).
+
+  The plugin''s parse_data/pre_process/post_process hooks run per request in the
+
+  front-end process, so they can add CPU-side latency to request handling and, if the
+
+  plugin does heavy work, reduce end-to-end throughput. It does NOT touch the model
+
+  forward pass, KV cache, HCCL communication, or NPU memory allocation, so it has no
+
+  direct effect on Ascend NPU compute. There is no vllm-ascend override of this
+
+  parameter in the provided context; it is a pure upstream vLLM front-end feature.
+
+  The plugin is loaded only in process0 (IO_PROCESSOR_PLUGINS_GROUP comment in
+
+  vllm/plugins/__init__.py:19-20), so it does not affect worker processes.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:966
+  context: CLI argument registration for --io-processor-plugin
+- file: vllm/engine/arg_utils.py:1888
+  context: Passed into ModelConfig during EngineArgs.create_model_config()
+- file: vllm/config/model.py:373
+  context: ModelConfig field definition; excluded from hash factors at line 454
+- file: vllm/plugins/io_processors/__init__.py:26
+  context: has_io_processor() checks plugin_from_init before falling back to hf_config
+- file: vllm/plugins/io_processors/__init__.py:49
+  context: get_io_processor() loads the plugin class from the entry-point group
+- file: vllm/entrypoints/pooling/factories.py:75
+  context: Selects PluginWithIOProcessorPlugins when a plugin is configured
+- file: vllm/entrypoints/pooling/pooling/io_processor.py:57
+  context: Instantiates the IOProcessor and runs pre/post-processing per request
+related_parameters:
+- name: --runner
+  relation: IOProcessor plugins are only meaningful for pooling/embedding runners, not generation
+- name: --task
+  relation: PluginWithIOProcessorPlugins is registered for the 'plugin' pooling task; the plugin must match the pooling task
+- name: --renderer-num-workers
+  relation: Both affect the async renderer/front-end path; renderer workers parallelize tokenization while the plugin adds
+    per-request CPU work
+constraints:
+- The plugin name must correspond to an entry point registered under the 'vllm.io_processor_plugins' group, otherwise get_io_processor()
+  logs a warning and the plugin is not loaded.
+- If --io-processor-plugin is not set, vLLM falls back to the model's hf_config 'io_processor_plugin' field; if neither is
+  set, no plugin is loaded.
+- IOProcessor plugins are only used by pooling models; they have no effect on generation models.
+tuning_advice:
+  summary: Only set this when using a pooling model that requires a custom IOProcessor; otherwise leave it unset to avoid
+    front-end overhead.
+  suggested_values:
+  - scenario: Standard generation or pooling workload without custom pre/post-processing
+    value: unset
+    reason: Leaving it unset avoids loading a plugin and any per-request CPU overhead in the front-end.
+  - scenario: Pooling model that ships an IOProcessor plugin via hf_config
+    value: unset
+    reason: The plugin is auto-detected from hf_config 'io_processor_plugin', so no CLI flag is needed.
+  - scenario: Custom pooling pipeline requiring explicit plugin selection
+    value: <plugin-name>
+    reason: Set the registered entry-point name to activate PluginWithIOProcessorPlugins for the pooling task.
+  caveats:
+  - Keep plugin pre/post-processing lightweight; it runs serially in the front-end and can limit throughput under high concurrency.
+  - This setting has no impact on Ascend NPU compute, memory, or HCCL; do not expect NPU-side performance changes.
+  quick_guide: Leave unset unless a pooling model needs a custom IOProcessor plugin; it only affects front-end CPU processing.
+analysis_date: '2026-10-27'

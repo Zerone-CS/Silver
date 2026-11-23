@@ -1,0 +1,186 @@
+name: --max-num-seqs
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:63
+- vllm/engine/arg_utils.py:1595
+- vllm/engine/arg_utils.py:559
+- vllm/config/vllm.py:2160
+- vllm/config/compilation.py:712
+- vllm_ascend/platform.py:1515
+- vllm_ascend/platform.py:1528
+- vllm_ascend/ascend_config.py:1392
+- vllm_ascend/worker/model_runner_v1.py:418
+- vllm_ascend/worker/model_runner_v1.py:3968
+- vllm_ascend/worker/v2/model_runner.py:430
+- vllm_ascend/worker/v2/model_states/default.py:77
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:126
+value_type: int
+default: 128
+valid_choices: integer >= 1 (Field(ge=1)); CLI default is None and resolved at engine-config creation time
+cli_example: --max-num-seqs 128
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: '--max-num-seqs caps the number of sequences the scheduler batches into a single
+
+  iteration (vllm/config/scheduler.py:63, DEFAULT_MAX_NUM_SEQS = 128). It is the
+
+  primary knob for decode batch width, so it directly drives NPU utilization,
+
+  throughput and per-token latency.
+
+
+  Upstream mechanism: "vllm/config/vllm.py:2160 computes the default CUDA-graph"
+
+  capture ceiling as min(max_num_seqs * decode_query_len * 2, 512/1024), and
+
+  vllm/config/compilation.py:712 documents that this ceiling exists to avoid OOM
+
+  with small max_num_seqs and to limit large-graph capture cost. So max_num_seqs
+
+  also indirectly controls how many ACLGraph/CUDA-graph shapes get captured.
+
+
+  Ascend override (vllm_ascend/platform.py:1503-1537, _get_reduced_cg_cap): when
+
+  the user has NOT set max_cudagraph_capture_size or cudagraph_capture_sizes,
+
+  vllm-ascend injects its own default capture cap equal to
+
+  min(max_num_seqs * decode_query_len, 512) — note the deliberate removal of the
+
+  CUDA-oriented trailing "* 2". decode_query_len = 1 + num_speculative_tokens.
+
+  This means on Ascend, raising --max-num-seqs enlarges the ACLGraph capture
+
+  upper bound (up to 512), increasing graph capture time and memory, while
+
+  lowering it shrinks the captured shape set.
+
+
+  vllm_ascend/ascend_config.py:1392: when oproj_tensor_parallel_size /
+
+  mlp_tensor_parallel_size are enabled, max_step = min(max_num_batched_tokens,
+
+  max_num_seqs * decode_query_len) must be covered by the largest cudagraph
+
+  capture size, otherwise those TP features are silently disabled with a warning
+
+  (an oversized step would dispatch to eager and hang cross-DP HCCL collectives).
+
+
+  vllm_ascend/worker/model_runner_v1.py:418 sets self.max_num_reqs from
+
+  max_num_seqs, and :3968 uses it to shape dummy/warmup runs (num_reqs =
+
+  min(max_num_reqs, cdiv(num_tokens, max_query_len))), so it sizes per-request
+
+  buffers and warmup work. vllm_ascend/worker/v2/model_runner.py:430 passes it to
+
+  initialize_kda_state_copy, and v2 model_states/default.py:77 allocates
+
+  CpuGpuBuffer(max_num_seqs) for sparse KV offload (plus max_num_seqs + 2 pool
+
+  slots), so it directly sizes pinned host memory in that path.
+
+
+  vllm_ascend/patch/platform/patch_dyntra_lb_core.py:126-173 uses max_num_seqs as
+
+  the per-card running-set cap when rebalancing load across DP ranks
+
+  (fill_running_from_waiting pulls waiting requests until len(running) reaches
+
+  max_num_seqs), so it bounds the DP load-balancer''s admission per card.
+
+
+  Docs: "batch_invariance.md:192 recommends decreasing --max-num-seqs to reduce"
+
+  preemption (preemption forces recompute through the prefill path and breaks
+
+  batch invariance); graph_mode.md:306 and preempt_offload_connector.md:19 note
+
+  the decode token budget is sized as max_num_seqs * (1 + num_speculative_tokens).
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:63
+  context: Field definition with ge=1 and DEFAULT_MAX_NUM_SEQS = 128
+- file: vllm/engine/arg_utils.py:1595
+  context: CLI registration of --max-num-seqs with default None (resolved later)
+- file: vllm/config/vllm.py:2160
+  context: Default cudagraph capture ceiling derived from max_num_seqs * decode_query_len * 2
+- file: vllm_ascend/platform.py:1515
+  context: Ascend reduced capture cap = min(max_num_seqs * decode_query_len, 512)
+- file: vllm_ascend/ascend_config.py:1392
+  context: max_step for oproj/mlp TP validation uses max_num_seqs * decode_query_len
+- file: vllm_ascend/worker/model_runner_v1.py:418
+  context: self.max_num_reqs = scheduler_config.max_num_seqs (buffer sizing)
+- file: vllm_ascend/worker/model_runner_v1.py:3968
+  context: Dummy/warmup run num_reqs capped by max_num_seqs
+- file: vllm_ascend/worker/v2/model_runner.py:430
+  context: Passed to initialize_kda_state_copy for KDA state copy planning
+- file: vllm_ascend/worker/v2/model_states/default.py:77
+  context: CpuGpuBuffer sized by max_num_seqs for sparse KV offload
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:126
+  context: Per-card running-set cap in DP load balancing
+related_parameters:
+- name: --max-num-batched-tokens
+  relation: 'Coupled: max_step = min(max_num_batched_tokens, max_num_seqs * decode_query_len); decode deployments typically
+    size max_num_batched_tokens ~ max_num_seqs * (1 + num_spec_tokens)'
+- name: --max-cudagraph-capture-size
+  relation: If set explicitly, overrides the Ascend default cap derived from max_num_seqs; must cover max_num_seqs * decode_query_len
+    for oproj/mlp TP to stay enabled
+- name: --cudagraph-capture-sizes
+  relation: Explicit list disables the max_num_seqs-derived default capture cap
+- name: --num-speculative-tokens
+  relation: decode_query_len = 1 + num_speculative_tokens multiplies the effective decode batch width and capture cap
+- name: --gpu-memory-utilization
+  relation: Larger max_num_seqs needs more KV cache; docs suggest raising gpu-memory-utilization to avoid preemption
+- name: --max-model-len
+  relation: Longer context per request reduces the concurrency that fits in KV cache for a given max_num_seqs
+- name: --data-parallel-size
+  relation: max_num_seqs applies per DP rank; max_num_queued_reqs should be sized ~ data_parallel_size * max_num_seqs
+- name: --enable-batch-sharded-sampling
+  relation: Requires max_num_seqs >= tensor_parallel_size
+constraints:
+- --max-num-seqs must be at least 1.
+- For Mamba/hybrid models with full cudagraphs, max_num_seqs must not exceed the number of available Mamba cache blocks, otherwise
+  graph capture raises a ValueError.
+- Enabling batch-sharded sampling requires max_num_seqs to be at least tensor_parallel_size.
+- When oproj_tensor_parallel_size / mlp_tensor_parallel_size are set, the largest cudagraph capture size must be >= min(max_num_batched_tokens,
+  max_num_seqs * (1 + num_speculative_tokens)), otherwise those features are disabled.
+tuning_advice:
+  summary: Size --max-num-seqs to the concurrency your KV cache can hold without preemption, and keep it consistent with --max-num-batched-tokens
+    and the ACLGraph capture cap.
+  suggested_values:
+  - scenario: High-throughput online serving on Ascend with ample KV cache (v1 and v2 workers)
+    value: 128
+    reason: Matches upstream DEFAULT_MAX_NUM_SEQS; keeps the Ascend default capture cap at min(128 * decode_query_len, 512)
+      and gives good NPU batch utilization.
+  - scenario: 'Latency-sensitive / batch-invariance-critical workloads (docs: batch_invariance.md)'
+    value: 32
+    reason: Fewer concurrent requests share the KV cache, reducing preemption and recompute that break batch invariance and
+      inflate TPOT.
+  - scenario: Decode node in PD disaggregation with MTP/speculative decoding
+    value: 12
+    reason: KVPP doc example uses max_num_seqs=12 with max_num_batched_tokens=32768; decode nodes mainly schedule 1 + num_spec_tokens
+      tokens per request, so a small max_num_seqs suffices.
+  - scenario: Enabling oproj_tensor_parallel_size / mlp_tensor_parallel_size
+    value: 64
+    reason: Keep max_num_seqs * (1 + num_speculative_tokens) within the largest cudagraph capture size (default cap 512) so
+      the TP features are not silently disabled.
+  caveats:
+  - Always check startup logs for 'GPU KV cache size' and 'Maximum concurrency for ... tokens per request' to confirm max_num_seqs
+    fits the KV cache.
+  - If you explicitly set --max-cudagraph-capture-size or --cudagraph-capture-sizes, the Ascend max_num_seqs-derived default
+    cap no longer applies — verify the explicit cap still covers max_num_seqs * decode_query_len.
+  - Raising --max-num-seqs without raising --max-num-batched-tokens can leave the scheduler token-budget-bound rather than
+    sequence-bound.
+  quick_guide: Set --max-num-seqs to the KV-cache-feasible concurrency (start at 128, lower to ~32 for latency/batch-invariance,
+    ~12 for PD decode nodes) and keep max_num_seqs * (1 + num_spec_tokens) within the ACLGraph capture cap.
+analysis_date: '2026-10-27'

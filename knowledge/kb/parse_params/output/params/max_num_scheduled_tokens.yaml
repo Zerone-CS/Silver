@@ -1,0 +1,115 @@
+name: --max-num-scheduled-tokens
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:56
+- vllm/engine/arg_utils.py:1588
+- vllm/engine/arg_utils.py:374
+- vllm/config/vllm.py:1723
+- vllm/config/vllm.py:2112
+- vllm/v1/core/sched/scheduler.py:125
+- vllm/v1/core/sched/scheduler.py:473
+- vllm/v1/worker/gpu_model_runner.py:3889
+- vllm_ascend/patch/platform/patch_balance_schedule.py:185
+- vllm_ascend/patch/platform/patch_balance_schedule.py:724
+- vllm_ascend/core/dyntra_lb_scheduler.py:446
+- vllm_ascend/core/dyntra_lb_scheduler.py:1057
+- vllm_ascend/core/batch_job_aware_scheduler.py:265
+- vllm_ascend/worker/model_runner_v1.py:2356
+- vllm_ascend/worker/model_runner_v1.py:2387
+- vllm_ascend/_310p/model_runner_310p.py:155
+value_type: int
+default: <computed>
+valid_choices: integer >= 0; defaults to max_num_batched_tokens when unset; accepts human-readable suffixes (e.g. 1K, 2M)
+cli_example: --max-num-scheduled-tokens <value>
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter caps the number of tokens the scheduler may issue in a single\niteration (token_budget). In\
+  \ vLLM upstream, SchedulerConfig.max_num_scheduled_tokens\ndefaults to None and is resolved in VllmConfig._set_max_num_scheduled_tokens()\n\
+  (vllm/config/vllm.py:2112) to max_num_batched_tokens, or reduced by the speculative\ndecoding draft-slot delta (max_num_new_slots_for_drafting).\
+  \ The v1 scheduler\n(vllm/v1/core/sched/scheduler.py:125) reads it as self.max_num_scheduled_tokens and\nuses it as the\
+  \ per-step token budget; it also bounds chunked-prefill chunk sizing\n(scheduler.py:473).\n\nOn Ascend, vllm-ascend does\
+  \ NOT override the value but re-implements the scheduler\nloop in several patched schedulers that all consume self.max_num_scheduled_tokens\n\
+  directly as token_budget:\n  - \"vllm_ascend/patch/platform/patch_balance_schedule.py:185 (DP prefill-balancing\"\n    scheduler)\
+  \ sets token_budget = self.max_num_scheduled_tokens and asserts\n    total_num_scheduled_tokens <= self.max_num_scheduled_tokens\
+  \ at line 724.\n  - \"vllm_ascend/core/dyntra_lb_scheduler.py:446/1057 (dynamic load-balancing\"\n    scheduler) does the\
+  \ same.\n  - \"vllm_ascend/core/batch_job_aware_scheduler.py:265 uses it to predict per-round\"\n    token demand for KV\
+  \ block reservation.\nSo on Ascend this parameter directly controls the per-iteration batch token count,\nwhich drives NPU\
+  \ compute utilization, KV-cache block allocation pressure, and\nprefill/decode interleaving.\n\nIt also feeds the model\
+  \ runner's batch-execution decision. In\nvllm_ascend/worker/model_runner_v1.py:2356 the runner computes\nmax_num_scheduled_tokens\
+  \ = max(num_scheduled_tokens_np) and passes it into\n_determine_batch_execution_and_padding (line 2387). On the 310P path\n\
+  (vllm_ascend/_310p/model_runner_310p.py:175) the uniform-decode / spec-decode graph\nreplay decision compares max_num_scheduled_tokens\
+  \ against uniform_decode_query_len;\nif they mismatch, force_eager=True and the ACL graph is bypassed, hurting decode\n\
+  latency. Thus the value interacts with graph capture and speculative decoding.\n\nLarger values raise throughput (more tokens\
+  \ per NPU step, better compute saturation)\nbut increase per-step memory (activation/KV block demand) and can raise first-token\n\
+  latency for other requests; smaller values reduce memory pressure and improve\ninter-request fairness/latency at the cost\
+  \ of throughput.\n"
+usage_locations:
+- file: vllm/config/vllm.py:2112
+  context: _set_max_num_scheduled_tokens resolves default from max_num_batched_tokens and spec-decode draft slots
+- file: vllm/v1/core/sched/scheduler.py:125
+  context: v1 scheduler stores it as the per-step token budget
+- file: vllm/v1/core/sched/scheduler.py:473
+  context: bounds chunked-prefill chunk size
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:185
+  context: Ascend DP prefill-balancing scheduler uses it as token_budget
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:724
+  context: assert total scheduled tokens <= max_num_scheduled_tokens
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:446
+  context: Ascend dynamic load-balancing scheduler token_budget
+- file: vllm_ascend/core/batch_job_aware_scheduler.py:265
+  context: predicts per-round token demand for KV block reservation
+- file: vllm_ascend/worker/model_runner_v1.py:2387
+  context: passed to _determine_batch_execution_and_padding for graph/padding decision
+- file: vllm_ascend/_310p/model_runner_310p.py:175
+  context: 310P uniform-decode/spec-decode graph replay gating
+related_parameters:
+- name: --max-num-batched-tokens
+  relation: default source; max_num_scheduled_tokens defaults to this value when unset
+- name: --max-num-seqs
+  relation: together bound per-step batch size (tokens x seqs)
+- name: --long-prefill-token-threshold
+  relation: further caps chunked-prefill chunk size (min of the two)
+- name: --speculative-config
+  relation: spec decoding reduces effective scheduled tokens via max_num_new_slots_for_drafting; also affects uniform-decode
+    graph gating
+- name: --enable-chunked-prefill
+  relation: chunk size is bounded by max_num_scheduled_tokens
+constraints:
+- The value must be >= 0; a negative value is rejected by the field validator (ge=0).
+- When speculative decoding is enabled, the resolved value must be > 0 or a ValueError is raised telling you to increase max_num_batched_tokens
+  or decrease draft token slots.
+- The scheduler asserts that total scheduled tokens never exceed max_num_scheduled_tokens; setting it below what a single
+  request needs will stall or error.
+- If unset, it is automatically set equal to max_num_batched_tokens (minus spec-decode draft slots), so it cannot exceed the
+  worker's configured batch capacity.
+tuning_advice:
+  summary: Leave it equal to max_num_batched_tokens for max throughput; lower it only to reduce memory pressure or improve
+    inter-request latency, and keep it aligned with uniform_decode_query_len when using spec decode on 310P.
+  suggested_values:
+  - scenario: Throughput-oriented serving on Atlas 800/A2/A3 with ample HBM
+    value: <equal to max_num_batched_tokens>
+    reason: Default resolution fills each NPU step to batch capacity, maximizing compute saturation and tokens/sec.
+  - scenario: Memory-constrained NPU or long-context prefill causing OOM/preemption
+    value: <smaller than max_num_batched_tokens, e.g. 0.5x>
+    reason: Reduces per-step activation and KV block demand, avoiding preemption at some throughput cost.
+  - scenario: Latency-sensitive / many short requests
+    value: <moderate value, e.g. 2048-4096>
+    reason: Smaller token budget improves fairness and reduces head-of-line latency for concurrent requests.
+  - scenario: Speculative decoding on 310P
+    value: <aligned with uniform_decode_query_len>
+    reason: Matching uniform_decode_query_len keeps the uniform-decode path eligible for ACL graph replay instead of forcing
+      eager mode.
+  caveats:
+  - Do not set below the largest single-request chunk you expect; the scheduler asserts total scheduled tokens <= this value.
+  - On Ascend the patched balance/dyntra schedulers use it as the hard token budget, so changes take effect immediately per
+    step.
+  - Verify graph replay is not being disabled on 310P by checking that decode batches stay uniform.
+  quick_guide: Keep it equal to --max-num-batched-tokens unless you need to cut memory or latency; never set it below a single
+    request's chunk.
+analysis_date: '2026-10-27'

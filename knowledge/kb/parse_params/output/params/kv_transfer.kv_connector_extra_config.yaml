@@ -1,0 +1,126 @@
+name: kv_transfer.kv_connector_extra_config
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/kv_transfer.py:22
+- vllm/config/vllm.py:1054
+- vllm/config/vllm.py:1766
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py:109
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:76
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:141
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/connector.py:73
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/worker.py:98
+- vllm_ascend/distributed/kv_transfer/kv_pool/kv_offload/preempt_offload/preempt_offload_connector.py:77
+- vllm_ascend/patch/platform/patch_mamba_config.py:52
+value_type: dict
+default: {}
+valid_choices: Free-form dict; recognized keys depend on the connector (e.g. use_layerwise, consumer_is_to_put, consumer_is_to_load,
+  save_decode_cache, load_async, backend, memcache_dp_init_barrier, transfer_backend, enable_offload_prefix_caching, cpu_bytes_to_use,
+  num_workers, mooncake_protocol, device_name, host_pool_gib, connectors)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This is the free-form per-connector configuration dict that drives KV-transfer\nbehavior. On Ascend it is\
+  \ read by multiple connectors and directly changes the\ndata path, so it has high performance impact.\n\nAscendStoreConnector\
+  \ (vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py:109-117):\n- \"use_layerwise (default\
+  \ False) selects per-layer KV access. When true, the\"\n  connector declares requires_piecewise_for_cudagraph()==True, which\
+  \ forces\n  cudagraph_mode to PIECEWISE (upstream vllm/config/vllm.py:1766). Layerwise\n  transfer overlaps KV load/store\
+  \ with compute, improving latency/throughput,\n  but disables full CUDA-graph capture.\n- \"backend (default \\\"mooncake\\\
+  \") selects the layerwise protocol/data-plane\"\n  (get_layerwise_protocol / get_layerwise_data_plane). The data plane choice\n\
+  \  (block_key vs gva) changes whether block-key layerwise or GVA layerwise\n  transfer is used, affecting transfer efficiency.\n\
+  - \"consumer_is_to_put / consumer_is_to_load / save_decode_cache / load_async\"\n  (pool_scheduler.py:104-117) control whether\
+  \ the decode side writes/reads KV\n  and whether loads are async — directly affecting decode latency and store\n  traffic.\n\
+  - \"memcache_dp_init_barrier (default True) synchronizes DP ranks before NPU\"\n  graph capture; disabling it removes a\
+  \ startup barrier but risks races.\n\nSfaRemoteD2HConnector (sfa_pd_rd2h/connector.py:73, worker.py:98):\n- \"use_layerwise\
+  \ defaults to True here (layer-wise on both sides).\"\n- \"transfer_backend is REQUIRED and currently only \\\"memfabric\\\
+  \" is supported;\"\n  missing it raises ValueError at startup.\n\nPreemptOffloadConnector (preempt_offload_connector.py:77-82):\n\
+  - \"enable_offload_prefix_caching (default False) and cpu_bytes_to_use /\"\n  offload host memory ratio control CPU offload\
+  \ capacity, affecting memory\n  headroom and preemption behavior.\n\nUpstream vllm/config/vllm.py:1054 auto-populates cpu_bytes_to_use\
+  \ from\nkv_offloading_size for the native offload backend. Mooncake connector reads\nnum_workers (default 10), mooncake_protocol\
+  \ (default \"rdma\"), device_name.\nHiSparseConnector requires host_pool_gib (positive float).\n\nBecause these keys gate\
+  \ async/layerwise paths, CUDA-graph mode, and CPU\noffload capacity, misconfiguration can cause large latency regressions,\n\
+  reduced throughput, or OOM.\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py:109
+  context: Reads use_layerwise, consumer_is_to_put, memcache_dp_init_barrier, backend to configure AscendStoreConnector and
+    layerwise protocol.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:76
+  context: Reads backend, consumer_is_to_load/put, load_async, save_decode_cache for scheduler-side KV pool behavior.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:141
+  context: Passes extra_config into worker init (metadata, backend, memcache barrier).
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/connector.py:73
+  context: Reads use_layerwise (default True) for SFA PD RD2H connector.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/worker.py:98
+  context: Requires transfer_backend key (only "memfabric" supported).
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/kv_offload/preempt_offload/preempt_offload_connector.py:77
+  context: Reads enable_offload_prefix_caching and CPU offload capacity keys.
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:52
+  context: Inspects connectors list to detect AscendStoreConnector for mamba cache mode alignment.
+- file: vllm/config/vllm.py:1766
+  context: Passes extra_config to requires_piecewise_for_cudagraph to possibly override cudagraph_mode to PIECEWISE.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Determines which connector interprets the extra_config keys.
+- name: compilation_config.cudagraph_mode
+  relation: use_layerwise=true forces PIECEWISE mode via requires_piecewise_for_cudagraph.
+- name: kv_transfer_config.kv_role
+  relation: Combined with consumer_is_to_put/load and save_decode_cache to decide put/load behavior.
+- name: cache_config.kv_offloading_size
+  relation: Upstream auto-populates cpu_bytes_to_use from it for native offload backend.
+- name: sparse_kv_offload_config.enabled
+  relation: SfaRemoteD2HConnector asserts producer has it false and consumer has it true.
+constraints:
+- SfaRemoteD2HConnector requires kv_connector_extra_config["transfer_backend"] to be set, and currently only "memfabric" is
+  supported.
+- enable_offload_prefix_caching must be a boolean, otherwise a ValueError is raised.
+- HiSparseConnector requires host_pool_gib to be set and it must be a positive float; only one HiSparseConnector may be configured.
+- SfaRemoteD2HConnector producer (P) must run with sparse_kv_offload_config.enabled=false and consumer (D) with sparse_kv_offload_config.enabled=true.
+- With MultiConnector, connector-specific keys must be placed in the AscendStoreConnector child's kv_connector_extra_config,
+  not the root.
+- The Yuanrong store's use_layerwise must match kv_connector_extra_config.use_layerwise.
+tuning_advice:
+  summary: 'Set connector-specific keys deliberately: "enable use_layerwise for latency"
+
+    overlap (accepting PIECEWISE cudagraph), pick the right backend, and size
+
+    CPU offload capacity to available host memory.
+
+    '
+  suggested_values:
+  - scenario: PD-disaggregated prefill node using AscendStoreConnector, latency-sensitive
+    value:
+      backend: mooncake
+      use_layerwise: true
+    reason: Layerwise per-layer KV access overlaps transfer with compute, reducing TTFT; forces PIECEWISE cudagraph which
+      is acceptable for prefill.
+  - scenario: Decode node that only reads KV from store
+    value:
+      consumer_is_to_load: true
+      consumer_is_to_put: false
+      load_async: true
+    reason: Async load avoids blocking decode steps; disabling put reduces store traffic.
+  - scenario: SFA PD RD2H connector deployment
+    value:
+      transfer_backend: memfabric
+      use_layerwise: true
+    reason: transfer_backend is mandatory (only memfabric supported); layerwise defaults to true on both sides.
+  - scenario: PreemptOffloadConnector with CPU offload
+    value:
+      enable_offload_prefix_caching: true
+      cpu_bytes_to_use: 1073741824
+    reason: Enables prefix caching in CPU offload and sets a bounded host memory budget to avoid OOM.
+  caveats:
+  - use_layerwise=true forces cudagraph_mode to PIECEWISE, disabling full CUDA-graph capture — a throughput tradeoff for latency.
+  - memcache_dp_init_barrier defaults to true; disabling it removes a startup sync but risks races across DP ranks during
+    graph capture.
+  - With MultiConnector, keys must go into the AscendStoreConnector child config, not the root dict.
+  - SfaRemoteD2HConnector requires transfer_backend; omitting it raises ValueError at startup.
+  - cpu_bytes_to_use / offload host memory ratio must be sized to actual host DRAM to avoid OOM or wasted memory.
+  quick_guide: Enable use_layerwise for latency overlap, set backend and transfer_backend explicitly, and size CPU offload
+    capacity to host memory.
+analysis_date: '2026-10-27'

@@ -1,0 +1,138 @@
+name: engram.dp_shared_memory
+type: nested
+category: memory
+scope: both
+source_file:
+- vllm_ascend/ascend_config.py:689
+- vllm_ascend/distributed/parallel_state.py:99
+- vllm_ascend/models/deepseek_v41/engram/parallel.py:58
+- vllm_ascend/models/deepseek_v41/engram/embedding.py:375
+- vllm_ascend/models/deepseek_v41/model.py:1023
+- vllm_ascend/worker/v2/spec_decode/pcp_utils.py:133
+- vllm/models/deepseek_v41/nvidia/engram.py:365
+- vllm/models/deepseek_v41/nvidia/model.py:536
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'dp_shared_memory controls whether the CPU-offloaded Engram embedding tables are
+
+  shared between co-located DP (and PCP) replicas on the same node, instead of each
+
+  replica holding its own copy and performing per-step DP collectives.
+
+
+  Memory mechanism: "Engram tables are large host-resident allocations (per-rank"
+
+  24-51 GiB per the comment in vllm_ascend/models/deepseek_v41/model.py:1030-1033).
+
+  When dp_shared_memory is true, the head buckets are sharded by TP alone rather than
+
+  TP x DP x PCP (model.py:1028-1029), so each node stores one copy of every TP shard
+
+  and host memory is not duplicated across local DP replicas. This is the primary
+
+  reason it is required on A3: "the model''s 24 Engram heads cannot be evenly divided"
+
+  across 16 logical devices (docs).
+
+
+  Communication/latency mechanism: in vllm_ascend/distributed/parallel_state.py:99-106,
+
+  when dp_shared_memory is true the Engram DP group is created with the "gloo" backend
+
+  and use_device_communicator=False; when false it uses the device backend (hccl) with
+
+  a device communicator. In vllm_ascend/models/deepseek_v41/engram/parallel.py:64-66,
+
+  gather_engram_hashes returns hash_ids unchanged when dp_shared_memory is true,
+
+  skipping the DP all_gather entirely. In the upstream model
+
+  (vllm/models/deepseek_v41/nvidia/model.py:667-676), when dp_shared_memory is false
+
+  and DP size > 1, replicas that skip the hash must still issue dummy_hashes to join
+
+  the collective, and gather_engram_hashes performs a DP all_gather. So enabling
+
+  dp_shared_memory removes a per-step DP lookup collective from the critical path,
+
+  reducing decode-step latency and freeing communication bandwidth.
+
+
+  vllm-ascend override: "in vllm_ascend/ascend_config.py:687-695, derive_and_validate"
+
+  silently forces dp_shared_memory=True when the user did not set it, use_v2_model_runner
+
+  is true, and data_parallel_size > 1 or prefill_context_parallel_size > 1. The comment
+
+  states DP-dummy ranks have no hash work in MRV2 and host tables are shared across DP
+
+  and PCP peers to avoid per-step lookup collectives. In the v2 spec-decode path
+
+  (vllm_ascend/worker/v2/spec_decode/pcp_utils.py:131-137), a PCP=1 draft model with
+
+  data_parallel_size == 1 has dp_shared_memory reset to False because the draft has no
+
+  Engram tables and sharing belongs to the target.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:689
+  context: derive_and_validate auto-enables dp_shared_memory for MRV2 with DP>1 or PCP>1
+- file: vllm_ascend/distributed/parallel_state.py:99
+  context: Selects gloo backend and disables device communicator for the Engram DP group when shared
+- file: vllm_ascend/models/deepseek_v41/engram/parallel.py:58
+  context: gather_engram_hashes skips the DP all_gather when dp_shared_memory is true
+- file: vllm_ascend/models/deepseek_v41/engram/embedding.py:375
+  context: forward passes shared-mode flag to gather_engram_hashes so replicas embed their own window
+- file: vllm_ascend/models/deepseek_v41/model.py:1023
+  context: resolve_dp_shared_memory gates head-bucket sharding (TP-only vs TP x DP x PCP)
+- file: vllm_ascend/worker/v2/spec_decode/pcp_utils.py:133
+  context: Disables sharing for the PCP=1 draft when target DP size is 1
+- file: vllm/models/deepseek_v41/nvidia/model.py:667
+  context: 'Upstream: non-shared DP replicas must issue dummy_hashes to join the collective'
+related_parameters:
+- name: engram.cpu_offload
+  relation: dp_shared_memory only matters when Engram tables are host-resident; docs pair cpu_offload=true with dp_shared_memory=true
+- name: --data-parallel-size
+  relation: Sharing is only meaningful with DP>1; auto-enabled when DP>1 under MRV2
+- name: --prefill-context-parallel-size
+  relation: PCP>1 also triggers auto-enable under MRV2; PCP=1 draft resets sharing to false
+- name: --tensor-parallel-size
+  relation: Head buckets are sharded by TP alone when shared, vs TP x DP x PCP otherwise
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: Auto-enable override only applies when use_v2_model_runner is true
+constraints:
+- Requires sufficient /dev/shm capacity to hold the shared host-memory allocation for all local DP replicas.
+- Requires a shared IPC namespace across co-located DP ranks (e.g. run containers with --ipc=host).
+- Sharing only takes effect when there is a local DP peer (engram DP size > 1); with a single DP rank resolve_dp_shared_memory
+  returns false.
+- On A3, dp_shared_memory is required because the model's 24 Engram heads cannot be evenly divided across 16 logical devices.
+- When shared, the Engram DP group uses the gloo backend and no device communicator, so it cannot carry device-side collectives.
+tuning_advice:
+  summary: Enable dp_shared_memory together with cpu_offload on multi-DP/PCP Ascend deployments to cut host memory and remove
+    per-step Engram DP collectives.
+  suggested_values:
+  - scenario: A3 multi-DP deployment of DeepSeek-V4.1-Flash where 24 Engram heads cannot divide across 16 devices
+    value: true
+    reason: Required on A3 per docs; also reduces duplicate host-memory copies and avoids per-step lookup collectives.
+  - scenario: MRV2 with data_parallel_size > 1 or prefill_context_parallel_size > 1
+    value: true
+    reason: vllm-ascend auto-enables it in derive_and_validate to avoid per-step lookup collectives for DP-dummy ranks.
+  - scenario: Single DP rank with no local DP peer
+    value: false
+    reason: resolve_dp_shared_memory returns false when engram DP size is 1; sharing has no effect.
+  caveats:
+  - Ensure /dev/shm is large enough and containers use --ipc=host so local DP ranks share the IPC namespace.
+  - Do not expect setting false to disable sharing under MRV2 with DP>1 or PCP>1; it is overridden to true.
+  - Pair with cpu_offload=true; sharing is about host-resident tables.
+  quick_guide: Set --engram-config '{"cpu_offload":true,"dp_shared_memory":true}' on multi-DP A3 nodes with --ipc=host and
+    adequate /dev/shm.
+analysis_date: '2026-10-27'

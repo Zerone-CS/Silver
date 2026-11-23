@@ -1,0 +1,97 @@
+name: --spec-model
+type: cli
+category: speculation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1702
+- vllm/engine/arg_utils.py:1935
+value_type: str
+default: null
+valid_choices: Any HuggingFace model ID or local path to a draft model / eagle head / additional weights
+cli_example: --spec-model <draft-model-path-or-id>
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--spec-model selects the draft model (or eagle head / additional weights) used for
+
+  speculative decoding. In vllm/engine/arg_utils.py:1702 it is registered as a CLI flag
+
+  bound to SpeculativeConfig.model, and at arg_utils.py:1935 it is folded into the
+
+  speculative_config dict (key "model") inside create_speculative_config(). If both
+
+  --spec-model and --speculative-config[''model''] are supplied, a ValueError is raised
+
+  (mutually exclusive). The presence of a draft model is what enables the entire
+
+  speculative decoding pipeline: "a second model is loaded onto the NPU (extra weight"
+
+  memory), a proposer runs per step to generate candidate tokens, and the target model
+
+  verifies them in a batched forward pass. On Ascend this directly changes the decode
+
+  loop: "the draft model''s forward pass adds latency per step, but accepted tokens"
+
+  amortize target-model forward passes, raising tokens/sec for memory-bound decode.
+
+  The draft model also consumes NPU HBM, reducing KV cache capacity. vllm-ascend does
+
+  not redefine --spec-model itself; it consumes the resulting SpeculativeConfig through
+
+  its own spec-decode dispatch (v1 get_spec_decode_method / v2 init_speculator), which
+
+  determines which methods (eagle, mtp, ngram, medusa) are actually supported on Ascend.
+
+  The exact performance delta therefore depends on the draft model size, the accepted
+
+  token rate, and whether the chosen spec method is supported by the active Ascend
+
+  worker path.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1702
+  context: Registers --spec-model CLI flag bound to SpeculativeConfig.model
+- file: vllm/engine/arg_utils.py:1935
+  context: Merges --spec-model into speculative_config['model'] in create_speculative_config, raising ValueError if also set
+    via --speculative-config
+related_parameters:
+- name: --spec-method
+  relation: Selects the speculative decoding algorithm (eagle/mtp/ngram/medusa); determines how --spec-model is interpreted
+    and which Ascend dispatch path is used
+- name: --spec-tokens
+  relation: Number of speculative tokens proposed per step; together with the draft model governs the accept/reject tradeoff
+- name: --speculative-config
+  relation: Mutually exclusive with --spec-model for the 'model' key; JSON alternative that bundles method/model/num_speculative_tokens
+- name: --model
+  relation: Target model that the draft model verifies against; draft must be compatible with target tokenizer/vocab
+constraints:
+- --spec-model and --speculative-config['model'] are mutually exclusive; supplying both raises a ValueError.
+- The draft model specified by --spec-model must be architecturally compatible with the target model (matching tokenizer/vocab)
+  or speculative decoding will fail.
+- Speculative decoding requires a supported --spec-method; on Ascend the method must be one handled by the active v1 or v2
+  spec-decode dispatch, otherwise initialization fails.
+tuning_advice:
+  summary: Use --spec-model with a small, well-matched draft model and a supported --spec-method to trade extra NPU memory
+    and per-step compute for higher decode throughput.
+  suggested_values:
+  - scenario: EAGLE-style speculative decoding on Ascend v1 worker
+    value: <eagle-head-weights-path>
+    reason: v1 Ascend dispatch supports eagle; a trained eagle head gives high acceptance with minimal extra memory.
+  - scenario: MTP (multi-token prediction) draft on Ascend v1 worker
+    value: <mtp-draft-weights-path>
+    reason: v1 get_spec_decode_method supports mtp through Ascend-native proposers, avoiding a separate full draft model.
+  - scenario: Memory-constrained deployment where extra draft weights do not fit
+    value: 'null'
+    reason: Omitting --spec-model avoids loading a second model, preserving HBM for KV cache; use ngram-based speculation
+      instead if supported.
+  caveats:
+  - Verify the chosen --spec-method is supported by the active Ascend worker version (v1 vs v2) before relying on --spec-model.
+  - Benchmark acceptance rate; if it is low, disable speculative decoding to avoid latency regression.
+  - Account for the draft model's HBM footprint when sizing --gpu-memory-utilization and max_num_seqs.
+  quick_guide: Set --spec-model to a small draft/eagle head matching your --spec-method, confirm the method is supported on
+    your Ascend worker version, and validate acceptance rate before enabling in production.
+analysis_date: '2026-10-27'

@@ -1,0 +1,94 @@
+name: PYTORCH_NPU_ALLOC_CONF
+type: env
+category: memory
+scope: vllm-ascend
+source_file:
+- vllm_ascend/platform.py:1436-1455
+- vllm_ascend/device_allocator/camem.py:152-157
+- vllm_ascend/patch/worker/patch_v2/patch_uva.py:53
+- vllm_ascend/patch/worker/patch_v2/patch_uva.py:128
+value_type: str
+default: expandable_segments:True
+valid_choices: Comma-separated key:value pairs understood by the PyTorch NPU caching allocator, e.g. expandable_segments:True,
+  page_size:1g, max_split_size_mb:<N>, garbage_collection_threshold:<f>, pinned_mem_register:True
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+impact_detail: "PYTORCH_NPU_ALLOC_CONF controls the PyTorch NPU caching allocator behavior, which directly\ndetermines how\
+  \ NPU HBM is segmented, reused, and fragmented during model load, KV-cache\nallocation, and per-step activation allocation.\n\
+  \nvllm-ascend actively manages this variable in `_set_pytorch_npu_alloc_env` (platform.py:1436):\n- \"If the user has NOT\
+  \ set it, vllm-ascend defaults it to `expandable_segments:True`.\"\n- \"If the user set other keys (e.g. `page_size:1g`),\
+  \ vllm-ascend appends `,expandable_segments:True`\"\n  unless `expandable_segments`, `max_split_size_mb`, or `garbage_collection_threshold`\
+  \ is already present.\n- \"This is skipped entirely when `enable_sleep_mode` is true (RL/sleep scenarios), because\"\n \
+  \ expandable segments are incompatible with the sleep-mode memory pool (camem.py:152-157 asserts\n  `expandable_segments:True`\
+  \ is NOT present when CaMemAllocator is used).\n\nMechanism: \"`expandable_segments:True` lets the allocator grow/shrink\
+  \ physical segments instead of\"\npre-reserving fixed-size blocks, which reduces HBM fragmentation and OOM risk under variable\n\
+  sequence lengths and dynamic batching — improving effective memory utilization and thus achievable\nbatch size / throughput.\
+  \ It does not change compute latency directly.\n\nAdditionally, `pinned_mem_register:True` in this variable is the gate\
+  \ for the v2 UVA fast path\n(patch_uva.py:53 `is_uva_available`). When set (and triton-ascend version is valid), UVA tensors\n\
+  are mapped directly between CPU and NPU, avoiding the async H2D fallback copy path — a throughput\nwin for features relying\
+  \ on UVA buffers. Without it, `UvaBufferWrapper` falls back to\n`torch.zeros_like(..., device=\"npu\")` plus dirty-row sync\
+  \ copies.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1442
+  context: Reads existing PYTORCH_NPU_ALLOC_CONF (default expandable_segments:True) and appends expandable_segments:True if
+    no conflicting key present
+- file: vllm_ascend/platform.py:1454
+  context: Writes the finalized config back to os.environ before NPU allocator initialization
+- file: vllm_ascend/device_allocator/camem.py:152
+  context: CaMemAllocator asserts expandable_segments:True is absent (incompatible with memory pool / sleep mode)
+- file: vllm_ascend/patch/worker/patch_v2/patch_uva.py:53
+  context: is_uva_available() checks for pinned_mem_register:True to enable real UVA path
+- file: vllm_ascend/patch/worker/patch_v2/patch_uva.py:128
+  context: Documents that setting pinned_mem_register:True enables UVA support on Ascend
+related_parameters:
+- name: enable_sleep_mode
+  relation: When true, vllm-ascend does NOT set expandable_segments (incompatible with sleep-mode memory pool)
+- name: rl_config.enabled
+  relation: RL mode removes expandable_segments from PYTORCH_NPU_ALLOC_CONF
+- name: gpu_memory_utilization
+  relation: Reduced fragmentation from expandable_segments allows higher effective utilization before OOM
+- name: max_split_size_mb
+  relation: Mutually exclusive with expandable_segments:True; presence suppresses auto-append
+- name: garbage_collection_threshold
+  relation: Mutually exclusive with expandable_segments:True; presence suppresses auto-append
+constraints:
+- expandable_segments:True cannot be combined with max_split_size_mb or garbage_collection_threshold; vllm-ascend will not
+  append expandable_segments if either is present.
+- expandable_segments:True must not be set when enable_sleep_mode is true or when the CaMemAllocator memory pool is used,
+  otherwise an assertion error is raised.
+- pinned_mem_register:True only enables the UVA fast path if the installed triton-ascend version passes check_triton_ascend_version_valid();
+  otherwise it falls back to the async H2D copy path.
+tuning_advice:
+  summary: 'Leave PYTORCH_NPU_ALLOC_CONF at the vllm-ascend default (expandable_segments:True) for normal
+
+    serving to minimize HBM fragmentation; add pinned_mem_register:True when using v2 UVA features;
+
+    avoid expandable_segments in sleep-mode/RL scenarios.
+
+    '
+  suggested_values:
+  - scenario: Standard online serving / offline batch inference (no sleep mode)
+    value: expandable_segments:True
+    reason: Default set by vllm-ascend; reduces HBM fragmentation and OOM risk, improving effective batch size and throughput.
+  - scenario: v2 worker using UVA buffers (e.g. spec decode / structured output paths relying on UvaBufferWrapper)
+    value: expandable_segments:True,pinned_mem_register:True
+    reason: pinned_mem_register:True gates is_uva_available(), enabling direct CPU-NPU UVA mapping instead of the async H2D
+      fallback copy.
+  - scenario: RL / sleep-mode (enable_sleep_mode=true or rl_config.enabled=true)
+    value: page_size:1g
+    reason: expandable_segments is incompatible with the sleep-mode memory pool and is removed by vllm-ascend; use a plain
+      page-size config instead.
+  - scenario: Large-model load where fragmentation is not the bottleneck but allocation speed is
+    value: max_split_size_mb:512
+    reason: Caps split block size to reduce allocator overhead; note this suppresses the automatic expandable_segments append.
+  caveats:
+  - Do not combine expandable_segments:True with max_split_size_mb or garbage_collection_threshold.
+  - In sleep-mode/RL, expandable_segments is stripped automatically; do not rely on it there.
+  - pinned_mem_register:True requires a compatible triton-ascend version or it silently falls back to slower copies.
+  quick_guide: Keep expandable_segments:True (default); add pinned_mem_register:True for v2 UVA; drop expandable_segments
+    for sleep-mode/RL.
+analysis_date: '2026-10-27'

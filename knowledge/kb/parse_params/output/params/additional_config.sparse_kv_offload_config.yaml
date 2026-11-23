@@ -1,0 +1,147 @@
+name: additional_config.sparse_kv_offload_config
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:539
+- vllm_ascend/ascend_config.py:635
+- vllm_ascend/ascend_config.py:1723
+- vllm_ascend/ascend_config.py:1837
+value_type: dict
+default:
+  enabled: false
+  topk_buffer_size: 4096
+  dram_size_per_dp_GB: 128
+  keep_device_kv_cache: false
+valid_choices: 'dict with keys: enabled (bool), fused_op_type (''none''|''fused_copy_sfa''), topk_buffer_size (positive int),
+  dram_size_per_dp_GB (positive number), keep_device_kv_cache (bool), use_fused_overlap (bool)'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This is a vllm-ascend-only nested config (no upstream vLLM equivalent) that controls
+
+  sparse KV cache offloading to DRAM for sparse-attention models (models exposing
+
+  `index_topk` in hf_text_config). It is constructed by the factory
+
+  `SparseKVOffloadConfig.from_additional_config` (vllm_ascend/ascend_config.py:1720) and
+
+  injected into AscendConfig as a kw_only field (line 635). When `enabled=true`, KV cache
+
+  blocks for sparse attention are offloaded from NPU HBM to host DRAM, freeing device
+
+  memory for larger batches / longer contexts (memory impact). The offload path adds
+
+  H2D/D2H copy traffic per step, which trades memory for latency/throughput. The
+
+  `fused_op_type="fused_copy_sfa"` path uses fused CANN operators
+
+  (`npu_fused_lightning_indexer_manage`, `npu_fused_scatter_copy_sparse_flash_attention`)
+
+  to overlap the copy with SFA compute, reducing the copy overhead — this is the
+
+  performance-critical fast path. `topk_buffer_size` sizes the top-k staging buffer
+
+  (workspace memory scales with it) and must be a multiple of 256, at least Q_max*2048,
+
+  at most 32512. `dram_size_per_dp_GB` bounds the DRAM budget per DP rank. `use_fused_overlap`
+
+  enables overlap of the copy with compute but is mutually exclusive with fused_copy_sfa.
+
+  `keep_device_kv_cache` retains a device-resident copy of the KV cache (more HBM, less
+
+  copy traffic).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:539
+  context: Default schema for sparse_kv_offload_config in the documented additional_config example
+- file: vllm_ascend/ascend_config.py:635
+  context: AscendConfig field, factory-injected (kw_only) because construction depends on vllm_config
+- file: vllm_ascend/ascend_config.py:1723
+  context: from_additional_config validates dict type and calls _validate_preconditions
+- file: vllm_ascend/ascend_config.py:1837
+  context: init_ascend_config factory pre-constructs SparseKVOffloadConfig from additional_config
+related_parameters:
+- name: --attention_config.indexer_kv_dtype
+  relation: Set to int8 to enable LIM C8 fused path (npu_fused_quant_lightning_indexer_manage) with fused_copy_sfa
+- name: --speculative-config / num_speculative_tokens
+  relation: Q_max = 1 + num_speculative_tokens bounds topk_buffer_size lower limit (Q_max*2048) and must be <= 14
+- name: --block-size
+  relation: Fused path requires cache block size of 128
+- name: --prefill-context-parallel-size / --decode-context-parallel-size
+  relation: Sparse KV offload does not support context parallelism (product must be 1)
+- name: --pipeline-parallel-size
+  relation: Sparse KV offload does not support pipeline parallelism (must be 1)
+constraints:
+- additional_config.sparse_kv_offload_config must be a dict; other types raise ValueError.
+- Sparse KV offload does not support models with compress_ratios (compress attention).
+- Sparse KV offload only supports sparse attention models that expose index_topk in hf_text_config.
+- 'Sparse KV offload does not support context parallelism: prefill_context_parallel_size × decode_context_parallel_size must
+  be 1.'
+- 'Sparse KV offload does not support pipeline parallelism: pipeline_parallel_size must be 1.'
+- fused_op_type must be either 'none' or 'fused_copy_sfa'.
+- fused_copy_sfa and use_fused_overlap are mutually exclusive.
+- topk_buffer_size must be positive.
+- dram_size_per_dp_GB must be positive.
+- For the fused_copy_sfa path, the model must use index_topk=2048 and cache block size 128.
+- For the fused_copy_sfa path, Q_max = 1 + num_speculative_tokens (or 1 without spec decoding) must be between 1 and 14.
+- For the fused_copy_sfa path, topk_buffer_size must be a multiple of 256, at least Q_max*2048, and at most 32512.
+- Do not set sparse_kv_offload_config on Prefill nodes in a PD deployment; enable fused operators only on Decode.
+tuning_advice:
+  summary: 'Enable sparse KV offload only for sparse-attention models when HBM is the bottleneck;
+
+    prefer the fused_copy_sfa path on Decode nodes to hide copy overhead, and size
+
+    topk_buffer_size to the minimum aligned value covering Q_max*2048.
+
+    '
+  suggested_values:
+  - scenario: Sparse-attention model, HBM-constrained decode, operator-enabled build available
+    value:
+      enabled: true
+      fused_op_type: fused_copy_sfa
+      topk_buffer_size: 8192
+      dram_size_per_dp_GB: 128
+      keep_device_kv_cache: false
+      use_fused_overlap: false
+    reason: Fused Copy-SFA overlaps the DRAM copy with SFA compute, minimizing the latency penalty of offloading while freeing
+      HBM.
+  - scenario: Sparse-attention model, no fused operators in build, memory pressure moderate
+    value:
+      enabled: true
+      fused_op_type: none
+      topk_buffer_size: 4096
+      dram_size_per_dp_GB: 128
+      keep_device_kv_cache: false
+    reason: Plain offload path frees HBM without requiring native fused kernels; accept the extra copy traffic.
+  - scenario: Speculative decoding with num_speculative_tokens=3 (Q_max=4) on fused path
+    value:
+      enabled: true
+      fused_op_type: fused_copy_sfa
+      topk_buffer_size: 8192
+      dram_size_per_dp_GB: 128
+      keep_device_kv_cache: false
+      use_fused_overlap: false
+    reason: topk_buffer_size must be >= Q_max*2048 = 8192 and a multiple of 256; 8192 is the minimal aligned value.
+  - scenario: HBM headroom available, want to avoid copy traffic
+    value:
+      enabled: true
+      fused_op_type: none
+      topk_buffer_size: 4096
+      dram_size_per_dp_GB: 128
+      keep_device_kv_cache: true
+    reason: Keeping a device-resident KV cache copy reduces per-step copy traffic at the cost of HBM.
+  caveats:
+  - Do not enable on Prefill nodes in PD deployments; only Decode should use fused operators.
+  - Verify the installed _C_ascend build contains the fused operators before setting fused_op_type=fused_copy_sfa, otherwise
+    the path fails.
+  - topk_buffer_size above 32512 is invalid; the runtime adds two tail blocks internally, so do not inflate the setting.
+  - Context parallelism and pipeline parallelism must be disabled (both sizes = 1) for offload to work.
+  quick_guide: Enable only for sparse-attention models under HBM pressure; use fused_copy_sfa on Decode with topk_buffer_size
+    = max(4096, Q_max*2048) rounded to a multiple of 256.
+analysis_date: '2026-10-27'

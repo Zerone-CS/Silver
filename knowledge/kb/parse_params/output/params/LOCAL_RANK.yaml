@@ -1,0 +1,100 @@
+name: LOCAL_RANK
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:789
+- vllm/envs.py:24
+- vllm/distributed/parallel_state.py:1859
+- vllm/distributed/parallel_state.py:1903
+- vllm/v1/executor/uniproc_executor.py:191
+- vllm/v1/executor/ray_utils.py:37
+- vllm/v1/worker/gpu_worker.py:381
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:175
+value_type: int
+default: 0
+valid_choices: non-negative integer in range [0, local_world_size-1]; typically set by torchrun/launcher
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "LOCAL_RANK is the per-process local device index within a node. It is read via\nenvs.LOCAL_RANK (vllm/envs.py:789,\
+  \ default \"0\") and is used to bind the process to a\nphysical NPU device and to compute the device id for the distributed\
+  \ process group.\n\nUpstream vLLM usage:\n- \"vllm/distributed/parallel_state.py:1903 — when local_rank == -1 (not passed\
+  \ explicitly),\"\n  local_rank falls back to envs.LOCAL_RANK if distributed_init_method == \"env://\", else to\n  rank.\
+  \ This local_rank is then used to build the world group (init_world_group) and to\n  determine device_id for the process\
+  \ group. A wrong value here binds the process to the\n  wrong device, causing either a crash or (worse) two ranks sharing\
+  \ one device — which\n  serializes execution and destroys throughput.\n- \"vllm/distributed/parallel_state.py:1859 — with\
+  \ VLLM_DISTRIBUTED_USE_SPLIT_GROUP, local_rank\"\n  is needed early to compute device_id for eager init of the split group.\n\
+  - \"vllm/v1/executor/uniproc_executor.py:191 — in torchrun-compatible launchers, LOCAL_RANK\"\n  is a required env var for\
+  \ the env:// init method.\n- \"vllm/v1/executor/ray_utils.py:37 — LOCAL_RANK is in WORKER_SPECIFIC_ENV_VARS, so it is NOT\"\
+  \n  copied from driver to Ray workers; each worker sets its own after device discovery.\n- \"vllm/v1/worker/gpu_worker.py:381\
+  \ — local_rank is adjusted by DP_LOCAL_RANK * TP_PP_WORLD_SIZE\"\n  + TP_LOCAL_RANK for the mp backend, then used to select\
+  \ the device.\n\nvllm-ascend usage:\n- \"vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:175 — the\
+  \ AscendStore\"\n  KV connector reads envs.LOCAL_RANK into self.local_rank during _init_parallelism_info. This\n  value\
+  \ participates in KV-transfer key/rank addressing (combined with tp_rank, pp_rank,\n  pcp_rank, dcp_rank to form kvpp_rank).\
+  \ An incorrect LOCAL_RANK here mis-addresses KV cache\n  blocks across ranks, which can cause incorrect KV reuse or extra\
+  \ cross-rank traffic — a\n  correctness and performance hazard for disaggregated prefill/decode on Ascend.\n- \"Ascend examples\
+  \ (examples/offline_external_launcher.py:152, examples/offline_weight_load.py:156)\"\n  set os.environ[\"LOCAL_RANK\"] before\
+  \ torch.distributed.init_process_group with backend\n  \"cpu:gloo,npu:hccl\", confirming LOCAL_RANK drives NPU device binding\
+  \ for HCCL init.\n\nNet effect: \"LOCAL_RANK itself does not tune any kernel or scheduling knob. Its performance\"\nrelevance\
+  \ is indirect — it determines device affinity and HCCL rank-to-device mapping. Correct\nvalues are required for the expected\
+  \ throughput; wrong values cause device contention\n(multiple ranks on one NPU) or HCCL init failures. Hence impact is low\
+  \ (indirect, correctness-\ngated) rather than a tunable performance lever.\n"
+usage_locations:
+- file: vllm/envs.py:789
+  context: Definition of LOCAL_RANK env var accessor, default 0
+- file: vllm/distributed/parallel_state.py:1903
+  context: Fallback local_rank = envs.LOCAL_RANK when distributed_init_method == env://
+- file: vllm/distributed/parallel_state.py:1859
+  context: Early local_rank read for split-group eager init device_id
+- file: vllm/v1/executor/uniproc_executor.py:191
+  context: Required env var for env:// distributed init in torchrun-style launchers
+- file: vllm/v1/executor/ray_utils.py:37
+  context: Listed in WORKER_SPECIFIC_ENV_VARS, not propagated to Ray workers
+- file: vllm/v1/worker/gpu_worker.py:381
+  context: local_rank adjusted by DP local rank * TP*PP world size for device selection
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:175
+  context: AscendStore KV connector stores envs.LOCAL_RANK for KV-transfer rank addressing
+related_parameters:
+- name: RANK
+  relation: Global rank; LOCAL_RANK is the per-node device index, RANK is the global process index
+- name: WORLD_SIZE
+  relation: LOCAL_RANK must be < local world size; WORLD_SIZE defines total ranks
+- name: CUDA_VISIBLE_DEVICES
+  relation: Both are worker-specific env vars excluded from Ray propagation; on Ascend the analog is ASCEND_RT_VISIBLE_DEVICES
+- name: VLLM_DISTRIBUTED_USE_SPLIT_GROUP
+  relation: When enabled, LOCAL_RANK is read early to compute device_id for split-group init
+- name: ASCEND_RT_VISIBLE_DEVICES
+  relation: Ascend device visibility; LOCAL_RANK indexes into the visible device list
+constraints:
+- LOCAL_RANK must be a non-negative integer; it is parsed with int() and a non-numeric value raises ValueError at startup.
+- LOCAL_RANK must be less than the number of visible NPU devices on the node, otherwise device binding fails.
+- When using the env:// distributed init method, LOCAL_RANK must be set (along with RANK, MASTER_ADDR, MASTER_PORT) or the
+  process group initialization cannot determine the device.
+- LOCAL_RANK is worker-specific and is not propagated from the driver to Ray workers; each Ray worker must set its own LOCAL_RANK.
+tuning_advice:
+  summary: Do not tune LOCAL_RANK manually — let torchrun/launcher assign it per process so each rank binds to a distinct
+    NPU.
+  suggested_values:
+  - scenario: Single-node multi-NPU launched via torchrun
+    value: <assigned by torchrun per process>
+    reason: torchrun sets LOCAL_RANK to the per-node process index, ensuring each rank binds to a distinct NPU and HCCL initializes
+      correctly.
+  - scenario: Manual multi-process launch (offline examples)
+    value: 0..local_world_size-1
+    reason: vllm-ascend examples set os.environ['LOCAL_RANK'] to the per-node rank before init_process_group with npu:hccl;
+      each process must get a unique value.
+  - scenario: Ray distributed executor
+    value: <set per worker after device discovery>
+    reason: LOCAL_RANK is in WORKER_SPECIFIC_ENV_VARS and is not copied from the driver; each Ray worker must set its own
+      value.
+  caveats:
+  - Never hardcode LOCAL_RANK=0 for all ranks in a multi-NPU run — this causes device contention and HCCL init failures.
+  - Verify LOCAL_RANK stays within the range of ASCEND_RT_VISIBLE_DEVICES on each node.
+  - For AscendStore KV transfer, confirm LOCAL_RANK is consistent with the actual device binding to avoid KV block mis-addressing.
+  quick_guide: Let torchrun/launcher set LOCAL_RANK automatically; ensure it is unique per process and within visible NPU
+    count.
+analysis_date: '2026-10-27'

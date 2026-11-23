@@ -1,0 +1,90 @@
+name: VLLM_HUMMING_ONLINE_QUANT_CONFIG
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1502
+- vllm/envs.py:188
+- vllm/model_executor/layers/quantization/humming.py:269
+value_type: dict
+default: null
+valid_choices: JSON string or path to a JSON file that parses to a dict; keys include 'force_requant' (bool) and any weight-schema
+  fields understood by humming BaseWeightSchema.from_config
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This env var is read only by the upstream vLLM "humming" quantization method
+
+  (vllm/model_executor/layers/quantization/humming.py). It is parsed via
+
+  maybe_convert_json_str_or_file into a dict (envs.py:1502-1504) and consumed in
+
+  HummingQuantConfig.get_quant_config_for_layer (humming.py:269). When set, it
+
+  provides an online-quantization weight schema: "if the model has no full quant"
+
+  config, the layer weight schema is taken from this online config and
+
+  is_online_quant is set True (humming.py:270-275); if a full config exists and
+
+  online_quant_config["force_requant"] is True, the online schema is used as a
+
+  forced weight schema (humming.py:276-277). This changes which weight
+
+  quantization schema (and thus which GEMM kernel path / weight dtype) is used
+
+  per layer, which can affect throughput and weight memory footprint.
+
+  However, the humming quantization backend is a GPU-oriented kernel path
+
+  (Marlin/humming kernels, NVFP4/DeepEP references in the same env block) and
+
+  there is NO reference to VLLM_HUMMING_ONLINE_QUANT_CONFIG anywhere in
+
+  vllm-ascend. On Ascend NPU the humming quant method is not the active
+
+  quantization path (Ascend uses its own quantization configs), so this
+
+  parameter has no runtime effect on Ascend NPU performance. Impact is therefore
+
+  low and only relevant if the humming backend were ever enabled.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1502
+  context: 'Definition: parses env var as JSON string or file into dict'
+- file: vllm/envs.py:188
+  context: 'Type annotation: dict[str, Any] | None = None'
+- file: vllm/model_executor/layers/quantization/humming.py:269
+  context: Read in get_quant_config_for_layer to build online weight schema / force_requant
+related_parameters:
+- name: VLLM_HUMMING_INPUT_QUANT_CONFIG
+  relation: Companion env var providing the activation/input quant schema for the same humming layer config
+- name: VLLM_HUMMING_USE_F16_ACCUM
+  relation: Same humming kernel env block; controls fp16 accumulator in humming GEMM
+- name: VLLM_HUMMING_MOE_GEMM_TYPE
+  relation: Same humming kernel env block; selects indexed vs grouped GEMM for humming MoE
+constraints:
+- The value must be a valid JSON string or a path to a readable JSON file that parses to a dict, otherwise parsing fails.
+- It only takes effect when the humming quantization method is selected for the model; it is ignored for other quantization
+  backends.
+- When a full quant config exists, the online config is only applied if it contains force_requant set to true.
+tuning_advice:
+  summary: Leave unset on Ascend NPU; it only affects the GPU-oriented humming quantization backend and has no Ascend runtime
+    impact.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: unset
+    reason: vllm-ascend never reads this env var and does not use the humming quant backend, so setting it provides no benefit
+      and may confuse configuration.
+  - scenario: GPU deployment using humming online quantization without a model quant config
+    value: '{"quant_method": "humming"}'
+    reason: Provides the online weight schema used when the model has no full quant config (humming.py:270-275).
+  caveats:
+  - Only relevant to the upstream humming quantization path; irrelevant on Ascend NPU.
+  - Ensure the JSON is valid or points to an existing file, otherwise env parsing fails.
+  quick_guide: Do not set on Ascend NPU — no effect; only used by the GPU humming quant backend.
+analysis_date: '2026-10-27'

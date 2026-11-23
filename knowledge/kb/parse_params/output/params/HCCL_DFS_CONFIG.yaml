@@ -1,0 +1,90 @@
+name: HCCL_DFS_CONFIG
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/GLM5.md:204
+- docs/source/tutorials/models/GLM5.md:687
+- docs/source/tutorials/models/GLM5.md:752
+- docs/source/tutorials/models/GLM5.md:817
+value_type: str
+default: <computed>
+valid_choices: Comma-separated key:value pairs, e.g. 'task_exception:off,inconsistent_check:off'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_DFS_CONFIG is a CANN/HCCL runtime environment variable (not defined or read
+
+  directly in vllm or vllm-ascend source code — it is consumed by the underlying
+
+  Huawei Collective Communication Library). It configures HCCL''s DFS (distributed
+
+  fault-tolerance / detection subsystem) behavior. The documented usage in
+
+  vllm-ascend''s GLM5 tutorial sets "task_exception:off,inconsistent_check:off",
+
+  which disables HCCL task-exception handling and cross-rank inconsistency checks.
+
+  Disabling these checks removes periodic consistency verification and exception
+
+  bookkeeping from the collective communication hot path, which can slightly reduce
+
+  per-collective overhead and avoid spurious aborts/timeouts during long-running
+
+  large-scale (multi-node, EP/DP) deployments. It does not change collective
+
+  algorithms, buffer sizes, or memory allocation, so its direct throughput/latency
+
+  effect is small; its main value is stability of long-running distributed runs.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/GLM5.md:204
+  context: Single-node GLM5 deployment exports HCCL_DFS_CONFIG="task_exception:off,inconsistent_check:off" alongside HCCL_BUFFSIZE/HCCL_OP_EXPANSION_MODE
+- file: docs/source/tutorials/models/GLM5.md:687
+  context: Multi-node GLM5 prefill/worker launch script exports HCCL_DFS_CONFIG with HCCL_ALGO=level0:fullmesh
+- file: docs/source/tutorials/models/GLM5.md:752
+  context: Multi-node GLM5 decode/worker launch script exports HCCL_DFS_CONFIG
+- file: docs/source/tutorials/models/GLM5.md:817
+  context: Large-buffer (HCCL_BUFFSIZE=1200) multi-node GLM5 launch exports HCCL_DFS_CONFIG
+related_parameters:
+- name: HCCL_BUFFSIZE
+  relation: Set together in the same launch scripts; controls HCCL collective buffer size
+- name: HCCL_ALGO
+  relation: Set alongside in multi-node scripts (e.g. level0:fullmesh); selects collective algorithm
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Set alongside (e.g. AIV); affects how collective ops are expanded/executed
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Disabling task_exception checks interacts with long model-execute timeouts in large deployments
+constraints:
+- HCCL_DFS_CONFIG is parsed by the CANN/HCCL runtime, not by vLLM or vllm-ascend; invalid key:value pairs may be ignored or
+  cause HCCL initialization errors.
+- Disabling task_exception and inconsistent_check removes HCCL fault-detection safeguards, so genuine communication faults
+  may go undetected or surface later as hangs rather than clean errors.
+tuning_advice:
+  summary: For large multi-node GLM5-style deployments, set HCCL_DFS_CONFIG="task_exception:off,inconsistent_check:off" to
+    reduce HCCL fault-check overhead and avoid spurious aborts; leave unset for small/single-node runs where fault detection
+    is valuable.
+  suggested_values:
+  - scenario: Large multi-node EP/DP deployment (GLM5 tutorial configuration)
+    value: task_exception:off,inconsistent_check:off
+    reason: Matches the vllm-ascend GLM5 tutorial launch scripts; disables HCCL consistency checks and task-exception handling
+      to keep long-running collectives stable and trim hot-path overhead.
+  - scenario: Single-node or small-scale deployment where fault visibility matters
+    value: <unset>
+    reason: Default HCCL behavior retains fault detection; the performance gain from disabling checks is marginal at small
+      scale.
+  caveats:
+  - This is a CANN/HCCL runtime variable, not a vLLM/vllm-ascend parameter; it is not read by vllm or vllm-ascend source and
+    its effect depends on the installed CANN version.
+  - Disabling inconsistent_check can mask real cross-rank data inconsistencies, making debugging harder — enable it when diagnosing
+    correctness issues.
+  - Performance benefit is small and indirect (reduced check overhead / fewer spurious aborts); do not expect meaningful throughput
+    gains from this alone.
+  - Must be exported in the environment of every worker process (all nodes/ranks) to take effect consistently.
+  quick_guide: Export HCCL_DFS_CONFIG="task_exception:off,inconsistent_check:off" on all ranks for large multi-node runs;
+    leave unset otherwise.
+analysis_date: '2026-10-27'

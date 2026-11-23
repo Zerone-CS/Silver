@@ -1,0 +1,86 @@
+name: additional_config.eplb_config.stair_config.replica_search_num_stages
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:208
+- vllm_ascend/ascend_config.py:224
+- vllm_ascend/ascend_config.py:254
+value_type: int
+default: 4
+valid_choices: integer in range [1, 8]
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This field controls the number of risk-ordered expert groups processed by the
+
+  FlashTree-style replica search inside the MRv2 STAIR EPLB policy
+
+  (vllm_ascend/ascend_config.py:208-209, default 4 at line 224). It is a pure
+
+  vllm-ascend parameter (no upstream vLLM equivalent) consumed by the EPLB
+
+  rebalancing planner, not by the inference hot path. Increasing the number of
+
+  search stages expands the combinatorial search space explored when deciding
+
+  how many extra replicas each expert should receive, which can yield a better
+
+  expert-to-rank placement (more balanced rank load, fewer stragglers on the
+
+  slowest NPU rank) at the cost of more CPU time spent in the rebalance planner.
+
+  Because EPLB rebalancing runs periodically in the background and triggers
+
+  expert-weight redistribution over HCCL, a better placement reduces the
+
+  max-to-average rank-load ratio, which directly improves MoE decode throughput
+
+  and tail latency on Ascend NPU clusters. The effect is indirect (planner
+
+  quality, not per-token compute), hence medium impact.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:208
+  context: Docstring describing replica_search_num_stages as the number of risk-ordered expert groups handled by the FlashTree-style
+    replica search.
+- file: vllm_ascend/ascend_config.py:224
+  context: Field definition with default value 4 in StairConfig.
+- file: vllm_ascend/ascend_config.py:254
+  context: Model validator enforcing 1 <= replica_search_num_stages <= 8.
+related_parameters:
+- name: additional_config.eplb_config.stair_config.replica_search_radius
+  relation: Controls the search radius explored at each stage; jointly determines total search cost with num_stages.
+- name: additional_config.eplb_config.stair_config.replica_search_beam_size
+  relation: Beam width kept after each stage; multiplies per-stage cost together with num_stages.
+- name: additional_config.eplb_config.stair_config.placement_search_backtrack_limit
+  relation: Downstream placement search that consumes the replica-count candidates produced by the staged search.
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Determines whether the improved placement from the search actually triggers a rebalance.
+constraints:
+- replica_search_num_stages must be between 1 and 8; values outside this range raise a ValueError during StairConfig validation.
+- STAIR numeric fields must not be booleans; passing true/false raises a ValueError.
+tuning_advice:
+  summary: Keep the default 4 for most MoE deployments; raise toward 6-8 only when rank-load imbalance persists and planner
+    CPU headroom exists.
+  suggested_values:
+  - scenario: Default MoE serving with EPLB STAIR policy enabled
+    value: 4
+    reason: Default balances search quality against planner CPU cost and is validated to work across typical expert counts.
+  - scenario: Large-scale MoE with persistent rank-load imbalance and spare CPU during rebalance
+    value: 6
+    reason: More risk-ordered stages explore additional replica-count candidates, improving placement balance and reducing
+      straggler ranks.
+  - scenario: Latency-sensitive deployment where rebalance planning must stay fast
+    value: 2
+    reason: Fewer stages cut planner search time, accepting slightly less optimal placement to keep rebalance overhead low.
+  caveats:
+  - Raising num_stages without also tuning replica_search_beam_size and replica_search_radius may not improve balance.
+  - Monitor EPLB planner duration; excessive stages can delay expert redistribution on large expert counts.
+  - No effect unless the MRv2 STAIR EPLB policy is selected in additional_config.eplb_config.
+  quick_guide: Leave at 4; increase to 6-8 only if rank imbalance persists and planner CPU is not a bottleneck.
+analysis_date: '2026-10-27'

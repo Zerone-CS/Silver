@@ -1,0 +1,110 @@
+name: speculative.synthetic_acceptance_rates
+type: nested
+category: speculation
+scope: both
+source_file:
+- 'vllm/config/speculative.py: <speculative_config schema, synthetic_acceptance_rates field>'
+- 'vllm/v1/sample/rejection_sampler.py: synthetic rejection sampling path'
+- 'vllm_ascend/sample/rejection_sampler.py: Ascend Triton synthetic-mode kernel'
+value_type: list[float]
+default: null
+valid_choices: list of floats, length == num_speculative_tokens, each in [0, 1], monotonically non-increasing
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This parameter only takes effect when speculative_config.rejection_sample_method == "synthetic".
+
+  In that mode the verifier''s acceptance decision is reduced to a simple `uniform < rate`
+
+  comparison per draft position, so the acceptance schedule directly controls how many draft
+
+  tokens survive verification each step. On Ascend, the synthetic path is implemented in the
+
+  Ascend Triton rejection-sampling kernel (SYNTHETIC_MODE=True) and is validated bit-for-bit
+
+  against a PyTorch reference. Because acceptance is fully determined by the input rates, the
+
+  parameter does not change the kernel''s per-step cost (the verify kernel still runs over all
+
+  num_speculative_tokens positions), but it changes the *effective acceptance length* — i.e. how
+
+  many tokens are emitted per target-model forward pass. Higher per-position rates => longer
+
+  accepted runs => more output tokens per verify step => higher throughput and lower per-token
+
+  latency. Lower rates => more wasted draft work and more frequent re-drafting, reducing the
+
+  realized speedup. The parameter itself does not allocate memory or alter graph capture; its
+
+  performance effect is entirely through the acceptance-length / verify-efficiency tradeoff.
+
+  '
+usage_locations:
+- file: vllm/config/speculative.py
+  context: SpeculativeConfig field synthetic_acceptance_rates; validated for length == num_speculative_tokens, range [0,1],
+    monotonic non-increasing; mutually exclusive with synthetic_acceptance_length.
+- file: vllm/v1/sample/rejection_sampler.py
+  context: Synthetic rejection sampling uses per-position rates to decide acceptance via uniform < rate.
+- file: vllm_ascend/sample/rejection_sampler.py
+  context: Ascend Triton kernel with SYNTHETIC_MODE=True consumes the rate schedule; e2e test compares against PyTorch reference.
+related_parameters:
+- name: speculative_config.rejection_sample_method
+  relation: Must be set to "synthetic" for this parameter to have any effect.
+- name: speculative_config.synthetic_acceptance_length
+  relation: Mutually exclusive alternative; resolved internally to an equivalent synthetic_acceptance_rates schedule. Exactly
+    one must be provided in synthetic mode.
+- name: speculative_config.num_speculative_tokens
+  relation: Determines the required length of the rates list; also caps the maximum achievable acceptance length.
+- name: speculative_config.method
+  relation: Synthetic mode is layered on a real proposer (e.g. eagle3); the drafter still runs, only the verifier acceptance
+    is overridden.
+constraints:
+- synthetic_acceptance_rates must have length exactly equal to num_speculative_tokens.
+- Each entry must be in the range [0, 1].
+- The list must be monotonically non-increasing (position i's rate must be <= position i-1's rate).
+- synthetic_acceptance_rates and synthetic_acceptance_length are mutually exclusive; exactly one must be provided when rejection_sample_method
+  == "synthetic".
+- The parameter has no effect unless rejection_sample_method is set to "synthetic".
+tuning_advice:
+  summary: 'Use synthetic_acceptance_rates only for benchmarking/validating the Ascend verify path;
+
+    choose a monotonically non-increasing schedule of length num_speculative_tokens that
+
+    reflects the acceptance regime you want to stress-test (high rates for high-acceptance
+
+    stress tests, low rates for worst-case verify overhead).
+
+    '
+  suggested_values:
+  - scenario: High-acceptance stress test of the verify path (v1 and v2 Ascend workers)
+    value:
+    - 0.9
+    - 0.6
+    - 0.3
+    reason: Documented example schedule for num_speculative_tokens=3; exercises the high-acceptance regime and maximizes emitted
+      tokens per verify step.
+  - scenario: Kernel validation / bit-for-bit comparison against PyTorch reference
+    value:
+    - 1.0
+    - 1.0
+    - 1.0
+    reason: Fully deterministic acceptance (uniform < 1.0 always true) makes the synthetic kernel output trivially checkable
+      against the reference.
+  - scenario: Worst-case verify overhead / low-acceptance regime
+    value:
+    - 0.1
+    - 0.05
+    - 0.01
+    reason: Low monotonically non-increasing rates stress the re-draft path and measure verify cost when few draft tokens
+      survive.
+  caveats:
+  - Never use synthetic mode for production serving — output is not semantically correct.
+  - Ensure the list length matches num_speculative_tokens exactly and is non-increasing, or config validation will fail.
+  - Prefer synthetic_acceptance_length if you only care about a target mean acceptance length; it resolves to an equivalent
+    rates schedule automatically.
+  quick_guide: Set rejection_sample_method="synthetic" and provide a non-increasing length-num_speculative_tokens rate list
+    to benchmark the Ascend verify path at a controlled acceptance rate.
+analysis_date: '2026-10-27'

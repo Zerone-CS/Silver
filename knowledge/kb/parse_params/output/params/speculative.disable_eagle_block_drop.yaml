@@ -1,0 +1,82 @@
+name: speculative.disable_eagle_block_drop
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- 'vllm/config/speculative.py: <definition not in provided context>'
+- tests/test_config.py:3007
+- tests/models/kimi_k3/test_kda_metadata.py:113
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is an experimental switch on SpeculativeConfig that controls whether the
+
+  trailing prefix-cache block is dropped for EAGLE-like speculative methods
+
+  (use_eagle_block_drop() returns the inverse of this flag, per
+
+  tests/test_config.py:3007). It does NOT disable the speculative drafter itself.
+
+  When enabled (disable_eagle_block_drop=true), the trailing prefix-cache block is
+
+  retained/reused instead of being dropped, which can change the acceptance rate of
+
+  the EAGLE drafter by altering the context the drafter sees. The hint explicitly
+
+  states it is intended for measuring acceptance-rate impact. On Ascend NPU, the
+
+  speculative decoding path (EAGLE/MTP) is dispatched through vllm-ascend''s own
+
+  spec-decode method selection; this flag only affects the prefix-cache block
+
+  bookkeeping feeding that drafter, not the drafter execution itself. No definition
+
+  or override was found in vllm-ascend, so behavior follows upstream vLLM. The
+
+  performance effect is indirect and small: "it can shift acceptance rate (affecting"
+
+  effective tokens-per-step throughput and per-token latency) but does not change
+
+  memory footprint or scheduling in a first-order way.
+
+  '
+usage_locations:
+- file: tests/test_config.py:3007
+  context: Asserts use_eagle_block_drop() is the inverse of disable_eagle_block_drop for eagle3 method
+- file: tests/models/kimi_k3/test_kda_metadata.py:113
+  context: Sets speculative_config.disable_eagle_block_drop when method is eagle3 to exercise metadata builder
+related_parameters:
+- name: speculative_config.method
+  relation: Only meaningful for EAGLE-like methods (e.g. eagle3); has no effect for ngram/other methods
+- name: speculative_config.num_speculative_tokens
+  relation: Acceptance-rate impact of block reuse interacts with the number of drafted tokens
+- name: speculative_config.use_eagle
+  relation: Independent of use_eagle(); disabling block drop does not disable the EAGLE drafter
+constraints:
+- Only affects EAGLE-like speculative methods; for non-EAGLE methods such as ngram it has no effect.
+- Setting this flag does not disable the speculative drafter itself; use_eagle() remains true.
+tuning_advice:
+  summary: Leave at default (false) for production; only toggle true when experimentally measuring EAGLE acceptance-rate impact
+    of trailing prefix-cache block reuse.
+  suggested_values:
+  - scenario: Production EAGLE/MTP speculative decoding on Ascend NPU
+    value: false
+    reason: Default behavior drops the trailing prefix-cache block, which is the validated path; changing it is experimental
+      and may reduce acceptance rate.
+  - scenario: Benchmarking acceptance-rate sensitivity to prefix-cache block reuse
+    value: true
+    reason: Enabling retains the trailing block to measure its effect on drafter acceptance rate, as intended by the experimental
+      option.
+  caveats:
+  - No vllm-ascend override exists; behavior is inherited from upstream vLLM and is not Ascend-tuned.
+  - Effect is indirect via acceptance rate; do not expect large throughput changes and validate with acceptance-rate metrics
+    before adopting.
+  - Has no effect unless an EAGLE-like speculative method is configured.
+  quick_guide: Keep false unless experimentally probing EAGLE acceptance-rate impact of prefix-cache block reuse.
+analysis_date: '2026-10-27'

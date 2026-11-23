@@ -1,0 +1,126 @@
+name: --disable-chunked-mm-input
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:149
+- vllm/engine/arg_utils.py:648
+- vllm/engine/arg_utils.py:1625
+- vllm/engine/arg_utils.py:2438
+- vllm/v1/core/sched/scheduler.py:1766
+- vllm/v1/core/encoder_cache_manager.py:323
+- vllm/config/vllm.py:3171
+- vllm/platforms/cuda.py:349
+- vllm/platforms/rocm.py:953
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --disable-chunked-mm-input
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag only affects multimodal (VLM) models when chunked prefill is enabled.
+
+  In vLLM v1 scheduler (vllm/v1/core/sched/scheduler.py:1766), when set to true the
+
+  scheduler refuses to partially schedule a multimodal item: "if the scheduled token"
+
+  range would only cover part of an image/audio item, it rolls back num_new_tokens to
+
+  stop before the mm item start_pos and breaks out of the loop. This means a mixed
+
+  prompt (text TTTT followed by image IIIIIIIIII) is scheduled as TTTT in one step and
+
+  the full IIIIIIIIII in the next step, rather than splitting the image across steps.
+
+  Performance effect: "it can reduce per-step token utilization (a step may end early"
+
+  with fewer scheduled tokens than max_num_batched_tokens), slightly lowering prefill
+
+  throughput and increasing time-to-first-token for mixed text+image prompts. In
+
+  exchange it guarantees the encoder input is processed atomically, which avoids
+
+  encoder cache misses / recomputation and is required for correctness on models with
+
+  bidirectional multimodal attention (is_mm_prefix_lm). It also imposes a hard
+
+  constraint (encoder_cache_manager.py:323): max_tokens_per_mm_item must not exceed
+
+  max_num_batched_tokens, otherwise a ValueError is raised. For text-only models the
+
+  flag has no effect. On Ascend, vllm-ascend does not override this parameter; the
+
+  upstream v1 scheduler logic applies. The Ascend example
+
+  examples/offline_DSD_k_tuner/generate_config.py:302 sets disable_chunked_mm_input=True
+
+  for a multimodal (limit_mm_per_prompt image=5) offline tuning workload, indicating it
+
+  is used in practice on Ascend for VLM serving. Overall impact is low and confined to
+
+  multimodal workloads.
+
+  '
+usage_locations:
+- file: vllm/v1/core/sched/scheduler.py:1766
+  context: Scheduler rolls back scheduled tokens to avoid partially scheduling an mm item when flag is true
+- file: vllm/v1/core/encoder_cache_manager.py:323
+  context: Raises ValueError if max_tokens_per_mm_item > max_num_batched_tokens when flag is true
+- file: vllm/config/vllm.py:3171
+  context: Asserts flag is false when mamba_cache_mode == 'align'
+- file: vllm/platforms/cuda.py:349
+  context: Forces flag true for is_mm_prefix_lm models (CUDA platform; not Ascend)
+- file: vllm/platforms/rocm.py:953
+  context: Forces flag true for is_mm_prefix_lm models (ROCm platform; not Ascend)
+- file: examples/offline_DSD_k_tuner/generate_config.py:302
+  context: vllm-ascend example sets disable_chunked_mm_input=True for multimodal offline tuning
+related_parameters:
+- name: --enable-chunked-prefill
+  relation: Only meaningful when chunked prefill is enabled; ignored otherwise
+- name: --max-num-batched-tokens
+  relation: When flag is true, max_tokens_per_mm_item must not exceed this value or a ValueError is raised
+- name: --limit-mm-per-prompt
+  relation: Determines max_tokens_per_mm_item used in the encoder cache budget check
+- name: --mamba-cache-mode
+  relation: When set to 'align', this flag must be false (assert in vllm/config/vllm.py)
+constraints:
+- When --disable-chunked-mm-input is set, the maximum tokens per multimodal item must not exceed --max-num-batched-tokens,
+  otherwise a ValueError is raised at startup.
+- This flag must be false when --mamba-cache-mode is set to 'align', otherwise an assertion fails.
+- The flag only takes effect when chunked prefill is enabled and the model is multimodal; for text-only models it has no effect.
+- For encoder-decoder models, chunked prefill is disabled and this flag is forced to true automatically.
+tuning_advice:
+  summary: 'Leave at default (false) for text-only models. For multimodal models with
+
+    bidirectional image attention (is_mm_prefix_lm) or when encoder recomputation
+
+    must be avoided, enable it and ensure --max-num-batched-tokens is at least as
+
+    large as the largest single multimodal item''s token count.
+
+    '
+  suggested_values:
+  - scenario: Text-only LLM serving on Ascend
+    value: false
+    reason: Flag has no effect for non-multimodal models; keep default to avoid confusion.
+  - scenario: Multimodal (VLM) serving where images must be processed atomically / avoid encoder cache misses
+    value: true
+    reason: Prevents partial scheduling of mm items, avoiding encoder recomputation; used in vllm-ascend offline_DSD_k_tuner
+      example.
+  - scenario: Multimodal serving with tight max_num_batched_tokens and small images
+    value: false
+    reason: Allowing chunked mm input keeps per-step token utilization high; only safe if partial mm scheduling is acceptable
+      for the model.
+  caveats:
+  - Enabling this can reduce per-step scheduled token count (steps may end early before an mm item), slightly lowering prefill
+    throughput and raising TTFT for mixed text+image prompts.
+  - If enabled, --max-num-batched-tokens must be >= the largest multimodal item token count, otherwise startup fails with
+    a ValueError.
+  - vllm-ascend does not override this parameter; the upstream v1 scheduler logic applies on Ascend NPU.
+  - The CUDA/ROCm platforms auto-force this flag for is_mm_prefix_lm models; Ascend does not appear to do so, so set it manually
+    for such models.
+  quick_guide: Enable only for multimodal models needing atomic image scheduling; otherwise leave false.
+analysis_date: '2026-10-27'

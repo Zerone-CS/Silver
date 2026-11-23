@@ -1,0 +1,75 @@
+name: VLLM_ASCEND_ENABLE_QSA_E3V
+type: env
+category: model
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/Qwen3.8-Flash-Next.md:156
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (unset disables the fused QSA Expand E3 path)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_ASCEND_ENABLE_QSA_E3V is an Ascend-specific environment flag documented in the
+
+  Qwen3.8-Flash-Next tutorial. When set to 1, it enables the fused "QSA Expand E3" path,
+
+  which fuses the QSA (Qwen Sparse Attention) expand/E3 computation into a single Ascend
+
+  kernel path instead of executing the expand step as separate operators. Fusing the expand
+
+  stage reduces kernel launch overhead and intermediate tensor materialization on the NPU,
+
+  lowering per-token decode latency and improving throughput for Qwen3.8-Flash-Next models
+
+  that use the QSA attention variant. It is a model-architecture-specific optimization: it
+
+  only has an effect when the loaded model actually contains QSA Expand E3 layers (e.g.
+
+  Qwen3.8-Flash-Next). No definition or usage site was found in the extracted vllm or
+
+  vllm-ascend source context, so the exact kernel dispatch path could not be verified from
+
+  code; the behavior is inferred from the official vllm-ascend documentation.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/Qwen3.8-Flash-Next.md:156
+  context: Documented as the flag that enables the fused QSA Expand E3 path for Qwen3.8-Flash-Next deployment.
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_QSA_LIGHTNING_INDEXER
+  relation: Companion QSA fusion flag; both are enabled together in the validated Qwen3.8-Flash-Next launch command.
+- name: --quantization
+  relation: Used together with 'ascend' W8A8 checkpoint in the validated deployment; the fused path is validated in that quantization
+    configuration.
+- name: --tensor-parallel-size
+  relation: Validated with TP8 single-DP topology on A3; fusion behavior may depend on the parallel layout.
+constraints:
+- Only has an effect for models that contain QSA Expand E3 layers (e.g. Qwen3.8-Flash-Next); on other models it is a no-op.
+- Must be set as an environment variable before the vLLM-Ascend server starts; changing it at runtime has no effect.
+tuning_advice:
+  summary: 'Enable VLLM_ASCEND_ENABLE_QSA_E3V=1 when deploying Qwen3.8-Flash-Next (or other QSA-based
+
+    models) on Ascend NPU to fuse the QSA Expand E3 stage and reduce decode latency; leave it
+
+    unset for all other models.
+
+    '
+  suggested_values:
+  - scenario: Deploying Qwen3.8-Flash-Next with the validated W8A8 TP8 A3 configuration
+    value: '1'
+    reason: The official tutorial enables this flag in the validated launch command to activate the fused QSA Expand E3 path,
+      reducing kernel overhead and improving decode latency/throughput.
+  - scenario: Any model without QSA Expand E3 layers, or when debugging accuracy issues
+    value: '0'
+    reason: The fusion only applies to QSA-based models; for other models it is a no-op, and disabling it provides a safe
+      fallback if accuracy or operator support issues appear.
+  caveats:
+  - Pair with VLLM_ASCEND_ENABLE_QSA_LIGHTNING_INDEXER=1 as in the documented command for the full fused QSA path.
+  - Validate output accuracy after enabling, since the fused kernel path may produce slightly different numerics.
+  quick_guide: Set VLLM_ASCEND_ENABLE_QSA_E3V=1 only for Qwen3.8-Flash-Next-style QSA models on Ascend NPU; otherwise leave
+    unset.
+analysis_date: '2026-10-27'

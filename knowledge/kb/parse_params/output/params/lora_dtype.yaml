@@ -1,0 +1,109 @@
+name: --lora-dtype
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/lora.py:47
+- vllm/engine/arg_utils.py:635
+- vllm/engine/arg_utils.py:1487
+- vllm/lora/layers/base_linear.py:139
+- vllm/lora/layers/column_parallel_linear.py:231
+- vllm/lora/layers/fused_moe.py:177
+- vllm_ascend/lora/punica_npu.py:69
+- vllm_ascend/lora/utils.py:62
+- vllm_ascend/lora/utils.py:155
+value_type: str
+default: auto
+valid_choices: auto, or any torch.dtype string (e.g. float16, bfloat16, float32)
+cli_example: --lora-dtype bfloat16
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: '--lora-dtype controls the torch.dtype used to allocate all LoRA adapter buffers
+
+  (lora_a_stacked / lora_b_stacked and Ascend-specific packed copies). When set to
+
+  "auto" it resolves to the base model dtype (typically bfloat16/float16 on Ascend).
+
+  The dtype directly determines the memory footprint of the LoRA weight buffers:
+
+  in vllm/lora/layers/base_linear.py:139, column_parallel_linear.py:231/242 and
+
+  fused_moe.py:177/204, buffers are allocated as torch.zeros(..., dtype=lora_config.lora_dtype),
+
+  so float32 doubles the LoRA buffer memory vs bfloat16/float16. On Ascend, vllm-ascend
+
+  additionally allocates packed copies in vllm_ascend/lora/utils.py:62/155 and a
+
+  single-lora mask in vllm_ascend/lora/punica_npu.py:69 using the same lora_dtype, so
+
+  the dtype choice propagates to Ascend-specific buffers too. The dtype also affects
+
+  the compute path: "the LoRA shrink/expand kernels (sgmv/bgmv on NPU) run in this dtype,"
+
+  so a wider dtype (float32) increases per-token compute cost and memory bandwidth on
+
+  the NPU, lowering throughput and raising latency; a narrower dtype (float16/bfloat16)
+
+  matches the base model and lets the LoRA matmuls fuse efficiently with the base
+
+  linear layers. lora_dtype is also part of LoRAConfig.compute_hash (lora.py:104), so
+
+  changing it invalidates the computation-graph hash and forces recompilation/capture.
+
+  '
+usage_locations:
+- file: vllm/config/lora.py:47
+  context: 'Field definition lora_dtype: torch.dtype | LoRADType = ''auto''; docstring says auto defaults to base model dtype.'
+- file: vllm/config/lora.py:104
+  context: lora_dtype included in compute_hash factors, affecting graph identity.
+- file: vllm/lora/layers/base_linear.py:139
+  context: Allocates lora_a_stacked/lora_b_stacked buffers with dtype=lora_config.lora_dtype.
+- file: vllm/lora/layers/column_parallel_linear.py:231
+  context: Column-parallel LoRA A/B buffers allocated with lora_dtype.
+- file: vllm/lora/layers/fused_moe.py:177
+  context: MoE LoRA w13/w2 A/B buffers allocated with lora_dtype.
+- file: vllm_ascend/lora/punica_npu.py:69
+  context: Ascend single-lora-slot mask allocated with lora_config.lora_dtype; raises if not resolved to torch.dtype.
+- file: vllm_ascend/lora/utils.py:62
+  context: Ascend packed LoRA A/B buffers allocated with lora_config.lora_dtype.
+- file: vllm_ascend/lora/utils.py:155
+  context: Ascend transposed LoRA B copy allocated with lora_config.lora_dtype.
+related_parameters:
+- name: --enable-lora
+  relation: LoRA buffers (and thus lora_dtype) only matter when LoRA is enabled.
+- name: --max-loras
+  relation: Buffer size scales with max_loras; dtype multiplies the per-slot memory.
+- name: --max-lora-rank
+  relation: Buffer size scales with max_lora_rank; dtype multiplies the per-slot memory.
+- name: --fully-sharded-loras
+  relation: Changes buffer shapes; dtype still governs element size.
+- name: --dtype
+  relation: When lora_dtype is auto it inherits the base model dtype set by --dtype.
+constraints:
+- When LoRA is enabled on Ascend with a single LoRA slot (max_loras == 1 and not fully_sharded_loras), lora_dtype must be
+  resolved to a concrete torch.dtype before the Punica wrapper is created, otherwise a ValueError is raised.
+- lora_dtype must be a valid torch.dtype or the string 'auto'; 'auto' resolves to the base model dtype.
+tuning_advice:
+  summary: Leave --lora-dtype at 'auto' so LoRA buffers match the base model dtype (bfloat16/float16 on Ascend) for best memory
+    and throughput; only override to float32 when adapter precision demands it.
+  suggested_values:
+  - scenario: Default LoRA serving on Ascend NPU (v1 and v2 workers)
+    value: auto
+    reason: Resolves to base model dtype (bfloat16/float16), minimizing LoRA buffer memory and keeping LoRA matmuls fused
+      with base linear layers.
+  - scenario: Base model in bfloat16, want explicit control
+    value: bfloat16
+    reason: Matches typical Ascend base model dtype, avoids extra casts in LoRA kernels.
+  - scenario: Adapter weights require higher numerical precision
+    value: float32
+    reason: Higher precision but doubles LoRA buffer memory and slows NPU LoRA matmuls; use only when accuracy demands it.
+  caveats:
+  - float32 lora_dtype increases memory and latency on NPU; prefer bfloat16/float16 unless accuracy requires otherwise.
+  - Changing lora_dtype invalidates the LoRAConfig hash and forces graph recompilation.
+  - Ensure lora_dtype matches --dtype to avoid extra cast overhead in the LoRA path.
+  quick_guide: Keep --lora-dtype auto (or bfloat16) to match the base model; only use float32 for precision-critical adapters.
+analysis_date: '2026-10-27'

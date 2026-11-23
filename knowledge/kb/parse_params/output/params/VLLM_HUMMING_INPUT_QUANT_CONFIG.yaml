@@ -1,0 +1,86 @@
+name: VLLM_HUMMING_INPUT_QUANT_CONFIG
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1506
+- vllm/envs.py:189
+- vllm/model_executor/layers/quantization/humming.py:286
+- vllm/model_executor/layers/quantization/utils/humming_utils.py:1057
+value_type: dict
+default: null
+valid_choices: JSON string or path to a JSON file that parses to a dict (quant config schema); null disables the override
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read only by the upstream vLLM "humming" quantization backend
+
+  (vllm/model_executor/layers/quantization/humming.py and humming_utils.py). It is
+
+  parsed via maybe_convert_json_str_or_file into a dict and used to build a
+
+  HummingInputSchema (the activation/input quantization schema) for each layer.
+
+  In humming.py:286-291, when set, it forces an input schema (force_input_schema)
+
+  that overrides the input schema derived from the model''s own quant config; in
+
+  humming_utils.py:1057-1062 it is used to build the input schema for MoE layers
+
+  when none is provided, and humming_is_layer_skipped() can skip quantization for
+
+  specific layers. The choice of input (activation) quantization schema directly
+
+  determines which low-precision GEMM kernels are selected, which affects compute
+
+  throughput and latency of quantized matmuls. However, this is a GPU-oriented
+
+  humming kernel path; there is no reference to VLLM_HUMMING_INPUT_QUANT_CONFIG
+
+  anywhere in vllm-ascend, and the humming backend is not the Ascend quantization
+
+  path (Ascend uses its own quant methods such as W8A8/W4A8 via CANN). Therefore
+
+  on Ascend NPU this parameter has no runtime effect unless the humming backend
+
+  is somehow selected, which is not supported on Ascend hardware.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1506
+  context: Definition of the env var, parsed as JSON string or file into a dict
+- file: vllm/envs.py:189
+  context: Type annotation dict[str, Any] | None in the envs class
+- file: vllm/model_executor/layers/quantization/humming.py:286
+  context: Forces input schema (force_input_schema) for humming layer quantization config
+- file: vllm/model_executor/layers/quantization/utils/humming_utils.py:1057
+  context: Builds HummingInputSchema for MoE layers; can skip layers via humming_is_layer_skipped
+related_parameters:
+- name: VLLM_HUMMING_ONLINE_QUANT_CONFIG
+  relation: Companion config for online weight quantization; both feed the humming backend schema construction
+- name: VLLM_HUMMING_USE_F16_ACCUM
+  relation: Related humming kernel tuning flag affecting accumulator precision
+- name: VLLM_HUMMING_MOE_GEMM_TYPE
+  relation: Related humming MoE GEMM selection flag
+constraints:
+- The value must be a valid JSON string or a path to a JSON file that parses to a dict, otherwise parsing fails.
+- Only takes effect when the humming quantization backend is active; it is ignored for other quantization methods.
+- Not referenced anywhere in vllm-ascend, so it has no effect on Ascend NPU quantization paths.
+tuning_advice:
+  summary: Do not use on Ascend NPU; it only affects the upstream GPU humming quantization backend.
+  suggested_values:
+  - scenario: Running on Ascend NPU
+    value: unset
+    reason: vllm-ascend does not reference this env var and does not use the humming backend, so leaving it unset avoids confusion
+      and has no performance impact.
+  - scenario: Running on GPU with humming quantized model needing activation schema override
+    value: '{"quant_method": "humming"}'
+    reason: Provides an explicit input quantization schema dict to force the humming activation quantization path.
+  caveats:
+  - Setting this on Ascend has no effect and may mislead tuning efforts; use Ascend-native quantization configs instead.
+  - Overriding the input schema can alter accuracy; validate outputs after changing it.
+  quick_guide: Leave unset on Ascend NPU; only relevant to the GPU humming quantization backend.
+analysis_date: '2026-10-27'

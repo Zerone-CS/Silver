@@ -1,0 +1,73 @@
+name: compilation.pass_config.enable_qk_norm_rope_fusion
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/compilation.py:969
+- vllm/compilation/passes/pass_manager.py:225
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag is defined and consumed entirely in upstream vLLM (vllm/config/compilation.py:969 and
+
+  vllm/compilation/passes/pass_manager.py:225). When enabled, PostGradPassManager appends a
+
+  SplitCoalescingPass and a QKNormRoPEFusionPass, and CompilationConfig forces "+rotary_embedding"
+
+  into custom_ops so the RoPE op is not decomposed. The pass fuses Q/K RMSNorm with RoPE into a
+
+  single kernel, reducing kernel launches and intermediate memory traffic during the prefill/decode
+
+  forward pass. This is a CUDA/Inductor-oriented graph fusion pass. On Ascend NPU, vLLM''s Inductor
+
+  compilation path is not the primary execution path — vllm-ascend uses its own graph mode /
+
+  torch.compile integration and CANN operators, and there is no vllm-ascend definition or override
+
+  of this parameter in the provided context. Therefore the fusion pass has no meaningful effect on
+
+  Ascend runtime performance; it neither accelerates nor degrades NPU execution in practice.
+
+  '
+usage_locations:
+- file: vllm/config/compilation.py:969
+  context: Forces '+rotary_embedding' into custom_ops when the fusion pass is enabled
+- file: vllm/compilation/passes/pass_manager.py:225
+  context: Appends SplitCoalescingPass and QKNormRoPEFusionPass to the post-grad pass list
+- file: tests/compile/test_config.py:109
+  context: Rejects contradictory custom_ops when enable_qk_norm_rope_fusion is set
+- file: tests/test_config.py:2768
+  context: Default is platform-gated to cuda_alike or xpu; not enabled on Ascend
+related_parameters:
+- name: compilation.pass_config.fuse_rope_kvcache
+  relation: Sibling RoPE fusion pass; both force '+rotary_embedding' into custom_ops
+- name: compilation.pass_config.fuse_qk_norm_rope_kvcache
+  relation: More aggressive fusion variant that also fuses KV cache write
+- name: compilation.custom_ops
+  relation: Mutually constrained — enabling this pass conflicts with '-rotary_embedding'
+constraints:
+- Enabling this pass while custom_ops contains '-rotary_embedding' raises a ValueError (cannot both enable and disable rotary_embedding).
+- The pass is only auto-enabled by default on CUDA-alike or XPU platforms; on Ascend it is not enabled by default.
+tuning_advice:
+  summary: Leave at default (disabled) on Ascend NPU; this CUDA/Inductor fusion pass does not apply to the vllm-ascend execution
+    path.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: The QKNormRoPEFusionPass targets vLLM's Inductor compilation path, which is not the primary path on Ascend; enabling
+      it yields no runtime benefit.
+  - scenario: CUDA/XPU GPU deployment (upstream vLLM reference)
+    value: true
+    reason: On CUDA-alike/XPU platforms the pass fuses Q/K RMSNorm+RoPE, reducing kernel launches and latency.
+  caveats:
+  - Do not combine with custom_ops containing '-rotary_embedding'; this raises a configuration error.
+  - No vllm-ascend override exists, so behavior on Ascend is effectively a no-op for performance.
+  quick_guide: Keep disabled on Ascend; only relevant for CUDA/XPU Inductor fusion.
+analysis_date: '2026-10-27'

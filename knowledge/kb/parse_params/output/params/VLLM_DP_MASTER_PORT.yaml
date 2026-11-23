@@ -1,0 +1,107 @@
+name: VLLM_DP_MASTER_PORT
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:1445
+- vllm/envs.py:180
+- vllm/config/parallel.py:940
+- vllm/utils/network_utils.py:168
+- examples/offline_data_parallel.py:124
+value_type: int
+default: 0
+valid_choices: TCP port number in range [1, 65535]; 0 means unset (no reserved port window)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_DP_MASTER_PORT is only read in the offline SPMD data-parallel path
+
+  (vllm/config/parallel.py:940), where it is assigned to
+
+  data_parallel_master_port when the DP config is not driven by the API server
+
+  (i.e. when data_parallel_rank is not set via CLI). It is the TCP port used by
+
+  the DP master process for the DP coordination rendezvous (ZMQ/distributed
+
+  init). It does not affect per-token compute, memory allocation, or kernel
+
+  selection, so its direct throughput impact is negligible.
+
+  The one runtime-relevant behavior is in vllm/utils/network_utils.py:168:
+
+  when VLLM_DP_MASTER_PORT is set, get_open_port() reserves the window
+
+  [port, port+10) and will never hand out a port inside that range. This
+
+  prevents the livelock described in upstream issue #50024 where VLLM_PORT
+
+  colliding with the DP master port caused get_open_port() to loop forever
+
+  (see tests/utils_/test_network_utils.py). On Ascend, the same code path is
+
+  used by vllm-ascend''s offline DP examples (examples/offline_data_parallel.py)
+
+  and e2e tests, which set VLLM_DP_MASTER_PORT before constructing LLM. A
+
+  misconfigured/occupied port causes startup failure or hang, not steady-state
+
+  slowdown. vllm-ascend does not override this env var; it is consumed through
+
+  upstream vllm envs/config.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1445
+  context: 'Env var definition: int(os.getenv(''VLLM_DP_MASTER_PORT'', ''0''))'
+- file: vllm/config/parallel.py:940
+  context: Offline SPMD DP path assigns data_parallel_master_port = envs.VLLM_DP_MASTER_PORT
+- file: vllm/utils/network_utils.py:168
+  context: Reserves port window [VLLM_DP_MASTER_PORT, +10) so get_open_port() avoids it
+- file: examples/offline_data_parallel.py:124
+  context: vllm-ascend offline DP example sets VLLM_DP_MASTER_PORT per rank before LLM init
+- file: tests/e2e/conftest.py:910
+  context: vllm-ascend e2e DP worker sets VLLM_DP_MASTER_PORT for multi-process DP runs
+related_parameters:
+- name: VLLM_DP_MASTER_IP
+  relation: Companion address; together they form the DP master rendezvous endpoint
+- name: VLLM_DP_RANK
+  relation: Global DP rank; must be set for offline SPMD DP mode to take effect
+- name: VLLM_DP_RANK_LOCAL
+  relation: Local DP rank within a node; used alongside DP master endpoint
+- name: VLLM_DP_SIZE
+  relation: Total DP world size; must be >1 for DP mode (and model must be MoE)
+- name: VLLM_PORT
+  relation: Must not fall inside the reserved [VLLM_DP_MASTER_PORT, +10) window or get_open_port() livelocks
+constraints:
+- VLLM_DP_MASTER_PORT must be a valid TCP port integer; the env getter casts with int() and will raise on non-numeric values.
+- Offline data parallel mode (which reads this env var) requires the model to be an MoE model; dense models raise ValueError
+  when data_parallel_size > 1.
+- VLLM_PORT must not be set to a value inside [VLLM_DP_MASTER_PORT, VLLM_DP_MASTER_PORT+10), otherwise get_open_port() will
+  skip the whole reserved window.
+- This env var only takes effect in the offline SPMD DP path; when DP is configured via the API server / CLI data_parallel_rank,
+  the master port is auto-assigned from get_open_ports_list(5) instead.
+tuning_advice:
+  summary: Pick a free, stable TCP port for the DP master rendezvous and keep it outside the VLLM_PORT range; this is a correctness/startup
+    concern, not a throughput knob.
+  suggested_values:
+  - scenario: Single-node offline DP on Ascend NPU (v1 engine)
+    value: 29501
+    reason: A high, uncommon port avoids collisions with default service ports; the example offline_data_parallel.py passes
+      an explicit master port per rank.
+  - scenario: Multi-node DP where each node runs its own DP group
+    value: <unique per-node port>
+    reason: Each DP master must use a distinct port reachable from all ranks; reuse across nodes causes rendezvous conflicts.
+  - scenario: Avoiding VLLM_PORT collision livelock
+    value: <port not within 10 of VLLM_PORT>
+    reason: 'get_open_port() reserves [port, port+10); keeping VLLM_PORT outside this window prevents the upstream #50024
+      livelock.'
+  caveats:
+  - Verify the chosen port and the following 9 ports are free before launch.
+  - Do not reuse the same port across concurrent DP jobs on the same host.
+  - This setting does not change steady-state latency/throughput; focus tuning effort on TP/EP and memory parameters instead.
+  quick_guide: Set VLLM_DP_MASTER_PORT to a free, unique port (e.g. 29501) for offline DP; keep VLLM_PORT at least 10 away
+    from it.
+analysis_date: '2026-10-27'

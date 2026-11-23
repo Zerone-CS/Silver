@@ -1,0 +1,105 @@
+name: --disable-nccl-for-dp-synchronization
+type: cli
+category: communication
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1230
+- vllm/engine/arg_utils.py:524
+- vllm/config/parallel.py:238
+- vllm/config/vllm.py:1489
+- vllm/v1/worker/dp_utils.py:48
+- vllm/v1/worker/dp_utils.py:166
+value_type: bool
+default: <computed>
+valid_choices: 'true / false (None means auto: True when async scheduling is enabled, False otherwise)'
+cli_example: --disable-nccl-for-dp-synchronization
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls which collective backend is used for the DP padding/synchronization
+
+  all-reduce in vllm/v1/worker/dp_utils.py. When True, `_get_device_and_group` sets
+
+  device="cpu" and group=get_dp_group().cpu_group, so the all-reduce runs over Gloo on
+
+  host memory instead of NCCL on the accelerator. The upstream comment (dp_utils.py:44-47)
+
+  explains the rationale: "transferring the sync tensor from GPU to CPU introduces a device"
+
+  sync point that can hurt async scheduling, so the Gloo path avoids that GPU sync. The
+
+  second usage site (dp_utils.py:166) shows that when this flag is True the code skips
+
+  `gpu_sync_allowed()` (uses nullcontext) because the Gloo all-reduce already runs on CPU
+
+  and the reads are host-side; when False the NCCL path leaves the tensor on device and
+
+  the GPU sync guard stays armed. The default is resolved in vllm/config/vllm.py:1489-1500:
+
+  if unset (None), it becomes True when async scheduling is enabled, False otherwise.
+
+  On Ascend NPU, the DP group''s device_group is HCCL-backed and the cpu_group is Gloo;
+
+  forcing Gloo moves the small DP sync all-reduce off the NPU/HCCL path onto host CPU,
+
+  trading HCCL launch latency and a device sync point for a host-side collective. This
+
+  affects per-step DP synchronization latency (and thus inter-token latency in DP
+
+  deployments) but not model compute throughput directly. No vllm-ascend override of this
+
+  parameter was found in the provided context; behavior follows the upstream v1 worker
+
+  dp_utils path.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1489
+  context: 'Resolves None default: True if async_scheduling enabled, else False.'
+- file: vllm/v1/worker/dp_utils.py:48
+  context: Selects cpu device + cpu_group (Gloo) instead of device_group (NCCL/HCCL) for DP sync all-reduce.
+- file: vllm/v1/worker/dp_utils.py:166
+  context: Skips gpu_sync_allowed() guard when Gloo path is used, since reads are host-side.
+- file: vllm/engine/arg_utils.py:1230
+  context: CLI argument registration in ParallelConfig group.
+related_parameters:
+- name: --data-parallel-size
+  relation: Only meaningful when DP size > 1; DP sync all-reduce is a no-op for single DP rank.
+- name: --async-scheduling
+  relation: When unset, this flag defaults to True if async scheduling is enabled, False otherwise.
+- name: --enable-dbo / --ubatch-size
+  relation: DP sync also coordinates ubatching/DBO decisions; Gloo vs NCCL choice affects that sync path.
+- name: --enable-expert-parallel
+  relation: DP+EP MoE deployments are the primary scenario where DP synchronization runs each step.
+constraints:
+- 'The value is a tri-state: leaving it unset (None) triggers automatic resolution based on async scheduling rather than a
+  fixed default.'
+- The Gloo (CPU) path requires a valid CPU process group (cpu_group) to be initialized for the DP group; it is only usable
+  when a DP group exists (data_parallel_size > 1).
+- When set to True, the DP sync all-reduce runs on host CPU memory, so the sync tensor must be host-accessible; the NCCL/HCCL
+  device path is bypassed entirely.
+tuning_advice:
+  summary: Leave unset to let vLLM auto-select Gloo under async scheduling; explicitly set True for DP+async-scheduling on
+    Ascend to avoid the NPU sync point, and False only if host-side Gloo sync becomes a bottleneck.
+  suggested_values:
+  - scenario: DP deployment with async scheduling enabled (v1 worker)
+    value: true
+    reason: Auto-default already resolves to True; Gloo avoids the NPU->CPU device sync point that degrades async scheduling,
+      matching upstream intent.
+  - scenario: DP deployment without async scheduling, latency-sensitive
+    value: false
+    reason: NCCL/HCCL device-side all-reduce avoids host round-trip; default resolves to False here, keeping sync on the NPU
+      fabric.
+  - scenario: Large DP group where host Gloo sync is slow
+    value: false
+    reason: For many DP ranks the CPU Gloo collective can dominate; using HCCL keeps the sync on the NPU interconnect.
+  caveats:
+  - Only relevant when data_parallel_size > 1; single-DP-rank deployments see no effect.
+  - On Ascend the NCCL path is HCCL; verify cpu_group (Gloo) is functional before forcing True in multi-node DP setups.
+  - Benchmark both settings for your DP size — the optimal choice depends on whether the device sync point or the host collective
+    is the larger cost.
+  quick_guide: Leave unset (auto) in most cases; it becomes True under async scheduling and False otherwise — override only
+    after benchmarking DP sync latency on your Ascend cluster.
+analysis_date: '2026-10-27'

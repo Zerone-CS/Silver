@@ -1,0 +1,112 @@
+name: --enable-mixed-moe-lora-format
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/lora.py:75
+- vllm/engine/arg_utils.py:639
+- vllm/engine/arg_utils.py:1506
+- vllm/lora/model_manager.py:124
+- vllm/lora/model_manager.py:841
+- vllm/lora/utils.py:389
+- vllm/lora/request.py:36
+- vllm/lora/lora_model.py:78
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: --enable-mixed-moe-lora-format
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This flag only affects the LoRA adapter loading/wrapping path for MoE models; it does not
+
+  change the base model''s forward compute. When enabled, LoRAModelManager sets
+
+  `_enable_mixed_moe_lora_format = is_moe and lora_config.enable_mixed_moe_lora_format`
+
+  (vllm/lora/model_manager.py:124-134) and forces `_is_3d_moe_model` to False, so the model
+
+  is wrapped with the universal 2D wrapper `FusedMoEWithLoRA` instead of `FusedMoE3DWithLoRA`.
+
+  This changes `process_packed_modules_mapping(..., force_2d_moe=True)` (vllm/lora/utils.py:389-409),
+
+  which expands the packed mapping into per-expert 2D entries (gate_proj/up_proj/down_proj per
+
+  expert) rather than the fused 3D gate_up_proj/down_proj layout. At adapter-load time
+
+  (model_manager.py:841-846), 3D-format adapters are converted to 2D via `_convert_3d_to_2d_moe_lora`
+
+  before `set_lora` copies them into stacked buffers, adding a one-time CPU-side split cost per
+
+  adapter load. The runtime MoE LoRA kernel then operates on the 2D per-expert layout, which can
+
+  be slightly less efficient than the native 3D fused path on models that natively use 3D MoE
+
+  weights, and the 2D stacked buffers may use marginally more memory than the fused 3D tensors.
+
+  The flag is also part of LoRAConfig.compute_hash (lora.py:106), so toggling it changes the
+
+  config hash and invalidates any cached compilation/graph artifacts. No vllm-ascend override of
+
+  this parameter was found in the provided context; the effect is inherited from upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/config/lora.py:75
+  context: LoRAConfig field definition and docstring describing the 2D-wrapper forcing behavior
+- file: vllm/engine/arg_utils.py:639
+  context: EngineArgs field defaulting to LoRAConfig.enable_mixed_moe_lora_format
+- file: vllm/engine/arg_utils.py:1506
+  context: CLI argument registration in the LoRAConfig argument group
+- file: vllm/lora/model_manager.py:124
+  context: Computes _enable_mixed_moe_lora_format and forces _is_3d_moe_model to False
+- file: vllm/lora/model_manager.py:841
+  context: Converts 3D-format adapters to 2D before set_lora when mixed mode is on
+- file: vllm/lora/utils.py:389
+  context: process_packed_modules_mapping uses force_2d_moe to build 2D expert mapping
+- file: vllm/lora/request.py:36
+  context: LoRARequest.is_3d_lora_weight only consulted when this flag is enabled
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for this flag to have any effect; LoRA path is inactive otherwise
+- name: --enable-moe-shared-loras
+  relation: Mutually exclusive layout choice in process_packed_modules_mapping; shared-loras branch takes precedence over
+    the force_2d_moe branch
+- name: --max-lora-rank
+  relation: Determines the size of the stacked 2D LoRA buffers allocated per expert
+- name: --max-loras
+  relation: Number of adapter slots; affects total LoRA buffer memory footprint
+- name: --fully-sharded-loras
+  relation: Alternative LoRA memory/layout strategy that interacts with MoE wrapper selection
+constraints:
+- Only meaningful for MoE models; for non-MoE models the flag is ignored.
+- Requires --enable-lora to be set, otherwise the LoRA model manager is never constructed.
+- When --enable-moe-shared-loras is also set, the shared-loras mapping branch takes precedence and the force-2d mapping is
+  not applied.
+- Adapters served in mixed mode must correctly declare is_3d_lora_weight on the LoRARequest; otherwise 3D-format adapters
+  will be treated as 2D and fail to load.
+tuning_advice:
+  summary: Leave disabled unless you must serve both 2D- and 3D-format MoE LoRA adapters in one deployment; enable only then
+    and accept the small per-token and load-time overhead.
+  suggested_values:
+  - scenario: Single-format MoE LoRA deployment (all adapters same on-disk layout as base model)
+    value: false
+    reason: Keeps the native model-driven wrapper (FusedMoE3DWithLoRA for 3D models), preserving the fused 3D LoRA kernel
+      and avoiding conversion overhead.
+  - scenario: Mixed deployment serving both 2D and 3D MoE LoRA adapters simultaneously
+    value: true
+    reason: Forces the universal FusedMoEWithLoRA 2D wrapper so both adapter formats can be loaded and served in the same
+      engine.
+  - scenario: Non-MoE model with LoRA
+    value: false
+    reason: Flag is ignored for non-MoE models; enabling it has no effect and only changes the config hash.
+  caveats:
+  - Benchmark per-token latency after enabling on Ascend NPU; the 2D path may not be as optimized as the native 3D fused path.
+  - Ensure each LoRARequest sets is_3d_lora_weight correctly when mixed mode is on, or adapters will be mis-parsed.
+  - Account for extra memory from per-expert 2D stacked buffers when sizing --max-loras and --max-lora-rank.
+  quick_guide: Enable only when mixing 2D and 3D MoE LoRA adapters; otherwise keep default false for best performance.
+analysis_date: '2026-10-27'

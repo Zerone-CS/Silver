@@ -1,0 +1,95 @@
+name: additional_config.enable_sparse_li_c4
+type: nested
+category: quantization
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:644
+- vllm_ascend/ascend_config.py:451
+- vllm_ascend/ascend_config.py:654
+- vllm_ascend/ascend_config.py:655
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- throughput
+impact_detail: 'enable_sparse_li_c4 is a vllm-ascend-only switch declared in AscendConfig
+
+  (vllm_ascend/ascend_config.py:644) as a derived field with a sentinel default
+
+  of False. It is paired with private derived state _sparse_li_c4_layer_ids and
+
+  _sparse_li_c4_layer_names (lines 654-655), which are populated during config
+
+  derivation and consumed by the sparse "li" (linear-attention / lightning-indexer
+
+  style) path to select which layers use a C4 (4-bit) sparse quantization variant.
+
+  The sibling switches enable_sparse_li_c8 and enable_sparse_sfa_c8 follow the
+
+  same pattern for 8-bit variants. Because the field is a derived field (the
+
+  docstring notes derived fields are computed automatically and not user-settable
+
+  in the same sense as pure switches), its effective value is determined by the
+
+  model''s quantization type and layer configuration rather than being a primary
+
+  tuning knob. When active, it changes the per-layer quantization width for the
+
+  sparse li path, which affects NPU memory footprint (4-bit weights/activations
+
+  reduce memory vs C8) and can affect throughput via different matmul kernels.
+
+  No direct usage sites were found in the provided context, so the exact runtime
+
+  dispatch path is not visible here; impact is therefore assessed as low.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:644
+  context: 'Field declaration enable_sparse_li_c4: bool = False in AscendConfig'
+- file: vllm_ascend/ascend_config.py:451
+  context: Documented in the AscendConfig example dict as a supported additional_config key
+- file: vllm_ascend/ascend_config.py:654
+  context: Private derived state _sparse_li_c4_layer_ids populated from this switch
+- file: vllm_ascend/ascend_config.py:655
+  context: Private derived state _sparse_li_c4_layer_names populated from this switch
+related_parameters:
+- name: additional_config.enable_sparse_li_c8
+  relation: Sibling switch selecting the 8-bit sparse li variant; mutually exclusive in effect with the C4 variant for a given
+    layer
+- name: additional_config.enable_sparse_sfa_c8
+  relation: Related sparse SFA C8 switch; part of the same sparse quantization family
+- name: additional_config.enable_sparse_sfa_turboquant
+  relation: Related sparse quantization switch in the same derived-field group
+- name: additional_config.c8_enable_reshape_optim
+  relation: C8-specific reshape optimization toggle; only meaningful when a C8 sparse path is active
+constraints:
+- Unknown keys in additional_config are rejected (extra="forbid"), so the key must be spelled exactly enable_sparse_li_c4.
+- The value must be a boolean; lax bool coercion accepts strings like "false" but non-boolean values are rejected by pydantic
+  validation.
+- This is a derived field whose effective value is computed during config derivation; setting it manually may be overridden
+  by the derivation logic based on model quantization type.
+tuning_advice:
+  summary: Leave at default (false) unless the model and hardware explicitly support the C4 sparse li path; it is a derived
+    switch, not a general tuning knob.
+  suggested_values:
+  - scenario: Default deployment with standard quantized models
+    value: false
+    reason: The field defaults to False and is derived automatically; forcing it on without a compatible model/quant config
+      has no benefit and risks accuracy loss.
+  - scenario: Memory-constrained deployment where the model supports 4-bit sparse li quantization
+    value: true
+    reason: C4 reduces per-layer weight/activation memory versus C8, which can allow larger batches or longer context on memory-limited
+      NPUs.
+  caveats:
+  - Confirm the model's quantization type supports the C4 sparse li path before enabling; otherwise the switch may be silently
+    overridden by derivation.
+  - Benchmark accuracy after enabling C4, as lower bit-width can degrade output quality.
+  - This switch is vllm-ascend-specific and has no upstream vLLM equivalent.
+  quick_guide: Keep enable_sparse_li_c4=false unless you have a C4-compatible sparse li model and need the memory savings.
+analysis_date: '2026-10-27'

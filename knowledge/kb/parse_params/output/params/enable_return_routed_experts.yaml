@@ -1,0 +1,100 @@
+name: --enable-return-routed-experts
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:250
+- vllm/engine/arg_utils.py:436
+- vllm/engine/arg_utils.py:910
+- vllm/config/vllm.py:1281
+- vllm/v1/core/sched/scheduler.py:387
+- vllm/v1/worker/gpu_model_runner.py:7490
+- vllm_ascend/platform.py:1633
+- vllm_ascend/worker/v2/model_runner.py:445
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --enable-return-routed-experts
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This flag enables capture of MoE expert routing decisions (R3 / routed-experts replay)\nso they can be returned\
+  \ to the client (e.g. for RL trainer replay). It is not a\nthroughput knob but it does add runtime overhead and memory cost.\n\
+  \nUpstream vLLM path:\n- \"vllm/config/vllm.py:1281 validates compatibility (rejects PP>1, DCP>1/PCP>1, and any\"\n  KV\
+  \ connector).\n- \"vllm/v1/core/sched/scheduler.py:387 constructs a RoutedExpertsManager and, on every\"\n  schedule step\
+  \ (line 1555), snapshots block IDs for all scheduled requests\n  (`self._re_block_ids.update(...)`), adding per-step CPU\
+  \ work in the scheduler hot path.\n- \"vllm/v1/worker/gpu_model_runner.py:7490 `init_routed_experts_capturer` allocates\
+  \ a\"\n  device buffer sized by `max_num_batched_tokens` plus a pinned CPU buffer, and binds a\n  capturer into the model.\
+  \ Each step then does a D2H copy of routing_data and\n  slot_mapping (`get_routed_experts` clones device buffers), which\
+  \ adds a device-to-host\n  synchronization/copy per step and extra NPU memory proportional to\n  max_num_batched_tokens\
+  \ × num_layers × num_experts_per_tok.\n\nAscend-specific behavior:\n- \"vllm_ascend/platform.py:1633 `_validate_routing_replay_config`\
+  \ hard-rejects the flag\"\n  unless the V2 model runner is active (`VLLM_USE_V2_MODEL_RUNNER=1`); on the V1 runner\n  the\
+  \ R3 data plane was removed, so the engine would otherwise start and silently return\n  no routed_experts. This is a hard\
+  \ constraint, not a perf effect.\n- \"vllm_ascend/worker/v2/model_runner.py:445 only calls `init_routed_experts_capturer()`\"\
+  \n  when the flag is set, so the device/pinned buffers and per-step capture overhead are\n  only incurred when enabled.\
+  \ When disabled, there is zero overhead.\n\nNet effect: \"enabling adds per-step scheduler bookkeeping, a per-step D2H copy\
+  \ of routing\"\ndata, and extra NPU + pinned host memory. It does not change model compute throughput\nmaterially, but it\
+  \ can add measurable decode-step latency and memory pressure at large\nmax_num_batched_tokens.\n"
+usage_locations:
+- file: vllm/config/model.py:250
+  context: ModelConfig field definition, default False, docstring 'Whether to return routed experts.'
+- file: vllm/engine/arg_utils.py:910
+  context: CLI flag registration mapping to model_kwargs['enable_return_routed_experts']
+- file: vllm/config/vllm.py:1281
+  context: 'VllmConfig validation: rejects PP>1, DCP>1/PCP>1, and KV connectors when enabled'
+- file: vllm/v1/core/sched/scheduler.py:387
+  context: Scheduler builds RoutedExpertsManager and asserts dcp/pcp world size == 1
+- file: vllm/v1/core/sched/scheduler.py:1555
+  context: Per-schedule-step block-ID snapshot for routed experts (hot path overhead)
+- file: vllm/v1/worker/gpu_model_runner.py:7490
+  context: init_routed_experts_capturer allocates device + pinned CPU buffers and binds capturer
+- file: vllm_ascend/platform.py:1633
+  context: 'Ascend validation: flag only supported on V2 model runner, else raises ValueError'
+- file: vllm_ascend/worker/v2/model_runner.py:445
+  context: V2 Ascend runner conditionally calls init_routed_experts_capturer when flag set
+related_parameters:
+- name: --pipeline-parallel-size
+  relation: 'Incompatible: PP > 1 raises ValueError when this flag is enabled'
+- name: --decode-context-parallel-size
+  relation: 'Incompatible: DCP > 1 raises ValueError when this flag is enabled'
+- name: --prefill-context-parallel-size
+  relation: 'Incompatible: PCP > 1 raises ValueError when this flag is enabled'
+- name: --kv-transfer-config
+  relation: Incompatible with any KV connector (PD disaggregation / KV offload / sharing)
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: 'Required: on Ascend the flag is only supported by the V2 model runner'
+- name: --max-num-batched-tokens
+  relation: Sizes the routed-experts device buffer and per-step D2H copy volume
+- name: --enable-expert-parallel
+  relation: Commonly used together for MoE models in the R3 test
+constraints:
+- On Ascend, --enable-return-routed-experts is only supported by the V2 model runner; set VLLM_USE_V2_MODEL_RUNNER=1 or the
+  engine raises a ValueError at startup.
+- The flag is incompatible with pipeline parallelism; PP > 1 raises a ValueError.
+- The flag is incompatible with context parallelism; DCP > 1 or PCP > 1 raises a ValueError.
+- The flag is incompatible with any KV connector, including PD disaggregation (kv_producer/kv_consumer) and KV offload/sharing
+  (kv_both).
+- The flag only has an effect on MoE models; dense models have no routing decisions to capture.
+tuning_advice:
+  summary: Enable only when a trainer actually consumes and replays expert routing; otherwise leave off to avoid per-step
+    D2H copies and extra memory.
+  suggested_values:
+  - scenario: RL training-inference loop where the trainer replays MoE routing decisions
+    value: true
+    reason: Required to return encoded expert routing decisions; must be paired with VLLM_USE_V2_MODEL_RUNNER=1 on Ascend.
+  - scenario: Standard serving / inference without routing replay
+    value: false
+    reason: Default off incurs zero overhead; enabling adds scheduler bookkeeping, per-step D2H copy, and extra NPU/pinned
+      memory.
+  - scenario: RL replay with large max_num_batched_tokens
+    value: true
+    reason: If enabled, keep max_num_batched_tokens modest to bound the routed-experts device buffer and D2H copy volume.
+  caveats:
+  - Must set VLLM_USE_V2_MODEL_RUNNER=1 on Ascend or startup fails with a ValueError.
+  - Do not combine with PP>1, DCP>1/PCP>1, or any KV connector (PD disaggregation / KV offload).
+  - Budget extra NPU memory proportional to max_num_batched_tokens × num_layers × num_experts_per_tok.
+  - Expect a small decode-step latency increase from the per-step D2H copy of routing data.
+  quick_guide: Leave off unless doing MoE router replay; if on, use the V2 model runner and avoid PP/CP/KV connectors.
+analysis_date: '2026-10-27'

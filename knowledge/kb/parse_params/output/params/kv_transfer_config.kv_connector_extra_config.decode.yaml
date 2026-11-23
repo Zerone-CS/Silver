@@ -1,0 +1,98 @@
+name: kv_transfer_config.kv_connector_extra_config.decode
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/kv_transfer.py:93
+- examples/offline_disaggregated_prefill_npu.py:59
+- examples/offline_disaggregated_prefill_npu.py:106
+value_type: dict
+default: {}
+valid_choices: arbitrary dict; in vllm-ascend PD examples it holds keys 'dp_size' and 'tp_size' (ints)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'kv_connector_extra_config is a free-form dict passed to the KV connector
+
+  (vllm/config/kv_transfer.py:93, read via get_from_extra_config at line 154).
+
+  The nested "decode" sub-dict is not interpreted by vLLM core itself; it is
+
+  consumed by the disaggregated-prefill connector (e.g. MooncakeConnectorV1 in
+
+  the vllm-ascend example) to describe the topology of the decode (D) instance
+
+  group: {"dp_size": ..., "tp_size": ...}. These values determine how the
+
+  connector maps KV blocks between the prefill (P) producer and the decode (D)
+
+  consumer ranks. On Ascend, the KV cache is transferred over HCCL/ROCE between
+
+  P and D nodes; the decode dp_size/tp_size must match the actual parallel
+
+  layout of the decode instance so that block-to-rank mapping is correct.
+
+  A mismatch causes either incorrect KV routing (wrong results / retries) or
+
+  extra transfer overhead, both of which degrade decode throughput and
+
+  time-to-first-token. When the values are correct, the parameter itself adds
+
+  no runtime cost — it only configures the connector''s transfer plan.
+
+  '
+usage_locations:
+- file: vllm/config/kv_transfer.py:93
+  context: Field definition of kv_connector_extra_config (free-form dict for connector).
+- file: vllm/config/kv_transfer.py:154
+  context: get_from_extra_config reads keys from the dict; connectors pull their own sub-config.
+- file: examples/offline_disaggregated_prefill_npu.py:59
+  context: Prefill (producer) instance sets decode dp_size/tp_size in extra config for MooncakeConnectorV1.
+- file: examples/offline_disaggregated_prefill_npu.py:106
+  context: Decode (consumer) instance sets the same decode dp_size/tp_size to match the decode topology.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: The extra config is only meaningful when a connector (e.g. MooncakeConnectorV1) is set.
+- name: kv_transfer_config.kv_role
+  relation: Must be set (kv_producer on P, kv_consumer on D) for the connector to use the extra config.
+- name: kv_transfer_config.kv_connector_extra_config.prefill
+  relation: Sibling sub-dict describing the prefill topology; decode and prefill entries must be consistent across P and D
+    nodes.
+- name: tensor_parallel_size
+  relation: The decode tp_size in extra config should match the decode instance's --tensor-parallel-size.
+- name: data_parallel_size
+  relation: The decode dp_size in extra config should match the decode instance's data parallel size.
+constraints:
+- kv_connector must be set together with kv_role, otherwise KVTransferConfig raises a ValueError at startup.
+- The decode dp_size/tp_size values must match the actual parallel layout of the decode instance, otherwise KV block routing
+  between P and D is incorrect.
+- The decode sub-dict must be consistent between the prefill (producer) and decode (consumer) instances for the same connector.
+tuning_advice:
+  summary: Set the decode dp_size/tp_size to exactly match the decode instance's parallel layout so the connector maps KV
+    blocks correctly and avoids transfer overhead.
+  suggested_values:
+  - scenario: Single decode instance, single NPU (example default)
+    value:
+      dp_size: 1
+      tp_size: 1
+    reason: Matches the offline_disaggregated_prefill_npu.py example where decode runs on one NPU with TP=1.
+  - scenario: Decode instance with tensor parallelism across NPUs
+    value:
+      dp_size: 1
+      tp_size: <decode --tensor-parallel-size>
+    reason: The connector must know the decode TP degree to map KV blocks to the correct ranks.
+  - scenario: Decode instance with data parallelism
+    value:
+      dp_size: <decode data parallel size>
+      tp_size: <decode --tensor-parallel-size>
+    reason: dp_size must reflect the number of decode DP replicas so KV blocks are routed to the right replica.
+  caveats:
+  - Keep the decode sub-dict identical on both the prefill producer and decode consumer instances.
+  - Verify the values against the actual decode launch flags (--tensor-parallel-size, data parallel size); a mismatch is not
+    caught by vLLM validation.
+  - Only relevant for PD-disaggregated deployments using a KV connector such as MooncakeConnectorV1.
+  quick_guide: Set decode dp_size/tp_size to match the decode instance's real parallel layout, identically on P and D nodes.
+analysis_date: '2026-10-27'

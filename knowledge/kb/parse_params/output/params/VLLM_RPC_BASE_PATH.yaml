@@ -1,0 +1,107 @@
+name: VLLM_RPC_BASE_PATH
+type: env
+category: communication
+scope: both
+source_file:
+- vllm/envs.py:713
+- vllm/envs.py:17
+- vllm/utils/network_utils.py:158
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:2624
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:1235
+value_type: str
+default: <computed>
+valid_choices: Any existing, writable directory path (defaults to tempfile.gettempdir(), typically /tmp)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_RPC_BASE_PATH defines the base directory used to construct ZMQ IPC
+
+  (unix-domain socket) paths for inter-process communication. In upstream vLLM
+
+  it is read in vllm/utils/network_utils.py:get_open_zmq_ipc_path() to build
+
+  `ipc://{base_rpc_path}/{uuid4()}` and in the mooncake KV-connector worker
+
+  (get_zmq_rpc_path_lookup) to build the lookup socket path. In vllm-ascend it
+
+  is read in vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py
+
+  get_zmq_rpc_path_lookup() to build
+
+  `ipc://{base_url}/lookup_rpc_port_{rpc_port}_dp_rank{dp_rank}` for the
+
+  AscendStore KV-pool lookup RPC. The value only determines WHERE the unix
+
+  socket file lives; it does not change the amount of data transferred or the
+
+  HCCL/CANN compute path. Its performance relevance is therefore indirect and
+
+  low: "if the chosen directory resides on a slow or network-mounted filesystem,"
+
+  socket creation/binding and connect latency for the KV-transfer lookup RPC
+
+  can increase, and if the path is too long the OS unix-socket path length limit
+
+  can cause failures (the vllm-ascend unit test explicitly notes "Unix-domain
+
+  socket paths have a short platform-dependent size limit" and uses a
+
+  TemporaryDirectory under /tmp). It is explicitly excluded from torch.compile
+
+  cache-key factors (vllm/envs.py:2259 ignored_factors), so changing it does not
+
+  invalidate compilation caches. No vllm-ascend override of the default exists;
+
+  vllm-ascend simply consumes envs.VLLM_RPC_BASE_PATH.
+
+  '
+usage_locations:
+- file: vllm/envs.py:713
+  context: Definition of the env var, defaulting to tempfile.gettempdir()
+- file: vllm/utils/network_utils.py:158
+  context: get_open_zmq_ipc_path builds ipc://{base}/{uuid4()} for generic ZMQ IPC
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:2624
+  context: get_zmq_rpc_path_lookup builds the mooncake lookup socket IPC path
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:1235
+  context: AscendStore get_zmq_rpc_path_lookup builds ipc://{base}/lookup_rpc_port_{port}_dp_rank{rank}
+- file: vllm/envs.py:2259
+  context: Listed in compile_factors ignored_factors, so it does not affect torch.compile cache keys
+related_parameters:
+- name: VLLM_PORT
+  relation: Also used for inter-process communication port selection; complementary to the IPC base path
+- name: kv_transfer_config.kv_connector_extra_config.lookup_rpc_port
+  relation: Used together with VLLM_RPC_BASE_PATH to form the AscendStore lookup RPC socket path
+- name: VLLM_CACHE_ROOT
+  relation: Another path-type env var; both are excluded from compile cache-key factors
+constraints:
+- The directory specified by VLLM_RPC_BASE_PATH must exist and be writable by the process, otherwise ZMQ IPC socket creation
+  fails.
+- The resulting unix-domain socket path must stay within the platform's short socket path length limit; overly long base paths
+  cause bind/connect failures.
+- The path must be accessible to all processes that need to communicate (frontend API server and backend engine, or KV-transfer
+  peers on the same node).
+tuning_advice:
+  summary: Leave at the default /tmp for most deployments; only override to a short, local, writable directory when /tmp is
+    unsuitable or path-length limits are hit.
+  suggested_values:
+  - scenario: Default single-node or multi-node deployment
+    value: /tmp
+    reason: Default tempfile.gettempdir() is local, short, and writable; sufficient for ZMQ IPC sockets used by AscendStore
+      KV-transfer lookup.
+  - scenario: Containerized deployment where /tmp is read-only or shared across containers
+    value: /dev/shm/vllm_rpc
+    reason: tmpfs-backed local directory avoids cross-container collisions and provides fast socket creation.
+  - scenario: Encountering unix-socket path length errors with long temp dirs
+    value: /tmp/vr
+    reason: A short base path keeps the full ipc:// path within the platform socket path length limit.
+  caveats:
+  - Do not point this at NFS or other network filesystems; socket setup latency and reliability degrade.
+  - Ensure the directory exists and is writable before launching vLLM/vllm-ascend, otherwise IPC socket creation fails at
+    startup.
+  - This parameter has no effect on HCCL communication or NPU compute throughput; do not expect throughput gains from tuning
+    it.
+  quick_guide: Keep VLLM_RPC_BASE_PATH at /tmp unless /tmp is unavailable; use a short local writable dir if socket path errors
+    occur.
+analysis_date: '2026-10-27'

@@ -1,0 +1,100 @@
+name: --download-dir
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/load.py:63
+- vllm/engine/arg_utils.py:980
+- vllm/engine/arg_utils.py:1915
+- vllm/model_executor/model_loader/default_loader.py:197
+- vllm/model_executor/model_loader/weight_utils.py:157
+- tools/aisbench.py:380
+value_type: str
+default: null
+valid_choices: Any writable filesystem path; null means the Hugging Face default cache directory (~/.cache/huggingface)
+cli_example: --download-dir /data/models
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--download-dir only controls WHERE model weights are downloaded/cached, not how they are
+
+  loaded or executed. In vllm/config/load.py:63 it is a LoadConfig field passed through
+
+  EngineArgs.create_load_config (arg_utils.py:1915) into LoadConfig.download_dir. It is consumed
+
+  by the model loaders (default_loader.py:197, runai_streamer_loader.py:97,
+
+  sharded_state_loader.py:101) as the cache_dir argument to download_weights_from_hf /
+
+  download_safetensors_index_file_from_hf, and by maybe_download_from_modelscope
+
+  (weight_utils.py:157) as the ModelScope snapshot_download cache_dir. It has NO effect on the
+
+  Ascend NPU compute path, HCCL communication, KV-cache allocation, or graph capture. Its only
+
+  runtime relevance is model-loading latency: "if the directory points to fast local storage"
+
+  (NVMe/local disk) the one-time weight download/read is faster; if it points to a slow network
+
+  filesystem (NFS/Lustre) the initial load is slower. vllm-ascend does not override this
+
+  parameter; the tools/aisbench.py:380 usage is a benchmark helper that mirrors the same
+
+  cache_dir semantics for ModelScope downloads. Because it only affects the startup/loading
+
+  phase and not steady-state inference throughput, impact is low.
+
+  '
+usage_locations:
+- file: vllm/config/load.py:63
+  context: LoadConfig field definition; docstring says default is HF cache directory
+- file: vllm/engine/arg_utils.py:980
+  context: CLI flag registration under LoadConfig argument group
+- file: vllm/engine/arg_utils.py:1915
+  context: Passed into LoadConfig via create_load_config
+- file: vllm/model_executor/model_loader/default_loader.py:197
+  context: Used as cache_dir for download_weights_from_hf
+- file: vllm/model_executor/model_loader/default_loader.py:227
+  context: Used as cache_dir for download_safetensors_index_file_from_hf
+- file: vllm/model_executor/model_loader/runai_streamer_loader.py:97
+  context: Used as cache_dir for runai streamer weight download
+- file: vllm/model_executor/model_loader/sharded_state_loader.py:101
+  context: Used as cache_dir for sharded state weight download
+- file: vllm/model_executor/model_loader/weight_utils.py:157
+  context: Used as cache_dir for ModelScope snapshot_download when VLLM_USE_MODELSCOPE is set
+- file: tools/aisbench.py:380
+  context: vllm-ascend benchmark helper passes download_dir as ModelScope cache_dir
+related_parameters:
+- name: --load-format
+  relation: Determines which loader consumes download_dir; some loaders (e.g. tensorizer) use model path directly
+- name: --model
+  relation: If --model is a local directory, download_dir is bypassed (is_local branch)
+- name: --safetensors-load-strategy
+  relation: Controls how downloaded safetensors are read (lazy/eager/prefetch); interacts with storage speed of download_dir
+- name: --ignore-patterns
+  relation: Passed alongside download_dir to download_weights_from_hf to filter files
+- name: VLLM_USE_MODELSCOPE
+  relation: When set, download_dir is used as ModelScope cache_dir instead of HF cache
+constraints:
+- The directory must be writable by the process, otherwise weight download fails.
+- If --model points to an existing local directory, download_dir is not used for that model.
+- download_dir only affects remote (non-local) model downloads; local model paths bypass it.
+tuning_advice:
+  summary: Point --download-dir at fast local storage to minimize one-time model-load latency; it has no effect on inference
+    throughput.
+  suggested_values:
+  - scenario: Single-node Ascend NPU server with local NVMe
+    value: /data/models
+    reason: Local NVMe gives the fastest weight download/read, reducing startup time before NPU graph capture and warmup.
+  - scenario: Multi-node Ascend cluster with shared storage
+    value: /shared/models
+    reason: A shared filesystem lets all nodes reuse one downloaded copy, avoiding redundant downloads and lock contention.
+  - scenario: Offline / air-gapped deployment
+    value: /opt/models
+    reason: Pre-populate the directory and set HF_HUB_OFFLINE so no network access is attempted at startup.
+  caveats:
+  - Avoid NFS/Lustre for download_dir unless combined with --safetensors-load-strategy eager to mitigate random-read overhead.
+  - Ensure the directory has enough space for the full checkpoint plus index files.
+  quick_guide: Set --download-dir to fast local (or shared) storage; it only affects model-load time, not inference performance.
+analysis_date: '2026-10-27'

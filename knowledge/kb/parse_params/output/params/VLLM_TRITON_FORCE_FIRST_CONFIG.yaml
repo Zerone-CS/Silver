@@ -1,0 +1,85 @@
+name: VLLM_TRITON_FORCE_FIRST_CONFIG
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:1170
+- vllm/envs.py:124
+- vllm/env_override.py:928
+- vllm/triton_utils/force_first_config.py:3
+value_type: bool
+default: false
+valid_choices: 'boolean-like string: ''1'' or ''true'' (case-insensitive) enables; anything else disables'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var gates a monkey-patch installed in vllm/env_override.py:928. When set to
+
+  "1" or "true", it imports vllm.triton_utils.force_first_config and calls install(),
+
+  which replaces triton.runtime.autotuner.Autotuner.run so that instead of benchmarking
+
+  all candidate configs at first kernel launch, it walks the config list and picks the
+
+  first one that does not raise OutOfResources / CompileTimeAssertionFailure / PTXASError.
+
+  Effect on Ascend: "Triton autotuning normally incurs a one-time benchmarking cost at"
+
+  first kernel invocation (JIT warmup). Forcing the first valid config eliminates that
+
+  benchmarking overhead, reducing first-call latency and removing run-to-run variability
+
+  (non-determinism) from autotune selection. However, it also means the selected config
+
+  is NOT the empirically fastest one — steady-state kernel throughput may be lower than
+
+  the autotuned optimum. On Ascend NPU, Triton kernels are compiled through the CANN
+
+  backend; the same Autotuner.run patch applies if Triton is present (HAS_TRITON guard).
+
+  The patch is a no-op if Triton is not importable. This is primarily a determinism /
+
+  benchmarking-stability knob, not a steady-state throughput optimization.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1170
+  context: Environment variable definition and boolean parsing (accepts '1'/'true').
+- file: vllm/env_override.py:928
+  context: Reads env var at import time; if enabled, installs the force-first-config Autotuner patch.
+- file: vllm/triton_utils/force_first_config.py:18
+  context: install() replaces Autotuner.run to skip benchmarking and pick first valid config; guarded by HAS_TRITON.
+related_parameters:
+- name: VLLM_USE_TRITON_AWQ
+  relation: Both select Triton kernel paths; force-first-config affects how any Triton kernel's autotune config is chosen.
+- name: VLLM_DISABLED_KERNELS
+  relation: Both influence kernel selection; disabled-kernels affects MPLinearKernel choice, force-first-config affects Triton
+    autotune config choice.
+constraints:
+- The patch only takes effect if the Triton package is importable (HAS_TRITON); otherwise install() returns without doing
+  anything.
+- Only the exact string values '1' or 'true' (case-insensitive, whitespace-trimmed) enable the feature; any other value including
+  'yes' disables it.
+- The patch must be applied before any Triton kernel runs, since it is installed at env_override import time.
+tuning_advice:
+  summary: Leave disabled for production throughput; enable only when you need deterministic, reproducible kernel selection
+    or to remove autotune warmup noise during benchmarking.
+  suggested_values:
+  - scenario: Production serving where steady-state throughput matters
+    value: '0'
+    reason: Keeps full Triton autotuning so the fastest config is selected per kernel, maximizing steady-state throughput.
+  - scenario: Benchmarking / performance measurement needing run-to-run determinism
+    value: '1'
+    reason: Skips autotune benchmarking and picks the first valid config, eliminating autotune variability and first-call
+      warmup cost.
+  - scenario: Debugging non-deterministic kernel behavior
+    value: 'true'
+    reason: Forces a fixed config selection so results are reproducible across runs.
+  caveats:
+  - Enabling may reduce steady-state kernel performance because the first valid config is not necessarily optimal.
+  - Has no effect if Triton is not installed/importable on the Ascend environment.
+  quick_guide: Set VLLM_TRITON_FORCE_FIRST_CONFIG=1 only for deterministic benchmarking; keep 0 for max production throughput.
+analysis_date: '2026-10-27'

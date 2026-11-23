@@ -1,0 +1,90 @@
+name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/connector.py:73
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py
+value_type: bool
+default: true
+valid_choices: true / false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "use_layerwise is a vllm-ascend-only nested flag read from\nkv_transfer_config.kv_connector_extra_config. It\
+  \ selects whether KV cache is\ntransferred layer-by-layer (pipelined with model execution) instead of as a\nwhole-block\
+  \ bulk transfer.\n\nTwo distinct read sites exist:\n1. SfaRemoteD2HConnector (vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/connector.py:73):\n\
+  \   `self.use_layerwise = kv_connector_extra_config.get(\"use_layerwise\", True)`.\n   The SFA P/D path is layer-wise on\
+  \ both sides by default (comment: \"SFA path\n   is layer-wise on both sides\"). Setting it false disables the layer-wise\n\
+  \   READ_READY notification protocol used by the producer/consumer.\n2. AscendStoreConnector (kv_pool/ascend_store): use_layerwise\
+  \ gates the\n   layer-wise protocol path. When true, the connector uses per-layer\n   save_kv_layer / wait_for_layer_load\
+  \ hooks (see test_layerwise_worker_paths\n   and test_layerwise_cache_layout), enabling layerwise buffer reuse\n   (supports_layerwise_buffer_reuse\
+  \ = True) and a shared-buffer cache layout\n   (layerwise_num_shared_buffers). When false, the connector falls back to\n\
+  \   non-layerwise bulk transfer, and non-layerwise lookup is delegated to the\n   TP0 worker (per docs).\n\nPerformance\
+  \ mechanism: \"layer-wise transfer overlaps KV transfer with compute\"\nlayer-by-layer, reducing exposed transfer latency\
+  \ and enabling shared-buffer\nreuse (lower peak memory for KV staging buffers). It also affects cudagraph\nmode selection:\
+  \ \"requires_piecewise_for_cudagraph(config) returns true when\"\nuse_layerwise is true (test cases show {\"use_layerwise\"\
+  : False} -> False,\n{} -> False), meaning layerwise forces piecewise cudagraph handling. It also\naffects DSpark draft-layer\
+  \ registration (dspark_draft_layer_names registered\nonly when connector is SfaRemoteD2HConnector or AscendStoreConnector\
+  \ with\nuse_layerwise true).\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/connector.py:73
+  context: SfaRemoteD2HConnector reads use_layerwise (default True) to select layer-wise READ_READY protocol on P/D sides.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py
+  context: AscendStoreConnector uses use_layerwise to gate layer-wise save/load hooks, buffer reuse, and cudagraph piecewise
+    requirement.
+- file: tests/ut/distributed/ascend_store/test_ascend_store_connector.py:497
+  context: 'Worker path test: use_layerwise True routes save_kv_layer/wait_for_layer_load to layer-wise worker methods.'
+- file: tests/ut/distributed/ascend_store/test_layerwise_cache_layout.py:190
+  context: get_layerwise_reuse_config returns config only for AscendStoreConnector with use_layerwise true and supported backend
+    (memcache).
+- file: tests/ut/kv_offload/test_dspark_resident_kv.py:198
+  context: DSpark draft ownership registration enabled when AscendStoreConnector + use_layerwise true.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: use_layerwise semantics differ per connector (AscendStoreConnector vs SfaRemoteD2HConnector); only AscendStoreConnector
+    honors the opt-in for buffer reuse.
+- name: kv_transfer_config.kv_connector_extra_config.backend
+  relation: Layer-wise buffer reuse is only supported for the memcache backend; mooncake with use_layerwise true yields no
+    reuse config.
+- name: kv_transfer_config.kv_connector_extra_config.layerwise_num_shared_buffers
+  relation: Number of shared buffers used when use_layerwise is true.
+- name: compilation_config.cudagraph_mode
+  relation: use_layerwise true forces piecewise cudagraph requirement (requires_piecewise_for_cudagraph).
+- name: prefill_context_parallel_size
+  relation: KV cache pooling with PCP supports only AscendStoreConnector with use_layerwise=false.
+constraints:
+- use_layerwise is only supported on the Prefill (kv_producer) node of the Mooncake/Memcache backends.
+- KV cache pooling with PCP (prefill_context_parallel_size > 1) supports only AscendStoreConnector with use_layerwise=false.
+- Layer-wise buffer reuse (get_layerwise_reuse_config) is only returned for AscendStoreConnector with the memcache backend;
+  mooncake with use_layerwise=true yields no reuse config.
+- The Yuanrong backend's yuanrong.json use_layerwise field must match kv_connector_extra_config.use_layerwise.
+tuning_advice:
+  summary: Enable use_layerwise on the prefill node with memcache backend to overlap KV transfer with compute and reduce latency;
+    disable it for PCP or when full-graph decode is critical.
+  suggested_values:
+  - scenario: Prefill (kv_producer) node with memcache backend, latency-sensitive P/D disaggregation
+    value: true
+    reason: Layer-wise transfer overlaps KV transfer with layer compute and enables shared-buffer reuse, reducing exposed
+      transfer latency.
+  - scenario: PCP enabled (prefill_context_parallel_size > 1) with KV cache pooling
+    value: false
+    reason: Docs state KV cache pooling with PCP supports only AscendStoreConnector with use_layerwise=false.
+  - scenario: Mooncake backend or decode node
+    value: false
+    reason: use_layerwise is only supported on the prefill node of Mooncake/Memcache; mooncake yields no layer-wise reuse
+      config.
+  - scenario: Full-graph decode performance is critical
+    value: false
+    reason: use_layerwise forces piecewise cudagraph handling, which can reduce full-graph decode throughput.
+  caveats:
+  - Ensure layerwise_num_shared_buffers is sized to avoid memory pressure when enabling layer-wise reuse.
+  - Keep use_layerwise consistent between the connector config and the Yuanrong backend config when using Yuanrong.
+  - Verify the connector is AscendStoreConnector or SfaRemoteD2HConnector; other connectors ignore this flag.
+  quick_guide: Set use_layerwise=true on the prefill node with memcache for lower P/D transfer latency; set false for PCP,
+    mooncake, or full-graph decode.
+analysis_date: '2026-10-27'

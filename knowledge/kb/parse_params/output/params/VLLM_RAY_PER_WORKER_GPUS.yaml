@@ -1,0 +1,90 @@
+name: VLLM_RAY_PER_WORKER_GPUS
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:1423
+- vllm/envs.py:170
+- vllm/v1/executor/ray_executor.py:161
+- vllm/v1/executor/ray_executor_v2.py:276
+value_type: float
+default: 1.0
+valid_choices: any positive float; values < 1.0 allow multiple Ray actors to share a single device
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This env var controls how many device resources (GPUs, or on Ascend the
+
+  platform-specific ray_device_key resource) each Ray worker actor requests from
+
+  the Ray scheduler. It is read in vllm/v1/executor/ray_executor.py:161
+
+  (num_gpus = envs.VLLM_RAY_PER_WORKER_GPUS) and in
+
+  vllm/v1/executor/ray_executor_v2.py:276 (_get_actor_resource_kwargs), where it
+
+  becomes either {"num_gpus": num_devices} when ray_device_key == "GPU" or
+
+  {"num_gpus": 0, "resources": {device_key: num_devices}} for non-GPU platforms
+
+  (the Ascend NPU path). It does NOT change any kernel, HCCL, or model execution
+
+  behavior — it only affects Ray placement-group scheduling and device
+
+  co-location. Setting it below 1.0 lets Ray pack multiple vLLM worker actors
+
+  onto the same physical device, which is useful for co-locating other actors
+
+  but can cause device oversubscription (memory contention, degraded throughput)
+
+  if the model already saturates the NPU. Setting it above 1.0 reserves more
+
+  device resources per actor than it uses, wasting capacity. On Ascend the value
+
+  is applied to the NPU resource key rather than "GPU", so the effect is
+
+  identical in mechanism but routed through the Ascend platform''s ray_device_key.
+
+  No vllm-ascend override of this env var was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1423
+  context: Definition of the env var accessor, default 1.0, parsed as float.
+- file: vllm/envs.py:170
+  context: 'Type annotation VLLM_RAY_PER_WORKER_GPUS: float = 1.0.'
+- file: vllm/v1/executor/ray_executor.py:161
+  context: Ray executor reads num_gpus = envs.VLLM_RAY_PER_WORKER_GPUS to size worker actor device requests.
+- file: vllm/v1/executor/ray_executor_v2.py:276
+  context: RayExecutorV2._get_actor_resource_kwargs uses the value as num_gpus or as the platform device resource amount.
+related_parameters:
+- name: VLLM_RAY_BUNDLE_INDICES
+  relation: Both influence Ray placement-group bundle assignment for workers.
+- name: VLLM_RAY_DP_PACK_STRATEGY
+  relation: Governs how DP ranks are packed into Ray bundles, interacting with per-worker device resource requests.
+- name: tensor_parallel_size
+  relation: Total device demand is tp_size × pp_size × per-worker device fraction; must fit available NPUs.
+constraints:
+- The value must be a valid float parseable by Python float(); non-numeric strings raise an error at env access time.
+- The total requested device resources (number of workers × VLLM_RAY_PER_WORKER_GPUS) must not exceed the devices available
+  in the Ray cluster, or placement-group creation will hang or fail.
+tuning_advice:
+  summary: Leave at the default 1.0 for dedicated vLLM deployments; lower it only when intentionally co-locating other Ray
+    actors on the same NPUs.
+  suggested_values:
+  - scenario: Dedicated vLLM Ray cluster, one worker per NPU (v1 and v2 paths)
+    value: 1.0
+    reason: Default gives each worker exclusive use of one device, avoiding memory contention and maximizing throughput.
+  - scenario: Co-locating auxiliary Ray actors on the same NPUs as vLLM
+    value: 0.5
+    reason: Fractional value lets Ray schedule multiple actors per device so other actors can share the NPU, per the env var's
+      documented intent.
+  caveats:
+  - Ensure total workers × value does not exceed available NPU resources in the Ray cluster.
+  - Fractional values risk HBM oversubscription on Ascend; monitor npu-smi memory usage.
+  - Only relevant with the Ray distributed executor; ignored otherwise.
+  quick_guide: Keep 1.0 unless you deliberately co-locate actors on the same NPUs.
+analysis_date: '2026-10-27'

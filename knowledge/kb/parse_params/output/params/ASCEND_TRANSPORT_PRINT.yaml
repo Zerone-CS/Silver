@@ -1,0 +1,82 @@
+name: ASCEND_TRANSPORT_PRINT
+type: env
+category: observability
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/DeepSeek-V3.2.md:416
+- docs/source/tutorials/models/GLM4.x.md:395
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (boolean-like env flag)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ASCEND_TRANSPORT_PRINT is not defined or read anywhere in the vllm or vllm-ascend
+
+  Python source code (no definition or usage site was found in either repo). It only
+
+  appears in vllm-ascend deployment tutorials (DeepSeek-V3.2.md, GLM4.x.md) alongside
+
+  other Ascend/HCCL environment variables such as ASCEND_AGGREGATE_ENABLE,
+
+  ACL_OP_INIT_MODE, ASCEND_A3_ENABLE and HCCL_BUFFSIZE. Based on its name and its
+
+  placement in these scripts, it is a transport-layer (HCCL/CANN communication stack)
+
+  diagnostic print switch that enables verbose logging of the Ascend transport layer
+
+  during PD-disaggregated / multi-node serving. Because it only toggles diagnostic
+
+  printing in the underlying CANN/HCCL transport, it does not change the compute or
+
+  communication algorithm. Its runtime effect is limited to the overhead of emitting
+
+  extra log lines (I/O and log volume), which can marginally increase latency and
+
+  reduce throughput if left enabled in production, but it does not alter memory usage
+
+  or the actual data path. It is therefore classified as low impact and primarily an
+
+  observability/debugging knob.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/DeepSeek-V3.2.md:416
+  context: Exported in the DeepSeek-V3.2 PD-disaggregated multi-node launch script together with ASCEND_AGGREGATE_ENABLE,
+    ACL_OP_INIT_MODE and ASCEND_A3_ENABLE.
+- file: docs/source/tutorials/models/GLM4.x.md:395
+  context: Exported in the GLM4.x multi-node launch script alongside HCCL_BUFFSIZE, HCCL_OP_EXPANSION_MODE and ASCEND_AGGREGATE_ENABLE.
+related_parameters:
+- name: ASCEND_AGGREGATE_ENABLE
+  relation: Set together in the same launch scripts; both are Ascend transport/aggregation related env flags.
+- name: ACL_OP_INIT_MODE
+  relation: Co-exported in the same DeepSeek-V3.2/GLM4.x scripts; part of the Ascend runtime init/transport configuration
+    block.
+- name: ASCEND_A3_ENABLE
+  relation: Co-exported in the same scripts; A3 hardware enable flag used in the same transport configuration block.
+- name: HCCL_BUFFSIZE
+  relation: Co-exported HCCL communication buffer size; part of the same HCCL transport tuning block.
+constraints:
+- This variable is not parsed by vllm or vllm-ascend Python code; it is consumed by the underlying Ascend/CANN transport layer,
+  so its exact accepted values are defined by that stack rather than by vLLM.
+- It is only meaningful in multi-node / PD-disaggregated deployments that use the Ascend transport layer; setting it in single-node
+  non-disaggregated runs has no effect.
+tuning_advice:
+  summary: Use ASCEND_TRANSPORT_PRINT=1 only while debugging Ascend transport/HCCL issues in multi-node PD-disaggregated serving,
+    and leave it unset (0) in production.
+  suggested_values:
+  - scenario: Debugging transport/HCCL connectivity or PD-disaggregation issues on multi-node Ascend A3 deployments
+    value: '1'
+    reason: Enables verbose transport-layer printing to help diagnose communication problems, as shown in the DeepSeek-V3.2
+      and GLM4.x tutorials.
+  - scenario: Production serving / performance benchmarking
+    value: '0'
+    reason: Disabling transport printing avoids extra log I/O overhead that can marginally increase latency and reduce throughput.
+  caveats:
+  - Not referenced in vllm-ascend source; effect is governed by the CANN/HCCL transport stack and may vary by version.
+  - Leaving it enabled in production adds log overhead without any functional benefit.
+  quick_guide: Set ASCEND_TRANSPORT_PRINT=1 only for transport debugging; unset it for production.
+analysis_date: '2026-10-27'

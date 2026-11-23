@@ -1,0 +1,68 @@
+name: VLLM_PORT
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:507-533
+- vllm/utils/network_utils.py:190-247
+value_type: int
+default: null
+valid_choices: Any valid TCP port integer (0-65535); None means unset
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_PORT only controls which TCP port the engine/API server binds to and the
+
+  starting point for scanning for free ports. In vllm/envs.py:get_vllm_port() it is
+
+  parsed as an integer (or None if unset). In vllm/utils/network_utils.py it is used
+
+  by get_open_ports_list() and _get_open_port() as the starting port for a linear
+
+  upward scan (up to 1000 attempts) to find free ports for distributed workers
+
+  (e.g. ZMQ/engine RPC sockets). It does NOT affect model execution, memory layout,
+
+  kernel selection, or HCCL communication on Ascend NPU. Its only runtime effect is
+
+  startup-time port allocation: "if the chosen port is occupied, the code increments"
+
+  and retries, adding negligible startup latency. No vllm-ascend override of this
+
+  parameter was found in the provided context; vllm-ascend inherits upstream behavior.
+
+  '
+usage_locations:
+- file: vllm/envs.py:507-533
+  context: get_vllm_port() parses VLLM_PORT env var into int or None; raises ValueError on non-integer/URI
+- file: vllm/utils/network_utils.py:190-208
+  context: get_open_ports_list() scans upward from VLLM_PORT to allocate unique free ports
+- file: vllm/utils/network_utils.py:216-247
+  context: _get_open_port() uses VLLM_PORT as start_port, incrementing on bind failure
+related_parameters:
+- name: VLLM_HOST_IP
+  relation: Companion networking env var; together define the bind address/port for the engine
+- name: VLLM_RPC_BASE_PATH
+  relation: Related IPC/RPC configuration for engine communication
+constraints:
+- VLLM_PORT must be a valid integer; a non-integer value raises ValueError.
+- If VLLM_PORT looks like a URI (contains a scheme), a ValueError is raised suggesting a Kubernetes service discovery issue.
+- When VLLM_PORT is set, port scanning starts from that value and advances upward, skipping the reserved port range.
+tuning_advice:
+  summary: Set VLLM_PORT only to pin a deterministic base port for multi-process/distributed deployments; it has negligible
+    performance impact on Ascend NPU.
+  suggested_values:
+  - scenario: Single-node default deployment
+    value: unset
+    reason: Leave unset; vLLM auto-selects free ports, avoiding conflicts with no performance cost.
+  - scenario: Multi-node / Kubernetes deployment needing deterministic ports
+    value: 8000
+    reason: Pin a known base port so service discovery and firewall rules are predictable; scanning handles minor conflicts.
+  caveats:
+  - Setting VLLM_PORT does not improve throughput or latency; it only affects port allocation at startup.
+  - If the base port and the following range are occupied, startup may fail after 1000 bind attempts (RuntimeError).
+  - A URI-like value (e.g. from k8s service discovery) triggers a ValueError; ensure the env var holds a plain integer.
+  quick_guide: Leave VLLM_PORT unset unless you need deterministic ports; it does not affect Ascend NPU runtime performance.
+analysis_date: '2026-10-27'

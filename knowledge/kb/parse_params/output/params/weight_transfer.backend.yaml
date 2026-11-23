@@ -1,0 +1,86 @@
+name: weight_transfer.backend
+type: nested
+category: communication
+scope: both
+source_file:
+- vllm/v1/engine/core.py:1675
+- vllm/v1/engine/__init__.py:102
+- examples/rl/rlhf_async_new_apis.py:221
+value_type: str
+default: null
+valid_choices: 'Registered WeightTransferEngineFactory backends; on Ascend: ''hccl'' (cross-NPU), ''ipc'' (same-NPU); upstream:
+  ''nccl'', ''sparse_nccl'''
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'weight_transfer.backend selects the engine used to move updated weights from a
+
+  trainer into the inference engine during RL / online weight-update workflows.
+
+  It is read in vllm/v1/engine/core.py:1675 and surfaced to the frontend via
+
+  EngineCoreReadyResponse.weight_transfer_backend (vllm/v1/engine/__init__.py:102),
+
+  and validated against the WeightTransferEngineFactory registry at engine creation.
+
+  On Ascend, vllm-ascend registers Ascend-specific engines: ''hccl'' maps to an HCCL
+
+  collective-based transfer engine (cross-NPU, uses HCCL communication), and ''ipc''
+
+  maps to NPUIPCWeightTransferEngine (same-NPU, uses IPC handles). The chosen backend
+
+  determines the transport mechanism for weight updates: "HCCL collective transfer"
+
+  incurs collective-communication latency per weight group, while IPC avoids the
+
+  network/collective path but requires the trainer and inference engine to share the
+
+  same NPU card. Backend choice therefore affects weight-update latency and, in
+
+  steady-state RL loops, overall rollout throughput. It does not affect the normal
+
+  inference forward path when no weight transfer is configured.
+
+  '
+usage_locations:
+- file: vllm/v1/engine/core.py:1675
+  context: Reads weight_transfer_config.backend into EngineCoreReadyResponse
+- file: vllm/v1/engine/__init__.py:102
+  context: weight_transfer_backend field propagated to frontend
+- file: examples/rl/rlhf_async_new_apis.py:221
+  context: Ascend example constructs WeightTransferConfig(backend='hccl')
+related_parameters:
+- name: enable_sleep_mode
+  relation: Same-device mode uses sleep/wake + IPC weight transfer; cross-device mode uses pause/resume + HCCL
+- name: additional_config.rl_config.enabled
+  relation: RL mode applies defaults (disable NZ, dev endpoints) required for weight updates
+- name: additional_config.weight_nz_mode
+  relation: FRACTAL_NZ must be disabled (weight_nz_mode=0) for weight updates; RL mode forces this
+- name: VLLM_ALLOW_INSECURE_SERIALIZATION
+  relation: Required by the HTTP NPU IPC example because it serializes IPC handles
+constraints:
+- The backend value must be registered in the WeightTransferEngineFactory registry or engine creation fails.
+- FRACTAL_NZ must be disabled (weight_nz_mode=0) for weight updates; the weight-transfer start path validates the effective
+  Ascend configuration.
+- The 'ipc' backend requires the trainer and inference engine to share the same NPU card (same-device mode).
+- The 'hccl' backend is for cross-NPU weight transfer where trainer and inference engine use different NPU cards.
+- VLLM_ALLOW_INSECURE_SERIALIZATION=1 is required by the HTTP NPU IPC example and should only be enabled in a trusted environment.
+tuning_advice:
+  summary: Choose 'hccl' for cross-NPU RL weight transfer and 'ipc' for same-NPU deployments; ensure NZ is disabled and RL
+    config enabled.
+  suggested_values:
+  - scenario: Trainer and inference engine on different NPU cards (cross-device RL)
+    value: hccl
+    reason: Registers the Ascend HCCL transfer engine for cross-NPU collective weight transfer.
+  - scenario: Trainer and inference engine share the same NPU card (same-device RL)
+    value: ipc
+    reason: Selects NPUIPCWeightTransferEngine using IPC handles, avoiding collective transfer overhead.
+  caveats:
+  - Set additional_config rl_config.enabled=true so NZ is disabled and dev endpoints enabled.
+  - For the HTTP IPC example set VLLM_ALLOW_INSECURE_SERIALIZATION=1 only in trusted environments.
+  - Use enable_sleep_mode for same-device mode and pause/resume for cross-device mode.
+  quick_guide: Cross-NPU -> backend 'hccl'; same-NPU -> backend 'ipc'; always disable NZ via rl_config.
+analysis_date: '2026-10-27'

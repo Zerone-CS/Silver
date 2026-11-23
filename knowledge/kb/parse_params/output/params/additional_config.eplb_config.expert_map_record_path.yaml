@@ -1,0 +1,85 @@
+name: additional_config.eplb_config.expert_map_record_path
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:292
+- vllm_ascend/ascend_config.py:310
+- vllm_ascend/eplb/eplb_updator.py:57
+- vllm_ascend/model_loader/rfork/rfork_loader.py:427
+value_type: str
+default: null
+valid_choices: Any filesystem path ending in .json; parent directory is created automatically
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: "expert_map_record_path is a vllm-ascend-only field inside additional_config[\"eplb_config\"]\n(EplbConfig\
+  \ in vllm_ascend/ascend_config.py). It is not an upstream vLLM parameter.\nSetting it to a non-null JSON path has two effects:\n\
+  1) In the EplbConfig._validate_config model_validator (line 310-315), a non-null value\n   forcibly sets self.dynamic_eplb\
+  \ = True, so it implicitly enables the legacy MRv1\n   dynamic EPLB path even if dynamic_eplb was left False. It also validates\
+  \ the .json\n   suffix and creates the parent directory via os.makedirs.\n2) The path is read in EplbUpdator.init_eplb (vllm_ascend/eplb/eplb_updator.py:57)\
+  \ as\n   self.expert_map_record_path, which the EPLB worker uses to persist the computed\n   expert placement map to disk.\
+  \ This is the \"Recording\" mode described in the docs:\n   the EPLB algorithm runs (heat collection + rebalancing) and\
+  \ the resulting map is\n   written out for later reuse via expert_map_path (Static EPLB).\nPerformance mechanism: \"enabling\
+  \ dynamic EPLB activates periodic expert-load collection\"\n(expert_heat_collection_interval, default 600 iterations) and\
+  \ periodic algorithm\nexecution (algorithm_execution_interval, default 50) on the EPLB worker process. This\nadds CPU-side\
+  \ work and inter-rank communication (HCCL all-gather of expert loads via\nget_dynamic_eplb_group) during serving, which\
+  \ can reduce throughput and add latency\njitter. The recording itself is a one-time disk write of a small JSON map, so the\n\
+  steady-state cost is dominated by the dynamic EPLB machinery it implicitly enables,\nnot by the file I/O. The recorded map\
+  \ is intended to be produced once and then reused\nstatically, so the recording run is typically a warm-up/calibration step\
+  \ rather than\na production configuration.\nAdditionally, in vllm_ascend/model_loader/rfork/rfork_loader.py:427, a non-null\n\
+  expert_map_record_path makes _is_dynamic_eplb_enabled return True, which bypasses\nRFork weight transfer (falls back to\
+  \ the default model loader) because expert weights\nand placement can change after the seed service starts.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:292
+  context: Field definition in EplbConfig (default None).
+- file: vllm_ascend/ascend_config.py:310
+  context: Validator forces dynamic_eplb=True, checks .json suffix, creates parent dir.
+- file: vllm_ascend/eplb/eplb_updator.py:57
+  context: EplbUpdator.init_eplb stores the path for the EPLB worker to record the map.
+- file: vllm_ascend/model_loader/rfork/rfork_loader.py:427
+  context: Non-null value marks dynamic EPLB enabled, bypassing RFork transfer.
+related_parameters:
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: Implicitly set to True when expert_map_record_path is non-null.
+- name: additional_config.eplb_config.expert_map_path
+  relation: 'Complementary: expert_map_path loads a previously recorded map (Static EPLB); expert_map_record_path generates
+    it.'
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: Controls how often expert heat is collected while recording; affects overhead.
+- name: additional_config.eplb_config.algorithm_execution_interval
+  relation: Controls how often the EPLB algorithm runs while recording.
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: Selects the rebalancing policy used to compute the recorded map.
+- name: env EXPERT_MAP_RECORD
+  relation: Must be set to true (or DYNAMIC_EPLB=true) or startup assertion fails when dynamic_eplb is enabled.
+constraints:
+- The path must end with .json, otherwise a TypeError is raised at startup.
+- The parent directory of the path is created automatically via os.makedirs; the path must be writable by the serving process.
+- Setting expert_map_record_path implicitly enables dynamic_eplb, which requires the environment variable DYNAMIC_EPLB=true
+  (or 1) or EXPERT_MAP_RECORD=true, otherwise an assertion fails at startup.
+- This parameter is MRv1 (legacy dynamic EPLB) only; it is not part of the upstream vLLM --eplb-config schema.
+- When expert_map_record_path is set, RFork weight transfer is bypassed and the model is loaded through the default model
+  loader.
+tuning_advice:
+  summary: Use expert_map_record_path only for a one-off calibration run to generate a static expert map, then switch to expert_map_path
+    for production.
+  suggested_values:
+  - scenario: One-time calibration run to generate a static expert map for a MoE model
+    value: /data/eplb/expert_map.json
+    reason: Recording mode computes and persists the balanced expert placement; run once with EXPERT_MAP_RECORD=true, then
+      reuse the file.
+  - scenario: Steady-state production serving
+    value: unset
+    reason: Leave unset and instead load the pre-recorded map via expert_map_path to avoid the dynamic EPLB overhead and keep
+      RFork transfer available.
+  caveats:
+  - Set EXPERT_MAP_RECORD=true (or DYNAMIC_EPLB=true) for the recording run, otherwise startup assertion fails.
+  - Unset expert_map_record_path after recording; leaving it set keeps dynamic EPLB active and bypasses RFork.
+  - Ensure the target directory is writable and on fast local storage; the map is small but must be readable later by expert_map_path.
+  quick_guide: Set expert_map_record_path to a .json path with EXPERT_MAP_RECORD=true for a one-off map generation run, then
+    switch to expert_map_path for production.
+analysis_date: '2026-10-27'

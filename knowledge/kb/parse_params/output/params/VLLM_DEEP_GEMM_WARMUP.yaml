@@ -1,0 +1,77 @@
+name: VLLM_DEEP_GEMM_WARMUP
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:1563
+- vllm/envs.py:204
+- vllm/model_executor/warmup/deep_gemm_warmup.py:159
+- vllm/model_executor/warmup/kernel_warmup.py:228
+value_type: str
+default: relax
+valid_choices:
+- skip
+- full
+- relax
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only controls the DeepGEMM JIT warmup phase, which is a
+
+  CUDA/Blackwell-specific (DeepGEMM) kernel pre-compilation step. In
+
+  vllm/model_executor/warmup/kernel_warmup.py:228 the warmup is gated by
+
+  `is_deep_gemm_supported() and envs.VLLM_DEEP_GEMM_WARMUP != "skip"`. On
+
+  Ascend NPU, DeepGEMM (a CUDA library for FP8 GEMM on Hopper/Blackwell) is
+
+  not available, so `is_deep_gemm_supported()` returns False and the entire
+
+  deep_gemm_warmup path is never entered. Consequently this env var has no
+
+  effect on Ascend runtime throughput, latency, or memory. It only affects
+
+  engine startup time on supported CUDA platforms (skip = fastest startup,
+
+  full = slowest startup but no JIT in hot path, relax = heuristic subset).
+
+  No vllm-ascend override of this variable was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1563
+  context: Definition of the env var with choices skip/full/relax, default relax
+- file: vllm/model_executor/warmup/kernel_warmup.py:228
+  context: Gates whether deep_gemm_warmup runs; requires is_deep_gemm_supported()
+- file: vllm/model_executor/warmup/deep_gemm_warmup.py:161
+  context: Selects optimal M values (relax) vs all token sizes (full) for warmup
+related_parameters:
+- name: VLLM_USE_DEEP_GEMM
+  relation: Master switch for DeepGEMM kernels; if disabled, warmup is moot
+- name: VLLM_MOE_USE_DEEP_GEMM
+  relation: Enables DeepGEMM specifically for MoE fused ops, which the warmup targets
+constraints:
+- The value must be one of skip, full, or relax; any other value is rejected by env_with_choices.
+- When the value is not relax, the code asserts it must be full, otherwise an assertion error is raised.
+- The warmup only runs when DeepGEMM is supported on the current platform; on Ascend NPU it is skipped entirely.
+tuning_advice:
+  summary: Irrelevant on Ascend NPU since DeepGEMM is CUDA-only; leave at default or set skip to avoid any startup overhead
+    on CUDA reference runs.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: skip
+    reason: DeepGEMM is not supported on Ascend, so the warmup never runs; setting skip is harmless and documents intent.
+  - scenario: CUDA/Blackwell reference deployment wanting fast startup
+    value: skip
+    reason: Skips the multi-minute JIT warmup at the cost of possible JIT in the hot path.
+  - scenario: CUDA/Blackwell production wanting no hot-path JIT
+    value: relax
+    reason: Default heuristic warms the most likely GEMM shapes with moderate startup cost.
+  caveats:
+  - On Ascend NPU this variable has no runtime effect because is_deep_gemm_supported() is False and the warmup block is bypassed.
+  - Setting full on CUDA significantly increases engine startup time (warmup all token sizes).
+  quick_guide: On Ascend, ignore this variable; it only affects CUDA DeepGEMM JIT warmup.
+analysis_date: '2026-10-27'

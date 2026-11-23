@@ -1,0 +1,8 @@
+# Generated state (per suite-manifest.json generated_state_exclusions)
+.runtime/
+.maintenance/
+**/__pycache__/
+**/*.pyc
+
+# macOS
+.DS_Store

@@ -1,0 +1,110 @@
+name: --runner
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:135
+- vllm/engine/arg_utils.py:442
+- vllm/engine/arg_utils.py:878
+- vllm/engine/arg_utils.py:1824
+- vllm/config/model.py:656
+- vllm_ascend/ascend_config.py:690
+- vllm_ascend/ascend_config.py:1761
+- vllm_ascend/patch/platform/patch_balance_schedule.py:742
+- vllm_ascend/patch/platform/patch_eplb.py:423
+value_type: str
+default: auto
+valid_choices:
+- auto
+- generate
+- pooling
+- draft
+cli_example: --runner generate
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--runner selects the model runner type (generate/pooling/draft/auto) and is resolved\nin ModelConfig._get_runner_type\
+  \ (vllm/config/model.py:656) into self.runner_type, which\nthen drives the entire execution path. On Ascend this parameter\
+  \ is not merely a\nclassification label: \"vllm-ascend derives its own `use_v2_model_runner` flag from the\"\nrunner selection\
+  \ (via vllm_ascend/patch/platform/patch_use_v2_model_runner.py, imported\nin vllm_ascend/patch/platform/__init__.py:27),\
+  \ and that flag gates two fundamentally\ndifferent execution stacks:\n- \"MRv1 (vllm_ascend/worker/model_runner_v1.py:NPUModelRunner)\
+  \ — the stable/default path,\"\n  with its own dispatchers, profiling hooks (vllm_ascend/profiling_config.py:90,145),\n\
+  \  and scheduler bookkeeping (patch_balance_schedule.py:769 records prev_step_scheduled_req_ids\n  only for MRv1).\n- \"\
+  MRv2 — a newer path with different scheduler output construction\"\n  (patch_balance_schedule.py:742 merges resumed requests\
+  \ into new requests and passes\n  full token ids), different EPLB expert-mapping semantics (patch_eplb.py:423 uses\n  moe_config.ep_size\
+  \ for MRv2 vs 1 for MRv1), and different feature gating\n  (ascend_config.py:690 enables engram dp_shared_memory only under\
+  \ use_v2_model_runner;\n  ascend_config.py:1761 requires V2 for DSpark + sparse KV offload).\nBecause the runner choice\
+  \ changes which model_runner class is instantiated, it changes\ngraph capture behavior (resolve_cudagraph_mode_and_sizes\
+  \ takes use_v2_model_runner as\nan input, vllm/config/compilation.py:1387), memory layout, and per-step Python overhead.\n\
+  Choosing pooling vs generate also changes whether the model runs the LM head / sampler\nat all, which is a large latency\
+  \ and memory difference. Hence medium impact: it does\nnot directly set a numeric knob, but it selects the code path whose\
+  \ performance\ncharacteristics differ substantially.\n"
+usage_locations:
+- file: vllm/config/model.py:656
+  context: ModelConfig resolves runner into runner_type via _get_runner_type and validates against model architecture (pooling
+    vs generative).
+- file: vllm/engine/arg_utils.py:878
+  context: CLI argument --runner registered from ModelConfig field metadata.
+- file: vllm/engine/arg_utils.py:1824
+  context: EngineArgs.create_model_config passes runner into ModelConfig.
+- file: vllm_ascend/patch/platform/__init__.py:27
+  context: vllm-ascend imports patch_use_v2_model_runner, which derives use_v2_model_runner from the runner selection.
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:742
+  context: Scheduler builds NewRequestData differently for MRv2 vs MRv1 based on use_v2_model_runner.
+- file: vllm_ascend/patch/platform/patch_eplb.py:423
+  context: EPLB expert mapping uses ep_size for MRv2 and 1 for MRv1.
+- file: vllm_ascend/ascend_config.py:690
+  context: Engram dp_shared_memory auto-enabled only when use_v2_model_runner and DP/PCP > 1.
+- file: vllm_ascend/ascend_config.py:1761
+  context: Sparse KV offload with DSpark requires V2 model runner.
+related_parameters:
+- name: --convert
+  relation: Convert type is resolved after runner_type and must be compatible with it (_get_convert_type).
+- name: --enforce-eager
+  relation: Runner path determines whether cudagraph capture applies; enforce-eager disables it regardless.
+- name: --enable-eplb / --eplb-config
+  relation: EPLB expert-mapping semantics differ between MRv1 and MRv2 (patch_eplb.py).
+- name: --speculative-config
+  relation: DSpark + sparse KV offload requires V2 runner; drafter loading differs by runner.
+- name: compilation_config.cudagraph_mode
+  relation: resolve_cudagraph_mode_and_sizes takes use_v2_model_runner as input.
+constraints:
+- Embedding/pooling-only models do not support --runner generate or --runner draft; use --runner pooling or --runner auto.
+- A generative model with --runner generate requires a convert type compatible with generate, otherwise an error is raised.
+- Each vLLM instance supports only one model runner type, even if the model could serve multiple types.
+- Sparse KV offload combined with DSpark speculative decoding requires the V2 model runner; using MRv1 raises a ValueError.
+- MRv2 redundant expert loading requires a single EP size across all routed-expert modules, otherwise a RuntimeError is raised.
+tuning_advice:
+  summary: 'Leave --runner at auto for standard text-generation serving; only set it explicitly
+
+    when you need pooling/embedding behavior or when you deliberately want to select the
+
+    Ascend MRv1 vs MRv2 execution stack.
+
+    '
+  suggested_values:
+  - scenario: Standard text generation on Ascend (default, most stable)
+    value: auto
+    reason: auto resolves to generate for generative models and keeps the default MRv1 path, which has the broadest validated
+      performance coverage.
+  - scenario: Embedding / pooling / reranker models
+    value: pooling
+    reason: Required for pooling-only architectures; avoids running the LM head and sampler, reducing latency and memory.
+  - scenario: Deliberately using the newer MRv2 stack (e.g. for DSpark + sparse KV offload or engram DP sharing)
+    value: generate
+    reason: MRv2 is selected via use_v2_model_runner derived from the runner; needed for features gated on V2 such as DSpark
+      sparse KV offload and engram dp_shared_memory.
+  - scenario: Speculative decoding with a separate draft model
+    value: draft
+    reason: Selects the draft runner path; note the drafter is loaded on the last PP stage on both runners.
+  caveats:
+  - 'Do not assume GPU behavior: vllm-ascend maps the runner to use_v2_model_runner, changing scheduler, EPLB, and cudagraph
+    logic.'
+  - Validate MRv2 performance per model before switching; MRv1 remains the safer default for DeepSeek-class MoE workloads.
+  - When combining --runner with --speculative-config (DSpark) and sparse KV offload, ensure V2 is active or startup will
+    fail.
+  quick_guide: Keep --runner auto unless you need pooling or explicitly want the Ascend MRv2 stack.
+analysis_date: '2026-10-27'

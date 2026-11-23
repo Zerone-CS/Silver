@@ -1,0 +1,116 @@
+name: VLLM_USE_AOT_COMPILE
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:367-376
+- vllm/envs.py:770-773
+- vllm/envs.py:118
+- vllm/compilation/decorators.py:527
+- vllm/compilation/decorators.py:580
+- vllm/compilation/wrapper.py:138
+value_type: bool
+default: <computed>
+valid_choices:
+- '0'
+- '1'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_USE_AOT_COMPILE controls whether vLLM uses ahead-of-time (AOT) compilation
+
+  for torch.compile. When enabled, the model''s forward graph is compiled during the
+
+  warmup phase and the resulting artifacts are cached under
+
+  VLLM_CACHE_ROOT/torch_compile_cache/torch_aot_compile/{hash} (see
+
+  vllm/compilation/decorators.py:527-565). On subsequent calls the compiled function
+
+  is loaded from disk via _try_load_aot_compiled_fn (decorators.py:566-576), avoiding
+
+  re-tracing and re-compilation overhead. This directly reduces cold-start / warmup
+
+  latency and, by reusing the compiled artifact, avoids per-run recompilation stalls
+
+  that would otherwise hurt steady-state throughput.
+
+  The default is computed in use_aot_compile() (envs.py:367-376): it is "1" only when
+
+  torch >= 2.10.0 AND compile cache is not disabled (VLLM_DISABLE_COMPILE_CACHE unset),
+
+  otherwise "0". In wrapper.py:138-145, if torch._dynamo.config.enable_aot_compile is
+
+  unavailable (older torch), a warning is logged and AOT compile is effectively disabled.
+
+  This is an upstream vLLM (GPU/CUDA-oriented) mechanism. No vllm-ascend override of
+
+  this env var was found in the provided context; on Ascend the effect depends on
+
+  whether the torch version and the Ascend compilation backend support the AOT path.
+
+  The batch-invariant determinism path (batch_invariant.py:1159) forcibly sets it to "0".
+
+  '
+usage_locations:
+- file: vllm/envs.py:367-376
+  context: use_aot_compile() computes default based on torch version and compile cache setting
+- file: vllm/envs.py:770-773
+  context: Registered as env var; comment states compilation done in warmup and reused in subsequent calls
+- file: vllm/compilation/decorators.py:527
+  context: Branches into AOT cache-dir computation and artifact loading when enabled
+- file: vllm/compilation/decorators.py:580
+  context: Assertion ties AOT compile to non-eager backend when already compiled
+- file: vllm/compilation/wrapper.py:138
+  context: Patches torch._dynamo.config.enable_aot_compile=True before torch.compile
+- file: vllm/model_executor/determinism/batch_invariant.py:1159
+  context: Forcibly disables AOT compile for batch-invariant determinism
+related_parameters:
+- name: VLLM_DISABLE_COMPILE_CACHE
+  relation: When compile cache is disabled, use_aot_compile() defaults to 0 (AOT disabled)
+- name: VLLM_FORCE_AOT_LOAD
+  relation: Only meaningful when VLLM_USE_AOT_COMPILE is enabled; forces loading AOT artifacts from disk
+- name: VLLM_USE_MEGA_AOT_ARTIFACT
+  relation: Loads compiled models from cached standalone compile artifacts; complements AOT compile
+- name: VLLM_USE_STANDALONE_COMPILE
+  relation: Standalone compile feature flag; interacts with AOT artifact generation
+- name: VLLM_USE_BYTECODE_HOOK
+  relation: Bytecode hook in TorchCompileWithNoGuardsWrapper; used alongside AOT compile path
+- name: compilation_config.backend
+  relation: AOT compile assertion requires backend != eager when already compiled
+constraints:
+- AOT compile requires torch >= 2.10.0 to be enabled by default; on older torch the default is 0.
+- If torch._dynamo.config.enable_aot_compile is unavailable, AOT compile is disabled with a warning even if the env var is
+  set to 1.
+- When VLLM_DISABLE_COMPILE_CACHE is set, the default for VLLM_USE_AOT_COMPILE becomes 0.
+- VLLM_FORCE_AOT_LOAD has no effect when VLLM_USE_AOT_COMPILE is disabled.
+- Batch-invariant determinism mode forcibly sets VLLM_USE_AOT_COMPILE to 0.
+tuning_advice:
+  summary: 'Leave at the computed default on Ascend unless you have verified the torch version
+
+    and Ascend compilation backend support the AOT path; enabling it reduces warmup
+
+    and recompilation latency by reusing cached compiled artifacts.
+
+    '
+  suggested_values:
+  - scenario: torch >= 2.10.0 with compile cache enabled and stable model
+    value: '1'
+    reason: Compiles during warmup and reuses cached artifacts, cutting cold-start latency and avoiding recompilation stalls.
+  - scenario: torch < 2.10.0 or Ascend backend lacking enable_aot_compile support
+    value: '0'
+    reason: AOT path is unavailable; enabling logs a warning and falls back, so keep disabled to avoid confusion.
+  - scenario: Debugging recompilation or batch-invariant determinism testing
+    value: '0'
+    reason: Determinism path forces it off; disabling avoids AOT cache interference during debugging.
+  caveats:
+  - This is an upstream vLLM mechanism; no vllm-ascend override was found, so Ascend behavior depends on torch version and
+    Ascend compilation backend support.
+  - AOT artifacts are cached per rank/dp_rank under VLLM_CACHE_ROOT; stale source changes trigger full recompilation.
+  - Enabling VLLM_FORCE_AOT_LOAD without a valid cached artifact causes a hard error.
+  - Batch-invariant determinism mode silently overrides this to 0.
+  quick_guide: Keep default; set to 1 only on torch>=2.10 with cache enabled to reduce warmup latency.
+analysis_date: '2026-10-27'

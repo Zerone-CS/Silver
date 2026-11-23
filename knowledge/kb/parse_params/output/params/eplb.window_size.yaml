@@ -1,0 +1,99 @@
+name: eplb.window_size
+type: nested
+category: scheduling
+scope: both
+source_file:
+- vllm/distributed/eplb/eplb_state.py:455
+- tests/distributed/test_elastic_ep.py:191
+value_type: int
+default: 1000
+valid_choices: positive integer (number of recent steps); no explicit upper bound in code
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'window_size controls the size of the expert-load recording ring buffer allocated in
+
+  vllm/distributed/eplb/eplb_state.py:455-464. The buffer is a torch.int32 tensor of shape
+
+  (window_size, num_moe_layers, num_physical_experts) allocated on the NPU device. This means
+
+  memory footprint scales linearly with window_size: "larger windows consume more NPU HBM"
+
+  (window_size × num_moe_layers × num_physical_experts × 4 bytes). The window determines how
+
+  many recent steps of per-expert token counts are retained before the EPLB policy (stair on
+
+  Ascend) computes a new expert placement. A larger window smooths out transient load spikes
+
+  and yields more stable rearrangement decisions (better long-run expert balance → higher
+
+  throughput), but increases memory and adds latency to the periodic load-aggregation/rebalance
+
+  computation. A smaller window reacts faster to workload shifts but is noisier and can cause
+
+  thrashing of expert placement. On Ascend MRv2 (VLLM_USE_V2_MODEL_RUNNER=1), EPLB runs
+
+  asynchronously (use_async normalized to true), so the rebalance compute overlaps with
+
+  inference; the dominant cost of window_size is therefore the persistent HBM buffer plus the
+
+  quality of the balancing decision. vllm-ascend does not redefine window_size — it reuses the
+
+  upstream EPLBConfig field, but the Ascend docs recommend much smaller values (e.g. 50) than
+
+  the upstream default of 1000 for MRv2 deployments.
+
+  '
+usage_locations:
+- file: vllm/distributed/eplb/eplb_state.py:455
+  context: Reads parallel_config.eplb_config.window_size and allocates expert_load_window tensor of shape (window_size, num_moe_layers,
+    num_physical_experts) on device.
+- file: tests/distributed/test_elastic_ep.py:191
+  context: Passed as --eplb-config.window_size 5 in elastic EP test launch args.
+related_parameters:
+- name: eplb.step_interval
+  relation: Together define the rebalance cadence; window_size is the load-recording horizon, step_interval is how often rearrangement
+    runs. Docs advise tuning both jointly.
+- name: eplb.num_redundant_experts
+  relation: Determines physical expert capacity that the window buffer is sized against; must make (num_experts + num_redundant_experts)
+    divisible by EP size.
+- name: eplb.use_async
+  relation: On Ascend MRv2 always true; async rebalance overlaps compute so window_size mainly affects memory and decision
+    quality rather than blocking latency.
+- name: eplb.policy
+  relation: The policy (stair on Ascend) consumes the windowed load history to compute new placement.
+constraints:
+- window_size must be a positive integer; it is used directly as a tensor dimension for the expert-load window buffer.
+- The expert-load window tensor is allocated on the NPU device, so window_size × num_moe_layers × num_physical_experts × 4
+  bytes must fit in available HBM.
+- For MRv2, EPLB fields including window_size must be passed via --eplb-config (or --eplb-config JSON), not via --additional-config.
+tuning_advice:
+  summary: Tune window_size jointly with step_interval to balance load-estimate stability against HBM cost and responsiveness;
+    Ascend MRv2 favors much smaller windows than the upstream default.
+  suggested_values:
+  - scenario: Ascend MRv2 (VLLM_USE_V2_MODEL_RUNNER=1) with async EPLB, typical MoE serving
+    value: 50
+    reason: Matches the vllm-ascend doc example (window_size 50, step_interval 50); keeps the load window buffer small and
+      reacts quickly under async rebalance.
+  - scenario: Large MoE model with many layers/experts where HBM is tight
+    value: 20
+    reason: Reduces the (window_size × num_moe_layers × num_physical_experts) int32 buffer footprint while still smoothing
+      short-term noise.
+  - scenario: Stable, long-running workload with steady expert distribution
+    value: 100
+    reason: Larger window yields more stable placement decisions with modest memory overhead when HBM headroom exists.
+  - scenario: Upstream default / comparison experiments
+    value: 1000
+    reason: Upstream EPLBConfig default; use only when HBM is abundant and you want maximum smoothing.
+  caveats:
+  - Always pair window_size with a comparable step_interval; a window much larger than step_interval wastes memory without
+    improving decisions.
+  - Monitor NPU HBM after increasing window_size on models with many MoE layers.
+  - For MRv1, tune expert_heat_collection_interval and algorithm_execution_interval instead; window_size applies to the MRv2/upstream
+    EPLBConfig path.
+  quick_guide: On Ascend MRv2 start with window_size 50 and step_interval 50; increase only if placement is unstable and HBM
+    allows.
+analysis_date: '2026-10-27'

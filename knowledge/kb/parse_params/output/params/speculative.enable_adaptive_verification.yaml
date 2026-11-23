@@ -1,0 +1,100 @@
+name: speculative.enable_adaptive_verification
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/vllm.py:2894
+- vllm/config/vllm.py:2978
+- vllm/v1/attention/selector.py:145
+- vllm/v1/worker/gpu/spec_decode/speculator.py:168
+- vllm_ascend/ascend_config.py:107
+- vllm_ascend/attention/dsa_v1.py:772
+- vllm_ascend/attention/dsa_v1.py:1110
+- vllm_ascend/attention/indexer.py:663
+- vllm_ascend/attention/sfa_v1.py:575
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This flag enables DSpark's adaptive draft-verification budget, where the number of\ndraft tokens actually\
+  \ verified per request is trimmed on-device from per-request\nconfidence instead of always verifying the full num_speculative_tokens.\
+  \ It is only\nmeaningful when speculative_config.method == \"dspark\"; for any other method it has\nno effect (upstream\
+  \ vllm/config/vllm.py:2892-2895 only pairs it with dspark, and the\nAscend checks all gate on method == \"dspark\").\n\n\
+  On Ascend the flag changes attention metadata construction and CUDA-graph capture\nbehavior in several backends:\n- \"vllm_ascend/attention/dsa_v1.py:769-775,\
+  \ vllm_ascend/attention/indexer.py:660-666\"\n  and vllm_ascend/attention/sfa_v1.py:572-578: when dspark + adaptive verification\
+  \ is\n  on, get_cudagraph_support() returns AttentionCGSupport.ALWAYS instead of\n  UNIFORM_BATCH. This relaxes the uniform-batch\
+  \ requirement for graph capture, which\n  lets more decode shapes be captured/replayed and reduces per-step host overhead,\
+  \ but\n  also means the attention metadata builder must tolerate variable per-request query\n  lengths.\n- \"vllm_ascend/attention/dsa_v1.py:1107-1116:\
+  \ in the decode-only path (num_prefills == 0)\"\n  max_seqlen_q is forced to at least num_speculative_tokens + 1, because\
+  \ the CPU-side\n  query_start_loc_cpu keeps an even token distribution while the device-side\n  query_start_loc reflects\
+  \ the trimmed (reallocated) lengths. This over-provisions the\n  query dimension of the attention kernel, trading a small\
+  \ amount of compute for\n  correctness under variable verification budgets.\n\nUpstream, the flag also switches the attention\
+  \ selector to a flattened/device-query-lens\npath (vllm/v1/attention/selector.py:143-152, mla/indexer.py:764-771) and enables\
+  \ an\nonline acceptance estimator in the speculator (spec_decode/speculator.py:164-171),\nwhich adds per-step GPU work but\
+  \ can raise accepted tokens per verification step and\nthus effective throughput. Net effect on Ascend: potentially higher\
+  \ decode throughput\nand lower latency per accepted token when draft confidence is well-calibrated, at the\ncost of extra\
+  \ device-side bookkeeping and a slightly larger attention query bound.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:107
+  context: KVPP validation rejects dspark + adaptive verification with ValueError
+- file: vllm_ascend/attention/dsa_v1.py:772
+  context: get_cudagraph_support returns ALWAYS for dspark + adaptive verification
+- file: vllm_ascend/attention/dsa_v1.py:1110
+  context: decode-only path bumps max_seqlen_q to num_speculative_tokens + 1
+- file: vllm_ascend/attention/indexer.py:663
+  context: indexer cudagraph support returns ALWAYS for dspark + adaptive verification
+- file: vllm_ascend/attention/sfa_v1.py:575
+  context: SFA metadata builder cudagraph support returns ALWAYS for dspark + adaptive verification
+- file: vllm/config/vllm.py:2894
+  context: V1 model runner marks adaptive draft verification unsupported
+- file: vllm/config/vllm.py:2978
+  context: batch-sharded sampling rejects adaptive verification
+- file: vllm/v1/attention/selector.py:145
+  context: attention selector enables adaptive verification path (excluding dspark_head)
+- file: vllm/v1/worker/gpu/spec_decode/speculator.py:168
+  context: speculator enables online acceptance estimator
+related_parameters:
+- name: speculative_config.method
+  relation: Only effective when method is 'dspark'; ignored for mtp/eagle/ngram/medusa
+- name: speculative_config.num_speculative_tokens
+  relation: Upper bound of the verification budget; adaptive verification trims below it and max_seqlen_q is floored at num_speculative_tokens
+    + 1
+- name: compilation_config.cudagraph_mode
+  relation: Upstream requires full CUDA graphs; on Ascend it flips attention cudagraph support to ALWAYS
+- name: enable_kvpp
+  relation: 'Mutually exclusive: KVPP raises ValueError when adaptive verification is enabled with dspark'
+- name: enable_batch_sharded_sampling
+  relation: 'Mutually exclusive upstream: batch-sharded sampling rejects adaptive verification'
+- name: additional_config.dynamic_spec_config
+  relation: KVPP also rejects dynamic speculative lengths alongside adaptive verification
+constraints:
+- Only valid when speculative_config.method is 'dspark'; for other speculative methods the flag has no effect.
+- KVPP (enable_kvpp) does not support DSpark adaptive verification and raises a ValueError if both are enabled.
+- Upstream V1 model runner does not support adaptive draft verification and reports it as an unsupported feature.
+- Batch-sharded sampling (--enable-batch-sharded-sampling) cannot be combined with adaptive verification and raises a ValueError.
+- Upstream requires full CUDA graphs (cudagraph_mode) when adaptive verification is enabled.
+tuning_advice:
+  summary: Enable only with dspark speculative decoding on Ascend when draft confidence is well-calibrated and you want higher
+    accepted tokens per verification step; keep disabled for KVPP, batch-sharded sampling, or non-dspark methods.
+  suggested_values:
+  - scenario: DSpark speculative decoding on Ascend with calibrated draft model and decode-heavy workload
+    value: true
+    reason: Trims verification budget per request from confidence, raising accepted tokens per step and enabling ALWAYS cudagraph
+      support in Ascend attention backends for lower per-step overhead.
+  - scenario: KVPP PD disaggregation enabled
+    value: false
+    reason: KVPP validation raises ValueError when dspark adaptive verification is enabled.
+  - scenario: Batch-sharded sampling enabled or non-dspark speculative method
+    value: false
+    reason: Upstream rejects the combination with batch-sharded sampling, and the flag has no effect for non-dspark methods.
+  caveats:
+  - Verify draft confidence calibration before enabling; mis-calibration can reduce accepted tokens and throughput.
+  - 'Monitor NPU memory: ALWAYS cudagraph support captures more shapes and reserves additional graph memory.'
+  - Do not combine with enable_kvpp or --enable-batch-sharded-sampling; both raise errors.
+  quick_guide: Set true only for dspark on Ascend with a well-calibrated draft model; otherwise leave false.
+analysis_date: '2026-10-27'

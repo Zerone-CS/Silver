@@ -1,0 +1,92 @@
+name: additional_config.eplb_config.stair_config.relative_balance_threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:199
+- vllm_ascend/ascend_config.py:220
+- vllm_ascend/ascend_config.py:246
+value_type: float
+default: 0.95
+valid_choices: 0 < value <= 1 (finite float)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This field is part of StairConfig, the advanced tuning block for the MRv2 STAIR
+
+  EPLB (expert-parallel load balancing) policy in vllm-ascend. It is a hysteresis
+
+  control for rebalancing decisions: "per the docstring, a rebalance is triggered"
+
+  when the current balance divided by the last committed balance is at or below
+
+  this value. Balance is defined as the reciprocal of the mean max-to-average
+
+  rank-load ratio. Lowering the threshold makes the policy more tolerant of
+
+  imbalance (fewer rebalances), while raising it toward 1.0 makes it rebalance
+
+  more eagerly. Rebalancing on Ascend involves expert placement/transfer planning
+
+  (replica search, LPT placement, cross-node transfers) and the actual expert
+
+  weight movement across ranks/nodes over HCCL, which is expensive. Thus this
+
+  threshold indirectly governs how often that expensive rebalance path runs,
+
+  affecting steady-state throughput and tail latency of MoE inference. It does
+
+  not directly allocate memory or change kernel selection; its effect is mediated
+
+  through the frequency and aggressiveness of EPLB rebalancing.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:199
+  context: Docstring describing relative_balance_threshold as the ratio of current to last committed balance at or below which
+    a rebalance is triggered.
+- file: vllm_ascend/ascend_config.py:220
+  context: Field definition with default 0.95 in StairConfig.
+- file: vllm_ascend/ascend_config.py:246
+  context: Model validator enforcing 0 < relative_balance_threshold <= 1 and finiteness.
+related_parameters:
+- name: additional_config.eplb_config.stair_config.absolute_balance_threshold
+  relation: Companion rebalance trigger; rebalance also fires when current balance is at or below this absolute value. Both
+    are validated together in the same loop.
+- name: additional_config.eplb_config.stair_config.load_window_bins
+  relation: Controls the load window used to compute the balance that this threshold compares against.
+- name: additional_config.eplb_config.stair_config.load_risk_quantile
+  relation: Determines the risk-adjusted load used in balance computation, indirectly affecting when the relative threshold
+    is crossed.
+- name: additional_config.eplb_config.stair_config.cross_node_transfer_limit
+  relation: Bounds the cost of a rebalance that this threshold may trigger; zero disables cross-node transfers.
+constraints:
+- relative_balance_threshold must be strictly greater than zero and less than or equal to one.
+- relative_balance_threshold must be a finite number; NaN or infinity raises a validation error.
+- STAIR numeric fields must not be booleans; passing true/false raises a validation error.
+tuning_advice:
+  summary: Tune relative_balance_threshold to balance rebalance frequency against steady-state load balance for the MRv2 STAIR
+    EPLB policy on Ascend.
+  suggested_values:
+  - scenario: Stable, slowly drifting expert load; minimize rebalance overhead
+    value: 0.9
+    reason: A lower relative threshold tolerates more imbalance before rebalancing, reducing expensive expert-transfer churn
+      and preserving throughput.
+  - scenario: Default balanced workload
+    value: 0.95
+    reason: The shipped default provides moderate hysteresis, rebalancing only when balance degrades meaningfully relative
+      to the last committed state.
+  - scenario: Highly skewed or rapidly shifting expert load where balance matters more than rebalance cost
+    value: 0.98
+    reason: A threshold near 1.0 triggers rebalancing more eagerly to keep rank loads even, at the cost of more frequent transfers.
+  caveats:
+  - Coordinate with absolute_balance_threshold; a rebalance fires if either the relative or absolute condition is met, so
+    an aggressive absolute threshold can dominate.
+  - If cross_node_transfer_limit is 0, rebalances cannot move experts across nodes, so tightening this threshold may yield
+    limited benefit.
+  - Monitor rebalance frequency and expert-transfer time; if transfers dominate, raise tolerance (lower the threshold).
+  quick_guide: Keep near 0.95; lower toward 0.90 to cut rebalance overhead, raise toward 0.98 for tighter load balance.
+analysis_date: '2026-10-27'

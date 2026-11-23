@@ -1,0 +1,101 @@
+name: --enable-prompt-embeds
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:295
+- vllm/engine/arg_utils.py:933
+- vllm/engine/arg_utils.py:445
+- vllm/engine/arg_utils.py:1853
+- vllm/config/model.py:954
+- vllm/v1/worker/gpu_model_runner.py:535
+- vllm/v1/worker/gpu/model_runner.py:266
+- vllm/v1/worker/gpu/model_states/__init__.py:21
+- vllm/v1/worker/gpu/model_states/default.py:39
+- vllm/v1/worker/gpu/model_states/encoder_decoder.py:57
+- vllm_ascend/worker/model_runner_v1.py:1391
+- vllm_ascend/worker/model_runner_v1.py:1400
+- vllm_ascend/_310p/model_runner_310p.py:394
+- vllm_ascend/_310p/model_runner_310p.py:400
+- vllm_ascend/worker/dcp_utils.py:344
+- vllm_ascend/worker/dcp_utils.py:383
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --enable-prompt-embeds
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This flag switches the model runner into a mode where requests may carry\npre-computed text embeddings (`prompt_embeds`)\
+  \ instead of / in addition to\ntoken ids. On Ascend it is read in the v1 worker path\n(vllm_ascend/worker/model_runner_v1.py:1391\
+  \ and :1400) and the 310P path\n(vllm_ascend/_310p/model_runner_310p.py:394 and :400).\n\nMechanism of impact:\n1. Extra\
+  \ per-step CPU work: when enabled, `_prepare_input_ids` performs an\n   additional `torch.index_select` over `is_token_ids_tensor`\
+  \ to build the\n   `is_token_ids` buffer for every scheduled token (model_runner_v1.py:1391-1395).\n   This is a small but\
+  \ unconditional per-step cost on the host side.\n2. Embedding scatter loop: when any request carries prompt embeds, the\
+  \ runner\n   enters a Python loop over all requests (model_runner_v1.py:1400-1418) that\n   copies each request's embedding\
+  \ slice into the pre-allocated\n   `prompt_embeds` buffer. This is a per-request Python-level loop with\n   host-to-device\
+  \ copies, so it scales with batch size and can add measurable\n   latency for large batches.\n3. Memory: enabling the flag\
+  \ causes the runner to allocate a persistent\n   `inputs_embeds` buffer of shape (max_num_tokens, hidden_size) in the\n\
+  \   upstream default model state (vllm/v1/worker/gpu/model_states/default.py:39-48),\n   and the Ascend runner keeps a pre-allocated\
+  \ `prompt_embeds` tensor. This\n   consumes NPU HBM proportional to max_num_batched_tokens × hidden_size × dtype.\n4. DCP\
+  \ / async spec-decode: in vllm_ascend/worker/dcp_utils.py:383, when\n   `enable_prompt_embeds` is true the on-device async\
+  \ spec-decode rebuild path\n   is disabled (`can_rebuild_on_device` becomes False), forcing a slower\n   host-side rebuild\
+  \ path. This is a real latency regression for DCP +\n   async spec-decode workloads.\nWhen the flag is false (default),\
+  \ none of these branches execute and the\nrunner uses the plain token-id path with no extra buffers.\n"
+usage_locations:
+- file: vllm/config/model.py:295
+  context: ModelConfig field definition and docstring warning about crash on wrong embedding shape.
+- file: vllm/config/model.py:954
+  context: Validator rejects enable_prompt_embeds with encoder-decoder models.
+- file: vllm/engine/arg_utils.py:933
+  context: CLI flag registration --enable-prompt-embeds.
+- file: vllm/v1/worker/gpu_model_runner.py:535
+  context: Runner caches model_config.enable_prompt_embeds into self.enable_prompt_embeds.
+- file: vllm/v1/worker/gpu/model_states/default.py:39
+  context: Allocates persistent inputs_embeds buffer when enabled.
+- file: vllm/v1/worker/gpu/model_states/__init__.py:21
+  context: Rejects enable_prompt_embeds for model states that do not support it.
+- file: vllm_ascend/worker/model_runner_v1.py:1391
+  context: Ascend v1 runner builds is_token_ids buffer via index_select when enabled.
+- file: vllm_ascend/worker/model_runner_v1.py:1400
+  context: Ascend v1 runner scatters per-request prompt embeds into pre-allocated buffer.
+- file: vllm_ascend/_310p/model_runner_310p.py:394
+  context: 310P runner mirrors the same is_token_ids and prompt-embeds scatter logic.
+- file: vllm_ascend/worker/dcp_utils.py:383
+  context: DCP async spec-decode on-device rebuild disabled when enable_prompt_embeds is true.
+related_parameters:
+- name: --enable-mm-embeds
+  relation: Related embedding-input path; multimodal embeds also populate req_prompt_embeds and share the scatter loop.
+- name: --skip-tokenizer-init
+  relation: Often used together when clients supply pre-tokenized/embedded inputs directly.
+- name: --max-num-batched-tokens
+  relation: Determines the size of the persistent inputs_embeds buffer allocated when this flag is on.
+- name: --decode-context-parallel-size
+  relation: When >1 with async spec-decode, enabling prompt embeds disables the on-device rebuild fast path.
+constraints:
+- --enable-prompt-embeds is not supported with encoder-decoder models and raises a ValueError at config validation.
+- The engine may crash if prompt embeddings are passed with an incorrect shape; only enable this flag for trusted users.
+- The flag is rejected for model states that do not declare support for prompt embeds (raises ValueError).
+tuning_advice:
+  summary: Leave disabled unless you genuinely need embedding inputs; when enabled, keep batches modest and avoid combining
+    with DCP async spec-decode.
+  suggested_values:
+  - scenario: Standard text-only serving (default)
+    value: false
+    reason: Avoids the extra is_token_ids index_select, the per-request scatter loop, and the persistent inputs_embeds buffer
+      allocation.
+  - scenario: Serving requests that supply pre-computed prompt embeddings
+    value: true
+    reason: Required to accept the prompt_embeds key; only enable for trusted clients that guarantee correct embedding shapes.
+  - scenario: DCP + async spec-decode workloads
+    value: false
+    reason: Enabling it disables the on-device async spec-decode rebuild path in dcp_utils.py, forcing a slower host-side
+      rebuild.
+  caveats:
+  - Validate embedding shape on the client side; a wrong shape can crash the engine.
+  - Monitor NPU HBM headroom since the inputs_embeds buffer scales with max_num_batched_tokens.
+  - For large batches, the Python scatter loop can dominate host overhead; consider smaller max_num_seqs.
+  quick_guide: Keep --enable-prompt-embeds off unless you need embedding inputs; if on, watch HBM and avoid DCP async spec-decode.
+analysis_date: '2026-10-27'

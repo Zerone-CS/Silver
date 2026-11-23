@@ -1,0 +1,144 @@
+name: eplb.communicator
+type: nested
+category: communication
+scope: both
+source_file:
+- vllm/config/parallel.py:1028
+- vllm/distributed/eplb/eplb_communicator.py:644
+- vllm/distributed/eplb/eplb_state.py:492
+- vllm/distributed/eplb/eplb_utils.py:78
+- vllm_ascend/platform.py:988
+- vllm_ascend/patch/platform/patch_eplb.py:189
+- vllm_ascend/distributed/eplb/eplb_communicator.py:17
+- vllm_ascend/worker/v2/eplb.py:52
+value_type: str
+default: <computed>
+valid_choices:
+- torch_nccl
+- torch_gloo
+- pynccl
+- nixl
+- hixl
+cli_example: --eplb-config.communicator <backend>
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'eplb.communicator selects the transport used to move expert weights between ranks
+
+  during EPLB rebalancing. On Ascend the choice is heavily constrained and overridden:
+
+
+  Upstream (vllm/config/parallel.py:1028-1043): when enable_eplb is set and communicator
+
+  is None, vLLM auto-selects nixl if available, else pynccl for elastic EP, else
+
+  torch_gloo. torch_nccl is explicitly avoided because NCCL is incompatible with async
+
+  EPLB (multi-stream conflicts) and batched isend/irecv hangs under load. The backend
+
+  is consumed in eplb_state.py:492 via create_eplb_communicator(), which dispatches to
+
+  the concrete EplbCommunicator implementation (eplb_communicator.py:644). The backend
+
+  also gates env overrides in eplb_utils.py:78 (NCCL_MAX_CTAS tuning for NCCL-based
+
+  communicators).
+
+
+  Ascend override (vllm_ascend/platform.py:988-993): for Model Runner V2, only
+
+  torch_gloo and hixl (or None for auto) are accepted; any other value raises
+
+  ValueError. vllm_ascend/patch/platform/patch_eplb.py:189 implements a group-wide
+
+  consensus (resolve_ascend_eplb_communicator) that re-validates auto-selected
+
+  communicators across all EPLB ranks; if binding classes differ between ranks the
+
+  whole group falls back to torch_gloo CPU staging. When falling back to Gloo, Ascend
+
+  clamps unset STAIR transfer limits to 1 to avoid excessive CPU-staged transfers.
+
+
+  Performance mechanism: "hixl uses Ascend-native device-to-device transfer (HIXL"
+
+  runtime, 2MB alignment, up to 256 registered regions) enabling high-bandwidth
+
+  cross-node expert migration; torch_gloo stages transfers through CPU memory, which
+
+  is far slower and is why STAIR limits are clamped to 1 on fallback. The communicator
+
+  therefore directly determines rebalancing latency and, indirectly, steady-state
+
+  throughput (rebalance stalls block expert movement). It does not affect per-token
+
+  compute or KV-cache memory.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:1028
+  context: Auto-selects communicator when None (nixl/pynccl/torch_gloo) for enable_eplb
+- file: vllm/distributed/eplb/eplb_state.py:492
+  context: Asserts communicator is set and calls create_eplb_communicator with the backend
+- file: vllm/distributed/eplb/eplb_communicator.py:644
+  context: Factory dispatching to concrete communicator by backend name
+- file: vllm/distributed/eplb/eplb_utils.py:78
+  context: Gates NCCL_MAX_CTAS override for NCCL-based communicators
+- file: vllm_ascend/platform.py:988
+  context: 'MRv2 validation: only torch_gloo/hixl/None allowed, else ValueError'
+- file: vllm_ascend/patch/platform/patch_eplb.py:189
+  context: Group-wide consensus re-validation and Gloo fallback with STAIR clamping
+- file: vllm_ascend/distributed/eplb/eplb_communicator.py:17
+  context: AscendGlooEplbCommunicator and AscendHixlEplbCommunicator implementations
+- file: vllm_ascend/worker/v2/eplb.py:52
+  context: AscendEPLBController resolves communicator before building policy/state
+related_parameters:
+- name: enable_eplb
+  relation: Communicator is only selected/validated when EPLB is enabled
+- name: eplb_config.use_async
+  relation: Ascend forces async EPLB; communicator must support async (torch_gloo/hixl)
+- name: eplb_config.stair_config
+  relation: STAIR transfer limits are clamped to 1 when communicator falls back to torch_gloo
+- name: enable_elastic_ep
+  relation: Elastic EP is rejected on Ascend MRv2; upstream would pick pynccl for elastic EP
+- name: eplb_config.policy
+  relation: Policy (stair/default) determines migration pattern that the communicator transports
+constraints:
+- On Ascend Model Runner V2, eplb_config.communicator must be one of None, 'torch_gloo', or 'hixl'; any other value raises
+  ValueError.
+- Async EPLB on Ascend requires the torch_gloo or hixl communicator; torch_nccl, pynccl, and nixl are not accepted.
+- Elastic EP is not supported with async EPLB on Ascend, so the pynccl path used upstream for elastic EP is unavailable.
+- HIXL requires the CANN HIXL runtime and working device connectivity on every EPLB rank.
+- The communicator choice must resolve to one binding class on every EPLB rank; if ranks disagree the whole group falls back
+  to torch_gloo.
+tuning_advice:
+  summary: Leave communicator unset on Ascend to auto-select HIXL when available (fastest), or explicitly set 'hixl' for cross-node
+    high-bandwidth rebalancing; use 'torch_gloo' only as a compatibility fallback.
+  suggested_values:
+  - scenario: Ascend MRv2 with CANN HIXL runtime available and healthy device connectivity
+    value: hixl
+    reason: HIXL provides Ascend-native device-to-device expert transfer with high bandwidth, avoiding CPU staging and keeping
+      STAIR transfer limits unrestricted.
+  - scenario: Ascend MRv2 without HIXL runtime or when device connectivity is unreliable
+    value: torch_gloo
+    reason: Gloo is the guaranteed-compatible fallback; Ascend clamps unset STAIR limits to 1 to avoid excessive CPU-staged
+      transfers.
+  - scenario: Default / let Ascend auto-select
+    value: unset
+    reason: Leaving it None triggers auto-selection (HIXL when available, Gloo otherwise) with group-wide consensus re-validation
+      across ranks.
+  caveats:
+  - torch_gloo stages expert weights through CPU memory, which is significantly slower than HIXL and is why Ascend clamps
+    unset STAIR transfer limits to 1 on fallback.
+  - Auto-selected communicators are re-validated group-wide; if binding classes differ between ranks the entire group silently
+    falls back to torch_gloo and logs a warning.
+  - Explicitly setting torch_gloo or hixl keeps your configured STAIR transfer limits untouched, whereas an automatic fallback
+    clamps unset limits.
+  - torch_nccl, pynccl, and nixl are rejected on Ascend MRv2 even though upstream may auto-select them.
+  - HIXL requires the CANN HIXL runtime and working device connectivity on every EPLB rank; validate topology and traffic
+    before production use.
+  quick_guide: Leave unset for auto (HIXL preferred); set 'hixl' explicitly for fast cross-node rebalancing, 'torch_gloo'
+    only as fallback.
+analysis_date: '2026-10-27'

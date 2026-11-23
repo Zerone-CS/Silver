@@ -1,0 +1,100 @@
+name: additional_config.eplb_config.stair_config.rank_transfer_limit
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:203
+- vllm_ascend/ascend_config.py:222
+- vllm_ascend/ascend_config.py:250
+value_type: int
+default: -1
+valid_choices: -1 (no limit) or any positive integer >= 1
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'rank_transfer_limit caps the maximum number of outgoing and incoming expert
+
+  transfers per rank within a single layer plan produced by the MRv2 STAIR EPLB
+
+  policy (vllm_ascend/ascend_config.py:203-204, 222). It is consumed by the STAIR
+
+  rebalance planner, not by the inference hot path directly. Its performance
+
+  effect is indirect but real on Ascend: "EPLB rebalances MoE experts across ranks"
+
+  to even out per-rank expert load, which reduces the tail latency of the slowest
+
+  rank in the all-to-all / HCCL dispatch-combine path. A tighter limit (small
+
+  positive value) constrains how aggressively the planner can move experts in one
+
+  step, producing smaller, more incremental rebalances that are cheaper to apply
+
+  (less expert-weight movement and communicator reconfiguration) but converge
+
+  more slowly toward a balanced placement. The default -1 removes the limit,
+
+  letting the planner move as many experts as needed for the best balance in one
+
+  plan — best steady-state balance but potentially larger one-shot transfer cost.
+
+  Note the vllm-ascend override: "when the EPLB communicator falls back to"
+
+  torch_gloo (e.g. hixl unavailable), resolve_ascend_eplb_communicator clamps
+
+  unset limits to 1 (tests/ut/patch/platform/test_patch_eplb.py:155-160), so the
+
+  effective value can differ from the user-configured -1.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:222
+  context: Field definition of rank_transfer_limit in StairConfig with default -1
+- file: vllm_ascend/ascend_config.py:250
+  context: Model validator enforcing value is -1 or positive
+- file: vllm_ascend/patch/platform/patch_eplb.py
+  context: resolve_ascend_eplb_communicator clamps unset rank_transfer_limit to 1 on gloo fallback
+- file: tests/ut/test_ascend_config.py:215
+  context: Test constructing EplbConfig with stair_config rank_transfer_limit override
+- file: tests/ut/test_platform.py:454
+  context: Test that v2 model runner accepts stair_config with rank_transfer_limit
+related_parameters:
+- name: additional_config.eplb_config.stair_config.cross_node_transfer_limit
+  relation: Companion transfer cap for cross-node expert moves; both clamped to 1 on gloo fallback
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Determines when a rebalance is triggered; interacts with how much transfer budget is used
+- name: additional_config.eplb_config.stair_config.absolute_balance_threshold
+  relation: Absolute balance trigger that gates whether a plan is committed
+- name: additional_config.eplb_config.policy
+  relation: Must be 'stair' for stair_config to apply
+- name: additional_config.eplb_config.communicator
+  relation: gloo fallback clamps unset transfer limits to 1
+constraints:
+- rank_transfer_limit must be either -1 (no limit) or a positive integer >= 1; zero and other negative values raise a ValueError.
+- STAIR numeric fields must not be booleans; passing true/false raises a validation error.
+- stair_config only takes effect when the EPLB policy is set to 'stair'.
+tuning_advice:
+  summary: Leave at -1 for best steady-state MoE balance on Ascend; use a small positive value only when one-shot expert transfer
+    cost must be bounded.
+  suggested_values:
+  - scenario: Default / steady-state throughput-oriented MoE serving with stable expert load
+    value: -1
+    reason: Removes the per-rank transfer cap so STAIR can reach the best balance in one plan, minimizing the slowest-rank
+      tail latency in HCCL dispatch/combine.
+  - scenario: Highly dynamic load where large one-shot expert moves cause communication stalls
+    value: 2
+    reason: Bounds per-rank expert movement per plan, spreading rebalance cost across steps while still allowing incremental
+      convergence.
+  - scenario: gloo fallback communicator (hixl unavailable)
+    value: 1
+    reason: vllm-ascend already clamps unset limits to 1 in this path; setting it explicitly makes the effective behavior
+      transparent.
+  caveats:
+  - Setting a small limit trades balance quality for cheaper rebalances; monitor per-rank load skew after tuning.
+  - The gloo fallback silently overrides -1 to 1, so verify the effective value via logs when using torch_gloo.
+  - No effect unless enable_eplb is true and policy is 'stair'.
+  quick_guide: Keep -1 unless one-shot expert transfer cost is a problem, then try 2.
+analysis_date: '2026-10-27'

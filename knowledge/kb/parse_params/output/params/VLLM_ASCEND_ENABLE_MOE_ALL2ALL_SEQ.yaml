@@ -1,0 +1,76 @@
+name: VLLM_ASCEND_ENABLE_MOE_ALL2ALL_SEQ
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2135
+- docs/source/user_guide/release_notes.md:2002
+value_type: bool
+default: false
+valid_choices: 'boolean-like env var: set (e.g. ''1''/''true'') to enable, unset to disable'
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This environment variable was introduced in vllm-ascend to toggle a MoE all-to-all
+
+  sequence-parallel communication path ("moe all2all seq"), described in the release
+
+  notes as "a basic framework on the basis of alltoall for easy expansion". When enabled
+
+  it would have selected an all-to-all based expert-parallel dispatch/combine path for
+
+  MoE layers instead of the default all-gather/reduce-scatter or MC2 fused path, which
+
+  affects inter-device communication volume and thus throughput/latency for MoE models
+
+  (e.g. DeepSeek, Qwen3-MoE) under expert parallelism.
+
+  However, per the release notes (PR #2612), this variable — together with
+
+  MOE_ALL2ALL_BUFFER — was REMOVED from the environment variables. No definition or
+
+  usage site exists in the current vllm or vllm-ascend source trees (the code extraction
+
+  found none). Therefore setting it in current builds has no runtime effect: it is a
+
+  no-op. Its historical performance relevance was in MoE communication strategy
+
+  selection, but it is no longer wired into any code path.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2135
+  context: 'Introduced: ''Whether to enable moe all2all seq, this provides a basic framework on the basis of alltoall for
+    easy expansion.'''
+- file: docs/source/user_guide/release_notes.md:2002
+  context: 'Removed: ''Removed MOE_ALL2ALL_BUFFER and VLLM_ASCEND_ENABLE_MOE_ALL2ALL_SEQ in environment variables. [#2612]'''
+related_parameters:
+- name: MOE_ALL2ALL_BUFFER
+  relation: 'Removed together in the same PR #2612; both were MoE all-to-all related env vars.'
+- name: VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE
+  relation: Alternative communication-fusion optimization for TP; unrelated to MoE all2all but part of the same family of
+    Ascend communication env toggles.
+- name: enable_expert_parallel
+  relation: MoE expert parallelism is the feature area this all2all seq path was meant to serve.
+constraints:
+- This environment variable has been removed from vllm-ascend; setting it has no effect in current releases.
+- It only ever applied to MoE models using expert parallelism; dense models were unaffected.
+tuning_advice:
+  summary: Do not use this variable — it was removed; rely on current MoE/EP communication paths instead.
+  suggested_values:
+  - scenario: Any current vllm-ascend deployment
+    value: unset
+    reason: 'The variable was removed in PR #2612 and has no code path; setting it is a no-op.'
+  - scenario: MoE model wanting optimized expert-parallel communication on Ascend
+    value: use enable_expert_parallel and current MC2/all-gather fused paths
+    reason: The all2all seq framework was superseded; current MoE communication is handled by the refactored fused_experts
+      / MC2 paths.
+  caveats:
+  - Setting this env var on a current build silently does nothing — do not expect any performance change.
+  - If you are on an old build that still supports it, it was an experimental 'basic framework' and not a production-tuned
+    path.
+  quick_guide: Ignore this variable — it is removed and has no runtime effect.
+analysis_date: '2026-10-27'

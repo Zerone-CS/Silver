@@ -1,0 +1,108 @@
+name: --return-sampling-mask
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:252
+- vllm/engine/arg_utils.py:437
+- vllm/engine/arg_utils.py:914
+- vllm/config/vllm.py:1113
+- vllm/v1/core/sched/scheduler.py:390
+- vllm/v1/core/sched/scheduler.py:2139
+- vllm/v1/engine/input_processor.py:104
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: --return-sampling-mask
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag enables "sampling distribution replay": when true, the model runner
+
+  returns a per-sample SamplingMaskTensors object alongside logits, and the
+
+  scheduler slices it per request (vllm/v1/core/sched/scheduler.py:2139-2144,
+
+  guarded by self.return_sampling_mask set at scheduler.py:390). The mask is
+
+  built during post-processing of the sampling distribution, so it adds extra
+
+  tensor materialization and per-step slicing work on the critical path, plus
+
+  additional host/device transfer of the mask tensors. It is explicitly excluded
+
+  from the model config hash (vllm/config/model.py:443), so it does not trigger
+
+  recompilation or graph recapture. The flag is not referenced anywhere in
+
+  vllm-ascend source; there is no Ascend-specific override, so on NPU it behaves
+
+  exactly as upstream vLLM. Because it is off by default and only adds overhead
+
+  when enabled, its performance impact is low and opt-in. Note that it also
+
+  disables the batch-sharded sampling optimization (vllm/config/vllm.py:2969),
+
+  which can reduce throughput when that optimization would otherwise apply.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:252
+  context: ModelConfig field definition with docstring 'Whether to return the post-processing token support for each sample.'
+- file: vllm/engine/arg_utils.py:914
+  context: CLI argument registration --return-sampling-mask in the ModelConfig argument group
+- file: vllm/config/vllm.py:1113
+  context: _verify_sampling_replay_config validates prerequisites (Model Runner V2, no spec decode, no diffusion, no logits
+    processors, processed_logprobs mode)
+- file: vllm/config/vllm.py:2969
+  context: Blocks batch-sharded sampling when return_sampling_mask is set because gather_sampler_output drops sampling masks
+- file: vllm/v1/core/sched/scheduler.py:390
+  context: Scheduler caches the flag from model_config
+- file: vllm/v1/core/sched/scheduler.py:2139
+  context: Per-request slicing of sampling_masks in update_from_output
+- file: vllm/v1/engine/input_processor.py:104
+  context: Per-request validation requiring temperature > 0 and top_k > 0 when the flag is enabled
+related_parameters:
+- name: --logprobs-mode
+  relation: Must be set to 'processed_logprobs' when --return-sampling-mask is enabled, otherwise config validation raises
+    ValueError
+- name: --speculative-config
+  relation: 'Mutually exclusive: sampling distribution replay does not support speculative decoding'
+- name: --logits-processors
+  relation: 'Mutually exclusive: sampling distribution replay does not support custom logits processors'
+- name: --max-logprobs
+  relation: Batch-sharded sampling (which is disabled by this flag) is also blocked when max_logprobs is -1
+- name: --tensor-parallel-size
+  relation: Enabling this flag disables the batch-sharded sampling optimization that requires tp_size > 1
+constraints:
+- Sampling distribution replay requires Model Runner V2; enabling --return-sampling-mask without it raises ValueError.
+- Sampling distribution replay does not support speculative decoding; combining --return-sampling-mask with --speculative-config
+  raises ValueError.
+- Sampling distribution replay does not support diffusion models.
+- Sampling distribution replay does not support custom logits processors; --logits-processors must not be set.
+- --logprobs-mode must be 'processed_logprobs' when --return-sampling-mask is enabled.
+- Every request must use temperature > 0 when --return-sampling-mask is enabled, otherwise a ValueError is raised.
+- Every request must use top_k > 0 when --return-sampling-mask is enabled, to bound sampling mask size and avoid potential
+  OOMs.
+tuning_advice:
+  summary: Leave disabled unless you specifically need per-sample sampling masks for distribution replay; it is an opt-in
+    debugging/analysis feature with measurable overhead.
+  suggested_values:
+  - scenario: Normal production serving on Ascend NPU
+    value: false
+    reason: Default off; avoids extra mask tensor materialization, per-step slicing, and keeps batch-sharded sampling optimization
+      available.
+  - scenario: Debugging or replaying sampling distributions (requires Model Runner V2, no spec decode, processed_logprobs
+      mode)
+    value: true
+    reason: Only enable when you need the post-processing token support masks; ensure temperature > 0 and top_k > 0 on all
+      requests.
+  caveats:
+  - Do not combine with --speculative-config or --logits-processors; validation will fail.
+  - Set --logprobs-mode processed_logprobs when enabling.
+  - Expect a small throughput drop on tensor-parallel deployments because batch-sharded sampling is disabled.
+  quick_guide: Keep --return-sampling-mask off for performance; enable only for sampling-distribution replay with processed_logprobs
+    and no spec decode.
+analysis_date: '2026-10-27'

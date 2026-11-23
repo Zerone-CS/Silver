@@ -1,0 +1,82 @@
+name: VLLM_XGRAMMAR_CACHE_MB
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1621
+- vllm/envs.py:221
+- vllm/v1/structured_output/backend_xgrammar.py:70
+value_type: int
+default: 512
+valid_choices: any non-negative integer (megabytes); 0 disables the cache limit
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This env var only affects the xgrammar structured-output backend. In
+
+  vllm/v1/structured_output/backend_xgrammar.py:66-71 the value is read once at
+
+  XgrammarBackend construction time and passed to xgr.GrammarCompiler as
+
+  cache_limit_bytes = VLLM_XGRAMMAR_CACHE_MB * 1024 * 1024, with cache_enabled=True
+
+  and max_threads=8. The cache stores compiled grammars (JSON schemas, regexes,
+
+  EBNF) keyed by grammar spec, so repeated requests with the same schema skip
+
+  recompilation. On Ascend NPU this is pure host-side (CPU) work: it does not
+
+  touch HCCL, CANN kernels, or NPU memory, and vllm-ascend does not override or
+
+  reference this variable anywhere. Its performance effect is therefore indirect
+
+  and small: "a larger cache reduces CPU-side grammar compilation latency for"
+
+  workloads that reuse many distinct schemas, at the cost of host RAM. It has no
+
+  effect on model forward-pass throughput or NPU memory. Note the type stub in
+
+  vllm/envs.py:221 declares a default of 0 while the actual lambda at line 1621
+
+  defaults to 512; the runtime default is 512 MB.
+
+  '
+usage_locations:
+- file: vllm/v1/structured_output/backend_xgrammar.py:70
+  context: Passes cache_limit_bytes to xgr.GrammarCompiler with cache_enabled=True
+- file: vllm/envs.py:1621
+  context: Env var definition, default 512 MB, comment says ~1000 JSON schemas
+related_parameters:
+- name: VLLM_REGEX_COMPILATION_TIMEOUT_S
+  relation: Sibling structured-output env var controlling regex compilation timeout; both affect xgrammar/outlines compile
+    cost
+- name: --guided-decoding-backend
+  relation: This cache only applies when the structured output backend is xgrammar
+constraints:
+- The value is interpreted as megabytes and multiplied by 1024*1024 to form cache_limit_bytes, so it must be a non-negative
+  integer.
+- The setting only takes effect when the structured output backend is xgrammar; other backends ignore it.
+- The cache is read once when the XgrammarBackend is constructed, so changing the env var requires restarting the server.
+tuning_advice:
+  summary: Leave at the 512 MB default unless serving many distinct JSON schemas/regexes, in which case raise it to cut CPU-side
+    grammar recompilation.
+  suggested_values:
+  - scenario: Default / few distinct schemas
+    value: 512
+    reason: Default is documented as enough for roughly 1000 JSON schemas; no benefit to changing it.
+  - scenario: High-cardinality structured output (thousands of distinct schemas/regexes) on Ascend
+    value: 2048
+    reason: Larger host-side cache avoids repeated xgrammar compilation, reducing per-request CPU latency that can otherwise
+      stall the scheduler feeding the NPU.
+  - scenario: Memory-constrained host
+    value: 128
+    reason: Caps host RAM used by the grammar cache; only costs extra recompilation for repeated schemas.
+  caveats:
+  - This is host (CPU) memory and CPU compile time only; it does not change NPU memory usage or model throughput.
+  - vllm-ascend does not override this variable, so upstream behavior applies unchanged on Ascend.
+  - The type stub in vllm/envs.py shows 0 but the runtime default is 512 MB; do not rely on the stub value.
+  quick_guide: Keep 512 MB unless you serve many distinct schemas, then raise to 1-2 GB.
+analysis_date: '2026-10-27'

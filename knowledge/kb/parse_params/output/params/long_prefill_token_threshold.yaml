@@ -1,0 +1,160 @@
+name: --long-prefill-token-threshold
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:70
+- vllm/engine/arg_utils.py:558
+- vllm/engine/arg_utils.py:1609
+- vllm/v1/core/sched/scheduler.py:474
+- vllm/v1/core/sched/scheduler.py:661
+- vllm_ascend/patch/platform/patch_balance_schedule.py:243
+- vllm_ascend/patch/platform/patch_balance_schedule.py:550
+- vllm_ascend/core/dyntra_lb_scheduler.py:506
+- vllm_ascend/core/dyntra_lb_scheduler.py:866
+- vllm_ascend/core/recompute_scheduler.py:281
+- vllm_ascend/core/recompute_scheduler.py:664
+- vllm_ascend/core/scheduler_profiling_chunk.py:369
+- vllm_ascend/core/scheduler_profiling_chunk.py:844
+value_type: int
+default: 0
+valid_choices: integer >= 0; 0 disables the cap
+cli_example: --long-prefill-token-threshold 2048
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter caps the number of new tokens scheduled for a single prefill
+
+  request per scheduler step. In upstream vLLM v1 (vllm/v1/core/sched/scheduler.py:661)
+
+  the logic is: "if 0 < long_prefill_token_threshold < num_new_tokens, then"
+
+  num_new_tokens is clamped to the threshold before being further clamped by
+
+  token_budget. It also feeds the Mamba block-aligned split path
+
+  (scheduler.py:474-476) where it bounds max_prefill_tokens used to decide
+
+  chunk-end alignment.
+
+
+  vllm-ascend does NOT override the default (still 0) but re-implements the same
+
+  clamp in every Ascend scheduler variant: "patch_balance_schedule.py (DP prefill"
+
+  balancing patch, lines 243 and 550), dyntra_lb_scheduler.py (dynamic load-balance
+
+  scheduler, lines 506 and 866), recompute_scheduler.py (lines 281 and 664), and
+
+  scheduler_profiling_chunk.py (lines 369 and 844). In all of these the identical
+
+  pattern `if 0 < threshold < num_new_tokens: num_new_tokens = threshold` is applied
+
+  before the token_budget clamp.
+
+
+  Mechanism on Ascend: "chunked prefill splits a long prompt into multiple scheduler"
+
+  steps. A smaller threshold forces more, smaller prefill chunks, which:
+
+  (1) reduces per-step prefill compute and thus per-step latency / TTFT variance,
+
+  (2) increases the number of steps needed to finish a long prompt (more decode
+
+  interleaving opportunities, better fairness for concurrent decodes),
+
+  (3) can lower prefill throughput because each chunk has fixed per-step overhead
+
+  (kernel launch, HCCL all-reduce/all-gather, graph replay setup) that is amortized
+
+  over fewer tokens. On Ascend NPU, per-step overhead is relatively high due to
+
+  CANN kernel dispatch and HCCL collective latency, so very small thresholds can
+
+  noticeably degrade prefill throughput. Conversely, a large threshold (or 0) lets
+
+  a single long prefill monopolize the step, starving decodes and inflating
+
+  inter-token latency for other requests.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:70
+  context: Field definition with default 0 and ge=0 validation; docstring describes the long-prefill cap.
+- file: vllm/config/scheduler.py:278
+  context: Forced to 0 for encoder-decoder models (chunked prefill disabled).
+- file: vllm/engine/arg_utils.py:1609
+  context: CLI flag registration in the SchedulerConfig argument group.
+- file: vllm/v1/core/sched/scheduler.py:661
+  context: Upstream v1 scheduler clamps num_new_tokens to the threshold before token_budget.
+- file: vllm/v1/core/sched/scheduler.py:474
+  context: Bounds max_prefill_tokens used in Mamba block-aligned chunk splitting.
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:243
+  context: 'Ascend DP prefill-balancing patch: clamps running-request prefill chunk size.'
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:550
+  context: 'Ascend DP prefill-balancing patch: clamps waiting-request prefill chunk size.'
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:506
+  context: 'Ascend dynamic load-balance scheduler: running-request prefill clamp.'
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:866
+  context: 'Ascend dynamic load-balance scheduler: waiting-request prefill clamp.'
+- file: vllm_ascend/core/recompute_scheduler.py:281
+  context: 'Ascend recompute scheduler: running-request prefill clamp.'
+- file: vllm_ascend/core/recompute_scheduler.py:664
+  context: 'Ascend recompute scheduler: waiting-request prefill clamp.'
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:369
+  context: 'Ascend profiling-chunk scheduler: running-request prefill clamp.'
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:844
+  context: 'Ascend profiling-chunk scheduler: waiting-request prefill clamp, before dynamic chunk sizing.'
+related_parameters:
+- name: --max-num-batched-tokens
+  relation: Upper bound on total tokens per step; the long-prefill threshold is applied before this clamp, so it must be <=
+    max-num-batched-tokens to have any effect.
+- name: --enable-chunked-prefill
+  relation: The threshold only matters when chunked prefill is active; without chunking a long prompt is scheduled whole or
+    rejected.
+- name: --max-num-seqs
+  relation: Smaller thresholds let more concurrent requests interleave decodes, interacting with max-num-seqs for fairness.
+- name: --scheduler-cls
+  relation: Ascend custom schedulers (dyntra_lb_scheduler, recompute_scheduler, scheduler_profiling_chunk) each re-implement
+    the clamp; behavior depends on which scheduler is selected.
+- name: --max-model-len
+  relation: The threshold must be small enough that chunked prefill can still cover prompts up to max-model-len within the
+    token budget.
+constraints:
+- The value must be a non-negative integer (Field(ge=0)); negative values are rejected at config validation.
+- A value of 0 disables the cap entirely, meaning a long prompt may consume the full token budget in one step.
+- For encoder-decoder models the value is forcibly reset to 0 because chunked prefill is disabled for them.
+- The threshold only takes effect when it is strictly less than the number of new tokens the request would otherwise schedule;
+  values larger than max-num-batched-tokens have no practical effect.
+tuning_advice:
+  summary: Leave at 0 for max prefill throughput; set a moderate value (e.g. 2048-4096) when long prompts starve concurrent
+    decodes and inflate inter-token latency.
+  suggested_values:
+  - scenario: Offline batch / throughput-oriented prefill-heavy workloads
+    value: 0
+    reason: Disabling the cap lets each prefill step use the full token budget, amortizing Ascend per-step overhead (CANN
+      dispatch, HCCL) over more tokens and maximizing prefill throughput.
+  - scenario: Online serving with mixed long-prompt and decode traffic, latency-sensitive
+    value: 2048
+    reason: Caps long prefill chunks so decodes from other requests can interleave each step, reducing inter-token latency
+      and TTFT variance while keeping chunks large enough to amortize Ascend per-step overhead.
+  - scenario: Very long prompts (e.g. >32K) with tight decode SLOs
+    value: 1024
+    reason: Smaller chunks give finer-grained interleaving of decodes; use only if decode latency is the bottleneck, since
+      prefill throughput will drop on Ascend due to higher per-step overhead.
+  - scenario: DeepSeek-style models with MTP/speculative decoding and chunked prefill
+    value: 128
+    reason: Matches the vllm-ascend e2e accuracy test configuration (test_accuracy.py uses long_prefill_token_threshold=128
+      with chunked prefill and MTP), keeping chunks small enough to preserve spec-decode padding and graph replay.
+  caveats:
+  - Values below the KV-cache block size (e.g. 128) can cause partial-block prefill chunks and extra block allocations on
+    Ascend.
+  - The threshold is applied before max-num-batched-tokens clamping, so values >= max-num-batched-tokens are effectively no-ops.
+  - Behavior differs across Ascend scheduler variants; verify with the scheduler actually in use (dyntra_lb_scheduler, recompute_scheduler,
+    scheduler_profiling_chunk, or the balance-schedule patch).
+  - In scheduler_profiling_chunk, a small threshold overrides the dynamic chunk manager's prediction, so avoid combining a
+    small threshold with profiling-based chunk sizing.
+  quick_guide: Keep 0 for throughput; use 1024-4096 for latency-sensitive mixed workloads on Ascend.
+analysis_date: '2026-10-27'

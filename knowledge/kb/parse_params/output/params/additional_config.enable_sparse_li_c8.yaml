@@ -1,0 +1,91 @@
+name: additional_config.enable_sparse_li_c8
+type: nested
+category: quantization
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:643
+- vllm_ascend/ascend_config.py:450
+- vllm_ascend/ascend_config.py:652
+- vllm_ascend/ascend_config.py:653
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'enable_sparse_li_c8 is a vllm-ascend-only switch (defined in AscendConfig, passed via
+
+  --additional-config JSON). It is a derived field (sentinel default False, overwritten by
+
+  the after-validator / derive_and_validate path) that enables C8 (8-bit / FP8) quantization
+
+  for the LightningIndexer (LI) component of sparse attention models. It was split out of the
+
+  former single `enable_sparse_c8` option (PR #12351) into `enable_sparse_sfa_c8` (Sparse
+
+  Flash Attention C8) and `enable_sparse_li_c8` (LightningIndexer C8).
+
+  When enabled, the config populates the private derived state `_sparse_li_c8_layer_ids` and
+
+  `_sparse_li_c8_layer_names` (ascend_config.py:652-653), which are used to select which
+
+  LightningIndexer layers run in C8 quantized mode. This changes the compute path of the
+
+  indexer (lower-precision matmuls, reduced memory footprint for indexer weights/activations)
+
+  and interacts with `c8_enable_reshape_optim` (ascend_config.py:646) which controls a reshape
+
+  optimization for the C8 path. Net effect on Ascend NPU: reduced memory for the indexer and
+
+  potentially lower latency for the sparse-attention indexer compute, at the cost of precision.
+
+  It does not affect dense-attention or non-sparse models at all.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:643
+  context: 'Field definition `enable_sparse_li_c8: bool = False` in AscendConfig (derived field).'
+- file: vllm_ascend/ascend_config.py:450
+  context: Documented in the AscendConfig example dict as a supported --additional-config key.
+- file: vllm_ascend/ascend_config.py:652
+  context: Private derived state `_sparse_li_c8_layer_ids` populated when the switch is on.
+- file: vllm_ascend/ascend_config.py:653
+  context: Private derived state `_sparse_li_c8_layer_names` populated when the switch is on.
+related_parameters:
+- name: additional_config.enable_sparse_sfa_c8
+  relation: Sibling option split from the former enable_sparse_c8; controls Sparse Flash Attention C8 independently.
+- name: additional_config.enable_sparse_li_c4
+  relation: Alternative lower-precision (C4) variant for the LightningIndexer; mutually exclusive in intent with C8.
+- name: additional_config.c8_enable_reshape_optim
+  relation: Reshape optimization for the C8 path; only meaningful when a C8 sparse option is enabled.
+- name: additional_config.enable_sparse_sfa_turboquant
+  relation: Related sparse-attention quantization switch (derived field).
+constraints:
+- The key must be nested under --additional-config as a JSON object; unknown keys are rejected because AscendConfig uses extra="forbid".
+- The former enable_sparse_c8 option no longer exists; deployments must use enable_sparse_sfa_c8 and/or enable_sparse_li_c8
+  instead.
+- This option only has an effect on models that use a LightningIndexer sparse-attention component; on other models it is a
+  no-op.
+tuning_advice:
+  summary: Enable enable_sparse_li_c8 only for sparse-attention models whose LightningIndexer benefits from C8 quantization,
+    and verify accuracy.
+  suggested_values:
+  - scenario: Sparse-attention model (LightningIndexer) with memory pressure or indexer latency bottleneck, accuracy validated
+    value: true
+    reason: Runs the LightningIndexer in C8 quantized mode, reducing indexer memory and compute latency on Ascend NPU.
+  - scenario: Dense-attention model or model without a LightningIndexer component
+    value: false
+    reason: The switch has no effect on models without a LightningIndexer; leaving it off avoids confusion.
+  - scenario: Accuracy-sensitive deployment where C8 precision loss is unacceptable
+    value: false
+    reason: C8 quantization reduces numerical precision; disable if accuracy regressions are observed.
+  caveats:
+  - This is a vllm-ascend-only option; it does not exist in upstream vLLM.
+  - Migrate from the removed enable_sparse_c8 to the new split options; do not use the old key.
+  - Test accuracy after enabling; C8 indexer quantization can affect output quality.
+  quick_guide: Set additional_config.enable_sparse_li_c8=true only for sparse-attention models needing indexer C8 quantization,
+    after accuracy validation.
+analysis_date: '2026-10-27'

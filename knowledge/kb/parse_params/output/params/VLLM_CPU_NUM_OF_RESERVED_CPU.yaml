@@ -1,0 +1,77 @@
+name: VLLM_CPU_NUM_OF_RESERVED_CPU
+type: env
+category: hardware
+scope: vllm
+source_file:
+- vllm/envs.py:877
+- vllm/envs.py:53
+- vllm/utils/ompmultiprocessing.py:56
+value_type: int
+default: null
+valid_choices: Any non-negative integer; if unset (None) the backend auto-computes the reserved core count
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+impact_detail: 'This is a CPU-backend-only environment variable (documented in vllm/envs.py as
+
+  "(CPU backend only) CPU cores not used by OMP threads"). It is read in
+
+  vllm/utils/ompmultiprocessing.py:56 inside the OMP thread-binding setup. When set,
+
+  it overrides the auto-computed `reserve_cpu_num` (which defaults to local_world_size
+
+  on ARM/RISC-V, else 1, plus 1 more if kv_transfer_config is present for nixl_connector
+
+  under P/D). The reserved cores are excluded from the set of cores bound to OpenMP
+
+  compute threads, so the value directly changes how many CPU cores the OMP thread pool
+
+  can use for CPU-side work (tokenization, sampling, scheduling, CPU KV cache ops).
+
+  On Ascend NPU, the model compute runs on the NPU (Da Vinci cores) and the CPU is only
+
+  used for host-side orchestration; the CPU backend OMP thread binding path is not the
+
+  active execution path. Therefore this parameter has no meaningful effect on Ascend NPU
+
+  throughput/latency/memory. It only matters if vllm-ascend is run in a hybrid/CPU-offload
+
+  scenario, which is not the standard Ascend deployment. No vllm-ascend override of this
+
+  env var was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:877
+  context: Definition of the env var accessor; returns int if set, else None
+- file: vllm/envs.py:53
+  context: 'Type annotation VLLM_CPU_NUM_OF_RESERVED_CPU: int | None = None'
+- file: vllm/utils/ompmultiprocessing.py:56
+  context: Overrides reserve_cpu_num used to exclude cores from OMP thread binding; warns if below minimum requirement
+related_parameters:
+- name: VLLM_CPU_OMP_THREADS_BIND
+  relation: Both control which CPU cores are bound to OpenMP threads; reserved cores are excluded from the OMP-bound set
+- name: VLLM_CPU_KVCACHE_SPACE
+  relation: Both are CPU-backend-only tuning knobs; irrelevant to standard Ascend NPU execution
+constraints:
+- This variable only takes effect on the CPU backend; it has no effect when running on Ascend NPU.
+- If the value is set lower than the minimum required reserved cores (local_world_size on ARM/RISC-V else 1, plus 1 when kv_transfer_config
+  is set), vLLM logs a warning but still uses the provided value.
+tuning_advice:
+  summary: Irrelevant for standard Ascend NPU deployments; only tune on CPU backend to balance OMP compute cores vs. scheduler/reserved
+    cores.
+  suggested_values:
+  - scenario: Standard Ascend NPU inference (default)
+    value: unset
+    reason: CPU OMP thread binding is not the active execution path on Ascend; leave unset.
+  - scenario: CPU backend with P/D disaggregation (kv_transfer_config set)
+    value: 2
+    reason: Reserve at least one core for the scheduler process plus one for nixl_connector to avoid contention.
+  caveats:
+  - Setting this too low triggers a warning and may starve the scheduler/connector processes of CPU cores.
+  - Setting it too high reduces the cores available to OMP compute threads, lowering CPU-backend throughput.
+  - No effect on Ascend NPU runtime; do not expect any performance change from tuning it there.
+  quick_guide: Leave unset on Ascend NPU; only adjust on CPU backend to reserve cores for scheduler/connector processes.
+analysis_date: '2026-10-27'

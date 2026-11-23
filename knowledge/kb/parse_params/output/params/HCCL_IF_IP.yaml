@@ -1,0 +1,97 @@
+name: HCCL_IF_IP
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- tests/e2e/common/multi_node/benchmark_results.py:10
+- tests/e2e/common/multi_node/external_dp/runtime.py:569
+- tests/e2e/common/multi_node/internal_dp/multi_node_config.py:94
+value_type: str
+default: <computed>
+valid_choices: Any valid IPv4/IPv6 address of a local NIC that is reachable by all nodes in the HCCL cluster
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_IF_IP is a CANN/HCCL environment variable (not defined in vLLM or vllm-ascend
+
+  Python source; it is consumed by the underlying HCCL communication library) that
+
+  selects which local IP address HCCL binds for inter-rank communication. In the
+
+  vllm-ascend multi-node test harness it is set alongside HCCL_SOCKET_IFNAME,
+
+  GLOO_SOCKET_IFNAME, TP_SOCKET_IFNAME, LOCAL_IP, NIC_NAME and MASTER_IP to the
+
+  current node''s IP (see DistEnvBuilder.build() in internal_dp/multi_node_config.py
+
+  and build_dist_envs() in external_dp/runtime.py). The value determines the network
+
+  interface HCCL uses for collective operations (AllReduce/AllGather/ReduceScatter)
+
+  and for the initial socket bootstrap between ranks. If it points at a slow
+
+  management NIC instead of the high-speed service network, all collective
+
+  communication — which is on the critical path of tensor-parallel and data-parallel
+
+  inference — is routed over the wrong link, increasing per-step latency and
+
+  reducing throughput. If it is misconfigured (unreachable IP, mismatched with
+
+  HCCL_SOCKET_IFNAME), HCCL bootstrap can hang or fail, blocking engine startup
+
+  entirely. It does not change memory usage.
+
+  '
+usage_locations:
+- file: tests/e2e/common/multi_node/internal_dp/multi_node_config.py:94
+  context: DistEnvBuilder.build() sets HCCL_IF_IP to the current node IP for internal-DP multi-node launches
+- file: tests/e2e/common/multi_node/external_dp/runtime.py:569
+  context: build_dist_envs() sets HCCL_IF_IP to cur_ip for external-DP multi-node launches
+- file: tests/e2e/common/multi_node/benchmark_results.py:10
+  context: Listed in INFRA_ENV_KEYS so it is recorded as infrastructure config in benchmark results
+related_parameters:
+- name: HCCL_SOCKET_IFNAME
+  relation: Must select the same NIC/service network as HCCL_IF_IP; the two are set together in the test harness
+- name: GLOO_SOCKET_IFNAME
+  relation: Gloo socket interface, set to the same NIC name as HCCL_SOCKET_IFNAME
+- name: TP_SOCKET_IFNAME
+  relation: Tensor-parallel socket interface, set to the same NIC name
+- name: LOCAL_IP
+  relation: Set to the same current-node IP as HCCL_IF_IP
+- name: MASTER_IP
+  relation: Master node IP used for distributed bootstrap; must be reachable from HCCL_IF_IP
+- name: NIC_NAME
+  relation: Network interface name corresponding to HCCL_IF_IP
+- name: HCCL_BUFFSIZE
+  relation: HCCL buffer size; role-specific (e.g. 1024 Prefill / 1800 Decode) and must be validated together with the network
+    config
+constraints:
+- HCCL_IF_IP must be a valid IP address assigned to a local NIC on the node.
+- HCCL_IF_IP and the socket interface variables (HCCL_SOCKET_IFNAME, GLOO_SOCKET_IFNAME, TP_SOCKET_IFNAME) must select the
+  same high-speed service network used by the configured node IPs.
+- The selected IP must be reachable from all other nodes in the HCCL cluster, otherwise collective bootstrap hangs or fails.
+tuning_advice:
+  summary: Always set HCCL_IF_IP to the node's high-speed service-network IP and keep it consistent with the socket interface
+    variables.
+  suggested_values:
+  - scenario: Multi-node deployment on Ascend NPU (A2/A3) with a dedicated high-speed service network
+    value: <node service-network IP>
+    reason: Routing HCCL collectives over the high-speed service NIC minimizes collective latency and maximizes throughput;
+      the docs require HCCL_IF_IP and socket interface variables to select the same service network used by the node IPs.
+  - scenario: Single-node multi-NPU (no cross-node traffic)
+    value: <loopback or local service IP>
+    reason: HCCL still needs a valid local IP for bootstrap; using the local service IP avoids accidental routing over a slow
+      management interface.
+  caveats:
+  - Setting HCCL_IF_IP to a management/out-of-band NIC IP silently routes all collectives over the slow link, degrading latency
+    and throughput without an obvious error.
+  - If HCCL_IF_IP does not match HCCL_SOCKET_IFNAME's NIC, HCCL bootstrap can hang, blocking engine startup.
+  - This variable is consumed by CANN/HCCL, not by vLLM or vllm-ascend Python code; vllm-ascend only sets it in its multi-node
+    test harness, so production deployments must set it manually.
+  - The DP RPC, engine, Mooncake, and proxy ports must be allowed by the host firewall for the selected network.
+  quick_guide: Set HCCL_IF_IP to the node's high-speed service-network IP and match it with HCCL_SOCKET_IFNAME.
+analysis_date: '2026-10-27'

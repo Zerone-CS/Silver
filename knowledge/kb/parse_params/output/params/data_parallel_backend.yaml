@@ -1,0 +1,148 @@
+name: --data-parallel-backend
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1164
+- vllm/config/parallel.py:149
+- vllm/engine/arg_utils.py:2173
+- vllm/v1/engine/utils.py:1155
+- vllm/v1/engine/core_client.py:1710
+- vllm_ascend/worker/worker.py:392
+- vllm_ascend/worker/worker.py:472
+- vllm_ascend/_310p/worker_310p.py:193
+value_type: str
+default: mp
+valid_choices:
+- mp
+- ray
+cli_example: --data-parallel-backend ray
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This parameter selects how data-parallel (DP) replicas are launched and
+
+  coordinated. It does not change per-token compute, but it changes the process
+
+  topology, device binding, and the DP coordination path, all of which affect
+
+  throughput and startup latency on Ascend NPU.
+
+
+  Upstream vLLM (vllm/engine/arg_utils.py:1164) defines the flag with default
+
+  "mp" and choices "mp"/"ray". In vllm/v1/engine/utils.py:1155, when
+
+  data_parallel_backend == "ray", the engine launches a CoreEngineActorManager
+
+  (Ray actors) instead of local CoreEngine processes; this adds Ray actor
+
+  scheduling overhead and inter-actor RPC but enables multi-node / elastic
+
+  scaling. In vllm/v1/engine/core_client.py:1710, elastic EP scaling asserts
+
+  data_parallel_backend == "ray" — so only the ray backend supports dynamic
+
+  DP resizing.
+
+
+  On Ascend, vllm-ascend reads this value in the worker device-binding logic.
+
+  In vllm_ascend/worker/worker.py:392 (_init_device) and worker.py:472
+
+  (init_device), the DP local-rank shift
+
+  (local_rank += dp_local_rank * tp_pp_world_size) is applied ONLY when
+
+  distributed_executor_backend is not ray/external_launcher AND
+
+  data_parallel_backend != "ray" AND nnodes_within_dp == 1. So with the "mp"
+
+  backend, each DP worker shifts its local_rank to bind to a distinct NPU set;
+
+  with "ray", the shift is skipped because Ray already assigns devices per
+
+  actor. The same conditional appears in the 310P worker
+
+  (vllm_ascend/_310p/worker_310p.py:193). This means the backend choice
+
+  directly determines NPU device assignment correctness and thus whether DP
+
+  replicas actually spread across distinct NPUs (a wrong choice can cause
+
+  device contention or assertion failures, degrading throughput).
+
+
+  Additionally, vllm/config/parallel.py:834 excludes data_parallel_backend
+
+  from compute_hash, so it does not affect graph structure / compilation
+
+  caching — its impact is purely launch-topology and coordination overhead.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1164
+  context: CLI definition of --data-parallel-backend / -dpb, default mp, choices mp/ray
+- file: vllm/config/parallel.py:149
+  context: ParallelConfig.data_parallel_backend field, default 'mp'
+- file: vllm/engine/arg_utils.py:2173
+  context: 'Validation: nnodes > 1 requires data_parallel_backend == ''mp'''
+- file: vllm/v1/engine/utils.py:1155
+  context: Selects Ray CoreEngineActorManager launch path when backend == 'ray'
+- file: vllm/v1/engine/core_client.py:1710
+  context: Elastic EP scaling asserts backend == 'ray'
+- file: vllm_ascend/worker/worker.py:392
+  context: 'Ascend worker _init_device: DP local_rank shift skipped when backend == ''ray'''
+- file: vllm_ascend/worker/worker.py:472
+  context: 'Ascend worker init_device: local_world_size vs visible NPU count check gated on backend != ''ray'''
+- file: vllm_ascend/_310p/worker_310p.py:193
+  context: '310P worker: same backend-gated device count assertion'
+related_parameters:
+- name: --data-parallel-size
+  relation: Backend only matters when DP size > 1; DP replicas are launched per this backend
+- name: --data-parallel-size-local
+  relation: Local DP replica count; combined with backend to determine device binding
+- name: --nnodes
+  relation: nnodes > 1 forces backend to 'mp' (ray rejected)
+- name: --distributed-executor-backend
+  relation: Interacts with backend in Ascend device-binding conditionals (ray/external_launcher bypass the DP shift)
+- name: --enable-elastic-ep
+  relation: Elastic EP scaling requires data_parallel_backend == 'ray'
+- name: --device-ids
+  relation: When device-ids pre-shards NPUs, the Ascend DP local_rank shift is skipped regardless of backend
+constraints:
+- The value must be either 'mp' or 'ray'.
+- When --nnodes is greater than 1, --data-parallel-backend must be 'mp'; using 'ray' raises a ValueError.
+- Elastic EP scaling (prepare_elastic_ep) requires --data-parallel-backend ray; otherwise an assertion fails.
+- On Ascend, the DP local_rank device-binding shift is only applied when the backend is not 'ray' and nnodes_within_dp ==
+  1; with 'ray' the shift is skipped.
+tuning_advice:
+  summary: 'Use ''mp'' (default) for single-node Ascend DP deployments to get correct
+
+    NPU device binding and lowest launch overhead; use ''ray'' only when you need
+
+    multi-actor orchestration or elastic EP scaling, and never with --nnodes > 1.
+
+    '
+  suggested_values:
+  - scenario: Single-node multi-NPU data-parallel deployment (v1-ascend and v2-ascend)
+    value: mp
+    reason: Default backend; triggers the Ascend DP local_rank shift so each DP replica binds to a distinct NPU set, and avoids
+      Ray actor overhead.
+  - scenario: Elastic EP scaling / dynamic DP resizing
+    value: ray
+    reason: Elastic EP scaling asserts data_parallel_backend == 'ray'; only the ray backend supports dynamic DP resizing.
+  - scenario: Multi-node deployment (--nnodes > 1)
+    value: mp
+    reason: nnodes > 1 requires the mp backend; ray raises a ValueError.
+  - scenario: Pre-sharded NPUs via --device-ids
+    value: mp
+    reason: With device-ids the DP shift is skipped anyway; mp keeps launch simple and avoids Ray overhead.
+  caveats:
+  - Do not combine --data-parallel-backend ray with --nnodes > 1; it raises a ValueError.
+  - On Ascend, verify DP replicas land on distinct NPUs when using ray, since the automatic local_rank shift is skipped.
+  - Ray backend increases startup latency and inter-process RPC overhead; prefer mp for single-node throughput-focused serving.
+  quick_guide: Keep the default 'mp' for single-node Ascend DP; switch to 'ray' only for elastic EP scaling.
+analysis_date: '2026-10-27'

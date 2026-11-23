@@ -1,0 +1,73 @@
+name: VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:1981
+- vllm/envs.py:290
+- vllm/compilation/compiler_interface.py:759
+value_type: bool
+default: true
+valid_choices: 0 or 1 (boolean int)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read in vllm/compilation/compiler_interface.py:set_inductor_config(),
+
+  where it sets config["coordinate_descent_tuning"] on the Inductor config. It is only
+
+  applied when compile_range.is_single_size() is true (i.e. a static/single compile size
+
+  from compilation_config.compile_sizes). coordinate_descent_tuning makes Inductor run an
+
+  extra autotuning pass over Triton kernel parameters to find faster configurations.
+
+  On Ascend NPU, vLLM''s torch.compile path is largely bypassed/replaced by vllm-ascend''s
+
+  own graph handling (ACLGraph / torchair / npu graph capture), and Triton kernel autotuning
+
+  is a CUDA-centric mechanism. No usage of this env var was found in vllm-ascend source,
+
+  so on Ascend it has little to no runtime effect. Where the upstream Inductor path is
+
+  still exercised, enabling it increases compile time (one-time) in exchange for potentially
+
+  faster generated kernels; it does not affect steady-state memory or communication.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1981
+  context: Definition of the env var, default enabled (1).
+- file: vllm/envs.py:290
+  context: 'Type annotation declaration VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING: bool = True.'
+- file: vllm/compilation/compiler_interface.py:759
+  context: Sets inductor config['coordinate_descent_tuning'] when compiling a single static size.
+related_parameters:
+- name: VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE
+  relation: Companion flag set alongside it in set_inductor_config; both only apply for single-size compile ranges.
+- name: compilation_config.compile_sizes
+  relation: coordinate_descent_tuning is only applied when compile_range.is_single_size() is true, i.e. driven by compile_sizes.
+constraints:
+- The setting only takes effect when the compile range is a single static size (compile_range.is_single_size() is true); for
+  dynamic/multiple sizes it is ignored.
+- Value must be an integer 0 or 1 (parsed via int(os.getenv(...))); other values raise a ValueError at read time.
+tuning_advice:
+  summary: Leave at default (1) on Ascend; it has negligible runtime impact because the Inductor Triton autotuning path is
+    largely bypassed by vllm-ascend graph capture.
+  suggested_values:
+  - scenario: Default Ascend deployment (v1 or v2 worker)
+    value: 1
+    reason: Default is enabled; on Ascend the effect is minimal, so keeping the default avoids surprises and matches upstream
+      behavior.
+  - scenario: Fast startup / minimal compile time when using static compile_sizes
+    value: 0
+    reason: Disabling skips the coordinate-descent autotuning pass, reducing one-time compile latency with little throughput
+      loss on Ascend.
+  caveats:
+  - Only relevant when compile_sizes yields a single static size; otherwise the flag is ignored.
+  - No vllm-ascend override exists, so behavior follows upstream vLLM exactly.
+  quick_guide: Keep default 1 on Ascend; set 0 only to cut compile time when using static compile_sizes.
+analysis_date: '2026-10-27'

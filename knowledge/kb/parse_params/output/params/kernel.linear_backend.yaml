@@ -1,0 +1,102 @@
+name: kernel.linear_backend
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1678
+- vllm/engine/arg_utils.py:2563
+- vllm/model_executor/kernels/linear/__init__.py:250
+- vllm/model_executor/kernels/linear/__init__.py:393
+- vllm/model_executor/layers/linear.py:172
+value_type: str
+default: auto
+valid_choices: auto plus backend names such as torch, xpu, flashinfer_cutedsl, aiter (normalized to lowercase with '-' replaced
+  by '_'); exact set depends on registered linear kernels
+cli_example: --linear-backend <backend>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'kernel.linear_backend selects which GEMM kernel implementation is used for
+
+  linear layers. In upstream vLLM it is read in
+
+  vllm/model_executor/kernels/linear/__init__.py (_get_linear_backend) and
+
+  applied in _resolve_backend_kernels to filter the candidate kernel list for
+
+  each layer type. UnquantizedLinearMethod.__init__ (vllm/model_executor/layers/linear.py:172)
+
+  passes it to dispatch_unquantized_gemm, so it directly chooses the GEMM
+
+  implementation for unquantized linear layers. It also gates platform-specific
+
+  behavior (e.g. XPU W8A8 FP8 selection in compressed_tensors.py:828) and
+
+  FlashInfer autotune warmup paths (kernel_warmup.py:340/383).
+
+  On Ascend, none of the referenced backends (torch/xpu/flashinfer_cutedsl/aiter)
+
+  map to Ascend-native GEMM kernels; vllm-ascend does not define or read this
+
+  parameter in the provided context, so it has no Ascend-specific dispatch
+
+  effect. The Ascend linear path is governed by vllm-ascend''s own platform
+
+  dispatch (torch_npu / ACLNN ops) rather than this flag. Consequently the
+
+  parameter has only a marginal, indirect effect on Ascend runtime — mainly
+
+  through the generic fallback path when a requested backend has no kernel
+
+  (a WARNING is logged and normal selection resumes). It does not change
+
+  throughput/latency meaningfully on NPU.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1678
+  context: Registers --linear-backend CLI argument from KernelConfig.linear_backend
+- file: vllm/engine/arg_utils.py:2563
+  context: Transfers top-level linear_backend into kernel_config when not 'auto'
+- file: vllm/model_executor/kernels/linear/__init__.py:250
+  context: _get_linear_backend returns per-quant override or config.kernel_config.linear_backend
+- file: vllm/model_executor/kernels/linear/__init__.py:393
+  context: _resolve_backend_kernels filters kernel list by backend, falls back with WARNING if empty
+- file: vllm/model_executor/layers/linear.py:172
+  context: UnquantizedLinearMethod selects GEMM impl via dispatch_unquantized_gemm(linear_backend)
+- file: vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors.py:828
+  context: XPU-specific W8A8 FP8 selection based on linear_backend in ('xpu','torch')
+- file: vllm/model_executor/warmup/kernel_warmup.py:340
+  context: FlashInfer BF16 autotune token bucket selection keyed on linear_backend == 'flashinfer_cutedsl'
+related_parameters:
+- name: kernel.linear_backend_per_quant
+  relation: Per-quantization override; takes precedence over linear_backend in _get_linear_backend
+- name: kernel.moe_backend
+  relation: Sibling kernel backend selector for MoE layers
+- name: kernel.enable_flashinfer_autotune
+  relation: Interacts with flashinfer_cutedsl backend for autotune warmup
+- name: quantization
+  relation: Determines which linear kernels are candidates and thus whether the requested backend applies
+constraints:
+- Layer types without a kernel for the requested backend fall back to automatic selection with a WARNING rather than failing
+  startup.
+- The value is normalized to lowercase with '-' replaced by '_' before matching backend names.
+- Setting linear_backend to a non-'auto' value overrides kernel_config.linear_backend only when the top-level value is not
+  'auto'.
+tuning_advice:
+  summary: Leave at 'auto' on Ascend NPU; this flag targets GPU-specific GEMM backends and has negligible Ascend impact.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: auto
+    reason: No Ascend-native backend is selectable via this flag; auto lets vllm-ascend's platform dispatch choose the appropriate
+      linear kernels.
+  - scenario: Debugging kernel selection on GPU reference
+    value: torch
+    reason: Forces the generic torch GEMM path, useful for isolating backend-specific issues; not beneficial on Ascend.
+  caveats:
+  - Do not expect throughput gains from setting a specific backend on Ascend; the flag does not map to ACLNN/torch_npu kernels.
+  - If a requested backend lacks a kernel for a layer type, vLLM logs a WARNING and falls back, so behavior may be unchanged.
+  quick_guide: Keep --linear-backend auto on Ascend; it only matters for GPU-specific GEMM backends.
+analysis_date: '2026-10-27'

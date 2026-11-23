@@ -1,0 +1,109 @@
+name: --hf-token
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:316
+- vllm/engine/arg_utils.py:570
+- vllm/engine/arg_utils.py:939
+- vllm/engine/arg_utils.py:1835
+- vllm/entrypoints/llm.py:208
+value_type: str
+default: null
+valid_choices: bool | str | None (True = use token from `hf auth login`; str = explicit bearer token; None = no auth)
+cli_example: --hf-token <your_hf_token>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--hf-token is a Hugging Face Hub authentication credential used only during the
+
+  model/config/tokenizer download phase (ModelConfig.hf_token, passed through
+
+  EngineArgs -> ModelConfig at vllm/engine/arg_utils.py:1835). It is consumed by
+
+  huggingface_hub when fetching remote files (config.json, tokenizer files,
+
+  safetensors weights) and is not read on any inference hot path.
+
+
+  On Ascend NPU there is no vllm-ascend override of this parameter: vllm-ascend
+
+  does not redefine hf_token, does not patch ModelConfig for it, and does not
+
+  reference it in any runtime dispatch path. The only Ascend-side occurrence in
+
+  the provided context is an unrelated test helper name (test_hf_tokenizer_call_is_thread_safe),
+
+  which is about tokenizer thread-safety, not this flag.
+
+
+  Performance relevance is therefore limited to startup/load time: providing a
+
+  valid token avoids 401/403 retries and rate-limit throttling from the HF Hub,
+
+  which can add seconds-to-minutes to cold-start model loading. It has zero
+
+  effect on steady-state token throughput, decode latency, or NPU memory usage.
+
+  Note that hf_token is explicitly listed in ModelConfig''s ignored_factors set
+
+  (vllm/config/model.py:451), so it does not participate in config hashing /
+
+  compilation cache keys — changing it will not invalidate compiled graphs.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:316
+  context: ModelConfig field definition with docstring describing bearer-token semantics
+- file: vllm/engine/arg_utils.py:570
+  context: EngineArgs field mirroring ModelConfig.hf_token
+- file: vllm/engine/arg_utils.py:939
+  context: CLI argument registration --hf-token in the ModelConfig argument group
+- file: vllm/engine/arg_utils.py:1835
+  context: Passed from EngineArgs into ModelConfig during create_model_config
+- file: vllm/entrypoints/llm.py:208
+  context: LLM(...) offline API constructor parameter
+- file: vllm/entrypoints/serve/utils/api_utils.py:271
+  context: Listed in _SENSITIVE_ARG_FIELDS so it is redacted from logged args
+- file: vllm/v1/utils.py:405
+  context: Redacted before being logged when launching the Rust frontend subprocess
+related_parameters:
+- name: --model
+  relation: The remote repo ID that requires authentication when private/gated
+- name: --revision
+  relation: Revision of the model repo fetched with the same credential
+- name: --tokenizer
+  relation: Tokenizer repo may also require the same HF token
+- name: --download-dir
+  relation: Where authenticated downloads are cached; reused on subsequent loads
+- name: HF_TOKEN
+  relation: Environment variable fallback read by huggingface_hub when --hf-token is not set
+- name: HF_HUB_OFFLINE
+  relation: When offline mode is on, model IDs are rewritten to local paths and no token is used
+constraints:
+- The value must be either a boolean or a string; passing True means 'use the token stored by `hf auth login` in ~/.cache/huggingface/token'.
+- If True is passed but no token exists at ~/.cache/huggingface/token, authentication will fail when accessing gated/private
+  repos.
+- The token is only used for remote Hugging Face Hub access; it has no effect when the model is a local path or when HF_HUB_OFFLINE
+  is enabled.
+tuning_advice:
+  summary: Set a valid HF token (preferably via HF_TOKEN env var) to avoid gated-repo auth retries during model download;
+    it has no steady-state inference impact on Ascend.
+  suggested_values:
+  - scenario: Private or gated model repo (e.g. Llama, gated weights) on Ascend NPU
+    value: <your_hf_token>
+    reason: Authenticates the download so model loading does not fail or retry with 401/403, keeping cold-start time minimal.
+  - scenario: Token already stored via `hf auth login`
+    value: 'True'
+    reason: Reuses the cached token at ~/.cache/huggingface/token without embedding the secret in the command line.
+  - scenario: Public model or fully local model path / HF_HUB_OFFLINE enabled
+    value: unset
+    reason: No authentication is needed; leaving it unset avoids leaking credentials unnecessarily.
+  caveats:
+  - Prefer exporting HF_TOKEN over --hf-token to keep the secret out of shell history and process listings.
+  - Do not expect any throughput or latency change at inference time; this only affects the download/load phase.
+  - If you enable HF_HUB_OFFLINE, model IDs are rewritten to local paths and the token is never consulted.
+  quick_guide: Use HF_TOKEN env var (or --hf-token) only for gated/private repos; it affects download time, not NPU inference
+    performance.
+analysis_date: '2026-10-27'

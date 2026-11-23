@@ -1,0 +1,93 @@
+name: --expert-placement-strategy
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:187
+- vllm/engine/arg_utils.py:529
+- vllm/engine/arg_utils.py:1236
+- vllm/model_executor/layers/fused_moe/expert_map_manager.py:26
+- vllm/model_executor/layers/fused_moe/layer.py:276
+- vllm/model_executor/layers/fused_moe/routed_experts.py:230
+value_type: str
+default: linear
+valid_choices:
+- linear
+- round_robin
+cli_example: --expert-placement-strategy round_robin
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: "This parameter controls how global experts are mapped to expert-parallel (EP) ranks\nin MoE layers. It is\
+  \ consumed by ExpertMapManager (vllm/model_executor/layers/fused_moe/layer.py:276\npasses vllm_config.parallel_config.expert_placement_strategy\
+  \ into ExpertMapManager) and\nultimately by determine_expert_map (expert_map_manager.py:26), which builds the\nglobal->local\
+  \ expert_map tensor (and expert_mask for AITER). The resulting expert_map\nis registered as a buffer on each MoE layer (routed_experts.py:230-236)\
+  \ and used at\nruntime to translate global expert IDs to local slots and to mask non-local experts.\n\n- \"\\\"linear\\\"\
+  : contiguous assignment (rank 0 -> experts [0,1], rank 1 -> [2,3]). This is\"\n  the default and matches the natural ordering\
+  \ of checkpoint weights, so weight loading\n  and the expert_map are trivially contiguous.\n- \"\\\"round_robin\\\": interleaved\
+  \ assignment (rank 0 -> [0,2], rank 1 -> [1,3]). For grouped\"\n  expert models with no redundant experts, this spreads\
+  \ experts that are frequently\n  co-activated (adjacent global IDs) across ranks, improving per-rank load balance and\n\
+  \  reducing the tail rank's compute time in the MoE grouped-GEMM / dispatch phase. Better\n  balance lowers the all-to-all\
+  \ / allgather-reducescatter synchronization stall, which\n  directly affects MoE layer latency and overall throughput.\n\
+  \nOn Ascend NPU, MoE expert-parallel communication runs over HCCL (allgather_reducescatter\nor deepep-style all-to-all).\
+  \ Because these collectives are barrier-like, the slowest rank\ndetermines step time; a more balanced expert distribution\
+  \ (round_robin) can reduce the\nstraggler effect. However, the parameter only changes the expert_map index mapping — it\n\
+  does not change the number of experts per rank or the communication volume. The benefit\nis therefore workload-dependent\
+  \ (only materializes when expert activation is skewed and\nthe model has grouped experts without redundant experts). No\
+  \ vllm-ascend-specific\noverride of this parameter was found in the provided context; vllm-ascend relies on the\nupstream\
+  \ ExpertMapManager path, so the upstream semantics apply on Ascend.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1236
+  context: CLI flag registration in the ParallelConfig argument group, wired to parallel_kwargs['expert_placement_strategy'].
+- file: vllm/engine/arg_utils.py:529
+  context: EngineArgs field defaulting to ParallelConfig.expert_placement_strategy.
+- file: vllm/config/parallel.py:187
+  context: ParallelConfig field definition with docstring describing linear vs round_robin semantics.
+- file: vllm/model_executor/layers/fused_moe/layer.py:276
+  context: Passed as placement_strategy into ExpertMapManager when constructing MoE layers.
+- file: vllm/model_executor/layers/fused_moe/expert_map_manager.py:26
+  context: determine_expert_map uses the strategy to compute local_num_experts and the global->local expert_map.
+- file: vllm/model_executor/layers/fused_moe/routed_experts.py:230
+  context: Stores placement_strategy and registers expert_map/expert_mask buffers used at runtime.
+related_parameters:
+- name: --enable-expert-parallel
+  relation: The strategy only has an effect when expert parallelism is enabled (ep_size > 1); with ep_size == 1 determine_expert_map
+    returns None maps.
+- name: --enable-eplb
+  relation: EPLB performs dynamic expert rebalancing; expert_placement_strategy sets the initial static placement that EPLB
+    may override.
+- name: --eplb-config
+  relation: Configures EPLB behavior which interacts with the initial expert placement.
+- name: --all2all-backend
+  relation: Determines the MoE EP communication primitive whose straggler sensitivity the placement strategy can mitigate.
+- name: --tensor-parallel-size
+  relation: MoE parallel config combines TP and EP; placement applies within the EP group.
+constraints:
+- 'The value must be one of the ExpertPlacementStrategy literals: ''linear'' or ''round_robin''.'
+- The parameter has no effect when expert parallelism is not enabled (ep_size == 1), since determine_expert_map returns None
+  expert maps in that case.
+- Redundant experts are only supported with EPLB; without EPLB the number of redundant experts must be zero.
+tuning_advice:
+  summary: Keep the default 'linear' unless you observe skewed expert activation causing straggler ranks in MoE EP; then try
+    'round_robin' for grouped expert models without redundant experts.
+  suggested_values:
+  - scenario: Default / models with redundant experts or EPLB enabled
+    value: linear
+    reason: Contiguous placement matches checkpoint ordering, keeps expert_map simple, and EPLB handles dynamic balancing;
+      round_robin offers little benefit here.
+  - scenario: Grouped expert MoE (e.g. DeepSeek-style) with EP enabled, no redundant experts, and observed rank imbalance
+    value: round_robin
+    reason: Interleaving adjacent global expert IDs across ranks spreads co-activated experts, improving per-rank balance
+      and reducing HCCL collective straggler stalls.
+  - scenario: Non-MoE model or expert parallelism disabled
+    value: linear
+    reason: The parameter has no effect when ep_size == 1; keep the default to avoid confusion.
+  caveats:
+  - Benchmark with representative traffic; the benefit of round_robin is workload-dependent and may be negligible for balanced
+    routing.
+  - Ensure --enable-expert-parallel is set, otherwise the strategy is inert.
+  - On Ascend, validate against HCCL all-to-all/allgather-reducescatter timing to confirm reduced straggler effect.
+  quick_guide: Use 'linear' by default; switch to 'round_robin' only for grouped-expert MoE with EP and skewed activation.
+analysis_date: '2026-10-27'

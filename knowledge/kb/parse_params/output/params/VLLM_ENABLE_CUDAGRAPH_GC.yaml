@@ -1,0 +1,74 @@
+name: VLLM_ENABLE_CUDAGRAPH_GC
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:1814
+- vllm/envs.py:259
+- vllm/utils/gc_utils.py:102
+value_type: bool
+default: false
+valid_choices: 0 or 1 (boolean)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag controls Python garbage collection behavior during CUDA graph capture
+
+  (vllm/utils/gc_utils.py:freeze_gc_for_cudagraph_capture). When set to 0 (default),
+
+  vLLM calls gc.freeze() and gc.disable() for the duration of bulk graph capture,
+
+  then gc.unfreeze() + gc.collect() + restore on exit. This speeds up capture time
+
+  and, critically, prevents a GC cycle during stream capture from invalidating the
+
+  captured graph (e.g. a finalized Triton kernel unloading its module). When set to 1,
+
+  GC is allowed to run during capture, which can slow capture and risk graph
+
+  invalidation. On Ascend NPU, vllm-ascend uses ACL graph capture (torchair / ACLGraph)
+
+  rather than CUDA graphs, but the same Python-level GC-freeze helper is used around
+
+  capture in the model runner. The parameter does not affect steady-state inference
+
+  throughput or memory; it only affects startup/capture latency and capture
+
+  correctness. No vllm-ascend-specific override of this env var was found in the
+
+  provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1814
+  context: Environment variable definition and default (0/false)
+- file: vllm/envs.py:259
+  context: 'Type annotation VLLM_ENABLE_CUDAGRAPH_GC: bool = False'
+- file: vllm/utils/gc_utils.py:102
+  context: freeze_gc_for_cudagraph_capture reads the flag to decide whether to freeze/disable GC during capture
+related_parameters:
+- name: compilation_config.cudagraph_mode
+  relation: Determines whether graph capture happens at all; GC freezing only matters when graph capture is enabled
+- name: enforce_eager
+  relation: When true, no graph capture occurs, so this flag has no effect
+constraints:
+- The value must be 0 or 1; any other integer is coerced via bool(int(...)) and non-numeric values raise a ValueError at env
+  parse time.
+- This flag only has an effect when graph capture (ACL graph / CUDA graph) is enabled; with --enforce-eager it is ignored.
+tuning_advice:
+  summary: Leave at the default 0 to keep GC frozen during graph capture for faster, safer capture; only set to 1 when debugging
+    GC-related capture issues.
+  suggested_values:
+  - scenario: Production deployment with ACL/CUDA graph capture enabled (default)
+    value: 0
+    reason: Freezing GC speeds up capture and prevents GC cycles from invalidating captured graphs.
+  - scenario: Debugging suspected GC interference during graph capture
+    value: 1
+    reason: Allows GC to run during capture so you can observe whether GC activity is the source of capture failures.
+  caveats:
+  - Do not enable in production; it can cause graph invalidation and slower startup.
+  - No effect when running with --enforce-eager (no graph capture).
+  quick_guide: Keep VLLM_ENABLE_CUDAGRAPH_GC=0 (default); set to 1 only for debugging capture-time GC issues.
+analysis_date: '2026-10-27'

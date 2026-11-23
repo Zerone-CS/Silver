@@ -1,0 +1,110 @@
+name: compilation.pass_config.sp_min_token_num
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:1687
+- vllm/config/vllm.py:2466
+- vllm/compilation/passes/fusion/sequence_parallelism.py:543
+value_type: int
+default: <computed>
+valid_choices: Any positive integer token count; None triggers a heuristic based on hidden_size, tp_size and dtype element
+  size
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'sp_min_token_num is the token-count threshold above which the SequenceParallelismPass
+
+  (vllm/compilation/passes/fusion/sequence_parallelism.py) rewrites the graph to split
+
+  residual tensors across TP ranks. It is only consulted when
+
+  compilation_config.pass_config.enable_sp is True (which is also forced on when
+
+  fuse_gemm_comms is set, see vllm/config/vllm.py:1679-1680). During config init
+
+  (vllm/config/vllm.py:1687-1698) if the value is None it is computed via
+
+  get_sequence_parallelism_threshold(hidden_size, tp_size, element_size); if that
+
+  heuristic still returns None (hidden_size too small) SP is disabled entirely.
+
+  The value is then used in vllm/config/vllm.py:2466-2484 to add a compile range
+
+  endpoint so that the SP-transformed graph is only compiled/used for token counts
+
+  >= min_token_num, and in sequence_parallelism.py:543-553 it is clamped to
+
+  max_num_batched_tokens. On Ascend, vllm-ascend removed its own sp_threshold knob
+
+  and now consumes this upstream field (release notes #7044: "sp_threshold is removed
+
+  in favor of sp_min_token_num from vLLM"), so this parameter directly controls when
+
+  Ascend FlashComm/SP graph variants are selected. Setting it too low forces the SP
+
+  graph for small batches where the extra all-gather/reduce-scatter communication
+
+  outweighs the compute savings (latency regression); setting it too high (or above
+
+  max_num_batched_tokens) means SP is effectively never used, losing the throughput
+
+  and memory benefit of splitting residual activations across TP ranks.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1687
+  context: 'Config init: if sp_min_token_num is None, compute from hidden_size/tp_size/element_size; disable SP if heuristic
+    returns None'
+- file: vllm/config/vllm.py:2466
+  context: 'Compile-range construction: adds an SP compile range endpoint when min_token_num < max_num_batched_tokens and
+    > 1'
+- file: vllm/compilation/passes/fusion/sequence_parallelism.py:543
+  context: SequenceParallelismPass reads the threshold and clamps it to max_num_batched_tokens
+related_parameters:
+- name: compilation_config.pass_config.enable_sp
+  relation: SP pass is only active when enable_sp is True; if TP==1 enable_sp is forced off and this value is irrelevant
+- name: compilation_config.pass_config.fuse_gemm_comms
+  relation: Setting fuse_gemm_comms forces enable_sp=True, which in turn activates sp_min_token_num
+- name: tensor_parallel_size
+  relation: SP requires TP>1; also feeds the default threshold heuristic
+- name: max_num_batched_tokens
+  relation: Threshold is clamped to and compared against max_num_batched_tokens; if >= it, SP compile range is not added
+- name: model_config.hidden_size
+  relation: Used by the default heuristic get_sequence_parallelism_threshold
+constraints:
+- Sequence parallelism requires tensor_parallel_size > 1; with TP=1 enable_sp and fuse_gemm_comms are disabled and this threshold
+  has no effect.
+- If sp_min_token_num is left unset and the hidden_size-based heuristic returns None, SP is disabled with a warning; you must
+  set sp_min_token_num manually to force SP.
+- The effective threshold is clamped to max_num_batched_tokens, so values larger than max_num_batched_tokens never trigger
+  the SP graph.
+- An SP compile range is only added when the threshold is greater than 1 and strictly less than max_num_batched_tokens.
+tuning_advice:
+  summary: Tune sp_min_token_num to the batch size where SP communication cost is amortized by compute savings on Ascend NPUs,
+    typically a few hundred to a few thousand tokens.
+  suggested_values:
+  - scenario: Large-batch prefill-heavy serving with TP>1 and enable_sp on Ascend
+    value: 1024
+    reason: Enables SP graph for reasonably large prefill batches where all-gather/reduce-scatter overhead is amortized, while
+      avoiding SP for small decode-like batches.
+  - scenario: Latency-sensitive small-batch workloads
+    value: 4096
+    reason: Raises the threshold so SP is only used for large batches, avoiding communication overhead on small batches that
+      would increase latency.
+  - scenario: Memory-constrained deployment needing residual activation split
+    value: 512
+    reason: Lower threshold activates SP earlier to reduce per-rank residual memory, at the cost of more communication for
+      small batches.
+  caveats:
+  - Ensure the value is below max_num_batched_tokens, otherwise SP is never triggered.
+  - SP requires TP>1; with TP=1 this parameter is ignored.
+  - On Ascend, verify against FlashComm/SP enablement (enable_sp or fuse_gemm_comms) since vllm-ascend now consumes this upstream
+    field instead of its removed sp_threshold.
+  quick_guide: Set sp_min_token_num to the batch size where SP compute savings beat Ascend HCCL communication cost; keep it
+    below max_num_batched_tokens and only with TP>1.
+analysis_date: '2026-10-27'

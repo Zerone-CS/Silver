@@ -1,0 +1,90 @@
+name: structured_outputs.reasoning_parser
+type: nested
+category: other
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1039
+- vllm/engine/arg_utils.py:2587
+- vllm/v1/structured_output/__init__.py:89
+- vllm/entrypoints/launchers/launcher.py:246
+- vllm/model_executor/models/config.py:406
+value_type: str
+default: ''
+valid_choices: Any reasoning parser name registered in ReasoningParserManager (validated at startup via ReasoningParserManager.list_registered());
+  empty string disables reasoning parsing
+cli_example: --reasoning-parser <parser_name>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter selects a ReasoningParser class that splits model output into
+
+  "reasoning" and "content" segments for OpenAI-compatible API responses. It is
+
+  read in vllm/v1/structured_output/__init__.py:89 where the parser class is
+
+  resolved once at engine init (ReasoningParserManager.get_reasoning_parser) and
+
+  then instantiated per-request lazily (_get_reasoner). The parser runs on the
+
+  CPU in the output-processing path (detokenization / response rendering), not on
+
+  the NPU compute path. It does not affect model execution, KV cache, scheduling,
+
+  or HCCL communication. Its only runtime cost is a small per-request CPU
+
+  overhead for parsing the generated text stream, which is negligible relative to
+
+  NPU token generation. No vllm-ascend override of this parameter was found in
+
+  the provided context; vllm-ascend does not patch StructuredOutputsConfig for
+
+  reasoning parsing, so upstream behavior applies unchanged on Ascend.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:2587
+  context: Copies top-level --reasoning-parser into structured_outputs_config.reasoning_parser during engine config creation
+- file: vllm/v1/structured_output/__init__.py:89
+  context: Resolves the reasoning parser class at engine init and builds per-request parsers lazily
+- file: vllm/entrypoints/launchers/launcher.py:246
+  context: Validates the parser name against ReasoningParserManager.list_registered() at API server startup
+- file: vllm/entrypoints/generate/api_router.py:116
+  context: Passes the parser to OpenAIServingResponses/Chat/Completion for response rendering
+- file: vllm/model_executor/models/config.py:406
+  context: GptOssForCausalLMConfig auto-sets reasoning_parser to openai_gptoss when left empty
+related_parameters:
+- name: structured_outputs.reasoning_parser_plugin
+  relation: Plugin module that must be imported before the parser name can be resolved; used together with reasoning_parser
+- name: tool_call_parser
+  relation: Sibling output-parsing parameter; both run in the CPU response-rendering path
+- name: structured_outputs.enable_in_reasoning
+  relation: Controls whether structured-output constraints apply inside reasoning segments; read alongside reasoning_parser
+constraints:
+- The value must be a parser name registered in ReasoningParserManager, otherwise the API server raises a KeyError at startup.
+- If a custom parser is used, its module must be provided via --reasoning-parser-plugin so it is imported before validation.
+- For GPT-OSS models the parser defaults to openai_gptoss when left empty; setting an incompatible parser may produce incorrect
+  reasoning/content splitting.
+tuning_advice:
+  summary: Set the reasoning parser matching your model's reasoning-token format to get correct reasoning/content separation;
+    it has negligible NPU performance cost.
+  suggested_values:
+  - scenario: DeepSeek-R1 / DeepSeek-V3 style models emitting  thinking... blocks
+    value: deepseek_r1
+    reason: Matches the model's reasoning delimiters so reasoning content is correctly separated in OpenAI API responses.
+  - scenario: Qwen3 models with thinking mode
+    value: qwen3
+    reason: Parses Qwen3 reasoning segments correctly for chat completions.
+  - scenario: GPT-OSS models
+    value: openai_gptoss
+    reason: Auto-selected by GptOssForCausalLMConfig when unset; explicit setting is equivalent.
+  - scenario: Models without reasoning output or when reasoning separation is not needed
+    value: unset
+    reason: Leaving it empty disables reasoning parsing, avoiding any per-request CPU parsing overhead.
+  caveats:
+  - This parameter only affects CPU-side output parsing/rendering; it does not change NPU compute, memory, or throughput.
+  - An invalid parser name causes a startup KeyError, so verify the name against ReasoningParserManager.list_registered().
+  - Custom parsers require --reasoning-parser-plugin to be set so the plugin is imported before validation.
+  quick_guide: Set --reasoning-parser to the parser matching your model's reasoning format (e.g. deepseek_r1, qwen3); leave
+    empty if not needed.
+analysis_date: '2026-10-27'

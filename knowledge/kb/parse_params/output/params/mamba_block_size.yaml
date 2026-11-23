@@ -1,0 +1,106 @@
+name: --mamba-block-size
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:166
+- vllm/engine/arg_utils.py:1306
+- vllm/config/vllm.py:3197
+- vllm_ascend/patch/platform/patch_mamba_config.py:174
+- vllm_ascend/patch/platform/patch_mamba_config_310.py:28
+- vllm_ascend/platform.py:420
+value_type: int
+default: null
+valid_choices: positive integer; must be a multiple of 8 (causal_conv1d kernel alignment); on Ascend 310P must align to 128-token
+  kernel block alignment
+cli_example: --mamba-block-size 128
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "--mamba-block-size controls the granularity of the Mamba (SSM/conv) state cache for hybrid\nattention+Mamba\
+  \ models (e.g. Qwen3-Next, Nemotron-H style). It is only meaningful when\n--enable-prefix-caching is on and the model has\
+  \ Mamba layers.\n\nUpstream (vllm/config/cache.py:166): the field is `int | None` with gt=0, default None. The\ndocstring\
+  \ states it must be a multiple of 8 to align with the causal_conv1d kernel. In\nvllm/config/vllm.py:3197 `validate_mamba_block_size`\
+  \ raises if it is set (non-None and not\nequal to max_model_len) while prefix caching is disabled.\n\nRuntime effect (vllm/v1/attention/backends/mamba_attn.py:417-456):\
+  \ mamba_block_size is used\nin `_compute_prefix_caching_block_indices` to compute block_idx_last_computed_token,\nblock_idx_first_scheduled_token\
+  \ and block_idx_last_scheduled_token via integer division.\nLarger mamba_block_size means fewer Mamba state checkpoints\
+  \ are stored (less memory) but\ncoarser prefix-cache reuse granularity (a cache hit can only land on a mamba_block_size\n\
+  boundary), which can reduce prefix-cache hit rate and thus throughput for workloads with\nshared prefixes. Smaller mamba_block_size\
+  \ stores more state snapshots (more memory) but\nenables finer-grained reuse. The scheduler (vllm/v1/core/sched/scheduler.py:461)\
+  \ also uses\nblock_size to align chunk ends so state is written at block-aligned positions.\n\nvllm-ascend overrides (critical):\n\
+  - \"vllm_ascend/patch/platform/patch_mamba_config.py:174 — when prefix caching is enabled and\"\n  mamba_cache_mode == \"\
+  align\", vllm-ascend FORCES `cache_config.mamba_block_size =\n  cache_config.block_size` (the attention block size, which\
+  \ the Ascend patch sets to 128).\n  Otherwise it sets mamba_block_size = model_config.max_model_len. So on the default Ascend\n\
+  \  path the user-supplied value is effectively overwritten.\n- \"vllm_ascend/patch/platform/patch_mamba_config_310.py:28,69\
+  \ — on 310P, the user value is\"\n  saved before MambaModelConfig runs; for mamba_cache_mode == \"all\" it is used as\n\
+  \  base_chunk_size and the final mamba_block_size is recomputed as an lcm-aligned multiple of\n  128; for \"align\" it is\
+  \ set to cache_config.block_size. The attention block size is bumped\n  to at least the mamba page size aligned to 128.\n\
+  - \"vllm_ascend/platform.py:420 — when prefix caching is off but kv_transfer + hybrid is on and\"\n  mamba_cache_mode ==\
+  \ \"align\", mamba_block_size defaults to block_size, and if explicitly set\n  it must be a multiple of block_size (assert\
+  \ at line 424).\n\nNet: \"on Ascend the parameter mostly influences memory footprint of the Mamba state cache and\"\nthe\
+  \ prefix-cache reuse granularity, but its value is frequently recomputed/overridden by the\nAscend patches to satisfy 128-token\
+  \ kernel alignment. Impact is medium: it affects Mamba\ncache memory and prefix-cache hit rate, not the core attention kernel\
+  \ throughput.\n"
+usage_locations:
+- file: vllm/config/cache.py:166
+  context: Field definition with gt=0 and docstring requiring multiple of 8
+- file: vllm/config/vllm.py:3197
+  context: validate_mamba_block_size raises if set without --enable-prefix-caching
+- file: vllm/v1/attention/backends/mamba_attn.py:417
+  context: Used to compute prefix-caching block indices for Mamba state
+- file: vllm/v1/core/sched/scheduler.py:461
+  context: Used to align prefill chunk ends to block boundaries for state writes
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:174
+  context: Ascend forces mamba_block_size = block_size when prefix caching + align mode
+- file: vllm_ascend/patch/platform/patch_mamba_config_310.py:69
+  context: 310P recomputes mamba_block_size with 128-token kernel alignment
+- file: vllm_ascend/platform.py:420
+  context: kv_transfer hybrid path defaults/validates mamba_block_size against block_size
+related_parameters:
+- name: --enable-prefix-caching
+  relation: 'Required: --mamba-block-size can only be set when prefix caching is enabled'
+- name: --block-size
+  relation: On Ascend mamba_block_size is forced to block_size in align mode; must be a multiple of block_size in kv_transfer
+    hybrid path
+- name: --mamba-cache-mode
+  relation: Determines whether mamba_block_size is used as-is ('all') or set to block_size ('align')
+- name: --mamba-cache-dtype
+  relation: Affects Mamba state element size and thus total Mamba cache memory
+- name: --max-model-len
+  relation: When prefix caching is off, Ascend sets mamba_block_size = max_model_len
+constraints:
+- --mamba-block-size can only be set when --enable-prefix-caching is enabled; otherwise vLLM raises a ValueError.
+- The value must be a positive integer greater than 0.
+- The value must be a multiple of 8 to align with the causal_conv1d kernel.
+- On Ascend 310P, the effective mamba block size is recomputed to align to the 128-token kernel block alignment.
+- When kv_transfer is enabled with hybrid cache and prefix caching is off, an explicitly set mamba_block_size must be a multiple
+  of block_size.
+tuning_advice:
+  summary: Leave --mamba-block-size unset on Ascend unless you need to control Mamba state cache memory; the Ascend patches
+    recompute it to 128-aligned values anyway.
+  suggested_values:
+  - scenario: Default hybrid Mamba model with prefix caching on Ascend (v1/v2)
+    value: unset
+    reason: Ascend patch_mamba_config.py forces mamba_block_size = block_size (128) in align mode, so the default is already
+      optimal and aligned to the kernel.
+  - scenario: Workloads with many short shared prefixes needing finer cache reuse
+    value: 128
+    reason: 128 is the Ascend attention block size and satisfies the multiple-of-8 and 128-token kernel alignment requirements,
+      giving the finest reuse granularity Ascend supports.
+  - scenario: Memory-constrained deployment wanting fewer Mamba state checkpoints
+    value: 256
+    reason: A larger multiple of 128 reduces the number of stored Mamba state snapshots, lowering Mamba cache memory at the
+      cost of coarser prefix-cache reuse.
+  - scenario: 310P hardware with mamba_cache_mode 'all'
+    value: 128
+    reason: 310P recomputes mamba_block_size via lcm with 128-token alignment; supplying 128 as base chunk size yields a predictable
+      aligned result.
+  caveats:
+  - Do not set this without --enable-prefix-caching; vLLM raises a ValueError.
+  - Values not a multiple of 8 (and not 128-aligned on 310P) will be rejected or silently adjusted.
+  - On Ascend align mode the value is overwritten with block_size, so manual tuning is largely ineffective there.
+  quick_guide: Usually leave unset on Ascend; if set, use a multiple of 128 and only with --enable-prefix-caching.
+analysis_date: '2026-10-27'

@@ -1,0 +1,107 @@
+name: additional_config.enable_shared_expert_dp
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:639
+- vllm_ascend/ascend_config.py:448
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This is a vllm-ascend-only switch passed through --additional-config JSON and parsed into
+
+  AscendConfig (pydantic dataclass, extra="forbid"). It is declared as a derived field
+
+  (vllm_ascend/ascend_config.py:639) but the unit test
+
+  test_user_input_derived_field_survives_factory (tests/ut/test_ascend_config.py:1802) confirms
+
+  a user-supplied value survives the factory, so it is effectively user-settable.
+
+
+  Mechanism (per docs, user_guide/configuration/additional_config.md:59): when enabled, the
+
+  shared-expert weights of a MoE model are replicated across TP ranks and the shared expert is
+
+  executed with data parallelism instead of being tensor-parallel sharded. This removes the
+
+  TP all-reduce/all-gather synchronization on the shared-expert branch and lets each DP rank
+
+  compute its own shared-expert activations, which improves throughput on MoE models (e.g.
+
+  DeepSeek/Kimi style architectures with shared experts). The cost is memory: each TP rank
+
+  holds a full copy of the shared-expert weights rather than a 1/TP shard, so NPU HBM usage
+
+  increases.
+
+
+  The docs explicitly state this option is independent of upstream MoE sequence parallelism
+
+  (use_sequence_parallel_moe) — either or both can be enabled. It also interacts with
+
+  multistream_overlap_shared_expert: "per tutorials/models/DeepSeek-V3.1.md:931, the extra"
+
+  stream for shared-expert overlap is enabled when TP size is 1 OR when
+
+  enable_shared_expert_dp is true, so enabling this flag can unlock the multi-stream overlap
+
+  path for shared experts.
+
+
+  E2E tests (tests/e2e/pull_request/four_card/test_sequence_parallel_linear.py,
+
+  test_kimi_k3.py) exercise it with DP2/TP2 + expert parallel + allgather_reducescatter,
+
+  confirming it is intended for multi-DP MoE deployments.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:639
+  context: Field declaration in AscendConfig (derived-field section, default False)
+- file: vllm_ascend/ascend_config.py:448
+  context: Documented in the AscendConfig docstring example JSON for --additional-config
+- file: tests/ut/test_ascend_config.py:1802
+  context: Unit test verifying user-supplied enable_shared_expert_dp survives init_ascend_config factory
+- file: tests/e2e/pull_request/four_card/test_sequence_parallel_linear.py:49
+  context: E2E test toggling enable_shared_expert_dp with DP2/TP2 + expert parallel
+- file: tests/e2e/pull_request/four_card/test_kimi_k3.py:469
+  context: E2E test enabling enable_shared_expert_dp for Kimi K3 W4A8 DP2/TP2
+related_parameters:
+- name: multistream_overlap_shared_expert
+  relation: Enabling enable_shared_expert_dp (or TP=1) allows the extra shared-expert overlap stream to take effect
+- name: enable_expert_parallel
+  relation: Typically used together in MoE DP deployments; tests combine it with expert parallel
+- name: use_sequence_parallel_moe
+  relation: Independent of upstream MoE sequence parallelism; either or both can be enabled
+- name: data_parallel_size
+  relation: Meaningful only when DP > 1; shared expert runs data-parallel across DP ranks
+constraints:
+- Only meaningful for MoE models that have shared experts; on models without shared experts the flag has no effect.
+- Unknown keys in --additional-config are rejected (extra="forbid"), so the key must be spelled exactly enable_shared_expert_dp.
+- Requires a multi-rank MoE deployment (e.g. data_parallel_size > 1 with expert parallel) to provide any benefit.
+tuning_advice:
+  summary: Enable for MoE models with shared experts in multi-DP deployments when NPU memory headroom allows, to trade memory
+    for higher throughput.
+  suggested_values:
+  - scenario: MoE model with shared experts (e.g. DeepSeek/Kimi) deployed with DP>1 and expert parallel, ample NPU memory
+    value: true
+    reason: Replicates shared-expert weights across TP ranks and runs the shared expert data-parallel, removing TP synchronization
+      on that branch and improving throughput; also unlocks the shared-expert multi-stream overlap path.
+  - scenario: Memory-constrained deployment or model without shared experts
+    value: false
+    reason: Replication increases HBM usage and provides no benefit on models lacking shared experts; keep default to preserve
+      KV cache capacity.
+  caveats:
+  - Monitor NPU memory after enabling; weight replication can push KV cache allocation down.
+  - Pair with multistream_overlap_shared_expert to fully exploit the overlap stream when TP=1 or shared-expert DP is on.
+  - Validate correctness with DP2/TP2 + allgather_reducescatter as in the e2e tests before production rollout.
+  quick_guide: Set enable_shared_expert_dp=true in --additional-config for multi-DP MoE models with shared experts when memory
+    allows.
+analysis_date: '2026-10-27'

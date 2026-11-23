@@ -1,0 +1,136 @@
+name: attention.backend
+type: nested
+category: model
+scope: both
+source_file:
+- vllm/config/attention.py:40
+- vllm/engine/arg_utils.py:731
+- vllm/engine/arg_utils.py:1008
+- vllm_ascend/platform.py:856
+- vllm_ascend/platform.py:285
+- vllm_ascend/patch/platform/patch_mla_prefill_backend.py:48
+value_type: str
+default: null
+valid_choices: Any member of AttentionBackendEnum (e.g. FLASH_ATTN, FLASHINFER, TRITON_MLA, FLASHINFER_MLA, ...) or 'auto'/None
+  for automatic selection
+cli_example: --attention-backend <backend-name>
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'In upstream vLLM, AttentionConfig.backend (exposed as --attention-backend) selects the
+
+  concrete AttentionBackend implementation used for the model''s attention layers. The choice
+
+  determines which kernel runs attention (FlashAttention vs FlashInfer vs Triton MLA, etc.),
+
+  which directly changes decode/prefill latency, achievable throughput, KV-cache layout
+
+  (block size support via get_supported_kernel_block_sizes), and CUDA-graph compatibility
+
+  (AttentionCGSupport, consulted in CompilationConfig.resolve_cudagraph_mode_and_sizes at
+
+  vllm/config/compilation.py:1394). A backend with AttentionCGSupport.NEVER can force
+
+  CUDAGraphMode down or raise, which is a large throughput effect.
+
+
+  On Ascend, however, this parameter is effectively neutralized. In
+
+  vllm_ascend/platform.py:856-862, the platform check_and_update_config logic logs
+
+  "User specified attention backend ''%s''. Note that Ascend NPU will use its registered
+
+  plugin backend instead. Resetting to None." and sets att_config.backend = None. The actual
+
+  backend is then chosen by vllm-ascend''s own get_attn_backend_cls (vllm_ascend/platform.py:285
+
+  and surrounding backend_map / pcp_backend_map), which maps (use_mla, use_sfa, use_dsa, use_pcp)
+
+  keys to Ascend-native backends such as AscendAttentionBackend, AscendMLABackend,
+
+  AscendSFABackend, AscendDSABackend, or the 310P compatibility backend. Additionally,
+
+  vllm_ascend/patch/platform/patch_mla_prefill_backend.py:48 monkey-patches
+
+  get_mla_prefill_backend to always return AscendMLAPrefillBackend, so MLA prefill backend
+
+  selection is also forced to Ascend''s implementation.
+
+
+  Therefore the performance impact on Ascend is medium rather than high: "the user-facing"
+
+  value does not select the kernel (Ascend does), but it can still influence behavior
+
+  indirectly — e.g. the RL training-consistency path documented in additional_config.md
+
+  (previously `--attention-backend FLASH_ATTN` for FA3 consistency mode, now migrated to
+
+  `rl_config.enable_training_consistency`), and any code that reads the config before the
+
+  reset. Setting a non-None value produces only a log line and is otherwise ignored for
+
+  kernel selection.
+
+  '
+usage_locations:
+- file: vllm/config/attention.py:40
+  context: AttentionConfig.backend field definition; docstring says use 'auto' or None for automatic selection.
+- file: vllm/engine/arg_utils.py:731
+  context: EngineArgs.attention_backend maps to AttentionConfig.backend.
+- file: vllm/engine/arg_utils.py:1008
+  context: CLI flag --attention-backend registered from AttentionConfig.
+- file: vllm_ascend/platform.py:856
+  context: Ascend platform resets att_config.backend to None, logging that the plugin backend will be used instead.
+- file: vllm_ascend/platform.py:285
+  context: get_attn_backend_cls selects Ascend-native backend from backend_map/pcp_backend_map; raises NotImplementedError
+    for unsupported PCP backend keys.
+- file: vllm_ascend/patch/platform/patch_mla_prefill_backend.py:48
+  context: Monkey-patch forces get_mla_prefill_backend to return AscendMLAPrefillBackend.
+related_parameters:
+- name: attention_config.backend_per_kind
+  relation: Per-KV-cache-group backend overrides; also subject to Ascend's backend reset.
+- name: attention_config.flash_attn_version
+  relation: Reset to None on Ascend (vllm_ascend/platform.py:846-851); only meaningful with flash-attention backend upstream.
+- name: attention_config.mla_prefill_backend
+  relation: Overridden by AscendMLAPrefillBackend monkey-patch on Ascend.
+- name: compilation_config.cudagraph_mode
+  relation: Upstream backend choice affects AttentionCGSupport and thus cudagraph mode resolution; on Ascend the backend is
+    fixed by the plugin.
+- name: rl_config.enable_training_consistency
+  relation: Documented migration target replacing `--attention-backend FLASH_ATTN` for FA3 consistency mode.
+constraints:
+- On Ascend NPU, any user-specified --attention-backend value is ignored and reset to None; the plugin's registered backend
+  is always used.
+- Upstream, a backend selected via --attention-backend that is invalid for a given KV-cache group kind raises at startup (see
+  backend_per_kind docstring).
+- Upstream, 'XFORMERS' is no longer a valid attention backend and raises ValueError.
+- On Ascend MRV2 with PCP enabled, an unsupported (use_mla, use_sfa, use_dsa) combination raises NotImplementedError.
+tuning_advice:
+  summary: On Ascend, leave --attention-backend unset (auto/None); the plugin selects the Ascend-native backend automatically,
+    and setting it only produces a warning log.
+  suggested_values:
+  - scenario: Standard Ascend NPU deployment (v1 or v2 worker)
+    value: auto
+    reason: vllm_ascend/platform.py resets backend to None and uses its own backend_map; specifying a value has no effect
+      on kernel selection and only logs a message.
+  - scenario: RL training consistency mode (previously used --attention-backend FLASH_ATTN)
+    value: auto
+    reason: 'Docs migration guide says to replace `--attention-backend FLASH_ATTN` with `rl_config.enable_training_consistency:
+      true`; the backend flag is no longer the mechanism.'
+  - scenario: Upstream GPU reference / non-Ascend debugging
+    value: FLASH_ATTN
+    reason: On GPU, selecting a backend with AttentionCGSupport.ALWAYS enables full CUDA graphs and best throughput; not applicable
+      on Ascend.
+  caveats:
+  - Setting --attention-backend on Ascend is silently overridden (logged at INFO level); do not rely on it to change kernel
+    behavior.
+  - The actual Ascend backend is chosen by get_attn_backend_cls based on model type (MLA/SFA/DSA) and PCP usage, not by this
+    flag.
+  - MLA prefill backend is force-patched to AscendMLAPrefillBackend regardless of configuration.
+  - Upstream backend choice interacts with cudagraph mode resolution; on Ascend this interaction is bypassed because the backend
+    is fixed by the plugin.
+  quick_guide: Leave --attention-backend at auto/None on Ascend; the plugin picks the backend for you.
+analysis_date: '2026-10-27'

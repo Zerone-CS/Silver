@@ -1,0 +1,80 @@
+name: HCCL_BUFFSIZE_EP
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/Kimi-K3.md:159
+- docs/source/tutorials/models/Qwen3.8-2.4T-A95B.md:199
+- docs/source/tutorials/models/Qwen3.8-2.4T-A95B.md:254
+value_type: int
+default: <computed>
+valid_choices: positive integer (HCCL buffer size in MB); docs use 2048
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'HCCL_BUFFSIZE_EP is a CANN/HCCL runtime environment variable (not defined or read
+
+  directly in vllm or vllm-ascend Python source) that sets the HCCL communication
+
+  buffer size used for Expert-Parallel (EP) all-to-all / dispatch-combine traffic.
+
+  It is consumed by the underlying HCCL library when vllm-ascend performs MoE
+
+  expert-parallel communication (e.g. FusedMoE all-to-all dispatch/combine on
+
+  Ascend NPU). A larger EP buffer allows more in-flight tokens per collective,
+
+  reducing the number of HCCL round-trips and stalls during MoE dispatch/combine,
+
+  which directly affects decode latency and prefill throughput for large MoE models
+
+  (Kimi-K3, Qwen3.8-2.4T-A95B). Because it is a CANN-level knob, vllm-ascend does
+
+  not override it; it is set purely via the environment before process launch.
+
+  The docs pair it with HCCL_BUFFSIZE=1024 (general collective buffer) and set
+
+  HCCL_BUFFSIZE_EP=2048 for EP-heavy MoE deployments.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/Kimi-K3.md:159
+  context: export HCCL_BUFFSIZE_EP=2048 in multi-node Kimi-K3 MoE deployment (DP_SIZE=4, TP_SIZE=16)
+- file: docs/source/tutorials/models/Qwen3.8-2.4T-A95B.md:199
+  context: export HCCL_BUFFSIZE_EP=2048 in Qwen3.8-2.4T-A95B MoE deployment
+- file: docs/source/tutorials/models/Qwen3.8-2.4T-A95B.md:254
+  context: export HCCL_BUFFSIZE_EP=2048 on worker nodes of multi-node Qwen3.8 deployment
+related_parameters:
+- name: HCCL_BUFFSIZE
+  relation: General HCCL collective buffer size; docs set it to 1024 alongside HCCL_BUFFSIZE_EP=2048
+- name: HCCL_INTRA_PCIE_ENABLE
+  relation: Intra-node PCIe transport toggle set in the same MoE deployment scripts
+- name: HCCL_INTRA_ROCE_ENABLE
+  relation: Intra-node RoCE transport toggle set in the same MoE deployment scripts
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Set to AIV in the same MoE deployment scripts to control op expansion
+constraints:
+- Must be set as an environment variable before the vLLM process starts; it is read by the CANN/HCCL runtime, not by vllm-ascend
+  Python code.
+- Value must be a positive integer representing buffer size in MB; setting it too large can exhaust device memory and cause
+  allocation failures.
+tuning_advice:
+  summary: For large MoE models with expert parallelism on Ascend NPU, raise HCCL_BUFFSIZE_EP (e.g. 2048) to reduce EP all-to-all
+    stalls, while keeping HCCL_BUFFSIZE at 1024 and watching device memory headroom.
+  suggested_values:
+  - scenario: Large MoE model (e.g. Kimi-K3, Qwen3.8-2.4T-A95B) with expert parallelism across multiple nodes
+    value: 2048
+    reason: Documented value in vllm-ascend tutorials for EP-heavy MoE deployments; larger EP buffer reduces dispatch/combine
+      round-trips.
+  - scenario: Smaller MoE model or single-node EP deployment with limited device memory
+    value: 1024
+    reason: A moderate EP buffer avoids excessive device memory consumption while still improving over the default.
+  caveats:
+  - Set this env var before launching vllm serve; it is consumed by HCCL at process init.
+  - 'Monitor device memory: a large EP buffer reduces memory available for KV cache.'
+  - Pair with HCCL_BUFFSIZE=1024 as shown in the official tutorials.
+  quick_guide: export HCCL_BUFFSIZE_EP=2048 for large MoE EP deployments; lower it if you hit out-of-memory.
+analysis_date: '2026-10-27'

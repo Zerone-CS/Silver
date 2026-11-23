@@ -1,0 +1,88 @@
+name: additional_config.enable_mc2_hierarchy_comm
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:580
+- vllm_ascend/ascend_config.py:431
+- vllm_ascend/ascend_config.py:664
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a deprecated boolean switch in vllm-ascend''s AscendConfig (additional_config).
+
+  It does not directly implement any communication itself; instead, in the
+
+  `_validate_user_input_ranges` model validator (vllm_ascend/ascend_config.py:664-665),
+
+  when `enable_mc2_hierarchy_comm` is True it sets `self.mc2_comm_alg = "hierarchy"`.
+
+  The actual performance effect therefore flows through `mc2_comm_alg`, which is passed
+
+  as the `comm_alg` parameter to the MC2 dispatch/combine operators used in MoE
+
+  all-to-all communication. Selecting the "hierarchy" algorithm changes how dispatch/combine
+
+  inter-node communication is routed (hierarchical intra-node + inter-node ROCE instead of
+
+  a flat fullmesh), which affects MoE all-to-all latency and effective throughput on
+
+  multi-node deployments. Because it only rewrites `mc2_comm_alg`, the impact is indirect
+
+  (medium): it does not change memory footprint or model math, but it can materially change
+
+  communication latency/throughput for MoE models on A2/A3 multi-node clusters.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:580
+  context: 'Field definition: enable_mc2_hierarchy_comm: bool = False, marked deprecated, to be replaced by mc2_comm_alg =
+    ''hierarchy''.'
+- file: vllm_ascend/ascend_config.py:664
+  context: 'In _validate_user_input_ranges: if self.enable_mc2_hierarchy_comm: self.mc2_comm_alg = ''hierarchy'' — the only
+    place the flag is consumed.'
+- file: vllm_ascend/ascend_config.py:605
+  context: mc2_comm_alg field (Literal['', 'fullmesh', 'hierarchy', 'fullmesh_v2']) that the flag overrides.
+related_parameters:
+- name: mc2_comm_alg
+  relation: Replacement parameter; setting enable_mc2_hierarchy_comm=true forces mc2_comm_alg='hierarchy'. Prefer setting
+    mc2_comm_alg directly.
+- name: enable_fused_mc2
+  relation: Controls whether the fused MC2 / dispatch-ffn-combine path is used; the comm_alg selection only matters when MC2
+    dispatch/combine is active.
+- name: enable_prefill_mc2
+  relation: Affects MC2 token capacity for prefill batches; interacts with MC2 communication path usage.
+constraints:
+- enable_mc2_hierarchy_comm is deprecated and will be removed; use mc2_comm_alg = "hierarchy" instead.
+- The hierarchy communication algorithm is only supported on A2/A3 hardware (per mc2_comm_alg docs); enabling it on unsupported
+  hardware is not valid.
+- Setting enable_mc2_hierarchy_comm=true unconditionally overwrites mc2_comm_alg to "hierarchy", so any explicit mc2_comm_alg
+  value is ignored when this flag is true.
+- Unknown keys in additional_config are rejected (extra="forbid"); the key must be spelled exactly.
+tuning_advice:
+  summary: Do not use this deprecated flag; set mc2_comm_alg="hierarchy" directly for multi-node MoE deployments on A2/A3.
+  suggested_values:
+  - scenario: New deployments on A2/A3 multi-node MoE clusters wanting hierarchical dispatch/combine
+    value: Use mc2_comm_alg="hierarchy" instead of enable_mc2_hierarchy_comm
+    reason: The flag is deprecated and only rewrites mc2_comm_alg; setting mc2_comm_alg directly is the supported path and
+      avoids deprecation.
+  - scenario: Single-node or non-A2/A3 hardware
+    value: false
+    reason: Hierarchy algorithm is only supported on A2/A3; leave disabled and keep default mc2_comm_alg="".
+  - scenario: Legacy configs already using enable_mc2_hierarchy_comm=true
+    value: true
+    reason: Still resolves and maps to mc2_comm_alg="hierarchy", but migrate to mc2_comm_alg to avoid future removal.
+  caveats:
+  - This flag has no effect on its own; it only sets mc2_comm_alg="hierarchy" in the config validator.
+  - It will be removed in a future release; migrate to mc2_comm_alg.
+  - The performance benefit only materializes when the MC2 dispatch/combine path is active (MoE models with enable_fused_mc2
+    / MC2 operators).
+  - Explicitly setting mc2_comm_alg is silently overridden to "hierarchy" when this flag is true.
+  quick_guide: Deprecated — use mc2_comm_alg="hierarchy" on A2/A3 multi-node MoE instead.
+analysis_date: '2026-10-27'

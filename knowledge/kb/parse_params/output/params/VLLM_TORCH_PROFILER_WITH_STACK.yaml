@@ -1,0 +1,78 @@
+name: VLLM_TORCH_PROFILER_WITH_STACK
+type: env
+category: observability
+scope: vllm
+source_file:
+- 'vllm/envs.py: (VLLM_TORCH_PROFILER_WITH_STACK definition, upstream vLLM env var)'
+value_type: bool
+default: true
+valid_choices: 'boolean-like: 0/1 or true/false'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_TORCH_PROFILER_WITH_STACK controls whether the PyTorch profiler captures Python
+
+  stack traces when profiling is enabled (via torch.profiler / vLLM''s profiler integration).
+
+  It is NOT defined or read anywhere in vllm-ascend source; it is an upstream vLLM env var
+
+  consumed only by the profiling code path. When profiling is active and this is enabled,
+
+  the profiler records Python stack frames for each event, which adds CPU-side overhead
+
+  (stack unwinding, symbolization) and inflates trace size. This overhead only materializes
+
+  while a profiling session is running; during normal inference (no profiler active) the
+
+  variable has no effect on the hot path. On Ascend NPU, the profiler still runs on the host
+
+  CPU side and the same stack-capture overhead applies, but it does not alter NPU kernel
+
+  execution, HCCL communication, or memory allocation. The vllm-ascend InternVL3.5 tutorial
+
+  sets it to 0 as part of a production tuning recipe, indicating that disabling stack capture
+
+  reduces profiling overhead and trace bloat during benchmark/profiling runs.
+
+  '
+usage_locations:
+- file: vllm/envs.py
+  context: Upstream vLLM env var definition controlling profiler stack capture
+- file: docs/source/tutorials/models/InternVL3.5.md:105
+  context: vllm-ascend tutorial sets VLLM_TORCH_PROFILER_WITH_STACK=0 in the recommended env export block
+- file: docs/source/tutorials/models/InternVL3.5.md:147
+  context: Second InternVL3.5 deployment recipe also sets VLLM_TORCH_PROFILER_WITH_STACK=0
+related_parameters:
+- name: VLLM_TORCH_PROFILER_DIR
+  relation: Profiling must be enabled (profiler dir set) for this stack-capture flag to have any effect
+- name: VLLM_USE_V1
+  relation: Set alongside in the same tutorial env block; unrelated functionally but part of the same recommended recipe
+constraints:
+- This variable only has an effect when a PyTorch profiling session is active; setting it during normal inference changes
+  nothing.
+- It is not read by vllm-ascend source, so it does not alter Ascend NPU kernel, HCCL, or memory behavior.
+tuning_advice:
+  summary: Disable stack capture (set to 0) during profiling/benchmarking to reduce profiler overhead and trace size; leave
+    default otherwise.
+  suggested_values:
+  - scenario: Production inference without profiling
+    value: 0
+    reason: No profiler is active, so stack capture is irrelevant; setting 0 matches the vllm-ascend InternVL3.5 recommended
+      recipe and avoids any accidental overhead.
+  - scenario: Profiling / benchmarking runs where trace size and overhead matter
+    value: 0
+    reason: Disabling Python stack capture reduces host-side profiler overhead and produces smaller traces, as recommended
+      in the vllm-ascend InternVL3.5 tutorial.
+  - scenario: Debugging where Python call stacks are needed in the trace
+    value: 1
+    reason: Enables stack traces in the profiler output for root-cause analysis, at the cost of extra CPU overhead and larger
+      trace files.
+  caveats:
+  - Only affects behavior while a profiler session is running; it has no impact on steady-state inference throughput or latency.
+  - Not referenced in vllm-ascend source — it is purely an upstream vLLM profiling knob and does not change Ascend NPU execution.
+  - Enabling stack capture (1) inflates trace size and adds host CPU overhead, which can skew profiling measurements.
+  quick_guide: Set VLLM_TORCH_PROFILER_WITH_STACK=0 for profiling/benchmarks; only use 1 when you need Python stack traces
+    in the trace.
+analysis_date: '2026-10-27'

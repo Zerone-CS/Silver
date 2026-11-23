@@ -1,0 +1,82 @@
+name: kv_transfer_config.kv_connector_extra_config.load_async
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:110
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: '`load_async` is read in vllm-ascend''s AscendStoreConnector pool scheduler
+
+  (vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:110) via
+
+  `kv_connector_extra_config.get("load_async", False)`. It controls whether KV cache blocks
+
+  are loaded from the Ascend KV Pool (Mooncake/Memcache/Yuanrong backend) asynchronously
+
+  rather than blocking the request path. When enabled, the scheduler can overlap the KV
+
+  transfer from the store backend with other work (e.g. scheduling, compute of other
+
+  requests), reducing per-request time-to-first-token for prefix-cache hits and improving
+
+  overall throughput under concurrent load. When disabled (default), loads are synchronous,
+
+  so each request that hits the pool stalls until the transfer completes. The parameter
+
+  only affects the AscendStoreConnector path (KV Pool / KVPP / PD-colocated store
+
+  connectors); it has no effect on non-store connectors. It does not change memory
+
+  footprint directly, but async loads can increase concurrent in-flight transfers and
+
+  buffer pressure (see the doc note about BUFFER_OVERFLOW and overlapping loads).
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:110
+  context: Reads load_async from kv_connector_extra_config into self.load_async to drive async KV pool loading in the AscendStoreConnector
+    scheduler.
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+  relation: Layerwise save/load mode; docs recommend use_layerwise=false together with load_async=true for KVPP.
+- name: kv_transfer_config.kv_connector_extra_config.consumer_is_to_load
+  relation: Decode node must load from pool for load_async to matter; load_async governs how that load is performed.
+- name: kv_transfer_config.kv_connector_extra_config.backend
+  relation: Store backend (mooncake/memcache/yuanrong) whose transfer latency async loading overlaps.
+- name: kv_transfer_config.kv_connector_extra_config.register_buffer
+  relation: Buffer registration required for PD-colocated mode; interacts with async load buffer pressure.
+constraints:
+- load_async only takes effect with the AscendStoreConnector (KV Pool) path; it is ignored by connectors that do not read
+  kv_connector_extra_config.
+- load_async must be a boolean (true/false); other values are not documented as valid.
+tuning_advice:
+  summary: Enable load_async=true for AscendStoreConnector KV Pool deployments to overlap KV loads with compute and cut TTFT,
+    while sizing buffers to absorb concurrent in-flight transfers.
+  suggested_values:
+  - scenario: KV Pool / KVPP with AscendStoreConnector, latency-sensitive serving
+    value: true
+    reason: Docs recommend load_async=true for KVPP and PD-colocated store configs; async loads overlap transfer with compute,
+      reducing per-request stall.
+  - scenario: PD-colocated MooncakeConnectorStoreV1
+    value: true
+    reason: Tutorial config sets load_async=true alongside register_buffer=true for PD-colocated mode.
+  - scenario: Memory-constrained host or observed BUFFER_OVERFLOW
+    value: false
+    reason: Disabling async loading reduces overlapping in-flight loads and buffer pressure when buffer overflow errors occur.
+  caveats:
+  - If BUFFER_OVERFLOW or error_codes=[-10] persists with a large buffer, investigate overlapping loads (load_async) per the
+    docs.
+  - Keep use_layerwise=false with load_async=true for KVPP; layerwise pooling is not supported there.
+  - Only relevant to AscendStoreConnector-based KV Pool; no effect on other connectors.
+  quick_guide: Set load_async=true for KV Pool store connectors to overlap KV loads; disable if buffer overflow appears.
+analysis_date: '2026-10-27'

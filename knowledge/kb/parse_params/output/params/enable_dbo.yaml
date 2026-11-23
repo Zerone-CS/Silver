@@ -1,0 +1,109 @@
+name: --enable-dbo
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:222
+- vllm/engine/arg_utils.py:1205
+- vllm/engine/arg_utils.py:519
+- vllm/engine/arg_utils.py:2367
+- vllm_ascend/platform.py:918
+- vllm_ascend/worker/model_runner_v1.py:2369
+- vllm_ascend/ops/fused_moe/fused_moe.py:91
+value_type: bool
+default: false
+valid_choices: true or false (store_true flag)
+cli_example: --enable-dbo
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Upstream vLLM: "--enable-dbo enables \"dual batch overlap\" (microbatching) for the model"
+
+  executor. In vllm/config/parallel.py, ParallelConfig.use_ubatching returns
+
+  `enable_dbo or ubatch_size > 1`, and num_ubatches returns 2 when enable_dbo is set.
+
+  This drives the worker to allocate 2 ubatch workspaces (gpu_worker.py:461,
+
+  xpu_worker.py:187: `num_ubatches = 2 if enable_dbo else 1`), and enables SM control
+
+  contexts (ubatch_utils.py) to reserve SMs for communication kernels while microbatches
+
+  overlap. It also disables cascade attention in the model runner
+
+  (model_runner_v1.py:2369: `if self.cascade_attn_enabled and not enable_dbo`). The
+
+  intent is to overlap compute and communication across two microbatches, improving
+
+  throughput/latency on GPU.
+
+
+  On Ascend NPU: "vllm-ascend explicitly neutralizes this parameter. In"
+
+  vllm_ascend/platform.py:918-922, during platform config validation, if
+
+  parallel_config.enable_dbo is True it logs a warning ("Parameter is currently
+
+  ignored on Ascend. parameter=enable_dbo, action: resetting to False.") and resets
+
+  enable_dbo to False. Consequently, on Ascend the DBO microbatching path is never
+
+  activated: "use_ubatching stays False (unless ubatch_size > 1, which is also reset to 0"
+
+  at platform.py:924-930), num_ubatches stays 1, no dual workspace is allocated, and
+
+  cascade attention is not disabled by DBO. The AscendMoERunner (fused_moe.py:91) still
+
+  accepts an enable_dbo argument but it is always passed False after the reset.
+
+
+  Therefore, on Ascend NPU this flag has effectively no runtime performance effect —
+
+  it is silently ignored and reset. The only observable effect is a warning log line.
+
+  The performance_impact is rated low because the parameter is a no-op on Ascend
+
+  (the upstream mechanism it controls is disabled), not because it is a tuning knob.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:918
+  context: Ascend platform validation resets enable_dbo to False with a warning, neutralizing the flag on NPU.
+- file: vllm/config/parallel.py:597
+  context: use_ubatching property returns enable_dbo or ubatch_size > 1; num_ubatches returns 2 if enable_dbo.
+- file: vllm/v1/worker/gpu_worker.py:461
+  context: Upstream GPU worker allocates 2 ubatch workspaces when enable_dbo is set.
+- file: vllm_ascend/worker/model_runner_v1.py:2369
+  context: Cascade attention is disabled when enable_dbo is set (upstream logic; on Ascend enable_dbo is reset to False so
+    this branch is not taken).
+- file: vllm_ascend/ops/fused_moe/fused_moe.py:91
+  context: AscendMoERunner accepts enable_dbo argument but receives False after platform reset.
+related_parameters:
+- name: --ubatch-size
+  relation: Both feed ParallelConfig.use_ubatching; ubatch_size is also reset to 0 on Ascend (platform.py:924).
+- name: --dbo-decode-token-threshold
+  relation: Threshold controlling when microbatching kicks in for decode-only batches; only meaningful if DBO is active.
+- name: --dbo-prefill-token-threshold
+  relation: Threshold controlling when microbatching kicks in for prefill batches; only meaningful if DBO is active.
+- name: --all2all-backend
+  relation: Upstream DBO interacts with deepep_high_throughput all2all backend (ROCm-specific SM control); not applicable
+    on Ascend.
+constraints:
+- 'On Ascend NPU, --enable-dbo is ignored: vllm-ascend resets parallel_config.enable_dbo to False during platform validation,
+  so the flag has no effect.'
+- Because enable_dbo is reset to False, the DBO microbatching path (num_ubatches=2, dual workspace allocation) is never activated
+  on Ascend.
+tuning_advice:
+  summary: Do not use --enable-dbo on Ascend NPU; it is silently reset to False and has no runtime effect.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: vllm-ascend platform.py:918 resets enable_dbo to False regardless of the flag, so leaving it disabled avoids a
+      misleading warning and matches actual behavior.
+  caveats:
+  - Enabling the flag only emits a warning and is reset; it will not improve throughput or latency on Ascend.
+  - The related --ubatch-size is likewise reset to 0 on Ascend, so the entire ubatching path is inactive.
+  quick_guide: Leave --enable-dbo off on Ascend; it is ignored and reset to False by vllm-ascend.
+analysis_date: '2026-10-27'

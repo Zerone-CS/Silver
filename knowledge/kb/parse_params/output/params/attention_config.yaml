@@ -1,0 +1,105 @@
+name: --attention-config
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1726
+- vllm/engine/arg_utils.py:702
+- vllm/engine/arg_utils.py:801
+- vllm/engine/arg_utils.py:2493
+- vllm/config/vllm.py:381
+- vllm_ascend/ascend_config.py:921
+- vllm_ascend/platform.py:511
+- vllm_ascend/worker/model_runner_v1.py:467
+- vllm_ascend/worker/v2/attn_utils.py:199
+- vllm_ascend/attention/indexer.py:198
+- vllm_ascend/models/deepseek_v4/indexer.py:110
+value_type: dict
+default: '{}'
+valid_choices: JSON object of AttentionConfig fields (e.g. backend, flash_attn_version, flash_attn_max_num_splits_for_cuda_graph,
+  indexer_kv_dtype); on Ascend the practically relevant field is indexer_kv_dtype in {auto, fp8, int8, mxfp4}
+cli_example: '--attention-config ''{"indexer_kv_dtype": "int8"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: "--attention-config is a JSON-serialized AttentionConfig (parsed in EngineArgs.__post_init__ at\nvllm/engine/arg_utils.py:801).\
+  \ On Ascend, the field that actually changes runtime behavior is\nattention_config.indexer_kv_dtype, which selects the dtype\
+  \ of the sparse-attention indexer K cache\n(Lightning Indexer / SFA / DeepSeek-V4 indexer). It is read in several hot paths:\n\
+  - \"vllm_ascend/ascend_config.py:921-924 derives enable_sparse_li_c8 (indexer_kv_dtype in {fp8,int8})\"\n  and enable_sparse_li_c4\
+  \ (indexer_kv_dtype == mxfp4), and raises if both are set. These flags gate\n  the C8/C4 compressed indexer cache path and\
+  \ the c8_reshape_optim prefill optimization\n  (ascend_config.py:933).\n- \"vllm_ascend/platform.py:511 asserts the hardware\
+  \ supports FP8_ATTENTION when indexer_kv_dtype is\"\n  fp8, so the choice is hardware-gated.\n- \"v1 worker (vllm_ascend/worker/model_runner_v1.py:467-481)\
+  \ and v2 worker\"\n  (vllm_ascend/worker/v2/attn_utils.py:199-209) both branch on indexer_kv_dtype to pick the indexer\n\
+  \  K cache dtype (float8_e4m3fn -> fp32 scales, int8 -> fp16 scales) and to build the KV cache spec.\n- \"vllm_ascend/attention/indexer.py:195-209\
+  \ selects the C8/C4 indexer kernel path per layer.\"\n- \"vllm_ascend/models/deepseek_v4/indexer.py:110 resolves \\\"auto\\\
+  \" to the platform default (fp8 on\"\n  A5/compressed-cache-capable hardware, int8 otherwise) and rejects unsupported combinations.\n\
+  Mechanism: \"quantizing the indexer K cache to int8/fp8 (C8) or mxfp4 (C4) shrinks indexer cache\"\nmemory footprint and\
+  \ enables the fused quantized lightning-indexer kernels\n(npu_fused_quant_lightning_indexer_manage), which reduces memory\
+  \ bandwidth and improves sparse\nattention throughput. The upstream fields (backend, flash_attn_version,\nflash_attn_max_num_splits_for_cuda_graph)\
+  \ are CUDA/FlashAttention-specific and have no effect on\nAscend NPU attention backends.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1726
+  context: CLI registration of --attention-config / -ac as JSON-parsed AttentionConfig
+- file: vllm/engine/arg_utils.py:801
+  context: dict -> AttentionConfig conversion in EngineArgs.__post_init__
+- file: vllm/engine/arg_utils.py:2493
+  context: Attention config overrides (backend mutual exclusion, flash_attn_version fixups)
+- file: vllm_ascend/ascend_config.py:921
+  context: Derives enable_sparse_li_c8 / enable_sparse_li_c4 from indexer_kv_dtype
+- file: vllm_ascend/platform.py:511
+  context: Asserts FP8_ATTENTION hardware capability when indexer_kv_dtype is fp8
+- file: vllm_ascend/worker/model_runner_v1.py:467
+  context: v1 worker selects indexer C8 cache dtype and scale dtype
+- file: vllm_ascend/worker/v2/attn_utils.py:199
+  context: v2 worker builds KV cache spec using indexer_kv_dtype
+- file: vllm_ascend/attention/indexer.py:198
+  context: Indexer backend picks C8/C4 kernel path per layer
+- file: vllm_ascend/models/deepseek_v4/indexer.py:110
+  context: Resolves indexer_kv_dtype auto and validates against platform default
+related_parameters:
+- name: --kv-cache-dtype
+  relation: Controls main KV cache dtype (C8 for SFA); indexer_kv_dtype controls the separate indexer cache dtype. Both feed
+    the sparse C8 path.
+- name: --attention-backend
+  relation: Mutually exclusive with attention_config.backend (upstream raises ValueError if both set).
+- name: --speculative-config
+  relation: num_speculative_tokens affects Q_max and topk_buffer_size requirements for the fused sparse indexer path.
+- name: --additional-config
+  relation: AscendConfig strips derived fields (enable_sparse_li_c4 etc.) that are selected by attention_config.indexer_kv_dtype.
+constraints:
+- attention_config.backend and --attention-backend are mutually exclusive; setting both raises a ValueError.
+- enable_sparse_li_c8 (indexer_kv_dtype in fp8/int8) and enable_sparse_li_c4 (indexer_kv_dtype == mxfp4) are mutually exclusive
+  and raise a ValueError if both are enabled.
+- When indexer_kv_dtype is fp8, the hardware must support FP8_ATTENTION or an assertion fails during platform config validation.
+- For DeepSeek-V4 indexer, indexer_kv_dtype must resolve to the platform default (fp8 on compressed-cache-capable hardware,
+  int8 otherwise); other values raise a ValueError.
+- The C8 LIM kernel is int8-only; indexer_kv_dtype fp8 is not a valid LIM C8 serving path.
+tuning_advice:
+  summary: On Ascend, use --attention-config to set indexer_kv_dtype (int8/fp8/mxfp4) for sparse-indexer models to shrink
+    indexer cache and enable fused quantized lightning-indexer kernels; leave other fields at defaults.
+  suggested_values:
+  - scenario: Sparse-indexer model (DeepSeek-V3.2/V4, GLM) on hardware without FP8 attention support, using fused Copy-SFA
+      / LIM C8
+    value: '{"indexer_kv_dtype": "int8"}'
+    reason: The C8 LIM kernel is int8-only; int8 enables npu_fused_quant_lightning_indexer_manage and the C8 indexer cache
+      path.
+  - scenario: Sparse-indexer model on A5/950PR hardware with FP8 attention support
+    value: '{"indexer_kv_dtype": "fp8"}'
+    reason: fp8 is the platform default on compressed-cache-capable hardware and enables the FP8 indexer cache path with per-token
+      FP32 scales.
+  - scenario: Ultra-low-bit (W4A4C8) DeepSeek-V4 deployment
+    value: '{"indexer_kv_dtype": "mxfp4"}'
+    reason: Selects the C4 indexer cache path (enable_sparse_li_c4) for MXFP4 microscaling.
+  - scenario: Default / unsure of hardware capability
+    value: '{}'
+    reason: auto resolution picks fp8 or int8 based on hardware profile, avoiding validation errors.
+  caveats:
+  - Do not set both indexer_kv_dtype fp8 and mxfp4; they are mutually exclusive and raise an error.
+  - Do not combine --attention-backend with attention_config.backend.
+  - Upstream FlashAttention fields in this config are ignored on Ascend.
+  quick_guide: 'Set --attention-config ''{"indexer_kv_dtype": "int8"}'' (or fp8 on FP8-capable hardware) for sparse-indexer
+    models to enable compressed indexer cache and fused kernels.'
+analysis_date: '2026-10-27'

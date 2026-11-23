@@ -1,0 +1,103 @@
+name: VLLM_RPC_TIMEOUT
+type: env
+category: communication
+scope: both
+source_file:
+- 'vllm/envs.py: (VLLM_RPC_TIMEOUT definition, upstream vLLM env registry)'
+- 'vllm-ascend docs: tutorials/models/GLM5.3.md:405'
+- 'vllm-ascend docs: tutorials/models/GLM5.3-Flash.md:877'
+value_type: int
+default: 10000
+valid_choices: positive integer (milliseconds); no hard upper bound
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_RPC_TIMEOUT is an upstream vLLM environment variable that controls the
+
+  timeout (in milliseconds) for RPC calls between the frontend engine process and
+
+  the worker/model-runner processes (e.g. the ZMQ/socket-based RPC channel used by
+
+  the engine core client to send execute_model / sampling requests and await
+
+  responses). It is not a compute-path parameter: it does not change kernel
+
+  selection, memory allocation, or scheduling policy. Its performance relevance is
+
+  therefore indirect and only manifests at startup or under pathological stalls.
+
+  On Ascend, vllm-ascend does not redefine or override this variable in source; it
+
+  is consumed by the upstream vLLM RPC layer that vllm-ascend inherits. The
+
+  vllm-ascend documentation (GLM5.3.md:405) explicitly lists VLLM_RPC_TIMEOUT
+
+  alongside VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS, HCCL_EXEC_TIMEOUT,
+
+  HCCL_CONNECT_TIMEOUT and VLLM_ENGINE_READY_TIMEOUT_S as "timeout settings for
+
+  multi-node startup and model execution on the slower A2 platform", recommending
+
+  VLLM_RPC_TIMEOUT=360000 for large multi-node GLM deployments. The mechanism: on
+
+  Ascend A2 multi-node setups, engine startup and the first RPC round-trips can be
+
+  slow (HCCL communicator bring-up, CANN operator compilation, weight loading over
+
+  the network). If the RPC timeout is too small, the frontend aborts the RPC and
+
+  the engine fails to become ready, forcing a restart — a startup-latency and
+
+  availability cost rather than a steady-state throughput cost. Raising it does not
+
+  speed anything up; it only prevents premature timeouts. Lowering it can surface
+
+  real hangs faster but risks spurious failures on slow A2 nodes.
+
+  '
+usage_locations:
+- file: vllm/envs.py
+  context: Upstream vLLM env var registry entry defining VLLM_RPC_TIMEOUT (milliseconds) used by the engine-core RPC client.
+- file: vllm/v1/engine/core_client.py
+  context: Upstream vLLM v1 engine core client uses the RPC timeout when waiting for responses from worker processes.
+- file: docs/source/tutorials/models/GLM5.3.md:405
+  context: vllm-ascend doc recommends VLLM_RPC_TIMEOUT=360000 for multi-node A2 startup/model execution.
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:877
+  context: vllm-ascend doc lists VLLM_RPC_TIMEOUT among validated A2 startup defaults to keep unless environment requires
+    otherwise.
+related_parameters:
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Companion timeout for model execution; tuned together for slow A2 multi-node startup.
+- name: VLLM_ENGINE_READY_TIMEOUT_S
+  relation: Engine-ready timeout; must be large enough for the engine to come up before RPC/ready checks fail.
+- name: HCCL_EXEC_TIMEOUT
+  relation: HCCL collective execution timeout; related multi-node communication timeout.
+- name: HCCL_CONNECT_TIMEOUT
+  relation: HCCL connection establishment timeout; related multi-node communication timeout.
+constraints:
+- The value is interpreted as a timeout in milliseconds and must be a positive integer.
+- If the RPC timeout is smaller than the actual engine startup / first-response latency on slow A2 multi-node setups, the
+  engine fails to become ready and startup aborts.
+tuning_advice:
+  summary: Keep the default for single-node; raise it substantially for slow multi-node A2 startup to avoid premature RPC
+    timeouts.
+  suggested_values:
+  - scenario: Single-node Ascend deployment with fast startup
+    value: 10000
+    reason: Default is sufficient when engine startup and RPC round-trips are fast; no need to change.
+  - scenario: Multi-node A2 deployment (e.g. GLM-5.3 large model) with slow HCCL bring-up and operator compilation
+    value: 360000
+    reason: vllm-ascend docs (GLM5.3.md:405) recommend 360000 ms as a validated A2 startup default to prevent engine-ready
+      failures on slower multi-node platforms.
+  - scenario: Debugging suspected engine hangs
+    value: 30000
+    reason: A moderate value surfaces genuine stalls faster while still tolerating normal startup jitter.
+  caveats:
+  - This is a startup/availability knob, not a throughput knob; do not expect performance gains from raising it.
+  - Tune together with VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS, VLLM_ENGINE_READY_TIMEOUT_S, HCCL_EXEC_TIMEOUT and HCCL_CONNECT_TIMEOUT
+    for consistent multi-node behavior.
+  - Applies to both v1 and v2 worker paths since it is handled by the upstream vLLM RPC layer, not by vllm-ascend dispatchers.
+  quick_guide: Leave default on single node; set VLLM_RPC_TIMEOUT=360000 for slow multi-node A2 startup.
+analysis_date: '2026-10-27'

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "campaign_id": "example-campaign",
+  "state_id": "0001",
+  "supersedes": null,
+  "updated_at": null,
+  "contract": {
+    "path": "contract.json",
+    "sha256": null
+  },
+  "source_manifest": {
+    "path": "source_manifest.json",
+    "sha256": null
+  },
+  "baseline": null,
+  "active_candidate": null,
+  "last_decision": null,
+  "service_identity": {
+    "host": null,
+    "container_id": null,
+    "pid": null,
+    "process_start_time": null,
+    "device_ids": null,
+    "endpoint": null,
+    "model": null,
+    "effective_config_evidence": null
+  },
+  "active_runs": [],
+  "remaining_budget": {
+    "time_seconds": null,
+    "runs": null,
+    "basis": "尚未约定时保留未知；实际执行后按同一规则更新"
+  },
+  "next_action": {
+    "action": "检查已有运行原件与实际部署，决定复用基线或采集",
+    "artifacts": [],
+    "success_condition": "确认证据有效性、身份与缺失项"
+  },
+  "unresolved": [],
+  "active_tasks": [],
+  "accounted_tasks": []
+}

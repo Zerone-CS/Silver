@@ -1,0 +1,140 @@
+name: compilation.splitting_ops
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/compilation.py:644
+- vllm/config/compilation.py:1197
+- vllm/config/compilation.py:1210
+- vllm/compilation/backends.py:1177
+- vllm/compilation/backends.py:157
+- vllm/v1/cudagraph_dispatcher.py:60
+- vllm/v1/worker/utils.py:768
+- vllm/compilation/passes/fusion/sequence_parallelism.py:607
+- vllm/compilation/passes/fusion/collective_fusion.py:981
+- vllm_ascend/platform.py:1213
+- vllm_ascend/platform.py:1319
+- vllm_ascend/platform.py:1325
+- vllm_ascend/platform.py:1336
+value_type: list[str]
+default: <computed>
+valid_choices: list of FX op target strings (e.g. 'vllm::mla_forward', 'vllm::dsa_forward', 'vllm::unified_kv_cache_update',
+  'vllm::unified_mla_kv_cache_update'); empty list [] disables FX-level splitting
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "splitting_ops controls where the Dynamo FX graph is split into piecewise subgraphs\n(vllm/compilation/backends.py:1177\
+  \ -> split_graph(graph, fx_split_ops)). Each split\nboundary becomes a separate Inductor compilation unit and a separate\
+  \ piecewise\ncudagraph capture region. On Ascend, vllm-ascend actively rewrites this list in\nNPUPlatform.check_and_update_config\
+  \ (vllm_ascend/platform.py):\n- \"When enforce_eager is set, mode is forced to CompilationMode.NONE and splitting_ops\"\n\
+  \  is set to [] if None (line 1213-1214) — no piecewise compilation, no cudagraph.\n- \"When cudagraph_mode requires piecewise\
+  \ compilation (PIECEWISE / FULL_AND_PIECEWISE),\"\n  vllm-ascend calls compilation_config.set_splitting_ops_for_v1(...)\
+  \ and then extends\n  the list with \"vllm::mla_forward\" and \"vllm::dsa_forward\" (lines 1319-1330). This\n  forces MLA/DSA\
+  \ attention ops to be split out of the cudagraph, which is required\n  because those attention kernels are not cudagraph-safe\
+  \ on NPU. It also disables\n  enable_npugraph_ex, enable_static_kernel and enable_super_kernel in\n  additional_config[\"\
+  ascend_compilation_config\"] (lines 1331-1333), so the Ascend\n  static-kernel / super-kernel optimizations are turned off\
+  \ whenever piecewise\n  splitting is active.\n- \"When cudagraph_mode has full cudagraphs (FULL / FULL_DECODE_ONLY), vllm-ascend\"\
+  \n  sets splitting_ops = [] (line 1336) so the FX graph is NOT split — this is required\n  for static-kernel compilation\
+  \ to run once instead of once per piecewise segment.\n- \"When cudagraph_mode is NONE, mode is set to NONE and the Ascend\
+  \ graph/kernel\"\n  optimizations are disabled (lines 1305-1309).\nUpstream, splitting_ops also gates several Inductor fusion\
+  \ passes: sequence\nparallelism (sequence_parallelism.py:607), collective/AsyncTP fusion\n(collective_fusion.py:981) and\
+  \ the residual-scatter SP path (v1/worker/utils.py:768)\nall assert `use_inductor_graph_partition or not splitting_ops`,\
+  \ i.e. a non-empty\nsplitting_ops disables those full-graph-only fusions. Empty splitting_ops with\nPIECEWISE cudagraph_mode\
+  \ causes upstream to downgrade cudagraph_mode to NONE\n(compilation.py:1210-1217), and with FULL_AND_PIECEWISE it downgrades\
+  \ to FULL\n(compilation.py:1218-1224). The v1 CUDAGraphDispatcher asserts that piecewise\ncudagraphs require attention to\
+  \ be in splitting_ops (cudagraph_dispatcher.py:49-61).\nNet effect on Ascend: \"splitting_ops determines whether the model\
+  \ runs as one\"\nmonolithic compiled graph (best for static-kernel / super-kernel, full cudagraph)\nor as multiple piecewise\
+  \ segments (needed for MLA/DSA attention, but disables\nAscend static/super-kernel and adds per-segment compile + capture\
+  \ overhead).\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1213
+  context: When enforce_eager, mode set to NONE and splitting_ops defaulted to [] if None
+- file: vllm_ascend/platform.py:1319
+  context: Piecewise cudagraph path calls set_splitting_ops_for_v1 then extends with mla_forward/dsa_forward
+- file: vllm_ascend/platform.py:1325
+  context: Extends splitting_ops with vllm::mla_forward and vllm::dsa_forward for piecewise mode
+- file: vllm_ascend/platform.py:1336
+  context: Full cudagraph path sets splitting_ops = [] to avoid multi-compile for static kernel
+- file: vllm/compilation/backends.py:1177
+  context: fx_split_ops = splitting_ops (unless use_inductor_graph_partition) fed to split_graph
+- file: vllm/compilation/backends.py:157
+  context: inductor_partition_rule_context(splitting_ops) when use_inductor_graph_partition is True
+- file: vllm/config/compilation.py:1197
+  context: Appends unified_kv_cache_update / unified_mla_kv_cache_update to splitting_ops
+- file: vllm/config/compilation.py:1210
+  context: Empty splitting_ops downgrades PIECEWISE->NONE and FULL_AND_PIECEWISE->FULL
+- file: vllm/v1/cudagraph_dispatcher.py:60
+  context: Asserts attention is in splitting_ops when piecewise cudagraphs are used
+- file: vllm/v1/worker/utils.py:768
+  context: SP residual scatter requires use_inductor_graph_partition or empty splitting_ops
+- file: vllm/compilation/passes/fusion/sequence_parallelism.py:607
+  context: SequenceParallelismPass requires full-graph compilation (empty splitting_ops)
+- file: vllm/compilation/passes/fusion/collective_fusion.py:981
+  context: AsyncTPPass requires full-graph compilation (empty splitting_ops)
+related_parameters:
+- name: compilation.cudagraph_mode
+  relation: splitting_ops is rewritten based on cudagraph_mode; piecewise modes force MLA/DSA into splitting_ops, full modes
+    force []
+- name: compilation.mode
+  relation: Piecewise cudagraphs require mode=VLLM_COMPILE and non-empty splitting_ops; enforce_eager forces mode=NONE and
+    splitting_ops=[]
+- name: compilation.use_inductor_graph_partition
+  relation: When True, FX-level splitting is skipped and splitting_ops is used as Inductor partition rules instead
+- name: compilation.pass_config.enable_sp
+  relation: Sequence parallelism requires full-graph compilation (empty splitting_ops or use_inductor_graph_partition)
+- name: compilation.pass_config.fuse_gemm_comms
+  relation: Collective/AsyncTP fusion requires full-graph compilation (empty splitting_ops)
+- name: compilation.pass_config.fuse_qk_norm_rope_kvcache
+  relation: Disabled when splitting_ops is None and use_inductor_graph_partition is False
+- name: additional_config.ascend_compilation_config.enable_static_kernel
+  relation: Forced False when piecewise splitting is active; requires empty splitting_ops to run
+- name: additional_config.ascend_compilation_config.enable_super_kernel
+  relation: Forced False when piecewise splitting is active
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: Forced False when piecewise splitting is active
+- name: enforce_eager
+  relation: When True, mode=NONE and splitting_ops defaulted to []
+constraints:
+- Piecewise cudagraphs (cudagraph_mode PIECEWISE or FULL_AND_PIECEWISE) require compilation mode VLLM_COMPILE and non-empty
+  splitting_ops, otherwise vllm-ascend raises an AssertionError.
+- When use_inductor_graph_partition is False and splitting_ops is None, the QK-Norm+RoPE+KV cache fusion pass is disabled.
+- Sequence parallelism (enable_sp) and collective/AsyncTP fusion (fuse_gemm_comms) require full-graph compilation, i.e. use_inductor_graph_partition
+  must be True or splitting_ops must be empty.
+- The v1 CUDAGraphDispatcher asserts that attention ops are present in splitting_ops when piecewise cudagraphs are used.
+- An empty splitting_ops with cudagraph_mode PIECEWISE causes upstream to downgrade cudagraph_mode to NONE; with FULL_AND_PIECEWISE
+  it downgrades to FULL.
+tuning_advice:
+  summary: Let vllm-ascend manage splitting_ops automatically; only override when you need full-graph compilation for SP/AsyncTP
+    or static-kernel, and align it with cudagraph_mode.
+  suggested_values:
+  - scenario: Default decode/prefill with MLA or DSA attention on Ascend (piecewise cudagraph)
+    value: <leave unset; vllm-ascend appends vllm::mla_forward and vllm::dsa_forward>
+    reason: MLA/DSA attention kernels are not cudagraph-safe on NPU; vllm-ascend must split them out of the cudagraph, and
+      manual values would be overwritten anyway.
+  - scenario: Full cudagraph mode (FULL / FULL_DECODE_ONLY) with Ascend static-kernel / super-kernel enabled
+    value: []
+    reason: vllm-ascend sets splitting_ops = [] in this path so the FX graph is not split and static-kernel compiles once
+      instead of per segment.
+  - scenario: Enabling sequence parallelism (enable_sp) or collective/AsyncTP fusion (fuse_gemm_comms)
+    value: []
+    reason: These Inductor passes assert full-graph compilation (use_inductor_graph_partition or empty splitting_ops); a non-empty
+      list disables them.
+  - scenario: Enforce eager / no compilation
+    value: []
+    reason: With enforce_eager, mode is NONE and vllm-ascend defaults splitting_ops to [] when None; no piecewise compilation
+      or cudagraph is used.
+  caveats:
+  - Do not manually set splitting_ops to a non-empty list while expecting static-kernel or super-kernel optimizations — vllm-ascend
+    disables them in the piecewise path.
+  - Manually setting splitting_ops = [] with cudagraph_mode PIECEWISE will cause upstream to downgrade cudagraph_mode to NONE,
+    losing cudagraph benefits.
+  - If you enable use_inductor_graph_partition, splitting_ops is used as Inductor partition rules rather than FX split points,
+    changing the semantics.
+  - vllm-ascend rewrites this field during check_and_update_config, so values set via CLI/config may not survive to runtime.
+  quick_guide: Leave splitting_ops unset on Ascend — vllm-ascend rewrites it based on cudagraph_mode; only force [] when you
+    need full-graph compilation (SP/AsyncTP/static-kernel).
+analysis_date: '2026-10-27'

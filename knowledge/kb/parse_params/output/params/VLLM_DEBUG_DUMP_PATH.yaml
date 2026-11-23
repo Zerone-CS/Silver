@@ -1,0 +1,87 @@
+name: VLLM_DEBUG_DUMP_PATH
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:769
+- vllm/envs.py:288
+- vllm/config/vllm.py:2066
+- vllm/envs.py:2262
+value_type: str
+default: null
+valid_choices: Any filesystem directory path; unset (None) disables dumping
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_DEBUG_DUMP_PATH is a debug-only environment variable read in vllm/envs.py
+
+  (getter returns os.environ.get("VLLM_DEBUG_DUMP_PATH", None)). When set, it is
+
+  consumed in vllm/config/vllm.py:2066 during VllmConfig.__post_init__: the value is
+
+  converted to an absolute expanded Path and assigned to
+
+  compilation_config.debug_dump_path, overriding any config-specified
+
+  debug_dump_path (with a warning logged). This path is used by the torch.compile /
+
+  Inductor pipeline to dump FX graphs and related compilation artifacts to disk.
+
+  The performance effect is indirect and only present when compilation/debug dumping
+
+  is active: "writing graph artifacts adds filesystem I/O and disk usage during"
+
+  compilation (cold-start latency), but it does not change the generated kernels or
+
+  the steady-state inference throughput. It is explicitly listed in the
+
+  compile_factors ignored_factors set (vllm/envs.py:2262), meaning it does NOT
+
+  participate in the torch.compile cache key — so changing it will not invalidate
+
+  or alter compiled artifacts. On Ascend, vllm-ascend does not define or override
+
+  this variable; it only affects the upstream torch.compile debug path, which is
+
+  largely bypassed when Ascend uses its own graph/compilation flow. Hence impact is
+
+  low and limited to compile-time I/O.
+
+  '
+usage_locations:
+- file: vllm/envs.py:769
+  context: Environment variable getter returning the raw path string or None
+- file: vllm/envs.py:288
+  context: 'Type annotation VLLM_DEBUG_DUMP_PATH: str | None = None'
+- file: vllm/config/vllm.py:2066
+  context: Overrides compilation_config.debug_dump_path with the env path during config post-init
+- file: vllm/envs.py:2262
+  context: Listed in compile_factors ignored_factors so it is excluded from the torch.compile cache key
+related_parameters:
+- name: compilation_config.debug_dump_path
+  relation: VLLM_DEBUG_DUMP_PATH overrides this config field when set
+- name: VLLM_USE_STANDALONE_COMPILE
+  relation: Related compilation toggle; debug dumping only matters when compilation runs
+- name: VLLM_PATTERN_MATCH_DEBUG
+  relation: Sibling debug env var for custom pass pattern matching
+constraints:
+- The value must be a valid filesystem path; it is converted via Path(...).absolute().expanduser(), so relative paths are
+  resolved against the current working directory.
+- When set, it unconditionally overrides any user-specified compilation_config.debug_dump_path (a warning is logged).
+- It has no effect on the torch.compile cache key because it is in the ignored_factors set.
+tuning_advice:
+  summary: Leave unset in production; set only temporarily to a dedicated directory when debugging torch.compile graph generation.
+  suggested_values:
+  - scenario: Production / normal serving
+    value: <unset>
+    reason: Avoids compile-time disk I/O and artifact accumulation; no benefit to runtime performance.
+  - scenario: Debugging compilation / graph issues
+    value: /tmp/vllm_debug_dump
+    reason: Points FX graph dumps to a scratch directory for inspection without polluting the working tree.
+  caveats:
+  - Only affects the upstream torch.compile debug path; on Ascend this path is largely bypassed, so expect limited usefulness.
+  - Remember to unset it after debugging to prevent unbounded dump directory growth.
+  quick_guide: Unset in production; set to a scratch dir only when debugging compilation.
+analysis_date: '2026-10-27'

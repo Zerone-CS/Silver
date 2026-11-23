@@ -1,0 +1,133 @@
+name: --ir-op-priority
+type: cli
+category: compilation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1670
+- vllm/engine/arg_utils.py:468
+- vllm/engine/arg_utils.py:827
+- vllm/config/kernel.py:230
+- vllm/config/kernel.py:367
+- vllm/config/vllm.py:161
+- vllm/config/vllm.py:234
+- vllm/v1/worker/worker_base.py:98
+- vllm/platforms/cuda.py:742
+- vllm/kernels/oink_ops.py:8
+- tests/ut/worker/test_worker_v1.py:55
+value_type: dict
+default: <computed>
+valid_choices: IrOpPriorityConfig mapping op-name -> ordered list of backend names (e.g. 'native', 'vllm_c', 'oink', 'aiter');
+  platform defaults appended during VllmConfig.__post_init__
+cli_example: '--ir-op-priority ''{"rms_norm": ["native"]}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--ir-op-priority populates KernelConfig.ir_op_priority (an IrOpPriorityConfig),
+
+  which selects which implementation backend is dispatched for each vLLM IR op
+
+  (e.g. rms_norm, fused_add_rms_norm, quant_fp8) during the forward pass.
+
+  In upstream vLLM the actual default is computed per-platform by
+
+  Platform.get_default_ir_op_priority() (vllm/platforms/cuda.py:742): when using
+
+  Inductor codegen the default is ["native"], otherwise ["vllm_c", "native"],
+
+  and "oink" is prepended for rms_norm when VLLM_USE_OINK_OPS is set. These
+
+  defaults are appended during VllmConfig.__post_init__ and then frozen per
+
+  worker via vllm_config.kernel_config.ir_op_priority.set_default() in
+
+  vllm/v1/worker/worker_base.py:98 (comment: "IR op priority and torch-wrap
+
+  state are constant for the worker''s lifetime").
+
+  The value also feeds compilation decisions: "enable_norm_fusion()"
+
+  (vllm/config/vllm.py:161) returns True if ir_op_priority.rms_norm[0] != "native",
+
+  and enable_norm_pad_fusion() (vllm/config/vllm.py:234) checks
+
+  fused_add_rms_norm[0] == "aiter". It is part of KernelConfig.compute_hash()
+
+  (vllm/config/kernel.py:367-372), so changing it invalidates the compilation
+
+  cache and forces recompilation/warmup.
+
+  On Ascend: "the CUDA-specific backends (\"vllm_c\", \"oink\", \"aiter\") are not"
+
+  available; vllm-ascend does not define its own get_default_ir_op_priority
+
+  override in the provided context, and the only Ascend reference is a unit-test
+
+  mock (tests/ut/worker/test_worker_v1.py:55) that stubs
+
+  kernel_config.ir_op_priority.set_default. Consequently on NPU the effective
+
+  behavior is the generic "native" path, and the parameter has little to no
+
+  measurable runtime effect on Ascend — it mainly influences whether
+
+  norm-fusion compilation passes are enabled and whether the compile cache is
+
+  invalidated. Hence low impact.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1670
+  context: Registers the --ir-op-priority CLI flag in the KernelConfig argument group.
+- file: vllm/engine/arg_utils.py:827
+  context: Coerces a dict passed on the CLI into an IrOpPriorityConfig instance.
+- file: vllm/config/kernel.py:230
+  context: Field definition on KernelConfig; docstring notes platform defaults are appended in VllmConfig.__post_init__.
+- file: vllm/config/kernel.py:367
+  context: Excluded from generic hash factors but re-added via ir_op_priority.compute_hash(), so it affects the compile cache
+    key.
+- file: vllm/config/vllm.py:161
+  context: enable_norm_fusion() checks ir_op_priority.rms_norm[0] != 'native' to decide whether to run the norm-fusion pass.
+- file: vllm/config/vllm.py:234
+  context: enable_norm_pad_fusion() checks fused_add_rms_norm[0] == 'aiter' (CUDA/AITER-specific).
+- file: vllm/v1/worker/worker_base.py:98
+  context: Worker init calls ir_op_priority.set_default() once; priority is fixed for the worker lifetime.
+- file: vllm/platforms/cuda.py:742
+  context: CUDA platform supplies the default priority list (native vs vllm_c/oink).
+- file: tests/ut/worker/test_worker_v1.py:55
+  context: Ascend unit test mocks kernel_config.ir_op_priority and its set_default method.
+related_parameters:
+- name: --compilation-config / compilation_config.backend
+  relation: Upstream default priority depends on whether Inductor codegen is used (backend == 'inductor' and mode != NONE).
+- name: --compilation-config / compilation_config.mode
+  relation: CompilationMode.NONE disables Inductor, changing the default op priority to ['vllm_c', 'native'].
+- name: VLLM_USE_OINK_OPS
+  relation: Env var that prepends 'oink' to the rms_norm priority list upstream (CUDA-only).
+- name: --kernel-config
+  relation: Parent config object; ir_op_priority is a field of KernelConfig.
+- name: compilation_config.ir_enable_torch_wrap
+  relation: Set alongside ir_op_priority.set_default() in worker init; both are fixed for worker lifetime.
+constraints:
+- The value must be a mapping from IR op name to an ordered list of backend names; a dict passed on the CLI is converted to
+  IrOpPriorityConfig.
+- The priority is frozen at worker initialization via set_default() and cannot be changed after the worker starts.
+- Backends such as 'vllm_c', 'oink', and 'aiter' are CUDA-specific and are not available on Ascend NPU.
+- Changing this value changes KernelConfig.compute_hash() and therefore invalidates the compilation cache, forcing recompilation.
+tuning_advice:
+  summary: Leave --ir-op-priority at its platform default on Ascend; only touch it if you are deliberately enabling/disabling
+    a specific IR op backend for compilation experiments.
+  suggested_values:
+  - scenario: Default Ascend NPU deployment (v1 or v2 worker)
+    value: <unset> (use platform default)
+    reason: CUDA-specific backends are unavailable on NPU; the generic 'native' path is used and the parameter has negligible
+      runtime effect.
+  - scenario: Experimenting with norm-fusion compilation passes on NPU
+    value: '{"rms_norm": ["native"]}'
+    reason: Keeping rms_norm[0] == 'native' avoids enabling the CUDA-oriented norm-fusion pass; change only after benchmarking.
+  caveats:
+  - Do not set 'vllm_c', 'oink', or 'aiter' on Ascend — these backends are CUDA-only and will not resolve.
+  - Any change invalidates the compile cache and increases warmup time; benchmark end-to-end before adopting.
+  quick_guide: On Ascend, leave --ir-op-priority unset; it mainly affects compilation passes and cache keys, not NPU runtime
+    throughput.
+analysis_date: '2026-10-27'

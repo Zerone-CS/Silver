@@ -1,0 +1,105 @@
+name: --data-parallel-multi-port-external-lb
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1181
+- vllm/engine/arg_utils.py:504
+- vllm/entrypoints/cli/serve.py:85
+- vllm/entrypoints/launchers/cli_args.py:468
+- vllm/entrypoints/launchers/dp_supervisor.py:130
+value_type: bool
+default: false
+valid_choices: true or false (store_true flag)
+cli_example: --data-parallel-multi-port-external-lb
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This flag does not change the compute kernels or memory layout of the model
+
+  itself; it changes the serving topology. When set, vLLM''s serve entrypoint
+
+  (vllm/entrypoints/cli/serve.py:85-95) treats the deployment as "multi-port"
+
+  LB mode and, per the help text, runs a node-local supervisor
+
+  (vllm/entrypoints/launchers/dp_supervisor.py) that launches one external-LB
+
+  API server per local data-parallel rank, each on port + local_rank
+
+  (dp_supervisor.py:122), with data_parallel_size_local=1 and
+
+  data_parallel_external_lb=True for each child (dp_supervisor.py:127-128).
+
+  The supervisor exposes aggregated health on a supervisor port. Performance
+
+  effect is indirect: "it determines how many independent API front-ends exist"
+
+  per node and how requests are distributed across DP ranks. More API servers
+
+  can improve request-level parallelism and reduce head-of-line blocking on the
+
+  HTTP/frontend layer, but each child process carries its own Python/uvicorn
+
+  overhead and the actual model throughput is still bounded by the DP/TP/EP
+
+  configuration and HCCL communication on Ascend. No vllm-ascend source
+
+  override of this parameter was found in the provided context; it is an
+
+  upstream-only serving-topology switch.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1181
+  context: CLI flag definition (store_true, default False) in the parallel argument group.
+- file: vllm/engine/arg_utils.py:504
+  context: 'EngineArgs field data_parallel_multi_port_external_lb: bool = False.'
+- file: vllm/entrypoints/cli/serve.py:85
+  context: LB-mode detection; sets is_multi_port and enforces mutual exclusivity with external/hybrid LB.
+- file: vllm/entrypoints/launchers/cli_args.py:468
+  context: Triggers validate_multi_port_external_lb_args when the flag is set.
+- file: vllm/entrypoints/launchers/dp_supervisor.py:130
+  context: Child server args reset the flag to False and set per-rank port/rank/external_lb.
+related_parameters:
+- name: --data-parallel-external-lb
+  relation: Mutually exclusive LB mode; cannot be combined with multi-port external LB.
+- name: --data-parallel-rank
+  relation: Implies external LB mode; conflicts with multi-port external LB.
+- name: --data-parallel-hybrid-lb
+  relation: Mutually exclusive LB mode.
+- name: --data-parallel-start-rank
+  relation: Implies hybrid LB when neither hybrid nor multi-port is set; conflicts with multi-port.
+- name: --data-parallel-size-local
+  relation: Determines how many child API servers the supervisor launches (one per local DP rank).
+- name: --data-parallel-supervisor-port
+  relation: Port on which the supervisor exposes aggregated health.
+- name: --api-server-count
+  relation: Overridden to 1 per child in multi-port mode; incompatible with --headless.
+constraints:
+- Cannot be combined with --data-parallel-external-lb, --data-parallel-rank, --data-parallel-hybrid-lb, or --data-parallel-start-rank;
+  using more than one LB mode raises a ValueError.
+- When --data-parallel-multi-port-external-lb is set, --data-parallel-start-rank no longer implicitly selects hybrid LB mode.
+- Cannot be used with --headless, since headless mode starts no API servers.
+- Arguments are validated by validate_multi_port_external_lb_args before the model loads; invalid combinations fail at startup.
+tuning_advice:
+  summary: Enable only when you want one API server per local DP rank with a node-local supervisor and an external LB; otherwise
+    use hybrid or external LB.
+  suggested_values:
+  - scenario: Multi-node MoE DP deployment where an external load balancer distributes requests across per-rank API ports
+    value: true
+    reason: Launches one external-LB API server per local DP rank and exposes aggregated health on a supervisor port, simplifying
+      per-rank front-end management.
+  - scenario: Single-node deployment or when a single aggregated API server is preferred
+    value: false
+    reason: Default; avoids extra per-rank API server processes and uses the standard external/hybrid LB path.
+  caveats:
+  - Do not combine with --data-parallel-external-lb, --data-parallel-rank, --data-parallel-hybrid-lb, or --data-parallel-start-rank.
+  - Ensure the external load balancer targets the per-rank ports (base port + local_rank) and the supervisor port for health
+    checks.
+  - On Ascend, verify CPU headroom for multiple uvicorn front-ends so frontend overhead does not reduce effective NPU utilization.
+  quick_guide: Use --data-parallel-multi-port-external-lb only for multi-node DP with an external LB; keep it off for single-node
+    or single-frontend setups.
+analysis_date: '2026-10-27'

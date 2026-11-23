@@ -1,0 +1,116 @@
+name: --gdn-prefill-backend
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1776
+- vllm/engine/arg_utils.py:789
+- vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:94
+- vllm/v1/attention/backends/gdn_attn.py:99
+- vllm_ascend/ascend_config.py:1804
+- vllm_ascend/ascend_config.py:1855
+value_type: str
+default: null
+valid_choices:
+- flashinfer
+- triton
+- cutedsl
+cli_example: --gdn-prefill-backend triton
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag selects the prefill kernel backend for GDN (Gated Delta Net) linear-attention
+
+  layers (e.g. Qwen3.5 GDN models). Upstream, the value is injected into
+
+  additional_config["gdn_prefill_backend"] and resolved by _resolve_gdn_prefill_backend()
+
+  (vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:94). The resolver first
+
+  checks current_platform.is_cuda(); if NOT CUDA it returns (backend, "triton") immediately
+
+  (line 119-120), i.e. on Ascend the active backend is always "triton" regardless of the
+
+  requested value. ChunkGatedDeltaRule then binds self._forward_method = self.forward_native
+
+  (the Triton/FLA path) and only emits a warning_once if a flashinfer/cutedsl value was
+
+  requested but could not be honored (lines 248-253). GDNAttentionMetadataBuilder
+
+  (vllm/v1/attention/backends/gdn_attn.py:99-103) also resolves the backend and only takes
+
+  the cutedsl metadata-prep path when the resolved backend is "cutedsl", which never happens
+
+  on Ascend.
+
+  On Ascend, vllm-ascend''s init_ascend_config (vllm_ascend/ascend_config.py:1804-1813)
+
+  explicitly strips gdn_prefill_backend from additional_config before pydantic validation
+
+  (extra="forbid"), warning only when the requested value is not in ("auto", "triton").
+
+  The comment states that on non-CUDA platforms only the triton path is available because
+
+  the FLA Triton kernels run on Ascend via triton-ascend. Therefore on Ascend this parameter
+
+  has NO effect on the actual kernel selection — the Triton/FLA prefill path is always used.
+
+  Its only runtime effect is a one-time warning log when an unsupported value is passed.
+
+  Because the parameter cannot change the executed kernel on Ascend, its performance impact
+
+  is low (essentially none beyond log noise); the actual prefill performance is governed by
+
+  the Triton/FLA kernels and triton-ascend compilation, not by this flag.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1776
+  context: argparse definition of --gdn-prefill-backend with choices flashinfer/triton/cutedsl, default None
+- file: vllm/engine/arg_utils.py:789
+  context: 'EngineArgs dataclass field gdn_prefill_backend: Literal[...] | None = None'
+- file: vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:94
+  context: _resolve_gdn_prefill_backend reads additional_config['gdn_prefill_backend']; returns 'triton' on non-CUDA platforms
+- file: vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:245
+  context: ChunkGatedDeltaRule selects forward method based on resolved backend; warns on fallback
+- file: vllm/v1/attention/backends/gdn_attn.py:99
+  context: GDNAttentionMetadataBuilder resolves backend; cutedsl branch only taken when resolved backend is cutedsl
+- file: vllm_ascend/ascend_config.py:1804
+  context: vllm-ascend warns when gdn_prefill_backend is not in ('auto','triton') and strips the key
+- file: vllm_ascend/ascend_config.py:1855
+  context: gdn_prefill_backend added to _NON_USER_INPUT_KEYS so it is stripped before extra='forbid' validation
+related_parameters:
+- name: --kda-prefill-backend
+  relation: Sibling parameter handled by the same Ascend stripping/warning logic; also only 'triton'/'auto' supported on Ascend
+- name: --additional-config
+  relation: The flag value is injected into additional_config['gdn_prefill_backend'] and read from there by the resolver
+- name: --enforce-eager
+  relation: GDN prefill path interacts with cudagraph capture; on Ascend the Triton/FLA path is used regardless of backend
+    selection
+constraints:
+- On Ascend only the 'triton' (and 'auto') value is effective; 'flashinfer' and 'cutedsl' have no kernel and are ignored with
+  a warning.
+- The value is stripped from additional_config by vllm-ascend before pydantic validation, so it cannot be used to select a
+  non-Triton kernel on Ascend.
+- The flag only affects GDN linear-attention models (e.g. Qwen3.5 GDN); it has no effect on models without GDN layers.
+tuning_advice:
+  summary: On Ascend this flag is effectively a no-op — leave it unset (or set to triton) and tune GDN prefill via triton-ascend/FLA
+    kernel settings instead.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment of a GDN model (Qwen3.5 GDN, etc.)
+    value: triton
+    reason: Only the Triton/FLA path exists on Ascend (FLA kernels run via triton-ascend); this is the resolved backend regardless
+      of the flag, so setting it explicitly just documents intent and avoids the unsupported-value warning.
+  - scenario: Default / no explicit backend preference
+    value: unset
+    reason: Leaving it unset resolves to 'auto' which on Ascend maps to triton with no warning; simplest and equivalent in
+      performance.
+  caveats:
+  - Do not expect flashinfer or cutedsl to accelerate GDN prefill on Ascend — those kernels are CUDA-only and are stripped
+    by vllm-ascend.
+  - If you see the 'Ascend does not support gdn_prefill_backend=...' warning, remove the flag; it has no performance benefit
+    on NPU.
+  quick_guide: On Ascend, set --gdn-prefill-backend triton or omit it; other values are ignored.
+analysis_date: '2026-10-27'

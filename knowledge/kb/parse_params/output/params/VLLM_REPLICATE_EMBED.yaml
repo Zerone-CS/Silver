@@ -1,0 +1,96 @@
+name: VLLM_REPLICATE_EMBED
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:620
+- vllm/envs.py:159
+- vllm/model_executor/layers/fused_embed_norm.py:5
+- vllm/model_executor/layers/fused_embed_norm.py:50
+value_type: bool
+default: false
+valid_choices: 'boolean: ''0''/''false'' (disabled) or ''1''/''true'' (enabled)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'VLLM_REPLICATE_EMBED is an upstream vLLM env var (vllm/envs.py:620) that, when
+
+  enabled, builds the input token embedding with disable_tp=True
+
+  (vllm/model_executor/layers/fused_embed_norm.py:58-70). This makes the full
+
+  embedding table live on every tensor-parallel rank instead of being sharded
+
+  across ranks. The lookup becomes a local gather with no mask and no all-reduce,
+
+  which unlocks the fused gather+norm Triton kernels (fused_embed_norm and
+
+  fused_embed_eh_norm) described in the module docstring. The performance effect
+
+  is: "(1) removes the all-reduce communication on the embedding lookup path,"
+
+  reducing latency slightly; (2) enables fused gather+RMSNorm kernels, saving a
+
+  separate norm kernel launch; (3) at TP>1 costs a full embedding table per rank
+
+  (extra NPU memory proportional to vocab_size * hidden_size * dtype_bytes).
+
+  The fused kernels are Triton-based and the test file explicitly skips unless
+
+  current_platform.is_cuda_alike() (tests/kernels/core/test_fused_embed_norm.py:27-30),
+
+  so on Ascend NPU the Triton fusion path is not guaranteed to be exercised; the
+
+  main observable effect on Ascend is the disable_tp replicated-table behavior.
+
+  No vllm-ascend override of this env var was found in the provided context, so
+
+  the upstream semantics apply. Overall impact is low because it only touches the
+
+  embedding lookup, a small fraction of total inference cost.
+
+  '
+usage_locations:
+- file: vllm/envs.py:620
+  context: 'Defines the env var parsing: ''1''/''true'' (case-insensitive) enables it, default ''0''.'
+- file: vllm/envs.py:159
+  context: 'Typed declaration VLLM_REPLICATE_EMBED: bool = False in the envs dataclass.'
+- file: vllm/model_executor/layers/fused_embed_norm.py:58
+  context: make_input_embedding reads envs.VLLM_REPLICATE_EMBED to set disable_tp on VocabParallelEmbedding.
+- file: vllm/model_executor/layers/fused_embed_norm.py:50
+  context: Docstring describing the replicated escape hatch and fused gather+norm path.
+related_parameters:
+- name: --tensor-parallel-size
+  relation: At TP>1 the replicated table costs full memory per rank; at TP=1 disable_tp is a no-op.
+- name: tie_word_embeddings
+  relation: Replicated unsharded table cannot tie to a vocab-parallel ParallelLMHead; tied embeddings rejected at TP>1.
+- name: VLLM_USE_V1
+  relation: Upstream env var; behavior is independent of v1/v2 worker path but only affects the embedding layer construction.
+constraints:
+- VLLM_REPLICATE_EMBED cannot be combined with tied word embeddings when tensor-parallel size is greater than 1; an assertion
+  fails because the replicated table cannot tie to a vocab-parallel lm_head.
+- At tensor-parallel size 1, enabling VLLM_REPLICATE_EMBED is a no-op (disable_tp has no effect) and tying still works.
+tuning_advice:
+  summary: Leave disabled by default; enable only for models with untied embeddings at TP>1 where the embedding all-reduce
+    is a measurable bottleneck and extra per-rank table memory is affordable.
+  suggested_values:
+  - scenario: Default / most deployments on Ascend NPU
+    value: '0'
+    reason: Disabled avoids per-rank full-table memory overhead and the tied-embedding assertion; the embedding path is a
+      small fraction of total latency.
+  - scenario: Untied embeddings, TP>1, memory headroom available, embedding all-reduce is a bottleneck
+    value: '1'
+    reason: Replicated table removes the embedding all-reduce and enables fused gather+norm, reducing lookup latency at the
+      cost of full table per rank.
+  - scenario: TP=1 deployment
+    value: '0'
+    reason: disable_tp is a no-op at TP=1, so enabling provides no benefit.
+  caveats:
+  - Do not enable with tied word embeddings at TP>1 — it will assert.
+  - Verify the fused Triton kernels actually run on Ascend; otherwise only the disable_tp memory tradeoff remains.
+  quick_guide: Keep VLLM_REPLICATE_EMBED=0 unless untied embeddings at TP>1 need the all-reduce removed and memory allows
+    a full table per rank.
+analysis_date: '2026-10-27'

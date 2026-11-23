@@ -1,0 +1,94 @@
+name: VLLM_USE_STANDALONE_COMPILE
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:746
+- vllm/envs.py:176
+- vllm/compilation/backends.py:97
+- vllm/compilation/compiler_interface.py:258
+value_type: bool
+default: true
+valid_choices: 0 or 1 (string compared to '1'; any other value is treated as false)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_USE_STANDALONE_COMPILE is an upstream vLLM feature flag that selects the
+
+  Inductor compilation adaptor used by the torch.compile backend. In
+
+  vllm/compilation/backends.py:make_compiler(), when compilation_config.backend
+
+  is "inductor" and this flag is true AND torch._inductor exposes a
+
+  standalone_compile symbol, vLLM returns InductorStandaloneAdaptor instead of
+
+  the classic InductorAdaptor. The standalone adaptor (compiler_interface.py:251)
+
+  uses torch._inductor.standalone_compile, which produces a self-contained
+
+  compiled artifact that can be cached and reloaded without re-running Dynamo
+
+  tracing/Inductor lowering on subsequent process starts. This primarily affects
+
+  cold-start compile time (latency to first token after server start) and the
+
+  effectiveness of the compile cache (compile_cache_save_format is passed to the
+
+  adaptor). It does not change steady-state kernel execution. On Ascend NPU,
+
+  vLLM''s torch.compile path is largely bypassed because vllm-ascend uses its own
+
+  ACLGraph / graph-mode capture and Ascend-native operators; the Inductor
+
+  backend is not the primary execution path, so the practical effect on Ascend
+
+  is limited to any residual torch.compile usage. No vllm-ascend override of this
+
+  env var was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:746
+  context: Defines the env var, defaulting to '1' (enabled) when unset.
+- file: vllm/envs.py:176
+  context: 'Type stub declaring VLLM_USE_STANDALONE_COMPILE: bool = True.'
+- file: vllm/compilation/backends.py:97
+  context: Asserts VLLM_USE_MEGA_AOT_ARTIFACT requires VLLM_USE_STANDALONE_COMPILE.
+- file: vllm/compilation/backends.py:104
+  context: Selects InductorStandaloneAdaptor vs InductorAdaptor for the inductor backend.
+- file: vllm/compilation/compiler_interface.py:258
+  context: InductorStandaloneAdaptor docstring documents this flag as the toggle.
+related_parameters:
+- name: VLLM_USE_MEGA_AOT_ARTIFACT
+  relation: Requires VLLM_USE_STANDALONE_COMPILE=1; assertion fails otherwise.
+- name: VLLM_USE_AOT_COMPILE
+  relation: Related AOT compilation feature flag; used together in AOT tests.
+- name: compilation_config.backend
+  relation: Only takes effect when backend is 'inductor'.
+- name: compilation_config.compile_cache_save_format
+  relation: Passed to InductorStandaloneAdaptor to control artifact save format.
+constraints:
+- VLLM_USE_MEGA_AOT_ARTIFACT=1 requires VLLM_USE_STANDALONE_COMPILE=1, otherwise make_compiler raises an assertion error.
+- The standalone adaptor is only used when compilation_config.backend is 'inductor' and the installed PyTorch build exposes
+  torch._inductor.standalone_compile; otherwise vLLM silently falls back to InductorAdaptor.
+- The value is parsed as the literal string '1'; any other value (including 'true') is treated as disabled.
+tuning_advice:
+  summary: Leave at default (enabled) for faster cold-start compile caching; it has minimal effect on Ascend steady-state
+    performance.
+  suggested_values:
+  - scenario: Default deployment on Ascend NPU
+    value: '1'
+    reason: Keeps upstream default; enables standalone compile caching where the Inductor path is used, reducing cold-start
+      compile time without affecting steady-state NPU execution.
+  - scenario: Debugging compile issues or older PyTorch without standalone_compile
+    value: '0'
+    reason: Falls back to the classic InductorAdaptor, avoiding potential incompatibilities with the standalone compile path.
+  caveats:
+  - Do not set VLLM_USE_MEGA_AOT_ARTIFACT=1 while disabling this flag; the assertion in make_compiler will fail.
+  - Expect negligible impact on Ascend since vllm-ascend relies on ACLGraph/Ascend-native ops rather than Inductor.
+  quick_guide: Keep VLLM_USE_STANDALONE_COMPILE=1 (default); only disable if you hit Inductor standalone compile errors.
+analysis_date: '2026-10-27'

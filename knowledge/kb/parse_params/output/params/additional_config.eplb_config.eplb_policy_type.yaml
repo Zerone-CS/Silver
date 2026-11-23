@@ -1,0 +1,123 @@
+name: additional_config.eplb_config.eplb_policy_type
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:294
+- vllm_ascend/ascend_config.py:322
+- vllm_ascend/worker/model_runner_v1.py:581
+- vllm_ascend/eplb/eplb_updator.py:35
+- vllm_ascend/ops/fused_moe/routed_experts.py:558
+value_type: int
+default: 2
+valid_choices:
+- 0
+- 1
+- 2
+- 3
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: 'eplb_policy_type selects which Expert-Parallel Load Balancing (EPLB) algorithm runs
+
+  on Ascend NPU when dynamic EPLB is enabled. It is read in three places:
+
+  (1) vllm_ascend/worker/model_runner_v1.py:581 — when dynamic_eplb is true, the value
+
+  is stored as self.policy_type and passed to EplbProcess(policy_type=...) which launches
+
+  a background CPU process that periodically recomputes the expert placement map.
+
+  (2) vllm_ascend/eplb/eplb_updator.py:35 — self.multi_stage = (eplb_policy_type == 3),
+
+  i.e. only FlashLB (3) uses the multi-stage load-collection path.
+
+  (3) vllm_ascend/ops/fused_moe/routed_experts.py:558 — use_multistage_eplb_load(...)
+
+  gates whether the MoE layer allocates a time-series moe_load buffer of shape
+
+  [expert_heat_collection_interval, local_num_experts] (int32) instead of a single
+
+  [local_num_experts] vector. This changes per-layer NPU memory footprint and the
+
+  all-gather payload size during heat collection.
+
+  The policy determines how expert load imbalance is corrected: "Random (0) is a"
+
+  baseline/randomized placement, DefaultEplb (1) is the classic balancing heuristic,
+
+  SwiftBalanceEplb (2, default) is the recommended Ascend policy, and FlashLB (3)
+
+  is the multi-stage time-series policy. A better policy reduces MoE all-to-all
+
+  imbalance across ranks, directly improving decode throughput and tail latency for
+
+  MoE models (e.g. DeepSeek-style). The policy also affects the CPU cost of the
+
+  background EplbProcess and the frequency of D2D expert weight reloads, which can
+
+  cause transient stalls if the algorithm cannot finish within
+
+  algorithm_execution_interval.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:294
+  context: Field definition with default 2; validated to be in [0,1,2,3] at line 322.
+- file: vllm_ascend/worker/model_runner_v1.py:581
+  context: Read into self.policy_type and passed to EplbProcess when dynamic_eplb is enabled (MRv1).
+- file: vllm_ascend/eplb/eplb_updator.py:35
+  context: Sets self.multi_stage = (eplb_policy_type == 3) to select FlashLB multi-stage path.
+- file: vllm_ascend/ops/fused_moe/routed_experts.py:558
+  context: use_multistage_eplb_load gates allocation of time-series moe_load buffer per MoE layer.
+related_parameters:
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: eplb_policy_type is only consumed when dynamic_eplb is true; otherwise it has no runtime effect.
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: For policy 3 (FlashLB) this sets the time-series window length (num_iter) of the moe_load buffer; for other policies
+    it is the collection interval.
+- name: additional_config.eplb_config.algorithm_execution_interval
+  relation: Interval allowed for the EPLB worker to finish its CPU balancing task; interacts with policy complexity.
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: Number of redundant physical experts the policy can place; affects balancing headroom.
+- name: additional_config.eplb_config.eplb_heat_collection_stage
+  relation: Restricts which request stage contributes heat data fed to the policy.
+- name: DYNAMIC_EPLB
+  relation: Environment variable that must be true (or EXPERT_MAP_RECORD=true) for dynamic_eplb to be allowed, which in turn
+    is required for eplb_policy_type to take effect.
+constraints:
+- eplb_policy_type must be one of 0, 1, 2, or 3; any other value raises ValueError at startup.
+- eplb_policy_type only takes effect when dynamic_eplb is true, and dynamic_eplb requires the DYNAMIC_EPLB environment variable
+  to be true (or EXPERT_MAP_RECORD=true), otherwise an assertion fails.
+- eplb_policy_type is an MRv1-only setting per the docs; MRv2 configures EPLB through upstream --eplb-config instead.
+tuning_advice:
+  summary: Keep the default SwiftBalanceEplb (2) for most MoE workloads; use FlashLB (3) only when you can afford the extra
+    time-series memory and want finer-grained balancing.
+  suggested_values:
+  - scenario: General MoE serving with dynamic EPLB enabled (recommended default)
+    value: 2
+    reason: SwiftBalanceEplb is the documented recommended policy and provides good balance without the extra time-series
+      buffer overhead of FlashLB.
+  - scenario: Highly skewed expert load where finer-grained multi-stage balancing is needed and memory headroom exists
+    value: 3
+    reason: FlashLB uses the multi-stage time-series load path (multi_stage=True) for more responsive balancing, at the cost
+      of a [interval, experts] int32 buffer per MoE layer.
+  - scenario: Baseline comparison or debugging placement behavior
+    value: 1
+    reason: DefaultEplb is the classic heuristic; useful as a reference point when validating that a newer policy actually
+      improves balance.
+  - scenario: Quick sanity check of EPLB plumbing
+    value: 0
+    reason: Random placement is a minimal baseline; not recommended for production throughput.
+  caveats:
+  - Ensure DYNAMIC_EPLB=true is exported, otherwise dynamic_eplb (and thus eplb_policy_type) has no effect.
+  - When using policy 3, keep expert_heat_collection_interval modest to bound the per-layer moe_load buffer memory.
+  - Tune algorithm_execution_interval together with the policy so the CPU balancing task completes without stalling D2D weight
+    reloads.
+  - This setting is MRv1-only; for MRv2 use upstream --eplb-config instead.
+  quick_guide: Leave eplb_policy_type at 2 (SwiftBalanceEplb) unless you specifically need FlashLB's multi-stage balancing
+    and can spare the extra NPU memory.
+analysis_date: '2026-10-27'

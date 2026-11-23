@@ -1,0 +1,91 @@
+name: profiler.max_iterations
+type: nested
+category: observability
+scope: both
+source_file:
+- vllm/config/profiler.py:173
+- vllm/profiler/wrapper.py:39
+- vllm_ascend/profiler/torch_npu_profiler.py:1
+value_type: int
+default: 0
+valid_choices: any non-negative integer; 0 means no limit (profile until stop_profile is called)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only controls how many engine/worker steps the profiler collects
+
+  before auto-stopping. It does not change model execution, scheduling, memory
+
+  allocation, or communication. Its performance relevance is indirect: while the
+
+  profiler is active (torch NPU profiler via TorchNPUProfilerWrapper in
+
+  vllm_ascend/profiler/torch_npu_profiler.py), every step incurs profiling overhead
+
+  (trace collection, CANN/NPU event recording, host-side bookkeeping). Setting
+
+  max_iterations to a small positive value bounds that overhead window, whereas
+
+  leaving it at 0 (no limit) means profiling continues until an explicit
+
+  stop_profile call, potentially adding sustained overhead to latency and throughput
+
+  for the duration of the run. The upstream WorkerProfiler (vllm/profiler/wrapper.py:39)
+
+  reads _max_iters and stops the underlying profiler once recorded steps exceed it;
+
+  the vllm-ascend TorchNPUProfilerWrapper mirrors this behavior (see
+
+  tests/ut/profiler/test_torch_npu_profiler.py:255). The upstream validator
+
+  (vllm/config/profiler.py:173) warns that using torch profiler with
+
+  delay_iterations or max_iterations while ignore_frontend is False may cause high
+
+  overhead. None of this affects steady-state inference when profiling is not active.
+
+  '
+usage_locations:
+- file: vllm/config/profiler.py:173
+  context: Validator warns about high overhead when torch profiler used with delay_iterations/max_iterations and ignore_frontend
+    is False
+- file: vllm/profiler/wrapper.py:39
+  context: WorkerProfiler stores _max_iters and logs that profiling stops after N worker steps or on stop_profile
+- file: vllm_ascend/profiler/torch_npu_profiler.py:1
+  context: TorchNPUProfilerWrapper implements step()/start() honoring max_iterations to auto-stop the NPU profiler
+- file: tests/ut/profiler/test_torch_npu_profiler.py:255
+  context: Ascend unit test verifying underlying profiler stops after max_iterations steps
+related_parameters:
+- name: profiler.delay_iterations
+  relation: Companion parameter; delay before profiling starts, max_iterations bounds how long it runs
+- name: profiler.profiler
+  relation: Only meaningful when profiler is set to 'torch' (or another active profiler)
+- name: profiler.ignore_frontend
+  relation: When False, torch profiler with delay/max iterations triggers a high-overhead warning
+- name: profiler.torch_profiler_dir
+  relation: Required when profiler is 'torch'; traces are written here
+constraints:
+- max_iterations must be a non-negative integer; 0 means no iteration limit.
+- torch_profiler_dir must be set when profiler is 'torch', otherwise a ValueError is raised.
+- torch_profiler_dir is only applicable when profiler is set to 'torch'.
+tuning_advice:
+  summary: Set a small positive max_iterations to bound profiling overhead on Ascend NPU; keep 0 only when you need continuous
+    tracing.
+  suggested_values:
+  - scenario: Short diagnostic capture of a few steps on Ascend NPU
+    value: 5
+    reason: Captures enough steps for analysis while minimizing profiling overhead window.
+  - scenario: Continuous profiling until manual stop_profile
+    value: 0
+    reason: No limit; use only when you explicitly control stop_profile and accept sustained overhead.
+  - scenario: Long-running benchmark where profiling must not perturb throughput
+    value: 1
+    reason: Minimal single-step capture to verify profiler wiring without meaningful overhead.
+  caveats:
+  - Profiling adds per-step overhead on NPU; keep the active window short in production-like benchmarks.
+  - Ensure ignore_frontend is set appropriately to avoid the high-overhead warning path.
+  quick_guide: Use a small positive max_iterations (e.g. 5) for bounded NPU profiling; 0 only for continuous capture.
+analysis_date: '2026-10-27'

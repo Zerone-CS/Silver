@@ -1,0 +1,110 @@
+name: --kv-cache-metrics
+type: cli
+category: observability
+scope: both
+source_file:
+- vllm/config/observability.py:60
+- vllm/engine/arg_utils.py:682
+- vllm/engine/arg_utils.py:1543
+- vllm/v1/core/sched/scheduler.py:105
+- vllm/v1/metrics/loggers.py:469
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:17
+value_type: bool
+default: false
+valid_choices: boolean (true/false); enabled via --kv-cache-metrics, disabled via --no-kv-cache-metrics
+cli_example: --kv-cache-metrics
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--kv-cache-metrics is an observability toggle defined in vllm/config/observability.py
+
+  (ObservabilityConfig.kv_cache_metrics, default False). When enabled, the v1 scheduler
+
+  (vllm/v1/core/sched/scheduler.py:105) constructs a KVCacheMetricsCollector with the
+
+  sampling rate from --kv-cache-metrics-sample, and the Prometheus logger
+
+  (vllm/v1/metrics/loggers.py:469) registers KV cache residency metrics (block lifetime,
+
+  idle time, reuse gaps). The collector hooks into block allocation/free paths in the
+
+  block pool and KV cache coordinator, adding per-block bookkeeping (timestamps, sampling
+
+  decisions) on the scheduler''s critical path. Because sampling defaults to 1% of blocks
+
+  (kv_cache_metrics_sample=0.01), the added CPU overhead is small but non-zero, and it
+
+  scales with block churn (allocation/free rate), which on Ascend is driven by the same
+
+  scheduler loop as on GPU. The metrics are only emitted through the log-stats path, so
+
+  the parameter requires --disable-log-stats to NOT be set. vllm-ascend does not override
+
+  this parameter; it only imports KVCacheMetricsCollector in its patched
+
+  kv_cache_coordinator (vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:17) to
+
+  preserve the upstream coordinator signature, so the collector is wired through the
+
+  Ascend-patched coordinator unchanged. Net effect on Ascend NPU: negligible throughput
+
+  impact at default sampling; the parameter does not change NPU compute, HCCL
+
+  communication, or KV cache memory layout — it only adds host-side metric collection.
+
+  '
+usage_locations:
+- file: vllm/config/observability.py:60
+  context: 'Field definition kv_cache_metrics: bool = False with docstring describing residency metrics and log-stats requirement'
+- file: vllm/engine/arg_utils.py:682
+  context: EngineArgs.kv_cache_metrics mirrors ObservabilityConfig.kv_cache_metrics
+- file: vllm/engine/arg_utils.py:1543
+  context: CLI argument --kv-cache-metrics registered in the ObservabilityConfig argument group
+- file: vllm/v1/core/sched/scheduler.py:105
+  context: Scheduler constructs KVCacheMetricsCollector(kv_cache_metrics_sample) when kv_cache_metrics is True
+- file: vllm/v1/metrics/loggers.py:469
+  context: Prometheus logger reads kv_cache_metrics to enable KV cache metric emission
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:17
+  context: vllm-ascend patched coordinator imports KVCacheMetricsCollector to keep upstream coordinator behavior intact
+related_parameters:
+- name: --kv-cache-metrics-sample
+  relation: Sampling rate (default 0.01) controlling what fraction of blocks are instrumented; only meaningful when --kv-cache-metrics
+    is enabled
+- name: --disable-log-stats
+  relation: Must NOT be set for KV cache metrics to be emitted; log stats must be enabled
+- name: --enable-prefix-caching
+  relation: Prefix caching increases block reuse and thus the volume of residency events the collector observes
+constraints:
+- KV cache metrics require log stats to be enabled, so setting --disable-log-stats disables metric emission even if --kv-cache-metrics
+  is set.
+- The sampling rate --kv-cache-metrics-sample must be in the range (0.0, 1.0]; values outside this range are rejected by the
+  field validator.
+tuning_advice:
+  summary: Leave --kv-cache-metrics disabled for production throughput runs; enable it only during profiling to inspect KV
+    cache residency, keeping the default 1% sampling.
+  suggested_values:
+  - scenario: Production serving / throughput benchmarking on Ascend NPU
+    value: false
+    reason: Disabling avoids per-block bookkeeping on the scheduler critical path; no residency metrics are needed for steady-state
+      serving.
+  - scenario: Debugging KV cache fragmentation, idle blocks, or prefix-cache reuse gaps
+    value: true
+    reason: Enables KVCacheMetricsCollector so block lifetime/idle/reuse-gap metrics are exported; keep --kv-cache-metrics-sample
+      at 0.01 to bound overhead.
+  - scenario: Deep profiling where accurate residency statistics are needed
+    value: true
+    reason: Enable metrics and raise --kv-cache-metrics-sample (e.g. 0.1) for better statistics, accepting higher host-side
+      overhead; revert after profiling.
+  caveats:
+  - Overhead scales with block allocation/free churn, so high-concurrency, short-request workloads see more collector activity
+    than long-context batch workloads.
+  - Metrics are only emitted when log stats are enabled; combining with --disable-log-stats silently yields no KV cache metrics.
+  - vllm-ascend does not override this parameter; the Ascend-patched KV cache coordinator still routes through the upstream
+    KVCacheMetricsCollector, so behavior matches upstream vLLM.
+  - This parameter does not affect NPU compute, HCCL communication, or KV cache memory allocation — it is purely host-side
+    observability.
+  quick_guide: Keep --kv-cache-metrics off in production; turn it on temporarily with default 1% sampling when diagnosing
+    KV cache residency on Ascend.
+analysis_date: '2026-10-27'

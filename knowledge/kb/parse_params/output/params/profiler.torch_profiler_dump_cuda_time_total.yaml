@@ -1,0 +1,75 @@
+name: profiler.torch_profiler_dump_cuda_time_total
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:332
+- vllm/platforms/cpu.py:377
+value_type: bool
+default: true
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only controls whether the torch profiler, at the end of a profiling
+
+  run, builds and writes a summary table sorted by self_cuda_time_total
+
+  (vllm/profiler/wrapper.py:332-338). When True, `_build_profiler_table` and
+
+  `_write_profiler_table` are invoked and the table is printed on rank 0. This
+
+  is pure post-processing of already-collected Kineto trace data — it does not
+
+  change how kernels are executed, scheduled, or how memory is allocated on the
+
+  NPU. On Ascend, "CUDA time" maps to the device (NPU) kernel time captured by
+
+  Kineto; the flag merely decides whether that aggregated table is emitted.
+
+  The only runtime cost is the CPU-side table construction and file/console
+
+  output, which happens once per profiling window (typically a few steps), so
+
+  the effect on steady-state throughput is negligible. It is disabled
+
+  unconditionally on the CPU platform (vllm/platforms/cpu.py:377) because there
+
+  is no device time to report. No vllm-ascend override of this field was found
+
+  in the provided context.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:332
+  context: In TorchProfilerWrapper._stop, gates building/writing/printing the self_cuda_time_total summary table.
+- file: vllm/platforms/cpu.py:377
+  context: CPU platform forces torch_profiler_dump_cuda_time_total = False since there is no device time.
+related_parameters:
+- name: profiler.profiler
+  relation: Parent selector; torch_profiler_dump_cuda_time_total only matters when profiler is 'torch'.
+- name: profiler.torch_profiler_dir
+  relation: Output directory where the profiler table/trace is written when this flag is enabled.
+- name: profiler.dump_cpu_time_total
+  relation: Sibling flag controlling the analogous CPU-time summary table; independent of this flag.
+constraints:
+- Only meaningful when profiler is set to 'torch'; with other profilers this field has no effect.
+- On the CPU platform this flag is forcibly set to False and cannot be enabled.
+tuning_advice:
+  summary: Leave at default (True) when profiling with the torch profiler; it only affects post-run reporting, not NPU execution.
+  suggested_values:
+  - scenario: Debugging kernel-level hotspots on Ascend with profiler=torch
+    value: true
+    reason: Produces the device-time summary table needed to identify the slowest NPU kernels.
+  - scenario: Production serving / steady-state benchmarking
+    value: false
+    reason: Profiling should be off entirely; if a profiler is active, disabling the table avoids extra per-rank write overhead.
+  caveats:
+  - This flag does not change kernel execution or memory usage; do not expect throughput gains from toggling it alone.
+  - Pair with profiler.torch_profiler_dir to control where output lands and avoid filling disk on multi-rank runs.
+  quick_guide: Keep default True for torch-profiler debugging; irrelevant to normal inference performance.
+analysis_date: '2026-10-27'

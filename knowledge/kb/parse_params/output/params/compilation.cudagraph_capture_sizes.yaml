@@ -1,0 +1,131 @@
+name: compilation.cudagraph_capture_sizes
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1657
+- vllm/engine/arg_utils.py:2599
+- vllm/config/vllm.py:1030
+- vllm/config/vllm.py:1784
+- vllm/v1/cudagraph_dispatcher.py:75
+- vllm_ascend/platform.py:1268
+- vllm_ascend/platform.py:1286
+- vllm_ascend/worker/model_runner_v1.py:660
+- vllm_ascend/worker/worker.py:868
+- vllm_ascend/ascend_config.py:1397
+- vllm_ascend/ascend_forward_context.py:256
+- vllm_ascend/attention/context_parallel/dsa_cp.py:292
+- vllm_ascend/attention/context_parallel/dsa_v41_cp.py:276
+- vllm_ascend/worker/v2/aclgraph_utils.py:114
+value_type: list[int]
+default: null
+valid_choices: Any ascending list of positive integers; each size is a batch/token count to capture as an ACL graph. When
+  None, sizes are inferred from max_cudagraph_capture_size / max_num_seqs / max_num_batched_tokens.
+cli_example: '--compilation-config ''{"cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64, 128]}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter defines the exact set of batch/token sizes for which ACL graphs (Ascend's\nequivalent of CUDA\
+  \ graphs) are captured. It is the primary lever controlling the\ngraph-vs-eager tradeoff on Ascend NPU.\n\nUpstream vLLM:\
+  \ \"`vllm/v1/cudagraph_dispatcher.py:75` builds `_bs_to_padded_graph_size`\"\nfrom `cudagraph_capture_sizes`; any runtime\
+  \ batch size is padded up to the next captured\nsize and dispatched to that graph. Sizes not covered fall back to eager\
+  \ execution.\n`vllm/config/vllm.py:1784` clears the list when `enforce_eager` is set, and\n`vllm/config/vllm.py:1030` clears\
+  \ it when cudagraph mode falls back to NONE.\n\nvllm-ascend overrides / augments this heavily:\n- \"`vllm_ascend/platform.py:1268`\
+  \ (recompute path): if `reduced_cg_cap` is set, it injects\"\n  that size into the list and resets `max_cudagraph_capture_size\
+  \ = None`, then calls\n  `vllm_config._set_cudagraph_sizes()` to rebuild the list.\n- \"`vllm_ascend/platform.py:1286`:\
+  \ when TP > 1 and SP / shared-expert-DP / DSA-CP is\"\n  enabled, capture sizes are rewritten to TP-aligned multiples via\n\
+  \  `update_sizes_for_sequence_parallelism`; if no size is a multiple of tp_size an\n  AssertionError is raised. This directly\
+  \ changes which graphs get captured.\n- \"`vllm_ascend/worker/model_runner_v1.py:660`: the sorted list becomes\"\n  `cudagraph_batch_sizes`,\
+  \ the dispatch table used at runtime to pick a graph.\n- \"`vllm_ascend/worker/worker.py:868`: capture sizes are excluded\
+  \ from the compile/warmup\"\n  size list, so each captured size triggers a dummy run + graph capture at startup\n  (startup\
+  \ latency and NPU memory cost scale with list length).\n- \"`vllm_ascend/ascend_forward_context.py:256`: `max_cudagraph_capture_size`\
+  \ (derived from\"\n  this list) sizes the MC2/MegaMoe token capacity, i.e. HCCL comm buffer allocation.\n- \"`vllm_ascend/attention/context_parallel/dsa_cp.py:292`\
+  \ and `dsa_v41_cp.py:276`: the max\"\n  capture size sizes per-request metadata buffers for DSA context-parallel attention.\n\
+  - \"`vllm_ascend/ascend_config.py:1397`: if the largest capture size does not cover the\"\n  largest possible decode step,\
+  \ `oproj_tensor_parallel_size` / `mlp_tensor_parallel_size`\n  are silently disabled (with a warning) to avoid eager fallback\
+  \ desyncing cross-DP HCCL\n  collectives.\n- \"`vllm_ascend/worker/v2/aclgraph_utils.py:114`: under v2 with speculative\
+  \ decoding and\"\n  FULL_DECODE_ONLY, raw sizes are rounded up to multiples of decode_query_len, so actual\n  graph sizes\
+  \ differ from the configured list.\n\nNet effect: \"more/larger capture sizes reduce per-step launch overhead and improve\
+  \ decode\"\nthroughput and latency, but increase NPU memory (each graph holds its own workspace) and\nstartup capture time;\
+  \ too many graphs can exhaust stream resources (CANN error 207008).\nToo few sizes cause frequent eager fallback, hurting\
+  \ throughput and, in cross-DP setups,\nrisking collective desync.\n"
+usage_locations:
+- file: vllm/v1/cudagraph_dispatcher.py:75
+  context: Builds batch-size-to-padded-graph-size dispatch table from capture sizes
+- file: vllm/engine/arg_utils.py:2599
+  context: CLI --cudagraph-capture-sizes merged into compilation_config; mutually exclusive with compilation_config.cudagraph_capture_sizes
+- file: vllm_ascend/platform.py:1268
+  context: Injects reduced_cg_cap size and rebuilds list via _set_cudagraph_sizes
+- file: vllm_ascend/platform.py:1286
+  context: Rewrites sizes to TP-aligned multiples when SP/shared-expert-DP/DSA-CP enabled
+- file: vllm_ascend/worker/model_runner_v1.py:660
+  context: Populates cudagraph_batch_sizes dispatch table for v1 worker
+- file: vllm_ascend/worker/worker.py:868
+  context: Excludes capture sizes from warmup list; each size triggers dummy run + capture
+- file: vllm_ascend/ascend_config.py:1397
+  context: Checks max capture size covers max decode step before enabling oproj/mlp TP
+- file: vllm_ascend/ascend_forward_context.py:256
+  context: Sizes MC2/MegaMoe token capacity from max_cudagraph_capture_size
+- file: vllm_ascend/attention/context_parallel/dsa_cp.py:292
+  context: Sizes per-request metadata buffers for DSA CP attention
+- file: vllm_ascend/worker/v2/aclgraph_utils.py:114
+  context: 'v2: actual graph token counts rounded to decode_query_len multiples'
+related_parameters:
+- name: compilation.max_cudagraph_capture_size
+  relation: Upper bound; when set, sizes are inferred from it. Mutually exclusive with an explicit sizes list at CLI level.
+- name: compilation.cudagraph_mode
+  relation: If NONE or enforce_eager, capture sizes are cleared and no graphs are captured.
+- name: compilation.compile_sizes
+  relation: Capture sizes are removed from the warmup/compile size list to avoid double work.
+- name: scheduler_config.max_num_seqs
+  relation: Default capture sizes are derived from max_num_seqs; also bounds decode batch sizes.
+- name: scheduler_config.max_num_batched_tokens
+  relation: Caps reduced_cg_cap and bounds the largest possible step.
+- name: speculative_config.num_speculative_tokens
+  relation: With EAGLE/MTP, each size must be n*(K+1); v2 rounds sizes to decode_query_len multiples.
+- name: tensor_parallel_size
+  relation: With SP/shared-expert-DP/DSA-CP, sizes must be multiples of tp_size or an AssertionError is raised.
+- name: additional_config.oproj_tensor_parallel_size
+  relation: Disabled if max capture size does not cover the largest decode step.
+- name: additional_config.mlp_tensor_parallel_size
+  relation: Disabled if max capture size does not cover the largest decode step.
+constraints:
+- When tensor parallelism > 1 and sequence parallelism, shared-expert DP, or DSA context parallelism is enabled, at least
+  one capture size must be a multiple of tensor_parallel_size, otherwise an AssertionError is raised.
+- With EAGLE speculative decoding under fullgraph mode, each capture size must be n*(K+1) where K is num_speculative_tokens
+  and n is a supported batch size.
+- The CLI flag --cudagraph-capture-sizes and compilation_config.cudagraph_capture_sizes are mutually exclusive; setting both
+  raises a ValueError.
+- If enforce_eager is set or cudagraph_mode resolves to NONE, the capture sizes list is cleared and has no effect.
+- Capture sizes must be positive integers; the dispatcher asserts the list is non-empty when cudagraphs are enabled.
+tuning_advice:
+  summary: Choose a capture-size list that covers your realistic decode batch sizes (accounting for speculative tokens and
+    TP alignment) while keeping the list short enough to fit NPU memory and stream resources.
+  suggested_values:
+  - scenario: Uniform decode, no speculative decoding, typical serving
+    value: '[1, 2, 4, 8, 16, 32, 64, 128, 256]'
+    reason: Geometric coverage of common decode batch sizes minimizes eager fallback while keeping graph count and memory
+      modest.
+  - scenario: EAGLE/MTP speculative decoding with num_speculative_tokens=K
+    value: '[n*(K+1) for n in (1,2,4,8,16,32,64)]'
+    reason: Fullgraph verification fixes tokens per step to n*(K+1); sizes not on this stride will not match captured graphs.
+  - scenario: DSpark / DeepSeek-V4 with num_speculative_tokens=5, target ~60 concurrency
+    value: '[6, 12, 24, 48, 96, 192, 360]'
+    reason: Each sequence processes 6 tokens per step, so batch_size/6 gives concurrency; 360 covers ~60 concurrent sequences.
+  - scenario: TP>1 with SP/shared-expert-DP/DSA-CP enabled
+    value: Multiples of tensor_parallel_size, e.g. [8, 16, 32, 64, 128, 256] for TP=8
+    reason: vllm-ascend rewrites sizes to TP-aligned multiples and raises AssertionError if none qualify.
+  - scenario: Hitting CANN stream-resource errors (207008) or NPU OOM during capture
+    value: Reduce list length and lower max_cudagraph_capture_size
+    reason: Fewer/smaller graphs reduce per-graph workspace and stream usage; docs recommend reducing capture sizes as the
+      primary mitigation.
+  caveats:
+  - Prefer FULL or FULL_DECODE_ONLY over PIECEWISE/FULL_AND_PIECEWISE for uniform decode workloads to reduce graph count.
+  - Verify the effective list after startup logs, since vllm-ascend may inject reduced_cg_cap or TP-align sizes.
+  - Ensure the largest capture size covers max_num_seqs * decode_query_len, otherwise oproj/mlp TP gets disabled.
+  quick_guide: Set a short geometric list of decode batch sizes (scaled by K+1 for speculative decoding and aligned to tp_size
+    when SP is on); reduce it if capture fails on stream resources.
+analysis_date: '2026-10-27'

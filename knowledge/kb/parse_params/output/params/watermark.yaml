@@ -1,0 +1,101 @@
+name: --watermark
+type: cli
+category: scheduling
+scope: vllm
+source_file:
+- vllm/config/scheduler.py:178
+- vllm/engine/arg_utils.py:653
+- vllm/engine/arg_utils.py:1634
+value_type: float
+default: 0.0
+valid_choices: float in range [0.0, 1.0)
+cli_example: --watermark 0.05
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: '--watermark is a SchedulerConfig field (vllm/config/scheduler.py:178, Field(default=0.0, ge=0.0, lt=1.0))
+
+  that reserves a fraction of total KV cache blocks as free headroom when the scheduler admits waiting or
+
+  preempted requests into the running queue. It is exposed as a CLI flag in vllm/engine/arg_utils.py:1634
+
+  and carried through EngineArgs.watermark (arg_utils.py:653). The mechanism is purely scheduler-side:
+
+  by keeping a fraction of KV blocks unallocated, the scheduler avoids the situation where admitting a new
+
+  request immediately exhausts the block pool, forcing eviction of running requests and triggering repeated
+
+  preemption/recompute cycles. On Ascend NPU this matters because preemption causes full recompute of the
+
+  preempted sequence''s KV cache, which is expensive on NPU (attention recompute + HCCL-synchronized forward
+
+  passes in multi-card deployments). A small watermark can therefore reduce tail latency spikes and improve
+
+  steady-state throughput under memory pressure. However, reserving blocks reduces the effective KV cache
+
+  capacity available for concurrent sequences, which can lower max concurrency and thus throughput when
+
+  memory is not the bottleneck. The default 0.0 disables the watermark entirely, preserving maximum KV
+
+  capacity. Note: vllm-ascend does not override this SchedulerConfig field; the `watermark` occurrences in
+
+  vllm_ascend (ec_manager/score_ec_manager.py, kv_offload worker, mooncake test configs) are unrelated
+
+  concepts (encoder-cache eviction ratio, event polling watermark, Mooncake eviction ratio) and do not
+
+  affect --watermark. Ascend''s DyntraLBScheduler tests explicitly set scheduler_config.watermark = 0.0,
+
+  confirming the upstream field is consumed by the Ascend scheduler path unchanged.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:178
+  context: SchedulerConfig.watermark field definition with ge=0.0, lt=1.0 validation and docstring describing KV headroom
+    semantics
+- file: vllm/engine/arg_utils.py:653
+  context: EngineArgs.watermark default sourced from SchedulerConfig.watermark
+- file: vllm/engine/arg_utils.py:1634
+  context: CLI argument registration in the SchedulerConfig argument group
+- file: tests/ut/core/test_dyntra_lb_scheduler.py:289
+  context: Ascend DyntraLBScheduler test sets scheduler_config.watermark = 0.0 to disable headroom for deterministic preemption
+    tests
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: Determines total KV cache blocks; watermark is a fraction of this total, so the absolute headroom scales with
+    it
+- name: --max-num-seqs
+  relation: Higher concurrency increases KV pressure; watermark becomes more valuable to prevent preemption thrashing
+- name: --enable-chunked-prefill
+  relation: Chunked prefill interleaves prefill and decode, increasing KV pressure; watermark helps avoid eviction during
+    mixed batches
+- name: --scheduler-reserve-full-isl
+  relation: Complementary admission-control mechanism that checks full ISL fits before admitting; both reduce over-admission
+- name: --scheduling-policy
+  relation: Priority policy interacts with preemption; watermark reduces the frequency of preemption events triggered by admission
+constraints:
+- --watermark must be in the range [0.0, 1.0); values >= 1.0 or < 0.0 are rejected by Pydantic validation (Field(ge=0.0, lt=1.0)).
+- A value of 0.0 disables the watermark entirely (default behavior).
+tuning_advice:
+  summary: Leave at 0.0 for maximum KV capacity; set a small value (0.02–0.1) only when preemption/recompute thrashing is
+    observed under memory pressure on Ascend NPU.
+  suggested_values:
+  - scenario: Offline batch / throughput-maximizing workloads with ample memory
+    value: 0.0
+    reason: No headroom needed; maximizes KV blocks available for concurrent sequences and thus throughput.
+  - scenario: Online serving with long-context requests and observed preemption spikes
+    value: 0.05
+    reason: Small headroom absorbs admission bursts, reducing repeated preemption and expensive NPU KV recompute while sacrificing
+      only ~5% of cache capacity.
+  - scenario: High-concurrency decode-heavy serving near memory limit
+    value: 0.1
+    reason: Larger headroom prevents eviction thrashing when many sequences compete for KV blocks; trade a modest concurrency
+      reduction for smoother tail latency.
+  caveats:
+  - Monitor preemption metrics before and after enabling; if preemption count does not drop, the watermark is pure capacity
+    loss.
+  - 'Scale the value with --gpu-memory-utilization: a larger KV pool means the same fraction yields more absolute headroom.'
+  - Do not exceed ~0.2; beyond that the reserved blocks materially reduce achievable concurrency.
+  quick_guide: Keep 0.0 unless you see preemption thrashing; then try 0.05 and measure.
+analysis_date: '2026-10-27'

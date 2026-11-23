@@ -1,0 +1,84 @@
+name: additional_config.eplb_config.algorithm_execution_interval
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:291
+- vllm_ascend/eplb/eplb_updator.py:73
+value_type: int
+default: 50
+valid_choices: integer >= 0 (validator rejects negative values)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: "This parameter is defined only in vllm-ascend (EplbConfig, MRv1 dynamic EPLB path).\nIt is read in vllm_ascend/eplb/eplb_updator.py:73\
+  \ into self.algorithm_execution_interval\nand drives the EPLB update state machine:\n- \"update_iteration() (line 79-89)\
+  \ increments cur_iterations each forward iteration and\"\n  resets the cycle when cur_iterations == expert_heat_collection_interval\
+  \ +\n  algorithm_execution_interval + num_moe_layers. This defines the total length of one\n  EPLB cycle: \"heat collection\
+  \ window + algorithm execution window + MoE layer drain.\"\n- \"get_update_info_flag() (line 91-92) returns True when cur_iterations\
+  \ ==\"\n  expert_heat_collection_interval + algorithm_execution_interval - 1, i.e. the point at\n  which the EPLB worker's\
+  \ computed expert map is applied.\nSo algorithm_execution_interval is the number of forward iterations reserved for the\
+  \ EPLB\nsubprocess to finish its CPU-side rebalancing computation before the new expert map is\nswapped in. If it is too\
+  \ small, the CPU algorithm may not finish before the swap point,\ncausing stale/partial maps or forcing synchronization\
+  \ stalls; if it is too large, the\nrebalancing reacts more slowly to load imbalance, reducing the throughput benefit of\n\
+  dynamic EPLB and lengthening the interval between map updates. It does not directly\nallocate memory or change communication\
+  \ volume, hence medium impact (indirect throughput\neffect via load balancing responsiveness and CPU/NPU overlap).\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:291
+  context: Field definition in EplbConfig dataclass with default 50
+- file: vllm_ascend/ascend_config.py:316
+  context: Validator loop checks it is an int and >= 0
+- file: vllm_ascend/eplb/eplb_updator.py:73
+  context: Read into self.algorithm_execution_interval of the EPLB updator
+- file: vllm_ascend/eplb/eplb_updator.py:81
+  context: Used to compute full EPLB cycle length for counter reset
+- file: vllm_ascend/eplb/eplb_updator.py:92
+  context: Used to compute the iteration at which the new expert map is applied
+related_parameters:
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: 'Additive partner: total cycle = expert_heat_collection_interval + algorithm_execution_interval + num_moe_layers;
+    the update flag fires at expert_heat_collection_interval + algorithm_execution_interval - 1'
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: Only meaningful when dynamic EPLB is enabled (dynamic_eplb=true or expert_map_record_path set)
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: Selects the rebalancing algorithm whose CPU runtime this interval must accommodate
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: Redundant experts are what the EPLB algorithm redistributes; affects rebalancing benefit
+- name: DYNAMIC_EPLB (env var)
+  relation: Must be set to true (or EXPERT_MAP_RECORD=true) when dynamic_eplb is enabled
+constraints:
+- algorithm_execution_interval must be an integer; non-int values raise TypeError.
+- algorithm_execution_interval must be >= 0; negative values raise ValueError.
+- This parameter is MRv1 only; MRv2 EPLB tuning uses upstream --eplb-config window_size and step_interval instead.
+- Dynamic EPLB (and thus this parameter's effect) requires the DYNAMIC_EPLB or EXPERT_MAP_RECORD environment variable to be
+  set to true.
+tuning_advice:
+  summary: 'Tune algorithm_execution_interval together with expert_heat_collection_interval so the
+
+    EPLB CPU rebalancing finishes within the reserved window; keep it large enough to avoid
+
+    stalls but small enough to react to load imbalance promptly.
+
+    '
+  suggested_values:
+  - scenario: Default / general workloads with SwiftBalanceEplb (policy 2)
+    value: 50
+    reason: Documented default; a reasonable reserve for the CPU algorithm on typical MoE models.
+  - scenario: Large MoE models or slow CPU-side rebalancing (many experts, large EP size)
+    value: 100
+    reason: Give the EPLB subprocess more forward iterations to complete before the map swap, avoiding stale/partial maps.
+  - scenario: Highly dynamic / bursty traffic needing fast rebalancing
+    value: 20
+    reason: Shorten the execution window so the new expert map is applied sooner, improving responsiveness to load imbalance.
+  caveats:
+  - Too small a value risks the CPU algorithm not finishing before the swap point, causing stale maps or synchronization stalls.
+  - Too large a value slows rebalancing reaction and lengthens the interval between expert-map updates, reducing dynamic EPLB
+    throughput gains.
+  - Only effective on the MRv1 dynamic EPLB path; MRv2 uses upstream --eplb-config window_size/step_interval instead.
+  - Requires DYNAMIC_EPLB=true (or EXPERT_MAP_RECORD=true) to have any effect.
+  quick_guide: Keep at 50 by default; raise toward 100 for large/slow-rebalancing MoE models, lower toward 20 for fast-reacting
+    balancing.
+analysis_date: '2026-10-27'

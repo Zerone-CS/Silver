@@ -1,0 +1,97 @@
+name: compilation.cache_dir
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/backends.py:1058
+- vllm/compilation/decorators.py:553
+- vllm/compilation/decorators.py:565
+- vllm/compilation/wrapper.py:338
+value_type: str
+default: ''
+valid_choices: Any writable filesystem path; empty string means auto-generate a hash-based directory under VLLM_CACHE_ROOT/torch_compile_cache
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+impact_detail: 'compilation.cache_dir controls where vLLM stores compiled graph artifacts (torch.compile / Inductor
+
+  and AOT compile outputs). In vllm/compilation/backends.py:1058-1074, if cache_dir is empty, VllmBackend
+
+  computes a hash from env_hash, config_hash, code_hash and compiler_hash and builds a directory under
+
+  envs.VLLM_CACHE_ROOT/torch_compile_cache/<hash>. It then creates a per-rank subdirectory
+
+  rank_{rank}_{dp_rank} and stores compiled artifacts there. On subsequent runs with identical factors,
+
+  the same directory is reused, so the compiled graph is loaded from disk instead of being recompiled.
+
+  In vllm/compilation/decorators.py:545-565, the AOT compile path derives a hash-level cache dir and sets
+
+  TORCHINDUCTOR_CACHE_DIR to {hash}/inductor_cache, then loads a previously AOT-compiled function from
+
+  {cache_dir}/rank_{rank}_{dp_rank}/model if VLLM_DISABLE_COMPILE_CACHE is not set. This directly affects
+
+  startup/warmup latency: a warm cache avoids expensive Inductor/AOT compilation (which on Ascend involves
+
+  CANN graph lowering and can take minutes for large models), while a cold or mismatched cache forces full
+
+  recompilation. It does not affect steady-state token throughput or memory footprint. vllm-ascend does not
+
+  define or override this parameter; it inherits upstream vLLM behavior. Note that on Ascend, torch.compile
+
+  support is limited and many deployments run with compilation disabled (e.g. enforce_eager or ACL graph
+
+  mode), in which case this parameter has little practical effect.
+
+  '
+usage_locations:
+- file: vllm/compilation/backends.py:1058
+  context: If cache_dir is empty, generate a hash-based cache directory under VLLM_CACHE_ROOT/torch_compile_cache and create
+    per-rank subdirs
+- file: vllm/compilation/decorators.py:553
+  context: AOT compile path sets local_cache_dir and TORCHINDUCTOR_CACHE_DIR under the hash-level cache dir
+- file: vllm/compilation/decorators.py:565
+  context: Loads previously AOT-compiled function from {cache_dir}/rank_{rank}_{dp_rank}/model when compile cache is enabled
+- file: vllm/compilation/wrapper.py:338
+  context: Resets cache_dir to empty string to force hash recomputation when data_parallel_size changes
+related_parameters:
+- name: VLLM_CACHE_ROOT
+  relation: Base directory used to auto-generate the cache_dir when compilation.cache_dir is empty
+- name: VLLM_DISABLE_COMPILE_CACHE
+  relation: When set, disables loading/saving of AOT compiled artifacts, making cache_dir effectively unused for reuse
+- name: compilation.backend
+  relation: Cache is only relevant when a compiling backend (e.g. inductor) is used; eager backend bypasses it
+- name: compilation.local_cache_dir
+  relation: Derived per-process cache directory set alongside cache_dir in the AOT compile path
+- name: enforce_eager
+  relation: When true, compilation is skipped entirely, so cache_dir has no effect
+constraints:
+- The cache directory path must be writable by the process; os.makedirs is called on it and failures will raise.
+- The cache is keyed by env/config/code/compiler hashes; if any of these change the auto-generated directory changes and the
+  old cache is not reused.
+- When data_parallel_size changes, cache_dir is reset to empty to force recomputation of the hash.
+tuning_advice:
+  summary: Leave cache_dir empty to let vLLM auto-generate a hash-based cache, or point it to a persistent fast local disk
+    to speed up repeated startup compilation.
+  suggested_values:
+  - scenario: Default / single-node deployment with compilation enabled
+    value: unset
+    reason: Auto-generated hash-based directory under VLLM_CACHE_ROOT correctly invalidates when env/config/compiler change,
+      avoiding stale artifacts.
+  - scenario: Repeated restarts of the same model/config on Ascend with torch.compile enabled
+    value: /data/vllm_compile_cache
+    reason: A persistent local path on fast storage lets subsequent runs load compiled graphs and skip expensive Inductor/AOT
+      compilation, reducing startup latency.
+  - scenario: Multi-node or shared-filesystem deployments
+    value: /local_nvme/vllm_compile_cache
+    reason: Use node-local fast storage rather than a shared network FS to avoid slow cache reads/writes; per-rank subdirs
+      are created automatically.
+  caveats:
+  - Clear the cache directory after upgrading CANN, torch-ascend, or changing model/parallelism to avoid stale compiled artifacts.
+  - If running with enforce_eager or without a compiling backend, this parameter has no practical effect on Ascend.
+  - Monitor disk usage of the cache directory; it accumulates artifacts across configurations.
+  quick_guide: Keep cache_dir empty for correctness, or set it to a persistent local fast disk to cut repeated compilation
+    startup cost when torch.compile is used on Ascend.
+analysis_date: '2026-10-27'

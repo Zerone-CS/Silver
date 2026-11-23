@@ -1,0 +1,152 @@
+name: kv_transfer.engine_id
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/platform.py:821
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/connector.py:80
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:1618
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_d2rh_connector.py:2571
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1212
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:728
+- vllm/v1/engine/core.py:1310
+- vllm/v1/engine/utils.py:396
+- vllm/distributed/kv_transfer/kv_connector/factory.py:65
+value_type: str
+default: None
+valid_choices: any non-empty string; must be unique per engine instance (per DP rank / per P or D node)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'engine_id is the identity key used by KV-transfer connectors (Mooncake, NIXL, etc.) to
+
+  register and address a given engine instance in the disaggregated prefill/decode (P/D)
+
+  topology. It is not a compute knob, but it directly gates whether KV cache reuse across
+
+  P/D nodes works at all, which is the whole point of the P/D disaggregation path.
+
+
+  Upstream vLLM (v1): in vllm/v1/engine/core.py:1310 and vllm/v1/engine/utils.py:396, when
+
+  data_parallel_size > 1 the engine_id is suffixed with `_dp{dp_rank}` so that sibling DP
+
+  engines get unique connector identities. The comment explicitly states this is required
+
+  "to ensure that the kv_transfer_config is unique for each DP rank" and that "KV-connector
+
+  engine_ids must be unique across sibling DP engines or registration collides." A collision
+
+  means two engines register under the same id, so remote peers pull KV from the wrong
+
+  engine — causing failed/incorrect transfers, retries, and effectively disabling cross-node
+
+  KV reuse (latency up, prefill compute wasted, throughput down).
+
+
+  vllm-ascend override: "vllm_ascend/platform.py:817-822 patches the engine_id during platform"
+
+  config validation by appending a random UUID hex suffix:
+
+  `engine_id = f"{engine_id}-{uuid4().hex}"`, guarded by a `_engine_id_patched` flag for
+
+  idempotency. The comment states the intent: "make engine_id unique so P/D nodes or restarts
+
+  never collide." This means on Ascend the user-supplied engine_id is NOT used verbatim — it
+
+  is always made unique per process. This is a behavioral divergence from upstream: any
+
+  external orchestration that hard-codes engine_id to match a peer (e.g. a proxy that routes
+
+  by engine_id, or a P node that must know the D node''s engine_id) must account for the
+
+  suffix, or rely on the connector''s own discovery/handshake rather than the literal id.
+
+
+  All Ascend Mooncake connectors (mooncake/connector.py:80, mooncake_connector.py:1618,
+
+  mooncake_d2rh_connector.py:2571, mooncake_hybrid_connector.py:1212) read
+
+  `vllm_config.kv_transfer_config.engine_id` and pass `str(self.engine_id)` into the
+
+  scheduler/worker. The metadata layer (mooncake/metadata.py:167, mooncake_connector.py:1593,
+
+  mooncake_hybrid_connector.py:1191, mooncake_layerwise_connector.py:728) keys incoming
+
+  requests by `remote_engine_id` from kv_transfer_params, so the id is the routing key for
+
+  which remote engine to pull from. Correctness of this key is a prerequisite for the
+
+  KV-transfer fast path; when it is wrong the transfer fails and the request falls back to
+
+  local recompute (higher TTFT, lower effective throughput).
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:821
+  context: Ascend platform config patch appends a uuid4 hex suffix to engine_id (idempotent via _engine_id_patched) to guarantee
+    uniqueness across P/D nodes and restarts.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/connector.py:80
+  context: MooncakeBaseConnector asserts engine_id is not None and stores it as self.engine_id for scheduler/worker construction.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:1618
+  context: MooncakeConnector reads engine_id and passes str(engine_id) to MooncakeConnectorScheduler/Worker.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_d2rh_connector.py:2571
+  context: D-Host staging Mooncake connector reads engine_id for scheduler/worker.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1212
+  context: Hybrid Mooncake connector reads engine_id for scheduler/worker.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:728
+  context: Layerwise connector keys requests by remote_engine_id from kv_transfer_params.
+- file: vllm/v1/engine/core.py:1310
+  context: Upstream v1 appends _dp{dp_rank} to engine_id when data_parallel_size > 1 to keep DP engines unique.
+- file: vllm/v1/engine/utils.py:396
+  context: Upstream v1 _apply_dp_identity_suffix appends _dp{dp_rank} to engine_id for sibling DP engines.
+- file: vllm/distributed/kv_transfer/kv_connector/factory.py:65
+  context: Connector factory logs engine_id when creating the v1 connector.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: engine_id is only meaningful when a KV connector (MooncakeConnectorV1/V2, NixlConnector, etc.) is configured.
+- name: kv_transfer_config.kv_role
+  relation: P nodes use kv_producer, D nodes use kv_consumer; engine_id must be unique per role group and per instance.
+- name: kv_transfer_config.kv_port
+  relation: Must be unique per instance alongside engine_id; docs pair them (e.g. kv_port 30100 / engine_id 1 for Prefill).
+- name: kv_transfer_config.kv_connector_extra_config
+  relation: Child connectors in a multi-connector setup inherit the outer engine_id unless overridden per child.
+- name: data_parallel_size
+  relation: When > 1, upstream appends _dp{dp_rank} to engine_id; Ascend additionally appends a uuid suffix.
+constraints:
+- engine_id must not be None when a KV connector is instantiated; Mooncake/NIXL connectors assert it is not None.
+- Each engine instance (each DP rank, each P or D node) must have a unique engine_id, otherwise connector registration collides
+  and KV transfers route to the wrong peer.
+- On Ascend, the user-supplied engine_id is always suffixed with a random uuid4 hex by vllm_ascend/platform.py, so the literal
+  configured value is not the runtime id.
+- When data_parallel_size > 1, upstream vLLM appends _dp{dp_rank} to engine_id, so the effective id differs from the configured
+  value.
+tuning_advice:
+  summary: Assign a unique, stable engine_id per engine instance (per DP rank / per P or D node) and rely on connector discovery
+    rather than the literal id, since Ascend appends a uuid suffix at runtime.
+  suggested_values:
+  - scenario: Single P/D pair, MooncakeConnectorV1, no DP
+    value: '0'
+    reason: Docs use engine_id 0 for the prefill engine; uniqueness is trivially satisfied with one instance per role.
+  - scenario: Multiple P instances (e.g. 4 P nodes)
+    value: 0,1,2,3 (increment per P instance)
+    reason: 'DeepSeek-V4-Flash doc: engine_id should start from 0 and increment sequentially per P instance, paired with a
+      unique kv_port.'
+  - scenario: Prefill vs Decode role groups (GLM5.2)
+    value: 0 for prefill, 2 for decode
+    reason: 'Doc specifies fixed engine_id per role group: 0 for prefill (shared by PP ranks), 2 for decode engines.'
+  - scenario: DP-launched engines (GLM5.3-Flash)
+    value: $4 (DP rank from launch_online_dp.py)
+    reason: 'Doc: each engine must have a unique engine_id and lookup_rpc_port; child connectors inherit the outer engine_id.'
+  caveats:
+  - On Ascend the configured engine_id is suffixed with a uuid4 hex at platform init; do not hard-code the literal id in external
+    routing logic.
+  - Ensure engine_id and kv_port are both unique per instance; docs pair them (e.g. kv_port 30100 / engine_id 1).
+  - With data_parallel_size > 1, upstream appends _dp{dp_rank}; combined with the Ascend uuid suffix the runtime id is fully
+    unique but not human-predictable.
+  quick_guide: Give every engine instance a unique engine_id (increment per P/D node or use DP rank); on Ascend it is auto-suffixed
+    with a uuid, so route via connector discovery, not the literal id.
+analysis_date: '2026-10-27'

@@ -1,0 +1,125 @@
+name: --mamba-cache-mode
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:178
+- vllm/engine/arg_utils.py:1312
+- vllm/engine/arg_utils.py:2115
+- vllm_ascend/patch/platform/patch_mamba_config.py:167
+- vllm_ascend/patch/platform/patch_mamba_config_310.py:68
+- vllm_ascend/platform.py:418
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:211
+- vllm_ascend/worker/model_runner_v1.py:1012
+- vllm_ascend/worker/v2/model_runner.py:1063
+value_type: str
+default: none
+valid_choices:
+- none
+- all
+- align
+cli_example: --mamba-cache-mode align
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter selects the recurrent-state (Mamba/linear-attention) caching strategy for\nhybrid models (e.g.\
+  \ GLM-5.3-Flash, Qwen3-Next style). It has a large effect on Ascend because\nvllm-ascend rewrites the mode and the derived\
+  \ block sizes in several places:\n\n1. Upstream default is \"none\" (vllm/config/cache.py:178). When prefix caching is enabled\
+  \ the\n   engine derives \"align\" (docstring: \"This is the default when prefix caching is enabled\").\n   \"all\" caches\
+  \ the mamba state at every i*block_size position; \"align\" only caches the last\n   token of each scheduler step that lands\
+  \ on a block boundary.\n\n2. vllm-ascend forces \"align\" whenever an AscendStoreConnector (or MultiConnector containing\n\
+  \   one) is used with a hybrid model: patch_mamba_config.py:167-172 sets\n   mamba_cache_mode=\"align\" if it was \"none\"\
+  , and asserts it must already be \"align\"\n   otherwise (\"mamba_cache_mode only support 'align' when kv_transfer enabled\
+  \ now!\").\n   So with KV-store PD disaggregation the user cannot choose \"all\" or \"none\".\n\n3. The mode drives block-size\
+  \ selection, which directly changes KV-cache memory footprint and\n   page padding. patch_mamba_config_310.py:68-85: in\
+  \ \"all\" mode mamba_block_size is set to an\n   LCM-aligned attention block size; in \"align\" mode mamba_block_size =\
+  \ block_size; otherwise\n   mamba_block_size = max_model_len. platform.py:418-426 additionally asserts\n   mamba_block_size\
+  \ % block_size == 0 when prefix caching is off but KV transfer + hybrid is on.\n   Larger mamba_block_size means more recurrent-state\
+  \ checkpoints per request -> more NPU HBM\n   consumed by the mamba cache group and fewer KV blocks available for attention.\n\
+  \n4. Runtime dispatch differs by mode. v1 worker (model_runner_v1.py:1012, 2419): \"align\" uses\n   mamba_utils.preprocess_mamba\
+  \ / postprocess_mamba_align_gpu with Ascend-specific state copy\n   funcs; \"all\" uses postprocess_mamba_all; \"none\"\
+  \ skips mamba postprocessing entirely. The\n   \"align\" path also forces deferred state corrections to be applied before\
+  \ preprocess, adding\n   CPU-side work per step. v2 worker (model_runner.py:1063) only special-cases \"align\" for PP\n\
+  \   non-last ranks (gather_block_tables before postprocess_sampled).\n\n5. patch_kv_cache_coordinator.py:211 enables enable_partial_hash_hits\
+  \ only when a MambaSpec has\n   mamba_cache_mode == \"align\" and block_size > hash_block_size, changing prefix-cache hit\n\
+  \   granularity (more cache hits -> higher throughput on repeated prefixes).\n\n6. Upstream vllm/config/vllm.py:2878 marks\
+  \ mamba cache mode \"all\" as unsupported by the V2\n   model runner, so on Ascend v2 \"all\" is effectively unavailable.\n\
+  \nNet: \"\\\"align\\\" gives prefix-cache reuse of recurrent state (throughput win on shared prefixes)\"\nat the cost of\
+  \ extra per-step state-copy work and larger mamba block bookkeeping; \"none\"\nminimizes memory and per-step overhead but\
+  \ loses prefix-cache reuse; \"all\" maximizes reuse\ngranularity but costs the most memory and is unsupported on v2.\n"
+usage_locations:
+- file: vllm/config/cache.py:178
+  context: Field definition and docstring describing none/all/align semantics
+- file: vllm/engine/arg_utils.py:1312
+  context: CLI flag registration in CacheConfig argument group
+- file: vllm/engine/arg_utils.py:2115
+  context: Passed into CacheConfig construction
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:167
+  context: Forces 'align' when AscendStoreConnector used with hybrid model; asserts otherwise
+- file: vllm_ascend/patch/platform/patch_mamba_config_310.py:68
+  context: Derives mamba_block_size / attention block_size from the mode
+- file: vllm_ascend/platform.py:418
+  context: Aligns mamba_block_size to block_size when prefix caching off + KV transfer + hybrid
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:211
+  context: Enables partial hash hits for align mode with block_size > hash_block_size
+- file: vllm_ascend/worker/model_runner_v1.py:1012
+  context: 'v1: chooses postprocess_mamba_align_gpu vs postprocess_mamba_all vs skip'
+- file: vllm_ascend/worker/model_runner_v1.py:2419
+  context: 'v1: runs preprocess_mamba for align mode before forward'
+- file: vllm_ascend/worker/v2/model_runner.py:1063
+  context: 'v2: PP non-last rank gathers block tables before align postprocess'
+related_parameters:
+- name: --enable-prefix-caching
+  relation: When enabled, the engine derives 'align' as the default mode; 'none' is used when prefix caching is disabled
+- name: --mamba-block-size
+  relation: 'Derived from the mode: equals block_size in ''align'', LCM-aligned attention block size in ''all'', max_model_len
+    otherwise'
+- name: --block-size
+  relation: Must divide mamba_block_size in align mode; block_size is raised to fit mamba page size
+- name: --kv-transfer-config
+  relation: AscendStoreConnector forces 'align' and rejects other modes for hybrid models
+- name: --enable-mamba-fine-grained-prefix-cache
+  relation: Only takes effect when mamba_cache_mode is 'align'
+- name: --use-replayssm
+  relation: Requires mamba_cache_mode 'none' or 'align'
+- name: --disable-hybrid-kv-cache-manager
+  relation: Hybrid KV cache manager must stay enabled for mamba cache modes to apply
+constraints:
+- When an AscendStoreConnector (or MultiConnector containing one) is used with a hybrid model, mamba_cache_mode must be 'align';
+  any other value raises an assertion error.
+- mamba cache mode 'all' is not supported by the V2 model runner and will be rejected there.
+- In align mode with prefix caching disabled but KV transfer enabled, mamba_block_size must be a multiple of block_size.
+- Align mode requires chunked MM input to remain enabled (disable_chunked_mm_input must be false).
+- use_replayssm requires mamba_cache_mode to be 'none' or 'align'.
+- enable_mamba_fine_grained_prefix_cache only takes effect when mamba_cache_mode is 'align'.
+tuning_advice:
+  summary: Use 'align' (the default with prefix caching) for hybrid models on Ascend; avoid 'all' (unsupported on v2, memory-heavy)
+    and let AscendStoreConnector auto-select 'align' for PD disaggregation.
+  suggested_values:
+  - scenario: Hybrid model serving with prefix caching enabled (default deployment)
+    value: align
+    reason: Enables recurrent-state prefix-cache reuse and partial hash hits (patch_kv_cache_coordinator.py:211), improving
+      throughput on shared prefixes; this is the engine-derived default.
+  - scenario: PD disaggregation with AscendStoreConnector / MultiConnector
+    value: align
+    reason: Forced by patch_mamba_config.py:167-172; any other value raises an assertion. No manual flag needed per GLM5.3-Flash
+      docs.
+  - scenario: Prefix caching disabled, memory-constrained single-request workloads
+    value: none
+    reason: Skips mamba preprocess/postprocess entirely (model_runner_v1.py:1012), minimizing per-step overhead and recurrent-state
+      memory.
+  - scenario: V2 worker path
+    value: align
+    reason: '''all'' is listed as unsupported by the V2 model runner (vllm/config/vllm.py:2878); align is the only fully supported
+      mode.'
+  caveats:
+  - Do not set 'all' on Ascend v2 — it is rejected as unsupported.
+  - When using AscendStoreConnector, do not pass --mamba-cache-mode manually; the engine sets 'align' automatically.
+  - Keep --enable-prefix-caching and chunked prefill enabled for align mode to be effective.
+  - If mamba_block_size is set manually in align mode, ensure it is a multiple of block_size.
+  quick_guide: Leave unset (defaults to align with prefix caching); never use 'all' on v2; AscendStoreConnector forces align
+    automatically.
+analysis_date: '2026-10-27'

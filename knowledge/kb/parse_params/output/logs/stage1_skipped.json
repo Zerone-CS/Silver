@@ -1,0 +1,1722 @@
+[
+  {
+    "name": "MAX_JOBS",
+    "default": null,
+    "description": "max compile thread number for package building. Usually, it is set to; the number of CPU cores. If not set, the default value is None, which; means all number of CPU cores will be used.",
+    "type": "env",
+    "scope": "vllm-ascend",
+    "category": "hardware",
+    "source_file": "vllm_ascend/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "CMAKE_BUILD_TYPE",
+    "default": null,
+    "description": "The build type of the package. It can be one of the following values:; Release, Debug, RelWithDebugInfo. If not set, the default value is Release.",
+    "type": "env",
+    "scope": "vllm-ascend",
+    "category": "hardware",
+    "source_file": "vllm_ascend/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "SOC_VERSION",
+    "default": null,
+    "description": "The version of the Ascend chip. It's used for package building.; If not set, we will query chip info through `npu-smi`.; Please make sure that the version is correct.",
+    "type": "env",
+    "scope": "vllm-ascend",
+    "category": "other",
+    "source_file": "vllm_ascend/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VERBOSE",
+    "default": "0",
+    "description": "If set, vllm-ascend will print verbose logs during compilation",
+    "type": "env",
+    "scope": "vllm-ascend",
+    "category": "hardware",
+    "source_file": "vllm_ascend/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "VLLM_VERSION",
+    "default": null,
+    "description": "The version of vllm is installed. This value is used for developers who; installed vllm from source locally. In this case, the version of vllm is; usually changed. For example, if the version of vllm is \"0.9.0\", but when; it's installed from source, the version of vllm is usually set to \"0.9.1\".",
+    "type": "env",
+    "scope": "vllm-ascend",
+    "category": "other",
+    "source_file": "vllm_ascend/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "YR_CONFIG_PATH",
+    "default": null,
+    "description": "Referenced in yuanrong_backend.py",
+    "type": "env",
+    "scope": "vllm-ascend",
+    "category": "other",
+    "source_file": "vllm_ascend/",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.refresh",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": "Force refresh AscendConfig even if already initialized",
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.rl_config",
+    "type": "nested",
+    "category": "other",
+    "default": {},
+    "description": null,
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.ascend_log_path",
+    "type": "nested",
+    "category": "observability",
+    "default": "~/ascend/log/vllm_ascend",
+    "description": null,
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.msmonitor_use_daemon",
+    "type": "nested",
+    "category": "observability",
+    "default": false,
+    "description": null,
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.rl_config.enabled",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": null,
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.rl_config.sleep_mode_extra_cleanup",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": null,
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "additional_config.rl_config.enable_training_consistency",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": null,
+    "source_file": "vllm_ascend/ascend_config.py",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--shm-size",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--branch",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--aop_enabled",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--no-build-isolation",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_V1",
+    "type": "env",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--additional_config",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--set-env",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--overflow_check",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--fuzzy_match",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--dataset-name",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--help",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "--base-url",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_PID",
+    "type": "env",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--headless",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--enable-auto-tool-choice",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--default-chat-template-kwargs",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--apply_chat_template",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--fewshot_as_multiturn",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--max-concurrency",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--ignore-eos",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--pp-size",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--rope_scaling",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--datasets",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--num-prompts",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--random-output-len",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--api-server-count",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--log_dir",
+    "type": "cli",
+    "category": "observability",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--remote_h2d_link_type",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--default_kv_lease_ttl",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--tokens-only",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm_ascend/docs/",
+    "scope": "vllm-ascend",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--show-hidden-metrics-for-version",
+    "type": "cli",
+    "category": "observability",
+    "default": null,
+    "description": "Enable deprecated Prometheus metrics that have been hidden since the specified version. For example, if a previously deprecated metric has been hidden since the v0.7.0 release, you use `--show-hidden-metrics-for-version=0.7` as a temporary escape hatch while you migrate to new metrics.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--otlp-traces-endpoint",
+    "type": "cli",
+    "category": "observability",
+    "default": null,
+    "description": "Target URL to which OpenTelemetry traces will be sent.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--cudagraph-metrics",
+    "type": "cli",
+    "category": "observability",
+    "default": false,
+    "description": "Enable CUDA graph metrics (number of padded/unpadded tokens, runtime cudagraph dispatch modes, and their observed frequencies at every logging interval).",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--enable-layerwise-nvtx-tracing",
+    "type": "cli",
+    "category": "observability",
+    "default": false,
+    "description": "Enable layerwise NVTX tracing. This traces the execution of each layer or module in the model and attach information such as input/output shapes to nvtx range markers. Noted that this doesn't work with CUDA graphs enabled.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--enable-mfu-metrics",
+    "type": "cli",
+    "category": "observability",
+    "default": false,
+    "description": "Enable Model FLOPs Utilization (MFU) metrics.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--enable-logging-iteration-details",
+    "type": "cli",
+    "category": "observability",
+    "default": false,
+    "description": "Enable detailed logging of iteration details. If set, vllm EngineCore will log iteration details This includes number of context/generation requests and tokens and the elapsed cpu time for the iteration.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--jit-monitor-mode",
+    "type": "cli",
+    "category": "observability",
+    "default": "warn",
+    "description": "How to handle post-warmup JIT compilation events.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--linear-backend",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": null,
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--speculative-config",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": "Speculative decoding configuration.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--watermark-config",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": "Text watermarking configuration.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--kv-events-config",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": "The configurations for event publishing.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--engram-config",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": "N-gram embedding storage and sharding settings.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--reasoning-config",
+    "type": "cli",
+    "category": "other",
+    "default": null,
+    "description": "The configurations for reasoning model.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--kernel-config",
+    "type": "cli",
+    "category": "other",
+    "default": "<computed>",
+    "description": "Kernel configuration.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--additional-config",
+    "type": "cli",
+    "category": "other",
+    "default": "<computed>",
+    "description": "Additional config for specified platform. Different platforms may support different configs. Make sure the configs are valid for the platform you are using. Contents must be hashable.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--structured-outputs-config",
+    "type": "cli",
+    "category": "other",
+    "default": "<computed>",
+    "description": "Structured outputs configuration.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--profiler-config",
+    "type": "cli",
+    "category": "other",
+    "default": "<computed>",
+    "description": "Profiling configuration.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--optimization-level",
+    "type": "cli",
+    "category": "other",
+    "default": "<computed>",
+    "description": "The optimization level. These levels trade startup time cost for performance, with -O0 having the best startup time and -O3 having the best performance. -O2 is used by default. See OptimizationLevel for full description.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "--disable-log-stats",
+    "type": "cli",
+    "category": "observability",
+    "default": null,
+    "description": "Disable logging statistics.",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--aggregate-engine-logging",
+    "type": "cli",
+    "category": "observability",
+    "default": null,
+    "description": "Log aggregate rather than per-engine statistics",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "--fail-on-environ-validation",
+    "type": "cli",
+    "category": "other",
+    "default": false,
+    "description": "If set, the engine will raise an error if",
+    "source_file": "vllm/engine/arg_utils.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_RINGBUFFER_WARNING_INTERVAL",
+    "default": 60,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_NCCL_SO_PATH",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "CUDA_VISIBLE_DEVICES",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "hardware",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "VLLM_API_KEY",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "S3_ACCESS_KEY_ID",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "S3_SECRET_ACCESS_KEY",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "S3_ENDPOINT_URL",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "VLLM_CONFIG_ROOT",
+    "default": "<computed>",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USAGE_STATS_SERVER",
+    "default": "https://stats.vllm.ai",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_NO_USAGE_STATS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_DO_NOT_TRACK",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USAGE_SOURCE",
+    "default": "production",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_CONFIGURE_LOGGING",
+    "default": true,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOGGING_LEVEL",
+    "default": "INFO",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOGGING_PREFIX",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOGGING_STREAM",
+    "default": "ext://sys.stdout",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOGGING_CONFIG_PATH",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOGGING_COLOR",
+    "default": "auto",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "NO_COLOR",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "VLLM_LOG_STATS_INTERVAL",
+    "default": 10.0,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_TRACE_FUNCTION",
+    "default": 0,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ZENTORCH_WEIGHT_PREPACK",
+    "default": true,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_SPARSE_INDEXER_MAX_LOGITS_MB",
+    "default": 512,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ADAPTIVE_VERIFICATION_PROFILE_CONTEXT_LEN",
+    "default": 8192,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_DISTRIBUTED_USE_SPLIT_GROUP",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "NVCC_THREADS",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "hardware",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "VLLM_BUILD_URL",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MAX_N_SEQUENCES",
+    "default": 16384,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MAX_COMPLETION_PROMPTS",
+    "default": 1024,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MAX_STOP_STRINGS",
+    "default": 4,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MAX_NUM_BAD_WORDS",
+    "default": 128,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_PLUGINS",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_BYTECODE_HOOK",
+    "default": true,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_HW_AGNOSTIC",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_OINK_OPS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOG_BATCHSIZE_INTERVAL",
+    "default": -1,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_LAYERNAME",
+    "default": true,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "Q_SCALE_CONSTANT",
+    "default": 200,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "K_SCALE_CONSTANT",
+    "default": 200,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "V_SCALE_CONSTANT",
+    "default": 100,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_RUST_FRONTEND",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_RUST_BENCH",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_RUST_FRONTEND_PATH",
+    "default": "auto",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_SERVER_DEV_MODE",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MLA_DISABLE",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MARLIN_USE_ATOMIC_ADD",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_HUMMING_USE_F16_ACCUM",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_TPU_USING_PATHWAYS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_DCP_Q_REPLICATE",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_DIRECT_DCP_A2A",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_DIRECT_DCP_Q_GATHER",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_DIRECT_DCP_KV_GATHER",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_KIMI_K3_AUX_ATTN_RES_STREAM",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MSGPACK_ZERO_COPY_THRESHOLD",
+    "default": 256,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ALLOW_INSECURE_SERIALIZATION",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_DISABLE_REQUEST_ID_RANDOMIZATION",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_EC_SIDE_CHANNEL_HOST",
+    "default": "localhost",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_MOONCAKE_STORE_TIER_LOG",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ENFORCE_STRICT_TOOL_CALLING",
+    "default": true,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_SSM_CONV_STATE_LAYOUT",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_COMPUTE_NANS_IN_LOGITS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_RAISE_ON_LOGIT_NANS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOOPBACK_IP",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ENABLE_RESPONSES_API_STORE",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ENABLE_COHERE_API",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_TUNED_CONFIG_FOLDER",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ENABLE_STARTUP_PLAN",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_GPT_OSS_SYSTEM_TOOL_MCP_LABELS",
+    "default": "<computed>",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_EXPERIMENTAL_PARSER_CONTEXT",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_GPT_OSS_HARMONY_SYSTEM_INSTRUCTIONS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_SYSTEM_START_DATE",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_TOOL_JSON_ERROR_AUTOMATIC_RETRY",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_CUSTOM_SCOPES_FOR_PROFILING",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_NVTX_SCOPES_FOR_PROFILING",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_OBJECT_STORAGE_SHM_BUFFER_NAME",
+    "default": "VLLM_OBJECT_STORAGE_SHM_BUFFER",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_NCCL_INCLUDE_PATH",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_LOG_MODEL_INSPECTION",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_DISABLE_LOG_LOGO",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "observability",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'observability' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_XPU_ENABLE_XPU_GRAPH",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_XPU_FORCE_N_CONTIG_WEIGHT",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_XPU_INC_WNA16_BACKEND",
+    "default": "auto",
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_NIC_SELECTION_VARS",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_ENABLE_HPC_OPS",
+    "default": false,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "CUDA_HOME",
+    "default": null,
+    "description": "path to cudatoolkit home directory, under which should be bin, include,; and lib directories.",
+    "type": "env",
+    "scope": "vllm",
+    "category": "hardware",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "matched skip_name_pattern"
+  },
+  {
+    "name": "VLLM_TEST_FORCE_LOAD_FORMAT",
+    "default": null,
+    "description": null,
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_PROCESS_NAME_PREFIX",
+    "default": "VLLM",
+    "description": "Used to set the process name prefix for vLLM processes.; This is useful for debugging and monitoring purposes.; The default value is \"VLLM\".",
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "VLLM_USE_SPINLOOP_EXT",
+    "default": "0",
+    "description": "If set to 1, use Python spinloop extension to poll in a more efficient; way when using the mp backend.",
+    "type": "env",
+    "scope": "vllm",
+    "category": "other",
+    "source_file": "vllm/envs.py",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "fault_tolerance.engine_recovery_timeout_sec",
+    "type": "nested",
+    "category": "other",
+    "default": 120,
+    "description": "Timeout (in seconds) to wait for error handling instructions before raising an exception. If the EngineCore encounters an error, it waits up to this many seconds for vLLM to receive instructions on how to handle the error and then recover from the fault.",
+    "source_file": "vllm/config/faulttoleranceconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.key",
+    "type": "nested",
+    "category": "other",
+    "default": null,
+    "description": "Secret key used to watermark generated text.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.algorithm",
+    "type": "nested",
+    "category": "other",
+    "default": "gumbel",
+    "description": "Algorithm used to watermark generated text.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.alpha",
+    "type": "nested",
+    "category": "other",
+    "default": 0.1,
+    "description": "Probability of selecting key B for dual-key watermarking.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.context_width",
+    "type": "nested",
+    "category": "other",
+    "default": 4,
+    "description": "Number of prior tokens used by the watermark PRF.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.deduplicate_contexts",
+    "type": "nested",
+    "category": "other",
+    "default": "single_turn",
+    "description": "Which history is searched for a repeated context before a token is sampled; a repeated context is sampled without the watermark. `none` disables the search. `single_turn` (default) searches this request's generated tokens.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.deduplicate_contexts_max_history",
+    "type": "nested",
+    "category": "other",
+    "default": 8192,
+    "description": "Number of most recent history positions searched (default 8192), or `None` for the whole scope. Each position is compared over the `context_width` tokens before it. Ignored when `deduplicate_contexts` is `none`.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.prf",
+    "type": "nested",
+    "category": "other",
+    "default": "philox",
+    "description": "Pseudorandom function used by the watermarking algorithm.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "watermark.allow_target_only_watermarking",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": "Allow speculative decoding without watermarking draft tokens.",
+    "source_file": "vllm/config/watermarkconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "compilation.pass_config.eliminate_noops",
+    "type": "nested",
+    "category": "other",
+    "default": true,
+    "description": "Eliminate no-op ops.",
+    "source_file": "vllm/config/passconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "compilation.pass_config.fuse_gemm_comms",
+    "type": "nested",
+    "category": "other",
+    "default": null,
+    "description": "Enable async TP.",
+    "source_file": "vllm/config/passconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "compilation.pass_config.fuse_act_padding",
+    "type": "nested",
+    "category": "other",
+    "default": null,
+    "description": "Fuse the custom RMSNorm + padding ops.",
+    "source_file": "vllm/config/passconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "compilation.pass_config.fuse_mla_dual_rms_norm",
+    "type": "nested",
+    "category": "other",
+    "default": null,
+    "description": "Fuse paired q/kv RMS norms in MLA attention.",
+    "source_file": "vllm/config/passconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "compilation.dynamic_shapes_config.evaluate_guards",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": "A debug mode to detect and fail if Dynamo ever specializes a dynamic shape by guarding on it. When True, dynamic shape guards are not dropped from dynamo. And a failure will be triggered if a recompilation ever happens due to that. This mode requires VLLM_USE_BYTECODE_HOOK to be 0.",
+    "source_file": "vllm/config/dynamicshapesconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "compilation.dynamic_shapes_config.assume_32_bit_indexing",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": "whether all tensor sizes can use 32 bit indexing. `True` requires PyTorch 2.10+",
+    "source_file": "vllm/config/dynamicshapesconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "engram.embedding_across_dp",
+    "type": "nested",
+    "category": "other",
+    "default": false,
+    "description": "Shard embeddings across TP and all DP ranks when enabled. Otherwise, each DP rank has a separate TP-sharded embedding replica.",
+    "source_file": "vllm/config/engramconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "reasoning.reasoning_parser",
+    "type": "nested",
+    "category": "other",
+    "default": "",
+    "description": "The name of the ReasoningParser to use for this model.",
+    "source_file": "vllm/config/reasoningconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "reasoning.reasoning_start_str",
+    "type": "nested",
+    "category": "other",
+    "default": "",
+    "description": "String that indicates the start of reasoning.",
+    "source_file": "vllm/config/reasoningconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "reasoning.reasoning_end_str",
+    "type": "nested",
+    "category": "other",
+    "default": "",
+    "description": "String forced when the thinking budget is exhausted.",
+    "source_file": "vllm/config/reasoningconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "kernel.ir_op_priority.rms_norm",
+    "type": "nested",
+    "category": "other",
+    "default": "<computed>",
+    "description": "Priority list for vllm.ir.ops.rms_norm",
+    "source_file": "vllm/config/iroppriorityconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  },
+  {
+    "name": "kernel.ir_op_priority.gelu_and_mul_sparse",
+    "type": "nested",
+    "category": "other",
+    "default": "<computed>",
+    "description": "Priority list for vllm.ir.ops.gelu_and_mul_sparse",
+    "source_file": "vllm/config/iroppriorityconfig.py",
+    "scope": "vllm",
+    "skip_reason": "category 'other' with no keep-keyword match"
+  }
+]

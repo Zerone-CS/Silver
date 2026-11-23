@@ -1,0 +1,91 @@
+name: VLLM_GDN_DECODE_KERNEL
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1205
+- vllm/envs.py:130
+- vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:512
+value_type: str
+default: cuda
+valid_choices:
+- cuda
+- triton
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var selects the GDN (Gated Delta Net) decode kernel implementation for
+
+  Qwen-family linear-attention models (Qwen3-Next style). It is read in
+
+  vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:512 into
+
+  self.gdn_decode_kernel, and self.enable_fused_gdn_decode is set to True only when
+
+  the value equals "cuda" (line 527). The "cuda" path uses a fused decode kernel
+
+  (CUDA-specific); the "triton" path uses a Triton implementation.
+
+  Crucially, the fused "cuda" path is gated by current_platform.is_cuda_alike()
+
+  (line 513). On Ascend NPU, is_cuda_alike() is False, so the fused-kernel selection
+
+  branch is skipped entirely and the value is never used to enable a fused kernel.
+
+  The only other branch is current_platform.is_cpu() (line 524), which also does not
+
+  apply to NPU. Therefore on Ascend this parameter has no effect on the actual decode
+
+  kernel selection — the GDN decode runs through whatever path vllm-ascend / the
+
+  Triton fallback provides regardless of the value. No vllm-ascend override or usage
+
+  of this env var was found in the provided context.
+
+  Because the parameter is inert on Ascend (the "cuda" fused kernel is CUDA-only and
+
+  the platform guard prevents it from being selected), its runtime performance impact
+
+  on NPU is negligible/low. It only matters on CUDA GPUs where the fused kernel can
+
+  reduce decode latency for GDN models.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1205
+  context: Defines the env var with choices cuda/triton, default cuda, case-insensitive.
+- file: vllm/envs.py:130
+  context: Type annotation Literal['cuda','triton'] = 'cuda'.
+- file: vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:512
+  context: Reads value, sets enable_fused_gdn_decode only when 'cuda' and platform is CUDA-alike; falls back to triton otherwise.
+related_parameters:
+- name: VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
+  relation: Sibling GDN decode tuning knob read in the same module; controls packed recurrent decode path.
+- name: VLLM_USE_TRITON_AWQ
+  relation: Another kernel-selection env var; unrelated functionally but similar 'select implementation' pattern.
+constraints:
+- VLLM_GDN_DECODE_KERNEL must be one of 'cuda' or 'triton' (case-insensitive); any other value raises a ValueError.
+- Setting VLLM_GDN_DECODE_KERNEL=cuda explicitly raises a ValueError if the fused GDN decode kernel is unsupported on the
+  current platform/config, rather than silently falling back.
+- The fused 'cuda' decode kernel is only selected when the platform reports is_cuda_alike(); on Ascend NPU this branch is
+  never taken.
+tuning_advice:
+  summary: On Ascend NPU this parameter is inert for kernel selection; leave it at the default and do not rely on it for performance.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker) of a GDN/linear-attention model
+    value: triton
+    reason: The fused 'cuda' kernel is CUDA-only and gated by is_cuda_alike(); on NPU the Triton path is what actually runs,
+      so setting 'triton' avoids any risk of an unsupported-kernel ValueError while matching actual behavior.
+  - scenario: CUDA GPU deployment where the fused kernel is supported
+    value: cuda
+    reason: Enables the fused GDN decode kernel (enable_fused_gdn_decode=True), reducing decode latency; falls back to triton
+      automatically if unsupported unless explicitly set.
+  caveats:
+  - Do not set VLLM_GDN_DECODE_KERNEL=cuda on Ascend expecting a fused-kernel speedup — the platform guard prevents it and
+    an explicit value may raise.
+  - This knob only affects GDN/linear-attention decode; it does not change prefill or standard attention performance.
+  quick_guide: Leave at default on Ascend; it only selects a CUDA-only fused kernel and has no NPU effect.
+analysis_date: '2026-10-27'

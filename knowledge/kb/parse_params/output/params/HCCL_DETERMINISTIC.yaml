@@ -1,0 +1,113 @@
+name: HCCL_DETERMINISTIC
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/batch_invariant.py:108
+- vllm_ascend/batch_invariant.py:116
+- examples/rl/rlhf_async_new_apis.py:201
+value_type: str
+default: unset (HCCL default non-deterministic reductions)
+valid_choices:
+- strict
+- 'true'
+- 'false'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_DETERMINISTIC controls whether HCCL collective communication operators
+
+  (AllReduce, AllGather, ReduceScatter, etc.) execute in a deterministic mode.
+
+  When set to "strict" (or "true"), HCCL forces a fixed reduction order across
+
+  ranks so that repeated runs produce bit-identical results. This is required for
+
+  batch-invariant inference and for reproducible golden outputs in tests.
+
+
+  In vllm-ascend, the parameter is set programmatically inside
+
+  `override_envs_for_invariance()` (vllm_ascend/batch_invariant.py:108) whenever
+
+  batch-invariant mode is active. That function also sets `LCCL_DETERMINISTIC=1`,
+
+  forces `weight_nz_mode=0`, and calls `torch.use_deterministic_algorithms(True,
+
+  warn_only=True)`. The doc (additional_config.md:260) confirms this path is
+
+  triggered by `rl_config.enable_batch_invariant=true` (which sets
+
+  `VLLM_BATCH_INVARIANT=1` before workers start), and that worker-side
+
+  initialization then sets `HCCL_DETERMINISTIC=strict`.
+
+
+  Performance mechanism: "deterministic HCCL reductions typically disable"
+
+  high-performance reduction algorithms (e.g. tree/ring optimizations that
+
+  reorder partial sums) and may serialize or add synchronization, which increases
+
+  collective latency and reduces achievable throughput for TP/DP/EP communication.
+
+  The effect scales with tensor-parallel size and communication volume. It does
+
+  not directly change memory footprint, but the associated `weight_nz_mode=0`
+
+  (FRACTAL_NZ disabled) can affect matmul efficiency on Ascend.
+
+  '
+usage_locations:
+- file: vllm_ascend/batch_invariant.py:108
+  context: Sets HCCL_DETERMINISTIC=strict when batch-invariant env override runs
+- file: vllm_ascend/batch_invariant.py:116
+  context: Logged as part of the batch-invariant env override debug message
+- file: examples/rl/rlhf_async_new_apis.py:201
+  context: Ray env vars for RL example set HCCL_DETERMINISTIC=strict alongside VLLM_BATCH_INVARIANT=1
+- file: tests/e2e/pull_request/four_card/test_graph_mode.py:640
+  context: Test sets HCCL_DETERMINISTIC=strict to keep graph precision golden reproducible across TP/DP launches
+- file: tests/e2e/pull_request/four_card/spec_decode/test_dspark_deepseekv4.py:70
+  context: Spec-decode acceptance test sets HCCL_DETERMINISTIC=true
+related_parameters:
+- name: VLLM_BATCH_INVARIANT
+  relation: Master switch; when =1, worker-side init sets HCCL_DETERMINISTIC=strict
+- name: LCCL_DETERMINISTIC
+  relation: Set together with HCCL_DETERMINISTIC=1 in the same override path
+- name: rl_config.enable_batch_invariant
+  relation: Config path that triggers VLLM_BATCH_INVARIANT=1 and thus HCCL_DETERMINISTIC=strict
+- name: weight_nz_mode
+  relation: Forced to 0 in the same override_envs_for_invariance() function
+- name: ATB_MATMUL_SHUFFLE_K_ENABLE
+  relation: Set to 0 in deterministic test configs alongside HCCL_DETERMINISTIC
+- name: CLOSE_MATMUL_K_SHIFT
+  relation: Set to 1 in deterministic test configs alongside HCCL_DETERMINISTIC
+constraints:
+- HCCL_DETERMINISTIC must be set before HCCL communicators are initialized (i.e. before workers start) to take effect.
+- Batch-invariant mode requires vllm-ascend to be built from source with COMPILE_CUSTOM_KERNELS=1.
+- When using rl_config.enable_batch_invariant=true, do not set VLLM_BATCH_INVARIANT, HCCL_DETERMINISTIC, or LCCL_DETERMINISTIC
+  manually; the config path sets them automatically.
+tuning_advice:
+  summary: Enable HCCL_DETERMINISTIC=strict only when bit-exact reproducibility is required (RL consistency, golden tests);
+    leave unset for maximum inference throughput.
+  suggested_values:
+  - scenario: Standard online inference where reproducibility is not required
+    value: unset
+    reason: Allows HCCL to use its fastest non-deterministic reduction algorithms, maximizing collective throughput.
+  - scenario: RL training-inference consistency or batch-invariant inference
+    value: strict
+    reason: Required for bit-identical outputs across runs; set via rl_config.enable_batch_invariant=true or VLLM_BATCH_INVARIANT=1
+      rather than manually.
+  - scenario: Reproducible golden/precision tests across TP/DP launches
+    value: strict
+    reason: Test suites set HCCL_DETERMINISTIC=strict to keep graph precision goldens reproducible across independent engine
+      launches.
+  caveats:
+  - Expect measurable throughput loss at large TP/DP/EP sizes due to serialized deterministic reductions.
+  - Pair with LCCL_DETERMINISTIC=1 and weight_nz_mode=0 for full batch invariance; setting HCCL_DETERMINISTIC alone is insufficient.
+  - Prefer the rl_config.enable_batch_invariant config path over manual env var setting to avoid inconsistent state.
+  quick_guide: Set HCCL_DETERMINISTIC=strict only for reproducibility; leave unset for peak inference throughput.
+analysis_date: '2026-10-27'

@@ -1,0 +1,76 @@
+name: --mamba-ssu-algorithm
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1019
+- vllm/engine/arg_utils.py:748
+- vllm/engine/arg_utils.py:2538
+value_type: str
+default: null
+valid_choices: MambaSSUAlgorithm enum members (FlashInfer SSU algorithms); None means FlashInfer 'auto'
+cli_example: --mamba-ssu-algorithm <algorithm>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter selects the selective state update (SSU) algorithm used by the
+
+  FlashInfer backend for Mamba/SSM models. In vllm/engine/arg_utils.py:748 it is
+
+  declared as `mamba_ssu_algorithm: MambaSSUAlgorithm | None = None`, and at
+
+  arg_utils.py:2538-2548 it is copied into `mamba_config.ssu_algorithm` only when
+
+  not None, then validated via `mamba_config.validate_ssu_algorithm()`.
+
+  The parameter only has any effect when the Mamba backend is FlashInfer
+
+  (`--mamba-backend flashinfer`); with the default Triton backend it is inert.
+
+  On Ascend NPU, vllm-ascend does not implement a FlashInfer SSU path — FlashInfer
+
+  is a CUDA-oriented kernel library and the Ascend Mamba/SSM execution goes through
+
+  Ascend-native kernels. No vllm-ascend source references `ssu_algorithm`, so this
+
+  flag has no runtime effect on Ascend hardware. Even on GPU it only changes which
+
+  precompiled FlashInfer kernel variant is dispatched, a marginal latency effect,
+
+  not a throughput or memory lever.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1019
+  context: CLI argument registration under the MambaConfig argument group
+- file: vllm/engine/arg_utils.py:748
+  context: EngineArgs field declaration, default None
+- file: vllm/engine/arg_utils.py:2538
+  context: Copied into mamba_config.ssu_algorithm when set, then validated
+related_parameters:
+- name: --mamba-backend
+  relation: SSU algorithm only applies when the Mamba backend is FlashInfer; ignored for Triton
+- name: --enable-mamba-cache-stochastic-rounding
+  relation: Sibling MambaConfig option affecting Mamba cache numerics
+- name: --mamba-cache-philox-rounds
+  relation: Sibling MambaConfig option for stochastic rounding
+constraints:
+- A forced algorithm must be supported by FlashInfer for the active GPU, state dtype, and decoding mode, otherwise validation
+  fails.
+- The parameter only takes effect when the Mamba backend is FlashInfer; it has no effect with the Triton backend.
+- On Ascend NPU there is no FlashInfer SSU implementation, so this flag does not affect execution.
+tuning_advice:
+  summary: Leave unset on Ascend; it only matters for FlashInfer-backed Mamba on GPU.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment
+    value: unset
+    reason: vllm-ascend has no FlashInfer SSU path, so the flag is inert; leaving it unset avoids validation errors.
+  - scenario: GPU deployment with --mamba-backend flashinfer
+    value: unset
+    reason: None lets FlashInfer pick its 'auto' algorithm, which is the safe default across state dtypes and decoding modes.
+  caveats:
+  - Forcing an algorithm unsupported by the active hardware/dtype/mode triggers validate_ssu_algorithm() failure at startup.
+  - Has no performance effect on Ascend NPU; do not expect tuning gains from it.
+  quick_guide: Ignore on Ascend; only relevant for FlashInfer Mamba on GPU, where the default auto is best.
+analysis_date: '2026-10-27'

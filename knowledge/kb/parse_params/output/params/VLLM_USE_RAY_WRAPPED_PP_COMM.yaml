@@ -1,0 +1,91 @@
+name: VLLM_USE_RAY_WRAPPED_PP_COMM
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:913
+- vllm/envs.py:64
+- vllm/v1/executor/ray_executor.py:612
+value_type: bool
+default: true
+valid_choices: 0 or 1 (boolean)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only takes effect in the Ray Compiled Graph executor path
+
+  (vllm/v1/executor/ray_executor.py:612), which is used when
+
+  distributed_executor_backend="ray" and pipeline parallelism is enabled with
+
+  Ray''s compiled DAG. When set to 1 (default), vLLM registers a
+
+  RayPPCommunicator accelerator context that wraps vLLM''s own _PP
+
+  GroupCoordinator for inter-pipeline-stage tensor transport. When set to 0,
+
+  Ray''s native NCCL communicator is used instead.
+
+  The choice affects how intermediate tensors are passed between PP stages
+
+  inside the Ray compiled graph: "the wrapped communicator reuses vLLM''s"
+
+  pipeline-parallel communication primitives (which on Ascend would be HCCL
+
+  based), while the fallback uses Ray''s NCCL communicator. On Ascend NPU,
+
+  Ray''s NCCL communicator is not applicable (NCCL is CUDA-specific), so the
+
+  wrapped PP comm path is the only viable option for Ray compiled-graph PP.
+
+  The performance effect is limited to the PP-stage tensor handoff latency
+
+  and is only relevant when Ray compiled graphs + PP are actually used; it
+
+  does not affect the common single-node or non-Ray execution paths.
+
+  No vllm-ascend override of this env var was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:913
+  context: Definition of the env var with default 1 (enabled).
+- file: vllm/envs.py:64
+  context: 'Type annotation VLLM_USE_RAY_WRAPPED_PP_COMM: bool = True.'
+- file: vllm/v1/executor/ray_executor.py:612
+  context: Branches between registering RayPPCommunicator (wrapped vLLM PP comm) vs Ray's NCCL communicator for Ray Compiled
+    Graph.
+related_parameters:
+- name: VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE
+  relation: Selects the tensor transport channel type (auto/nccl/shm) for PP-stage handoff; interacts with the wrapped PP
+    comm path.
+- name: VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM
+  relation: Enables experimental GPU communication overlap in Ray Compiled Graph; complements the PP comm choice.
+- name: VLLM_USE_RAY_V2_EXECUTOR_BACKEND
+  relation: Selects RayExecutorV2 (MQ-based) vs RayDistributedExecutor (compiled-graph backend); this env var only matters
+    for the compiled-graph backend.
+- name: distributed_executor_backend
+  relation: Must be 'ray' for this env var to have any effect.
+constraints:
+- This env var only has an effect when distributed_executor_backend is set to 'ray' and Ray Compiled Graph is used with pipeline
+  parallelism.
+- The wrapped PP communicator path registers a CUDA-named accelerator context (torch_module_name='cuda'); on Ascend this relies
+  on the device abstraction mapping to NPU/HCCL.
+tuning_advice:
+  summary: Keep the default (1) for Ray compiled-graph PP on Ascend; only disable for debugging the Ray NCCL fallback on GPU.
+  suggested_values:
+  - scenario: Ray distributed executor with pipeline parallelism on Ascend NPU
+    value: 1
+    reason: Uses vLLM's wrapped PP communicator (HCCL-backed on Ascend) instead of Ray's NCCL communicator, which is not applicable
+      to NPU.
+  - scenario: Debugging or GPU-only comparison of Ray native NCCL PP transport
+    value: 0
+    reason: Falls back to Ray's NCCL communicator; only meaningful on CUDA GPUs, not on Ascend.
+  caveats:
+  - Disabling on Ascend will attempt to use Ray's NCCL communicator, which is not supported on NPU.
+  - No performance benefit expected from changing this on Ascend; leave at default.
+  quick_guide: Leave VLLM_USE_RAY_WRAPPED_PP_COMM=1 (default) on Ascend; it only matters for Ray compiled-graph PP.
+analysis_date: '2026-10-27'

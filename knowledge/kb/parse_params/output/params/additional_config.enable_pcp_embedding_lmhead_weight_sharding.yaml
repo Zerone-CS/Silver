@@ -1,0 +1,96 @@
+name: additional_config.enable_pcp_embedding_lmhead_weight_sharding
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:585
+- vllm_ascend/ascend_config.py:436
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch defined in AscendConfig (vllm_ascend/ascend_config.py:585,
+
+  default True). It controls whether, when Prefill Context Parallel (PCP) size > 1, the
+
+  embedding and LM Head weights are stored as TP×PCP resident shards across PCP ranks inside
+
+  each TP shard (per docs user_guide/feature_guide/context_parallel.md:67 and
+
+  user_guide/configuration/additional_config.md:78). Mechanism: with PCP, world_size is
+
+  multiplied by prefill_context_parallel_size (world_size_with_pcp = pcp_size * original_world_size),
+
+  so each rank would otherwise hold a full copy of the (often very large) embedding table and
+
+  LM Head matrix. Sharding these weights across the PCP group divides their per-rank NPU memory
+
+  footprint by roughly the PCP size, freeing HBM for KV cache / larger batches (memory impact).
+
+  The tradeoff is that the embedding lookup and the LM Head GEMM become distributed operations
+
+  requiring communication (all-gather of the sharded weight or reduce-scatter of partial logits)
+
+  across PCP ranks, which adds latency to the embedding and final logits stages. Because these
+
+  stages run once per forward pass (embedding at input, LM Head at output), the added comm cost
+
+  is modest relative to the transformer layers, so the net effect is usually a memory win with
+
+  small throughput overhead. The switch only takes effect when PCP size > 1; with PCP disabled
+
+  it is a no-op. It is incompatible with batch-sharded sampling (enable_batch_sharded_sampling)
+
+  and with fine-grained TP for the embedding/LM Head modules.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:585
+  context: Field definition in AscendConfig pydantic dataclass, default True.
+- file: vllm_ascend/ascend_config.py:436
+  context: Documented in the AscendConfig docstring example dict of all supported additional_config keys.
+related_parameters:
+- name: enable_pcp_o_proj_weight_sharding
+  relation: Sibling PCP weight-sharding switch for O-projection (SFA-PCP o_proj / DSA-PCP wo_a/wo_b); both are PCP weight-sharding
+    optimizations enabled by default.
+- name: prefill_context_parallel_size
+  relation: This option only takes effect when PCP size > 1; with PCP disabled it is a no-op.
+- name: enable_batch_sharded_sampling
+  relation: Incompatible — batch-sharded sampling cannot be combined with embedding/LM Head weight sharding.
+- name: finegrained_tp_config.embedding_tensor_parallel_size
+  relation: Incompatible with fine-grained TP for the embedding module.
+- name: finegrained_tp_config.lmhead_tensor_parallel_size
+  relation: Incompatible with fine-grained TP for the LM Head module.
+constraints:
+- The option only takes effect when PCP size (prefill_context_parallel_size) is greater than 1; with PCP disabled it has no
+  effect.
+- It is incompatible with batch-sharded sampling (enable_batch_sharded_sampling).
+- It is incompatible with fine-grained TP for the embedding and LM Head modules (finegrained_tp_config.embedding_tensor_parallel_size
+  / lmhead_tensor_parallel_size).
+- Unknown keys in additional_config are rejected (extra=forbid), so the key name must be spelled exactly.
+tuning_advice:
+  summary: Keep enabled (default) for PCP deployments to cut embedding/LM Head HBM usage; disable only when incompatible with
+    batch-sharded sampling or fine-grained TP, or when comm overhead dominates.
+  suggested_values:
+  - scenario: PCP size > 1 with large vocabulary embedding/LM Head and memory pressure
+    value: true
+    reason: Sharding embedding and LM Head weights across PCP ranks divides their per-rank memory by ~PCP size, freeing HBM
+      for KV cache and larger batches.
+  - scenario: Using batch-sharded sampling (enable_batch_sharded_sampling) or fine-grained TP for embedding/LM Head
+    value: false
+    reason: The option is documented as incompatible with these features; disable to avoid conflicts.
+  - scenario: PCP size == 1 (no PCP)
+    value: true
+    reason: No-op when PCP is disabled; leaving the default avoids unnecessary config churn.
+  caveats:
+  - Added cross-rank communication at embedding/LM Head stages may slightly increase latency; measure end-to-end before disabling
+    for latency-sensitive small-PCP setups.
+  - Memory savings scale with PCP size — most beneficial at larger PCP.
+  quick_guide: Leave at default true for PCP; set false only if combined with batch-sharded sampling or fine-grained TP for
+    embedding/LM Head.
+analysis_date: '2026-10-27'

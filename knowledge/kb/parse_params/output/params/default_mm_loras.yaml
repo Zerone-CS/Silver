@@ -1,0 +1,79 @@
+name: --default-mm-loras
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1501
+- vllm/engine/arg_utils.py:632
+- vllm/engine/arg_utils.py:2452
+- vllm/config/lora.py:53
+- vllm/entrypoints/launchers/api_server/app_state.py:73
+- vllm/entrypoints/offline_utils.py:67
+- vllm/entrypoints/openai/chat_completion/serving.py:289
+value_type: dict
+default: null
+valid_choices: 'dict mapping modality name (str) to LoRA model path (str), e.g. {"image": "/path/to/lora"}'
+cli_example: '--default-mm-loras ''{"image": "/path/to/lora"}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This parameter does not change the core compute path; it only selects which LoRA\nadapter is automatically\
+  \ attached to a multimodal request when a given modality is\npresent. The performance-relevant effect is indirect: enabling\
+  \ default_mm_loras\nrequires LoRA support to be active (--enable-lora), which itself adds LoRA kernel\noverhead (extra matmuls\
+  \ / adapter application) to the model forward pass. On Ascend\nNPU, LoRA application goes through the same vllm-ascend LoRA\
+  \ path as any other\nadapter; there is no Ascend-specific override of default_mm_loras found in the\nprovided context. The\
+  \ parameter is read at:\n- \"vllm/engine/arg_utils.py:2452 — validated against model_config.is_multimodal_model\"\n  (raises\
+  \ ValueError for non-multimodal models).\n- \"vllm/entrypoints/launchers/api_server/app_state.py:73 — merged into static\"\
+  \n  lora_modules at server startup (online serving).\n- \"vllm/entrypoints/offline_utils.py:67 — resolved per-prompt in\
+  \ offline inference\"\n  (_resolve_mm_lora), building a LoRARequest with an auto-assigned ID.\n- \"vllm/entrypoints/openai/chat_completion/serving.py:289\
+  \ and batch_serving.py:141 —\"\n  _maybe_get_adapters(..., supports_default_mm_loras=True) attaches the adapter.\nBecause\
+  \ the adapter is applied only when the matching modality is present, the\nincremental cost is the LoRA adapter compute for\
+  \ those requests, not a global\nthroughput change. Memory impact is the resident LoRA weights (bounded by\n--max-loras /\
+  \ --max-cpu-loras). No Ascend-specific behavior was found in the\nprovided vllm-ascend context, so impact is low.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:2452
+  context: 'Validation: raises ValueError if default_mm_loras set on a non-multimodal model; passed into LoRAConfig.'
+- file: vllm/entrypoints/launchers/api_server/app_state.py:73
+  context: 'Online serving: merges default_mm_loras into static lora_modules at startup.'
+- file: vllm/entrypoints/offline_utils.py:67
+  context: 'Offline inference: _resolve_mm_lora builds a LoRARequest from the modality-matched default LoRA.'
+- file: vllm/entrypoints/openai/chat_completion/serving.py:289
+  context: 'Chat completion: _maybe_get_adapters with supports_default_mm_loras=True attaches the adapter.'
+- file: vllm/entrypoints/openai/chat_completion/batch_serving.py:141
+  context: 'Batch chat completion: same adapter resolution path.'
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for default_mm_loras to take effect; LoRA support is required.
+- name: --max-loras
+  relation: Bounds how many LoRA adapters can be resident in a single batch; affects memory.
+- name: --max-cpu-loras
+  relation: Bounds CPU-resident LoRA adapters; must be >= max_loras.
+- name: --lora-modules
+  relation: Static LoRA modules merged with default_mm_loras at server startup.
+- name: --max-lora-rank
+  relation: Determines LoRA kernel sizing and memory footprint of the adapter.
+constraints:
+- default_mm_loras can only be set for multimodal models; providing it for a non-multimodal model raises a ValueError.
+- Only one LoRA adapter is applied per prompt; if a request contains multiple modalities each with a default LoRA, the default_mm_loras
+  are skipped and a warning is logged.
+- In offline mode, LoRA IDs for the n modalities are auto-assigned 1..n in alphabetical order of modality names.
+- An explicitly provided lora_request takes precedence over the modality default LoRA when their IDs differ.
+tuning_advice:
+  summary: Use only when a multimodal model always expects a specific LoRA per modality; keep adapter count small and bound
+    memory with --max-loras.
+  suggested_values:
+  - scenario: Multimodal model that always needs an image LoRA active
+    value: '{"image": "/path/to/image-lora"}'
+    reason: Automatically attaches the image LoRA whenever an image modality is present, avoiding per-request lora_modules
+      plumbing.
+  - scenario: No default modality LoRA needed
+    value: unset
+    reason: Leave unset to avoid LoRA overhead; only enable when the model genuinely requires a modality-specific adapter.
+  caveats:
+  - Requires --enable-lora; LoRA adds compute overhead on Ascend NPU.
+  - Only one LoRA per prompt is supported; multi-modality default LoRAs are skipped with a warning.
+  - Bound adapter memory with --max-loras and --max-cpu-loras to avoid NPU OOM.
+  quick_guide: Set only for multimodal models needing a per-modality default LoRA, with --enable-lora and bounded --max-loras.
+analysis_date: '2026-10-27'

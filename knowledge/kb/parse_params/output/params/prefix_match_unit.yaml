@@ -1,0 +1,129 @@
+name: --prefix-match-unit
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:91
+- vllm/engine/arg_utils.py:739
+- vllm/engine/arg_utils.py:1309
+- vllm/engine/arg_utils.py:2114
+- vllm/v1/core/kv_cache_utils.py:730
+- vllm/v1/core/kv_cache_utils.py:773
+- vllm/v1/core/sched/scheduler.py:358
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:136
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:256
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:68
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:50
+value_type: int
+default: null
+valid_choices: Any positive integer (gt=0); must divide every prefix-cacheable KV cache group's block size
+cli_example: --prefix-match-unit 16
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'prefix_match_unit sets the finest token boundary at which a prefix-cache hit can land.
+
+  In upstream vLLM (vllm/config/cache.py:91) it is an optional int (gt=0) that equals the
+
+  `hash_block_size` used throughout the KV cache code. In vllm/v1/core/kv_cache_utils.py:773
+
+  `resolve_kv_cache_block_sizes` uses it as the hash_block_size override; when None it falls
+
+  back to the GCD of prefix-cacheable group block sizes. A finer unit lets a request reuse a
+
+  partial physical KV block, reducing recomputed prefill tokens (lower TTFT / higher prefix-hit
+
+  throughput) at the cost of more hash metadata, copy-on-write operations, and an extra prefill
+
+  split at the final matching boundary (see vllm/v1/core/sched/scheduler.py:358, where a finer
+
+  unit enables `mamba_partial_cache_hit` and adds a stop at the prompt''s last hash boundary).
+
+  On Ascend, vllm-ascend reads `cache_config.prefix_match_unit` directly in the AscendStore
+
+  KV pool: "pool_scheduler.py:136 and pool_worker.py:256 compute `hash_block_size ="
+
+  (prefix_match_unit or min(cacheable_block_sizes)) * dcp_size`, then assert every group''s
+
+  block size is divisible by it. This hash_block_size drives the block-hash keys used for
+
+  prefix lookups and KV transfer, so it directly affects how many tokens can be served from
+
+  cache (throughput/latency) and the size of the hash metadata (memory). dspark_prefix_cache.py:68
+
+  folds prefix_match_unit into the DSpark prefix-cache identity digest, so changing it
+
+  invalidates previously stored DSpark prefix entries. patch_kv_cache_coordinator.py:50 notes
+
+  that on hybrid mamba-align models a fine prefix_match_unit can interact with the EAGLE
+
+  last-block drop, which is why the drop is suppressed for standalone/producer instances.
+
+  Net effect on Ascend: "medium — it does not change the compiled graph (excluded from the"
+
+  cache config hash factors at cache.py:270) but materially changes prefix-hit length,
+
+  prefill recompute, and hash metadata footprint.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:91
+  context: 'Field definition: prefix_match_unit int|None, gt=0, equals hash_block_size'
+- file: vllm/v1/core/kv_cache_utils.py:773
+  context: resolve_kv_cache_block_sizes uses it as hash_block_size override; validates divisibility
+- file: vllm/v1/core/sched/scheduler.py:358
+  context: Finer unit enables mamba_partial_cache_hit and adds a prefill split stop
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:136
+  context: AscendStore scheduler computes hash_block_size from prefix_match_unit * dcp_size
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:256
+  context: AscendStore worker computes hash_block_size and asserts divisibility
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:68
+  context: prefix_match_unit included in DSpark prefix-cache identity digest
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:50
+  context: EAGLE last-block drop suppression interacts with fine prefix_match_unit on hybrid mamba models
+related_parameters:
+- name: --enable-prefix-caching
+  relation: prefix_match_unit only has effect when prefix caching (or a KV connector) is active
+- name: --block-size
+  relation: prefix_match_unit must divide every prefix-cacheable KV cache group's block size
+- name: --decode-context-parallel-size
+  relation: AscendStore multiplies prefix_match_unit by dcp_size to derive hash_block_size
+- name: --mamba-cache-mode
+  relation: Fine-grained partial hits require mamba groups in 'align' mode; otherwise hashing backs off to scheduler block
+    size
+- name: --speculative-config
+  relation: EAGLE block drop and DSpark prefix identity interact with prefix_match_unit
+constraints:
+- prefix_match_unit must be a positive integer (Field gt=0).
+- Every prefix-cacheable KV cache group's block size must be divisible by prefix_match_unit, otherwise vLLM raises a ValueError.
+- In AscendStore, block_size * dcp_size must be divisible by prefix_match_unit * dcp_size (assert 'block_size must be divisible
+  by hash_block_size').
+- Fine-grained partial hits only take effect when prefix caching or a KV connector is enabled; otherwise hash_block_size equals
+  the scheduler block size.
+- On hybrid mamba models, partial hash hits require mamba groups in 'align' cache mode; otherwise hashing backs off to the
+  scheduler block size.
+tuning_advice:
+  summary: Enable fine-grained prefix matching (e.g. --prefix-match-unit 16) for workloads with long shared prefixes to reuse
+    partial physical pages, keeping the unit a divisor of every KV cache group block size.
+  suggested_values:
+  - scenario: Long shared prefixes (RAG, multi-turn chat, few-shot) on Qwen3.5/Qwen3.6 hybrid models
+    value: 16
+    reason: Docs recommend --enable-prefix-caching --prefix-match-unit 16 to reuse more of a partial physical page; 16 divides
+      typical block sizes.
+  - scenario: Default / no fine-grained matching needed
+    value: unset
+    reason: Leaving it unset falls back to the GCD of prefix-cacheable group block sizes, avoiding extra hash metadata and
+      prefill splits.
+  - scenario: AscendStore KV pool with DCP enabled
+    value: 16
+    reason: hash_block_size = prefix_match_unit * dcp_size; ensure block_size * dcp_size is divisible by it to satisfy the
+      AscendStore assert.
+  caveats:
+  - Verify prefix_match_unit divides every KV cache group block size before enabling, or startup raises ValueError / assert.
+  - Weigh the extra hash metadata, copy-on-write, and prefill split cost against the prefill tokens saved.
+  - On hybrid mamba-align models with EAGLE, confirm output consistency (see test_hybrid_prefix_match_unit_cached_output_consistency).
+  quick_guide: Use --enable-prefix-caching --prefix-match-unit 16 for long shared prefixes; leave unset otherwise.
+analysis_date: '2026-10-27'

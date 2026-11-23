@@ -1,0 +1,132 @@
+name: --prefill-context-parallel-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:126
+- vllm/engine/arg_utils.py:1122
+- vllm/engine/arg_utils.py:490
+- vllm_ascend/platform.py:1643
+- vllm_ascend/platform.py:625
+- vllm_ascend/ascend_config.py:79
+- vllm_ascend/ascend_config.py:691
+- vllm_ascend/worker/v2/pcp_manager.py:232
+- vllm_ascend/worker/v2/model_states/default.py:191
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:151
+value_type: int
+default: 1
+valid_choices: integer >= 1
+cli_example: --prefill-context-parallel-size 2
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "PCP splits the prefill sequence computation across multiple ranks, expanding the\nprocess world size (world_size_with_pcp\
+  \ = pcp_size * original_world_size) without\nincreasing the KV-cache shard count (per upstream ParallelConfig docstring).\
+  \ This\ndirectly targets long-prompt prefill latency: \"each rank processes a chunk of the\"\nprompt sequence, so per-rank\
+  \ prefill compute and attention work drop roughly by a\nfactor of pcp_size, at the cost of extra cross-rank communication\
+  \ to gather KV /\nexchange chunk metadata.\n\nOn Ascend the behavior is version-gated and heavily overridden:\n- \"v1 worker\
+  \ (default): vllm_ascend/platform.py:_validate_parallel_config raises\"\n  ValueError if prefill_context_parallel_size >\
+  \ 1 and use_v2_model_runner is False.\n  So on the stable v1 path PCP is effectively disabled — setting it > 1 aborts\n\
+  \  startup. No runtime performance effect is possible on v1.\n- \"v2 worker (VLLM_USE_V2_MODEL_RUNNER=1): PCP is implemented\
+  \ via\"\n  vllm_ascend/worker/v2/pcp_manager.py, which partitions the scheduled batch into\n  PCP chunks (partition_batch)\
+  \ and drives graph-safe metadata. In\n  worker/v2/model_states/default.py:191, when pcp_size > 1 the model runner uses\n\
+  \  num_tokens_after_padding for token-shaped metadata, forcing padded inputs and\n  affecting cudagraph capture shapes.\
+  \ platform.py:625 sets\n  max_tokens_across_pcp = num_tokens when pcp_size > 1, feeding MoE comm-method\n  selection and\
+  \ padding decisions.\n- KVPP interaction: \"ascend_config.py:79 computes KVPP size as\"\n  tensor_parallel_size * prefill_context_parallel_size,\
+  \ so PCP multiplies the\n  layer-ownership replica domain for KV cache sharing.\n- Engram: \"ascend_config.py:691 auto-enables\
+  \ dp_shared_memory when PCP > 1 under\"\n  MRV2 to avoid per-step lookup collectives across PCP peers.\n- Executor: \"patch_multiproc_executor.py:151\
+  \ reads pcp_size to compute parallel\"\n  sizes for worker placement.\n\nNet: \"on Ascend, PCP is a high-impact prefill-latency\
+  \ lever but ONLY usable with\"\nthe v2 model runner; it trades extra ranks/communication for reduced per-rank\nprefill work,\
+  \ and forces padded token metadata (memory/compute overhead).\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1643
+  context: Rejects PCP > 1 unless use_v2_model_runner is enabled (v1 path hard-disabled).
+- file: vllm_ascend/platform.py:625
+  context: Sets max_tokens_across_pcp for MoE comm-method selection and padding when pcp_size > 1.
+- file: vllm_ascend/worker/v2/pcp_manager.py:232
+  context: Validates MRV2 PCP config (rejects encoder-decoder, MM inputs, LoRA, unsupported spec methods).
+- file: vllm_ascend/worker/v2/model_states/default.py:191
+  context: Uses padded token count for metadata when pcp_size > 1.
+- file: vllm_ascend/ascend_config.py:79
+  context: KVPP size = tp_size * pcp_size (layer ownership replica domain).
+- file: vllm_ascend/ascend_config.py:691
+  context: Auto-enables engram dp_shared_memory when PCP > 1 under MRV2.
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:151
+  context: Reads pcp_size to compute parallel sizes for worker placement.
+- file: vllm/config/parallel.py:539
+  context: EP group spans TP x PCP x DP; EPLB requires product > 1.
+related_parameters:
+- name: --tensor-parallel-size
+  relation: PCP multiplies world size on top of TP; KVPP size = TP x PCP; migration from DSA-CP replaces TP N with TP 1 +
+    PCP N.
+- name: --decode-context-parallel-size
+  relation: DCP and PCP are distinct CP modes; KVPP requires DCP == 1; SFA DCP replicated indexer requires DCP in {pcp_size,
+    tp_size*pcp_size}.
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: PCP > 1 is only supported when the v2 model runner is enabled; v1 raises ValueError.
+- name: additional_config.enable_dsa_cp
+  relation: Mutually exclusive with PCP > 1 (raises ValueError).
+- name: additional_config.enable_kvpp
+  relation: KVPP size derives from TP x PCP; KVPP shares caches across PCP x TP ranks.
+- name: --enable-return-routed-experts
+  relation: Incompatible with PCP > 1 (raises ValueError).
+- name: additional_config.enable_pcp_embedding_lmhead_weight_sharding
+  relation: When PCP > 1, embedding/LM head weights are stored as TP x PCP resident shards by default.
+- name: additional_config.enable_pcp_o_proj_weight_sharding
+  relation: O-projection weight sharding enabled by default for SFA-PCP/DSA-PCP when PCP > 1.
+constraints:
+- On vllm-ascend, --prefill-context-parallel-size greater than 1 requires VLLM_USE_V2_MODEL_RUNNER=1; the v1 model runner
+  raises ValueError.
+- PCP cannot be combined with additional_config.enable_dsa_cp; enabling both raises ValueError.
+- MRV2 PCP does not support encoder-decoder models.
+- MRV2 PCP does not support multimodal (MM) inputs.
+- MRV2 PCP does not support LoRA.
+- MRV2 PCP supports speculative decoding only with MTP, Eagle3, or DSpark.
+- PCP greater than 1 is incompatible with --enable-return-routed-experts.
+- KVPP and DCP cannot be enabled at the same time; KVPP requires decode_context_parallel_size == 1.
+- For SFA with replicated indexer, decode_context_parallel_size must equal pcp_size or tp_size * pcp_size.
+- P-side DSpark prompt initialization requires prefill_context_parallel_size == 1 and decode_context_parallel_size == 1.
+- When nnodes > 1, nnodes must evenly divide the total world size (DP x PP x TP x PCP).
+- Engram dp_shared_memory requires data_parallel_size > 1 or prefill_context_parallel_size > 1.
+tuning_advice:
+  summary: 'Use PCP only with the v2 model runner to cut long-prompt prefill latency; on the
+
+    default v1 path it is rejected, so leave it at 1 unless you have enabled
+
+    VLLM_USE_V2_MODEL_RUNNER=1 and validated the model/feature compatibility.
+
+    '
+  suggested_values:
+  - scenario: Default / v1 model runner (stable path)
+    value: 1
+    reason: vllm-ascend v1 raises ValueError for PCP > 1; keep at 1 to avoid startup failure.
+  - scenario: Long-prompt prefill-bound workload on MRV2 with spare NPUs
+    value: 2
+    reason: Splits prefill sequence across 2 ranks, roughly halving per-rank prefill compute; requires VLLM_USE_V2_MODEL_RUNNER=1
+      and doubles world size.
+  - scenario: Very long context prefill, dense non-MM, non-LoRA model, MRV2
+    value: 4
+    reason: Further reduces per-rank prefill latency for very long sequences; watch HCCL gather overhead and padded-token
+      memory growth.
+  - scenario: Migrating from DSA-CP (enable_dsa_cp) to PCP
+    value: 1
+    reason: Set --tensor-parallel-size 1 --prefill-context-parallel-size N and remove enable_dsa_cp; PCP requires additional
+      ranks at TP=1.
+  caveats:
+  - PCP expands world size (pcp_size * original_world_size), consuming extra NPUs; it does not increase KV-cache shard count,
+    so KV memory per rank is not reduced proportionally.
+  - When pcp_size > 1, the v2 model runner uses padded token counts for metadata (model_states/default.py:191), adding padding
+    compute/memory overhead.
+  - PCP adds cross-rank communication (KV gather / chunk metadata exchange); for short prompts the communication overhead
+    can outweigh the compute savings.
+  - KVPP size becomes TP x PCP, multiplying the layer-ownership replica domain; ensure KVPP compatibility (DCP must be 1).
+  - Under MRV2, PCP > 1 auto-enables engram dp_shared_memory to avoid per-step lookup collectives across PCP peers.
+  - Embedding/LM head and O-projection weights are sharded across TP x PCP by default when PCP > 1; disable via enable_pcp_embedding_lmhead_weight_sharding
+    / enable_pcp_o_proj_weight_sharding if unsupported.
+  - O-projection sharding is incompatible with fine-grained TP for the same modules.
+  quick_guide: Keep --prefill-context-parallel-size 1 on v1; on MRV2 set it to 2-4 for long-prompt prefill speedup, ensuring
+    VLLM_USE_V2_MODEL_RUNNER=1 and no DSA-CP/LoRA/MM/encoder-decoder.
+analysis_date: '2026-10-27'

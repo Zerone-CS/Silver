@@ -1,0 +1,62 @@
+name: speculative.draft_load_config.safetensors_load_strategy
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/load.py:1
+value_type: str
+default: null
+valid_choices:
+- null
+- lazy
+- eager
+- prefetch
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This parameter controls how safetensors weights for the draft (speculative) model are\nloaded from disk into\
+  \ host memory before being copied to the NPU. It is part of the\nLoadConfig used by the model loader (DefaultModelLoader\
+  \ / safetensors_weights_iterator).\n- \"None (default): memory-mapped (lazy) loading; if an NFS filesystem is detected and\
+  \ the\"\n  total checkpoint size fits within ~90% of available RAM, prefetching is auto-enabled.\n- \"\\\"lazy\\\": weights\
+  \ are mmap'd from the file and paged in on demand.\"\n- \"\\\"eager\\\"/\\\"prefetch\\\": weights are read fully into host\
+  \ RAM up front.\"\nThe choice affects only the host-side I/O path and host memory footprint during model\ninitialization;\
+  \ it does not change the NPU compute graph, HCCL communication, or KV-cache\nlayout. On Ascend, the actual device transfer\
+  \ is performed by the vllm-ascend model loader\n(NPUModelLoader / weight copy to device), which is independent of this strategy.\
+  \ Therefore\nthe impact is limited to startup latency and transient host RAM usage, not steady-state\nthroughput or NPU\
+  \ memory. No vllm-ascend override of this parameter was found in the\nprovided context.\n"
+usage_locations:
+- file: vllm/config/load.py:1
+  context: LoadConfig field defining safetensors load strategy for model weights
+- file: vllm/model_executor/model_loader/weight_utils.py:1
+  context: safetensors_weights_iterator consumes the strategy to choose mmap vs eager read
+related_parameters:
+- name: speculative.draft_load_config.load_format
+  relation: Determines the loader; safetensors_load_strategy only applies when load_format is safetensors/auto
+- name: speculative.draft_load_config.download_dir
+  relation: Prefetch behavior interacts with filesystem type (NFS detection) and available RAM
+- name: speculative.model
+  relation: Applies to the draft model weights; the target model uses model_loader's own load_config
+constraints:
+- Only meaningful when the draft model is loaded from safetensors format; ignored for other load formats.
+- Prefetching is only auto-enabled when an NFS filesystem is detected and the checkpoint fits within 90% of available RAM.
+tuning_advice:
+  summary: Leave at default (lazy/auto) unless startup I/O is a bottleneck; use prefetch only on fast local storage with ample
+    host RAM.
+  suggested_values:
+  - scenario: Default deployments on local SSD/NVMe with sufficient host RAM
+    value: unset
+    reason: Auto lazy loading with NFS-aware prefetch gives the best balance of startup time and host memory.
+  - scenario: Checkpoints on NFS with host RAM >= checkpoint size / 0.9
+    value: prefetch
+    reason: Avoids repeated network page-faults during first forward pass, reducing cold-start latency.
+  - scenario: Memory-constrained host where draft model is large
+    value: lazy
+    reason: Keeps host RAM footprint minimal by memory-mapping instead of reading fully into RAM.
+  caveats:
+  - This parameter does not affect NPU compute, HCCL, or KV-cache; do not expect throughput gains.
+  - Prefetch on slow or contended storage can increase startup time rather than reduce it.
+  quick_guide: Keep default; only switch to prefetch for NFS checkpoints with ample host RAM.
+analysis_date: '2026-10-27'

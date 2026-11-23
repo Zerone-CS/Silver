@@ -1,0 +1,172 @@
+name: --data-parallel-size-local
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1145
+- vllm/engine/arg_utils.py:499
+- vllm/engine/arg_utils.py:2215
+- vllm/config/parallel.py:132
+- vllm/config/parallel.py:509
+- vllm_ascend/worker/worker.py:470
+- vllm_ascend/_310p/worker_310p.py:191
+- vllm_ascend/compilation/compiler_interface.py:95
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:98
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2139
+value_type: int
+default: 1
+valid_choices: integer >= 0; 0 is a sentinel meaning DP was specified externally; must be <= --data-parallel-size
+cli_example: --data-parallel-size-local 2
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: '--data-parallel-size-local (-dpl) controls how many data-parallel (DP) replicas run on the
+
+  current node. It is the per-node decomposition of the global --data-parallel-size and directly
+
+  determines how many independent model replicas (each with its own KV cache and scheduler) are
+
+  spawned on this physical machine.
+
+
+  Upstream (vllm/engine/arg_utils.py:2215-2308): when --nnodes > 1 and data_parallel_size_local
+
+  is None, it is inferred as max(local_world_size // world_size_within_dp, 1). When set explicitly
+
+  it drives the DP launch topology: "data_parallel_size_local == data_parallel_size disables hybrid"
+
+  LB (single-node full internal LB); data_parallel_size_local == 1 with hybrid LB auto-switches to
+
+  external LB; data_parallel_size_local combined with --data-parallel-start-rank infers hybrid LB
+
+  mode. In vllm/v1/engine/core_client.py:692 and input_processor.py:301, dp_local_size determines
+
+  num_ranks (local_engines_only) and the valid range of data_parallel_rank, i.e. how many engine
+
+  cores the client manages locally. In vllm/v1/engine/utils.py:449 it sets local_engine_count for
+
+  Ray actor placement. So this parameter governs the number of local engine processes, which
+
+  multiplies per-node memory footprint (each replica holds a full model shard + KV cache) and
+
+  scales aggregate throughput roughly linearly with the number of DP replicas.
+
+
+  Ascend-specific (vllm_ascend/worker/worker.py:470 and _310p/worker_310p.py:191): when
+
+  data_parallel_size > 1, data_parallel_size_local > 0, backend is not ray/external_launcher,
+
+  data_parallel_backend != "ray" and nnodes_within_dp == 1, vllm-ascend asserts
+
+  local_world_size <= torch.npu.device_count(). local_world_size = tp * pp * pcp, so the product
+
+  data_parallel_size_local * local_world_size must fit within the visible NPU count on the node.
+
+  This is the key Ascend guard: "over-subscribing DP replicas beyond available NPUs raises an"
+
+  assertion at worker init.
+
+
+  Ascend compilation (vllm_ascend/compilation/compiler_interface.py:95-108): when
+
+  enable_static_kernel is on, vllm-ascend computes LOCAL_WORLD_SIZE =
+
+  local_world_size * data_parallel_size_local to give npugraph_ex the physical node topology for
+
+  per-node Gloo groups coordinating static-kernel compilation and .run package installation. A
+
+  wrong value here mis-sizes the Gloo group and can break static-kernel compilation.
+
+
+  Ascend KV transfer (mooncake base_worker.py:98, mooncake_connector.py:2139,
+
+  mooncake_hybrid_connector.py:1667): dp_size = data_parallel_size_local is used to compute
+
+  max_device_id = tp_size * dp_size * pcp_size * pp_size and the side-channel/handshake port
+
+  ranges. Incorrect values cause port collisions or out-of-range device ids in P/D disaggregation.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1145
+  context: CLI argument definition (-dpl), type=int, help 'Number of data parallel replicas to run on this node.'
+- file: vllm/engine/arg_utils.py:2215
+  context: Inference of data_parallel_size_local from nnodes/local_world_size when not set
+- file: vllm/engine/arg_utils.py:2252
+  context: External LB requires data_parallel_size_local == 1; hybrid LB requires it set
+- file: vllm/config/parallel.py:132
+  context: ParallelConfig field, default 1, ge=0; 0 is sentinel for externally-specified DP
+- file: vllm/config/parallel.py:509
+  context: 'Validation: data_parallel_size_local must be <= data_parallel_size'
+- file: vllm/v1/engine/core_client.py:692
+  context: dp_local_size determines num_ranks and engine_ranks_managed for local engine cores
+- file: vllm/v1/engine/input_processor.py:301
+  context: dp_local_size bounds valid data_parallel_rank range
+- file: vllm/v1/engine/utils.py:449
+  context: local_engine_count for Ray actor placement
+- file: vllm_ascend/worker/worker.py:470
+  context: Ascend assert local_world_size <= visible NPU count when DP local > 0 and single-node
+- file: vllm_ascend/_310p/worker_310p.py:191
+  context: Same NPU-count assertion for 310P worker path
+- file: vllm_ascend/compilation/compiler_interface.py:95
+  context: Computes LOCAL_WORLD_SIZE = local_world_size * data_parallel_size_local for static kernel
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:98
+  context: dp_size used for max_device_id and side-channel port computation
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2139
+  context: dp_size used for max_device_id in Mooncake connector
+related_parameters:
+- name: --data-parallel-size
+  relation: Global DP size; data_parallel_size_local must be <= data_parallel_size and typically equals data_parallel_size
+    / nnodes
+- name: --data-parallel-start-rank
+  relation: When set together with data_parallel_size_local, infers hybrid LB mode; offsets local ranks in global rank space
+- name: --data-parallel-rank
+  relation: External LB mode requires data_parallel_size_local == 1
+- name: --data-parallel-hybrid-lb
+  relation: Requires data_parallel_size_local to be set; auto-disabled when local == global or local == 1
+- name: --data-parallel-external-lb
+  relation: Requires data_parallel_size_local == 1
+- name: --nnodes
+  relation: When > 1, data_parallel_size_local is inferred from local_world_size if unset
+- name: --tensor-parallel-size
+  relation: local_world_size = tp * pp * pcp; product with data_parallel_size_local must fit visible NPUs
+- name: --data-parallel-backend
+  relation: ray backend changes inference (span strategy defaults local to 1); mp backend uses NPU-count assertion
+constraints:
+- --data-parallel-size-local must be less than or equal to --data-parallel-size.
+- When using external load balancing (--data-parallel-external-lb or --data-parallel-rank), --data-parallel-size-local must
+  be 1 or omitted.
+- --data-parallel-hybrid-lb requires --data-parallel-size-local to be set.
+- On Ascend single-node MP deployments, data_parallel_size_local × (tp × pp × pcp) must not exceed the number of visible NPUs
+  on the node, otherwise worker init raises an assertion.
+- When --nnodes > 1, --data-parallel-backend must be mp (ray is rejected for multi-node).
+- A value of 0 is a sentinel meaning DP was specified externally and is not a valid replica count for normal launches.
+tuning_advice:
+  summary: Set data_parallel_size_local to the number of DP replicas you want on this node, ensuring data_parallel_size_local
+    × tp × pp × pcp fits the node's visible NPU count; on Ascend prefer more DP replicas with smaller TP for higher throughput.
+  suggested_values:
+  - scenario: Single-node DeepSeek-R1/V3.1 deployment on 8 NPUs
+    value: 4
+    reason: vllm-ascend docs recommend dp4 tp4 over dp2 tp8 for single-node; 4 DP replicas × tp4 = 16 exceeds 8 NPUs, so use
+      dp2 tp4 (2×4=8) or dp4 tp2 depending on NPU count; the doc's dp4 tp4 assumes 16 NPUs.
+  - scenario: Two-node deployment, 2 DP ranks per node
+    value: 2
+    reason: 'Docs example: --data-parallel-size 4 with --data-parallel-size-local 2 per node, paired with --data-parallel-start-rank
+      0/2 and --headless on non-master nodes.'
+  - scenario: External LB / one-pod-per-rank wide-EP
+    value: 1
+    reason: External LB requires data_parallel_size_local == 1; each pod runs a single DP rank.
+  - scenario: Single-node full internal LB (all DP ranks local)
+    value: <equal to --data-parallel-size>
+    reason: When all DP replicas are on one node, set data_parallel_size_local == data_parallel_size to disable hybrid LB
+      and use full internal LB.
+  caveats:
+  - Always verify data_parallel_size_local × tp × pp × pcp <= visible NPU count on Ascend, or worker init asserts.
+  - Account for per-replica KV cache memory when increasing DP replicas; lower gpu_memory_utilization if HBM is tight.
+  - If enable_static_kernel is enabled, confirm LOCAL_WORLD_SIZE derived from this value matches the physical node topology.
+  quick_guide: Set --data-parallel-size-local to the DP replicas on this node such that replicas × tp × pp × pcp fits the
+    node's NPUs; use 1 for external LB.
+analysis_date: '2026-10-27'

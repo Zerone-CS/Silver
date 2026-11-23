@@ -1,0 +1,100 @@
+name: --specialize-active-lora
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1503
+- vllm/engine/arg_utils.py:638
+- vllm/engine/arg_utils.py:2467
+- vllm/config/lora.py:68
+- vllm/v1/cudagraph_dispatcher.py:65
+- vllm/v1/worker/gpu/lora_utils.py:33
+- vllm/lora/ops/triton_ops/lora_kernel_metadata.py:39
+- vllm/lora/punica_wrapper/punica_gpu.py:55
+value_type: bool
+default: false
+valid_choices: true or false (BooleanOptionalAction-style flag)
+cli_example: --specialize-active-lora
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag is defined in vLLM upstream (vllm/config/lora.py:68) and only takes effect
+
+  when `cudagraph_specialize_lora` is True. Its effect is entirely on the CUDA-graph
+
+  capture path: "in vllm/v1/worker/gpu/lora_utils.py:get_lora_capture_cases, when"
+
+  cudagraph_specialize_lora is enabled, `specialize_active_lora` decides whether the
+
+  captured num_active_loras set is the powers-of-2 ladder up to max_loras (plus
+
+  max_loras+1) or just [0, max_loras+1]. The captured counts are then threaded into
+
+  LoRAKernelMeta (vllm/lora/ops/triton_ops/lora_kernel_metadata.py:44) and used by
+
+  PunicaWrapperGPU (punica_gpu.py:55,121) to round num_active_loras up to the nearest
+
+  captured value so the LoRA shrink/expand kernels hit a matching cudagraph key.
+
+  The mechanism is CUDA-graph + Triton punica-kernel specific. On Ascend NPU, vLLM''s
+
+  Triton punica LoRA kernels and the CUDA-graph dispatcher are not the execution path
+
+  used by vllm-ascend (which uses its own ACLNN/CANN LoRA ops and its own graph capture
+
+  via ACLGraph). No vllm-ascend source references specialize_active_lora, so the flag
+
+  is effectively inert on Ascend. Even on GPU its impact is limited to LoRA-serving
+
+  workloads with cudagraph_specialize_lora enabled, trading extra graph captures
+
+  (startup time + memory) for slightly better latency under variable active-LoRA counts.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1503
+  context: CLI argument registration in the LoRAConfig argument group
+- file: vllm/engine/arg_utils.py:2467
+  context: Passed into LoRAConfig construction when --enable-lora is set
+- file: vllm/v1/cudagraph_dispatcher.py:65
+  context: Read into specialize_lora_count to drive cudagraph key specialization
+- file: vllm/v1/worker/gpu/lora_utils.py:33
+  context: Selects captured num_active_loras set for cudagraph capture
+- file: vllm/lora/ops/triton_ops/lora_kernel_metadata.py:44
+  context: captured_lora_counts used to round num_active_loras to a captured key
+- file: vllm/lora/punica_wrapper/punica_gpu.py:55
+  context: PunicaWrapperGPU builds LoRAKernelMeta with captured_lora_counts
+related_parameters:
+- name: --enable-lora
+  relation: LoRAConfig is only constructed (and this flag only read) when --enable-lora is set
+- name: --max-loras
+  relation: Determines the upper bound of the powers-of-2 capture ladder
+- name: compilation_config.cudagraph_specialize_lora
+  relation: This flag only takes effect when cudagraph_specialize_lora is True
+- name: --cudagraph-mode
+  relation: Cudagraph capture must be enabled for specialization to matter
+constraints:
+- Only takes effect when cudagraph_specialize_lora is True; otherwise it is ignored.
+- Only meaningful when --enable-lora is set; without LoRA the LoRAConfig is None and the flag has no effect.
+- The captured active-LoRA counts are powers of 2 up to --max-loras, so the benefit is bounded by max_loras.
+tuning_advice:
+  summary: Leave disabled on Ascend NPU; it has no effect there. On GPU LoRA serving with cudagraph_specialize_lora, enable
+    only for variable active-LoRA workloads.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: vllm-ascend does not consume this flag and uses its own LoRA/graph path, so enabling it provides no benefit and
+      only adds config noise.
+  - scenario: GPU LoRA serving with cudagraph_specialize_lora=True and many adapters active concurrently
+    value: true
+    reason: Captures powers-of-2 active-LoRA cudagraph variants, reducing latency when the active adapter count fluctuates.
+  - scenario: GPU LoRA serving with a single or fixed adapter set
+    value: false
+    reason: No variable active-LoRA count means extra captured graphs only cost startup time and memory.
+  caveats:
+  - Requires cudagraph_specialize_lora=True and --enable-lora; otherwise ignored.
+  - On Ascend this parameter is inert — do not rely on it for NPU LoRA performance tuning.
+  quick_guide: Keep false on Ascend; only enable on GPU with cudagraph_specialize_lora and variable LoRA counts.
+analysis_date: '2026-10-27'

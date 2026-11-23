@@ -1,0 +1,80 @@
+name: VLLM_GPU_SYNC_CHECK
+type: env
+category: observability
+scope: vllm
+source_file:
+- vllm/envs.py:639
+- vllm/envs.py:94
+- vllm/utils/gpu_sync_debug.py:43
+- vllm/v1/worker/gpu_worker.py:942
+value_type: str
+default: null
+valid_choices:
+- warn
+- error
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_GPU_SYNC_CHECK is a debug/diagnostic gate, not a tuning knob. In
+
+  vllm/utils/gpu_sync_debug.py:43 the mode is read once at import time via
+
+  `envs.VLLM_GPU_SYNC_CHECK if current_platform.is_cuda_alike() else None`.
+
+  On Ascend NPU, `current_platform.is_cuda_alike()` is False (the Ascend
+
+  platform is not CUDA-alike), so `_SYNC_CHECK_MODE` is forced to None and
+
+  `enable_gpu_sync_check()` (gpu_sync_debug.py:56-61) returns immediately
+
+  without installing any wrappers or compile-time sync suppressors. The
+
+  `enable_gpu_sync_check()` call in vllm/v1/worker/gpu_worker.py:942 is a
+
+  no-op on Ascend. Therefore this env var has effectively no runtime effect
+
+  on Ascend NPU. On CUDA it would wrap `execute_model`/`sample_tokens` with
+
+  PyTorch sync-debug mode and flag non_blocking CPU<->CUDA copies, adding
+
+  per-call overhead (warn/error checking) — a diagnostic cost, not a
+
+  throughput optimization. No vllm-ascend override of this parameter was
+
+  found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:639
+  context: Definition via env_with_choices with default None and choices warn/error
+- file: vllm/envs.py:94
+  context: Type annotation Literal['warn','error'] | None = None
+- file: vllm/utils/gpu_sync_debug.py:43
+  context: Read once at import; gated by current_platform.is_cuda_alike()
+- file: vllm/v1/worker/gpu_worker.py:942
+  context: enable_gpu_sync_check() called after warmup; no-op when mode is None
+related_parameters:
+- name: VLLM_USE_V1
+  relation: Sync-check activation lives in the v1 GPU worker path (gpu_worker.py)
+- name: VLLM_ATTENTION_BACKEND
+  relation: Unrelated functionally, but both are platform-gated env vars; sync check only active on CUDA-alike platforms
+constraints:
+- Valid values are only 'warn' or 'error'; any other value is rejected by env_with_choices.
+- The check is only active on CUDA-alike platforms; on Ascend NPU it is silently disabled regardless of the value set.
+- The check is only enabled after warmup completes (enable_gpu_sync_check is called post-compilation in the v1 GPU worker).
+tuning_advice:
+  summary: Leave unset on Ascend NPU; it is a CUDA-only diagnostic gate with no runtime effect on Ascend.
+  suggested_values:
+  - scenario: Ascend NPU production or benchmarking
+    value: unset
+    reason: The check is disabled on non-CUDA-alike platforms, so setting it provides no benefit and only risks confusion.
+  - scenario: Debugging unintended host-device syncs on CUDA reference runs
+    value: warn
+    reason: Warns on each synchronizing operation without aborting, useful to locate sync hotspots during profiling.
+  caveats:
+  - Do not rely on this env var to detect sync issues on Ascend; it is a no-op there.
+  - Setting 'error' on CUDA can raise at runtime and interrupt serving if the model path is not sync-clean.
+  quick_guide: Ignore on Ascend NPU — it is a CUDA-only sync-debug diagnostic and has no effect.
+analysis_date: '2026-10-27'

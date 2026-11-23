@@ -1,0 +1,82 @@
+name: VLLM_V1_OUTPUT_PROC_CHUNK_SIZE
+type: env
+category: scheduling
+scope: vllm
+source_file:
+- vllm/envs.py:1414
+- vllm/envs.py:168
+- vllm/envs.py:2330
+- vllm/v1/engine/async_llm.py:783
+value_type: int
+default: 128
+valid_choices: positive integer (number of EngineCoreOutputs processed per asyncio task iteration)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read once in AsyncLLM._run_output_handler (vllm/v1/engine/async_llm.py:783)
+
+  and used to slice the batch of EngineCoreOutputs pulled from the engine core into chunks of
+
+  at most VLLM_V1_OUTPUT_PROC_CHUNK_SIZE before processing them in the asyncio output handler
+
+  loop (for start in range(0, num_outputs, chunk_size)). It does NOT affect NPU compute, HCCL
+
+  communication, KV cache, or model execution — it only governs how the frontend event loop
+
+  interleaves output post-processing (detokenization, streaming push to AsyncStreams) with other
+
+  asyncio tasks. On Ascend, the engine core runs in a separate process (VLLM_ENABLE_V1_MULTIPROCESSING)
+
+  and the NPU-side throughput is unaffected; the effect is purely on the API-server-side event-loop
+
+  responsiveness. Setting it too high means a single asyncio task processes many outputs before
+
+  yielding, increasing inter-message latency variance for streaming clients; setting it too low
+
+  adds per-chunk overhead and can hurt TTFT and overall frontend throughput. No vllm-ascend
+
+  override or monkey-patch of this variable was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/v1/engine/async_llm.py:783
+  context: Reads envs.VLLM_V1_OUTPUT_PROC_CHUNK_SIZE into local chunk_size for the output handler loop
+- file: vllm/v1/engine/async_llm.py:800
+  context: Slices engine_core_outputs into chunks of chunk_size to avoid blocking the event loop
+- file: vllm/envs.py:1414
+  context: Environment variable definition with default 128
+related_parameters:
+- name: VLLM_ENABLE_V1_MULTIPROCESSING
+  relation: When enabled (default), the engine core runs in a separate process and this chunking governs frontend output processing;
+    the env var is in the same ignored_factors set for multiprocessing propagation
+- name: VLLM_V1_OUTPUT_PROC_CHUNK_SIZE
+  relation: self
+constraints:
+- The value must be a positive integer; a value of 0 or negative would make the range() step invalid and break output processing.
+- Only applies to the V1 AsyncLLM interface; it has no effect on non-streaming or non-V1 paths.
+tuning_advice:
+  summary: Leave at default 128 for most Ascend deployments; tune only when frontend streaming latency variance or TTFT is
+    a bottleneck under high concurrency.
+  suggested_values:
+  - scenario: Default / general Ascend serving
+    value: 128
+    reason: Balanced default that avoids blocking the event loop too long while keeping per-chunk overhead low.
+  - scenario: Very high concurrency streaming with many simultaneous requests, latency variance matters
+    value: 64
+    reason: Smaller chunks yield to the event loop more frequently, reducing inter-message latency variance for streaming
+      clients.
+  - scenario: Throughput-oriented batch serving where TTFT and overall throughput dominate
+    value: 256
+    reason: Larger chunks reduce per-chunk overhead and can improve TTFT and overall frontend throughput when latency variance
+      is not critical.
+  caveats:
+  - This parameter only affects the API-server frontend event loop, not NPU compute or HCCL; do not expect it to change raw
+    model throughput on Ascend.
+  - Setting it too high increases inter-message latency variance for streaming requests; setting it too low can negatively
+    impact TTFT and overall throughput.
+  - No vllm-ascend override was found; behavior matches upstream vLLM V1.
+  quick_guide: Keep 128 unless streaming latency variance or TTFT under high concurrency needs tuning.
+analysis_date: '2026-10-27'

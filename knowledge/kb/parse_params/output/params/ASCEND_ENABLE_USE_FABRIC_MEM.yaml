@@ -1,0 +1,83 @@
+name: ASCEND_ENABLE_USE_FABRIC_MEM
+type: env
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:202
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:259
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (string comparison against "1")
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "ASCEND_ENABLE_USE_FABRIC_MEM toggles the Mooncake Store backend into the \"unified memory\naddress direct\
+  \ transmission\" (FabricMem) scheme on Ascend NPU. In\nMooncakeBackend.__init__ (mooncake_backend.py:202) it is read as\n\
+  `os.getenv(\"ASCEND_ENABLE_USE_FABRIC_MEM\", \"0\") == \"1\"` and stored in `self._use_fabric_mem`.\nThis flag changes three\
+  \ distinct code paths:\n1. Store setup path (mooncake_backend.py:263-288): when fabric mem is enabled (and\n   ASCEND_GLOBAL_RESOURCE_CONFIG\
+  \ is not set), the backend skips\n   `global_te.get_transfer_engine(...)` and calls `store.setup(...)` WITHOUT passing an\n\
+  \   `engine=` argument and with `local_buffer_size=0`. This means the Mooncake store uses\n   its own internal transfer\
+  \ engine / direct memory addressing rather than the shared\n   global transfer engine. This removes an extra copy/registration\
+  \ hop between the KV cache\n   buffers and the RDMA/HCCS transport, reducing KV transfer latency and CPU overhead.\n2. Buffer\
+  \ registration (mooncake_backend.py:314-329): with fabric mem enabled,\n   `register_buffer` becomes a no-op (neither the\
+  \ store-independent path nor the\n   global_te path runs), because buffers are addressed directly by unified memory address.\n\
+  \   This eliminates per-buffer registration cost and the associated memory pinning.\n3. Lazy initialization (mooncake_backend.py:207):\
+  \ `self._lazy_init = lazy_init and\n   self._use_fabric_mem`, so fabric mem enables deferred store initialization, avoiding\n\
+  \   store setup cost at construction time and allowing `exists()` to short-circuit to\n   \"missing\" before init (mooncake_backend.py:331-337).\n\
+  Net effect: \"lower KV-cache transfer latency, higher effective KV pool throughput, and\"\nreduced memory overhead (no local_buffer_size\
+  \ allocation, no duplicate buffer registration).\nIt is the recommended mode on 800 I/T A3 hardware per the docs.\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:202
+  context: Reads env var into self._use_fabric_mem; also gates self._use_store_independent_te and self._lazy_init
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:263
+  context: 'Selects store.setup path: fabric mem skips global_te engine and uses local_buffer_size=0'
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:314
+  context: register_buffer becomes a no-op under fabric mem (direct unified address)
+- file: tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:89
+  context: E2E test sets ASCEND_ENABLE_USE_FABRIC_MEM=1 with AscendStoreConnector
+- file: tests/ut/kv_transfer/test_ascend_store_layerwise_lifecycle.py:161
+  context: Unit test sets it to 0 to exercise the non-fabric path
+related_parameters:
+- name: ASCEND_GLOBAL_RESOURCE_CONFIG
+  relation: 'Mutually exclusive setup path: _use_store_independent_te is only true when ASCEND_GLOBAL_RESOURCE_CONFIG is set
+    AND fabric mem is disabled; both take the store-independent-TE setup branch'
+- name: MOONCAKE_OFFLOAD_LOCAL_BUFFER_SIZE_BYTES
+  relation: Under fabric mem on A3, must be aligned to 1 GB; local_buffer_size in mooncake.json is ignored in fabric mem mode
+- name: MOONCAKE_CONFIG_PATH
+  relation: Points to mooncake.json which supplies protocol/metadata_server/global_segment_size used by store.setup
+- name: fabric_memory.max_capacity
+  relation: Fabric mem budget must cover global_segment_size + MOONCAKE_OFFLOAD_LOCAL_BUFFER_SIZE_BYTES plus headroom
+constraints:
+- Only supported on 800 I/T A3 series hardware (and 950PR/950DT per docs); enabling on other hardware is not supported.
+- Requires HDK >= 26.0 (or >= 25.5 with Mooncake >= v0.3.11) and CANN >= 9.1.0, plus LingQu Computing Network >= 1.5.
+- The Mooncake backend only supports protocol 'ascend'; a non-ascend protocol raises NotImplementedError regardless of this
+  flag.
+- When fabric mem is enabled on A3, MOONCAKE_OFFLOAD_LOCAL_BUFFER_SIZE_BYTES must be a multiple of 1 GB (1073741824 bytes)
+  or adxl MallocMem failures / FileStorage init segfaults may occur.
+- The value is compared literally to the string "1"; any other value (including "true") is treated as disabled.
+tuning_advice:
+  summary: Enable ASCEND_ENABLE_USE_FABRIC_MEM=1 on 800 I/T A3 (or 950) hardware running AscendStoreConnector with a FabricMem-capable
+    Mooncake client to cut KV transfer latency and memory overhead.
+  suggested_values:
+  - scenario: 800 I/T A3 with Mooncake >= v0.3.11, HDK >= 26.0/25.5, CANN >= 9.1.0, LingQu >= 1.5, using AscendStoreConnector
+    value: '1'
+    reason: Docs recommend fabric mem on A3; it uses unified-address direct transmission, skipping global_te engine setup
+      and buffer registration, lowering KV transfer latency and memory use.
+  - scenario: 800 I/T A2 or hardware without FabricMem support
+    value: '0'
+    reason: Fabric mem is only supported on 800 I/T A3 (and 950) series; on A2 use HCCL_INTRA_ROCE_ENABLE=1 direct transfer
+      instead.
+  - scenario: Using ASCEND_GLOBAL_RESOURCE_CONFIG store-independent TE path
+    value: '0'
+    reason: ASCEND_GLOBAL_RESOURCE_CONFIG takes the same store-independent-TE setup path as fabric mem; enabling both is redundant
+      and fabric mem takes precedence in the branch condition.
+  caveats:
+  - Always align MOONCAKE_OFFLOAD_LOCAL_BUFFER_SIZE_BYTES to a 1 GB multiple when fabric mem is on, or risk MallocMem failures/segfaults.
+  - Size fabric_memory.max_capacity to cover global_segment_size + offload local buffer + headroom.
+  - Verify the Mooncake client version supports FabricMem before enabling; otherwise store.setup fails at startup.
+  quick_guide: Set ASCEND_ENABLE_USE_FABRIC_MEM=1 only on A3/950 with a FabricMem-capable Mooncake client; keep 0 elsewhere.
+analysis_date: '2026-10-27'

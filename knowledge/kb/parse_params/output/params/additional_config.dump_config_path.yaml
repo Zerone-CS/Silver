@@ -1,0 +1,93 @@
+name: additional_config.dump_config_path
+type: nested
+category: observability
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:604
+- vllm_ascend/ascend_config.py:550
+- vllm_ascend/ascend_config.py:1174
+- vllm_ascend/ascend_config.py:1163
+value_type: str
+default: null
+valid_choices: Any filesystem path to a JSON file parseable by msprobe PrecisionDebugger; null disables msprobe dump
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'dump_config_path is an Ascend-only (vllm-ascend) option consumed by the
+
+  AscendConfig factory in _resolve_dump_config_path (vllm_ascend/ascend_config.py:1172-1188).
+
+  It is read from additional_config before pydantic schema validation and stored on
+
+  AscendConfig.dump_config_path (line 604). The value is a path to an msprobe
+
+  PrecisionDebugger configuration file; when set, the msprobe debugger is activated
+
+  and instruments the model execution to dump tensors/statistics to disk.
+
+  The performance cost is therefore indirect: "msprobe instrumentation adds per-op"
+
+  overhead (tensor copies, host-device synchronization, file I/O) during the
+
+  instrumented run, which can significantly slow down execution and consume host
+
+  disk space. However, this is a debugging/observability feature, not a runtime
+
+  tuning knob — when left at its default (None) it has zero runtime cost. The
+
+  parameter itself does not alter scheduling, memory allocation, parallelism, or
+
+  kernel selection. The alternative inline form dump_config is materialized to
+
+  .vllm_ascend/msprobe/msprobe_dump_config.json by _materialize_dump_config_to_file
+
+  (line 1163-1170), which performs a one-time file write at config init.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1174
+  context: _resolve_dump_config_path reads additional_config['dump_config_path'], validates mutual exclusivity with dump_config
+    and type, returns the path
+- file: vllm_ascend/ascend_config.py:604
+  context: 'AscendConfig field dump_config_path: str | None = None, populated by the factory'
+- file: vllm_ascend/ascend_config.py:1163
+  context: _materialize_dump_config_to_file writes inline dump_config dict to .vllm_ascend/msprobe/msprobe_dump_config.json
+    and returns that path
+- file: tests/ut/test_ascend_config.py:817
+  context: Unit test verifying dump_config_path and dump_config are mutually exclusive (raises ValueError)
+related_parameters:
+- name: additional_config.dump_config
+  relation: Mutually exclusive with dump_config_path; setting both raises ValueError. dump_config is the inline dict form
+    that gets materialized to a JSON file.
+- name: additional_config.refresh
+  relation: refresh forces reconstruction of the cached AscendConfig singleton, which re-runs dump config resolution.
+constraints:
+- additional_config.dump_config_path and additional_config.dump_config cannot both be set; doing so raises ValueError.
+- additional_config.dump_config_path must be a string; a non-string value raises ValueError.
+- The file at dump_config_path must contain configuration parseable by msprobe PrecisionDebugger, otherwise the debugger fails
+  to initialize.
+- Unknown keys in additional_config are rejected (extra='forbid'), so a typo in dump_config_path fails fast.
+tuning_advice:
+  summary: Leave dump_config_path unset for production; only set it to a valid msprobe config file when actively debugging
+    precision issues, and expect significant slowdown.
+  suggested_values:
+  - scenario: Production serving / performance benchmarking
+    value: unset
+    reason: Default None disables msprobe instrumentation entirely, avoiding per-op overhead and disk I/O.
+  - scenario: Precision debugging with a prepared msprobe config file
+    value: /path/to/msprobe_dump_config.json
+    reason: Points msprobe PrecisionDebugger at a JSON config; use a minimal dump scope (e.g. limited task/level) to bound
+      overhead and disk usage.
+  - scenario: Precision debugging with inline config
+    value: unset
+    reason: Prefer additional_config.dump_config (inline dict) instead of dump_config_path when you want vllm-ascend to materialize
+      the file automatically; the two are mutually exclusive.
+  caveats:
+  - Never enable dump in latency- or throughput-sensitive deployments; instrumentation dominates runtime.
+  - Ensure the target path is readable by all ranks and that disk space is sufficient for the dump volume.
+  - Do not set both dump_config_path and dump_config — it raises ValueError at config init.
+  quick_guide: Keep dump_config_path unset unless debugging precision; when set, expect heavy slowdown and large disk writes.
+analysis_date: '2026-10-27'

@@ -1,0 +1,67 @@
+name: attention.use_non_causal
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/v1/attention/selector.py:167
+- vllm/v1/attention/backends/flashinfer.py:1008
+- vllm/model_executor/models/config.py:282
+- vllm/models/deepseek_v4/nvidia/flashinfer_sparse.py:87
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "`attention.use_non_causal` is a nested field of `AttentionConfig` in vLLM upstream. It is\nread in several\
+  \ places, all of which are GPU-specific (FlashInfer / TRT-LLM / SM120 sparse\nattention paths):\n- \"`vllm/v1/attention/selector.py:167`\
+  \ passes it into `AttentionSelectorConfig`, where it\"\n  influences backend selection (e.g. excluding FlashInfer from auto-selection\
+  \ for models with\n  mixed causal/bidirectional attention).\n- \"`vllm/v1/attention/backends/flashinfer.py:1008` uses it\
+  \ to decide the CUDA graph support\"\n  level: \"when `use_non_causal` is true (and not XQA arch), the backend falls back\
+  \ from\"\n  `AttentionCGSupport.UNIFORM_BATCH` to `UNIFORM_SINGLE_TOKEN_DECODE`, which reduces the set of\n  batch shapes\
+  \ that can be captured in a single CUDA graph and can lower decode throughput.\n- \"`vllm/model_executor/models/config.py:282`\
+  \ auto-sets `use_non_causal=True` for DiffusionGemma\"\n  to exclude FlashInfer.\n- \"`vllm/models/deepseek_v4*/nvidia/flashinfer_sparse.py:87`\
+  \ uses it to pick the SM120 sparse\"\n  top-k width for DSpark speculative decoding.\nNo definition or usage of `attention.use_non_causal`\
+  \ was found in vllm-ascend. On Ascend NPU,\nthe attention backends are Ascend-native (e.g. AscendAttentionBackend / Ascend\
+  \ MLA), and the\nFlashInfer/TRT-LLM/SM120 code paths above are never executed. Therefore this parameter has no\nruntime\
+  \ effect on Ascend NPU performance; it only matters on NVIDIA GPU deployments using\nFlashInfer or the SM120 sparse attention\
+  \ kernels.\n"
+usage_locations:
+- file: vllm/v1/attention/selector.py:167
+  context: Passed into AttentionSelectorConfig to influence attention backend selection.
+- file: vllm/v1/attention/backends/flashinfer.py:1008
+  context: Determines CUDA graph support level (UNIFORM_BATCH vs UNIFORM_SINGLE_TOKEN_DECODE) for FlashInfer.
+- file: vllm/model_executor/models/config.py:282
+  context: Auto-enabled for DiffusionGemma to exclude FlashInfer from auto-selection.
+- file: vllm/models/deepseek_v4/nvidia/flashinfer_sparse.py:87
+  context: Selects SM120 sparse top-k width for DSpark speculative decoding.
+related_parameters:
+- name: attention.backend
+  relation: When use_non_causal is true, FlashInfer is excluded from auto-selection; an explicit backend may be required.
+- name: speculative_config.num_speculative_tokens
+  relation: Used together in the SM120 sparse top-k width computation for DSpark.
+constraints:
+- FlashInfer does not support mixed causal/bidirectional attention, so DiffusionGemma raises a ValueError if --attention-backend
+  FLASHINFER is explicitly set.
+- This parameter only affects NVIDIA GPU code paths (FlashInfer, TRT-LLM, SM120 sparse attention) and has no effect on Ascend
+  NPU backends.
+tuning_advice:
+  summary: Leave at default (false) on Ascend NPU; it has no runtime effect because the affected code paths are NVIDIA-only.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: false
+    reason: vllm-ascend does not read this parameter and uses Ascend-native attention backends, so changing it provides no
+      benefit and may only affect backend auto-selection logic that is not exercised on NPU.
+  - scenario: NVIDIA GPU with a model requiring bidirectional/mixed attention (e.g. DiffusionGemma)
+    value: true
+    reason: Required to exclude FlashInfer from auto-selection; note it may downgrade CUDA graph support to UNIFORM_SINGLE_TOKEN_DECODE
+      and reduce decode throughput.
+  caveats:
+  - On Ascend NPU this parameter is effectively a no-op; do not expect performance changes from toggling it.
+  - On NVIDIA GPUs, enabling it can reduce CUDA graph capture coverage (UNIFORM_SINGLE_TOKEN_DECODE instead of UNIFORM_BATCH),
+    which may lower decode throughput.
+  quick_guide: Ignore on Ascend NPU; only relevant for NVIDIA FlashInfer/SM120 sparse attention paths.
+analysis_date: '2026-10-27'

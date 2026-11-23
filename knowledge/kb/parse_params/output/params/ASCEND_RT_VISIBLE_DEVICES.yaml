@@ -1,0 +1,116 @@
+name: ASCEND_RT_VISIBLE_DEVICES
+type: env
+category: hardware
+scope: both
+source_file:
+- vllm_ascend/platform.py:95
+- vllm_ascend/platform.py:292
+- vllm_ascend/cpu_binding.py:25
+- vllm_ascend/cpu_binding.py:172
+- vllm_ascend/distributed/weight_transfer/npu_ipc_engine.py:85
+- vllm_ascend/patch/platform/patch_dp_device_ids.py:18
+- vllm_ascend/utils.py:547
+- vllm/envs.py:2376
+value_type: str
+default: null
+valid_choices: Comma-separated list of NPU device IDs (e.g. '0,1,2,3'); unset means all NPUs visible with identity mapping
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: "ASCEND_RT_VISIBLE_DEVICES is the CANN-level device visibility control variable, declared as\nNPUPlatform.device_control_env_var\
+  \ in vllm_ascend/platform.py:95. It does not directly change\nkernel speed, but it determines which physical NPU chips a\
+  \ process can see and how logical\ndevice ordinals map to physical chips, which has several performance-relevant consequences:\n\
+  \n1. Device-to-process mapping / parallelism: vLLM's worker placement and Ray device assignment\n   use device_control_env_var\
+  \ to select devices. If the visible set is smaller than the\n   requested tensor/data/pipeline parallel world size, the\
+  \ engine cannot place all workers and\n   fails or falls back. Correctly scoping the visible set is required to actually\
+  \ use all NPUs\n   for throughput scaling.\n\n2. CPU binding (vllm_ascend/cpu_binding.py:25,172): the module reads ASCEND_RT_VISIBLE_DEVICES\
+  \ at\n   import time and intersects it with the set of NPUs reported by npu-smi. If the env var filters\n   out all running\
+  \ NPUs, CPU binding raises \"Can not get running npu info.\" and the per-NPU CPU\n   affinity (IRQ threads, main/acl/release\
+  \ threads, NUMA memory migration) is skipped, which\n   degrades latency and throughput on ARM hosts. The number of visible\
+  \ NPUs also drives the CPU\n   budget check (MIN_CPUS_PER_NPU=5, MIN_CPUS_PER_NPU_WITHOUT_IRQ=3, one full cluster per worker\n\
+  \   on 950PR/950DT), so over-subscribing visible devices relative to the cpuset causes binding to\n   be skipped.\n\n3.\
+  \ Physical chip identity (npu_ipc_engine.py:85): the logical->physical mapping derived from this\n   env var is used to\
+  \ build the NPU IPC UUID. A wrong or inconsistent mapping breaks weight\n   transfer IPC handle matching between trainer\
+  \ and inference processes co-located on the same\n   chip.\n\n4. DP device slicing (patch_dp_device_ids.py): vllm-ascend\
+  \ patches\n   get_physical_gpu_ids_for_local_dp_rank to tolerate a pre-sharded ASCEND_RT_VISIBLE_DEVICES\n   (one slice\
+  \ per DP rank). Without the patch, a sharded env var causes IndexError; with it,\n   application-level DP can isolate devices\
+  \ per rank, which is required for correct multi-instance\n   deployment (e.g. separate prefill/decode instances on the same\
+  \ node).\n\n5. Lazy custom-op init (utils.py:547, platform.py:292): vllm-ascend deliberately defers importing\n   vllm_ascend_C\
+  \ so that ASCEND_RT_VISIBLE_DEVICES can still be modified before\n   torch.npu.set_device(). Setting it after device initialization\
+  \ has no effect.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:95
+  context: Declared as NPUPlatform.device_control_env_var; used by vLLM for device placement and Ray NPU assignment.
+- file: vllm_ascend/platform.py:292
+  context: import_kernels defers custom-op import so ASCEND_RT_VISIBLE_DEVICES can be changed before torch.npu.set_device().
+- file: vllm_ascend/cpu_binding.py:25
+  context: Read at module import; used to intersect running NPUs for CPU binding.
+- file: vllm_ascend/cpu_binding.py:172
+  context: Filters running_npu_set by visible device IDs; empty set raises 'Can not get running npu info.'
+- file: vllm_ascend/distributed/weight_transfer/npu_ipc_engine.py:85
+  context: Maps logical device index to physical chip ID for NPU IPC UUID generation.
+- file: vllm_ascend/patch/platform/patch_dp_device_ids.py:18
+  context: Patches get_physical_gpu_ids_for_local_dp_rank to accept a pre-sharded visible-devices env var per DP rank.
+- file: vllm_ascend/utils.py:547
+  context: 'enable_custom_op docstring: lazy init ensures the env var can be modified before torch.npu.set_device().'
+- file: vllm/envs.py:2376
+  context: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES listed in ray_noset_env_vars so Ray does not override it.
+related_parameters:
+- name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+  relation: When set, Ray will not overwrite ASCEND_RT_VISIBLE_DEVICES for worker processes, preserving the user-specified
+    device set.
+- name: --tensor-parallel-size
+  relation: The number of visible NPUs must be at least tp_size (times dp_size for DP) for workers to be placed.
+- name: --data-parallel-size
+  relation: Application-level DP slices ASCEND_RT_VISIBLE_DEVICES per rank; the patch in patch_dp_device_ids.py handles pre-sharded
+    values.
+- name: VLLM_ASCEND_ENABLE_CPU_BINDING
+  relation: CPU binding reads ASCEND_RT_VISIBLE_DEVICES to determine which NPUs to bind CPUs for; an empty intersection disables
+    binding.
+- name: PYTORCH_NPU_ALLOC_CONF
+  relation: Commonly set alongside ASCEND_RT_VISIBLE_DEVICES in quantization and deployment examples to control NPU memory
+    allocator behavior.
+constraints:
+- ASCEND_RT_VISIBLE_DEVICES must be set before torch.npu.set_device() / device initialization; changing it afterwards has
+  no effect.
+- The value must be a comma-separated list of integer NPU device IDs; non-integer entries cause parsing errors in cpu_binding.py
+  and npu_ipc_engine.py.
+- If ASCEND_RT_VISIBLE_DEVICES filters out all running NPUs, CPU binding raises 'Can not get running npu info.' and is skipped.
+- The number of visible NPUs must be at least the product of tensor-parallel-size and data-parallel-size for all workers to
+  be placed.
+- When using application-level DP with a pre-sharded ASCEND_RT_VISIBLE_DEVICES, the vllm-ascend patch to get_physical_gpu_ids_for_local_dp_rank
+  is required to avoid IndexError.
+tuning_advice:
+  summary: Set ASCEND_RT_VISIBLE_DEVICES to exactly the NPU chips you intend to use, before device init, and keep it consistent
+    with tp/dp sizes and the CPU cpuset for CPU binding.
+  suggested_values:
+  - scenario: Single-node, use all 8 NPUs for one instance
+    value: 0,1,2,3,4,5,6,7
+    reason: Exposes all chips so tensor/data parallel workers can be placed across the full node for maximum throughput.
+  - scenario: Multiple instances on the same node (e.g. separate prefill and decode servers)
+    value: 0,1,2,3 (instance 1) and 4,5,6,7 (instance 2)
+    reason: Partitioning the visible set per instance isolates devices, as recommended in ucm_deployment.md for running a
+      second prefill/decode instance on the same node.
+  - scenario: Application-level data parallel with per-rank device slices
+    value: 0,1 for rank 0; 2,3 for rank 1
+    reason: The patch_dp_device_ids.py patch tolerates a pre-sharded env var (one slice per DP rank), enabling correct DP
+      device isolation.
+  - scenario: Multi-card quantization run
+    value: 0,1,2,3,4,5,6,7
+    reason: quantization.md example exports all 8 devices for multi-card quantization.
+  caveats:
+  - CPU binding reads this env var at import time; if it filters out all running NPUs, binding is skipped and latency/throughput
+    on ARM hosts degrades.
+  - Over-subscribing visible NPUs relative to the cpuset can trigger 'Insufficient CPUs for binding' (needs >=5 CPUs per NPU
+    with IRQ, >=3 without; one full cluster per worker on 950PR/950DT).
+  - Setting this env var after torch.npu.set_device() has no effect because vllm-ascend lazily initializes custom ops to allow
+    late modification only before device init.
+  - Inconsistent logical-to-physical mapping breaks NPU IPC UUID matching in weight transfer between co-located trainer and
+    inference processes.
+  - Under Ray, set RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES to prevent Ray from overriding your device selection.
+  quick_guide: Export ASCEND_RT_VISIBLE_DEVICES=<comma-separated NPU IDs> before starting vLLM, matching your tp/dp sizes
+    and cpuset.
+analysis_date: '2026-10-27'

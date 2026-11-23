@@ -1,0 +1,82 @@
+name: VLLM_ELASTIC_EP_DRAIN_REQUESTS
+type: env
+category: scheduling
+scope: vllm
+source_file:
+- vllm/envs.py:2103
+- vllm/envs.py:316
+- vllm/v1/engine/async_llm.py:1191
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only takes effect during elastic EP (expert-parallel) scaling
+
+  operations. In vllm/v1/engine/async_llm.py:1191, when
+
+  envs.VLLM_ELASTIC_EP_DRAIN_REQUESTS is truthy, _scale_elastic_ep calls
+
+  _drain_requests_for_elastic_ep(drain_timeout) before commit_elastic_ep().
+
+  That helper (async_llm.py:1142) calls wait_for_requests_to_drain(), which
+
+  polls engine_core.dp_engines_running() every 1 second until all DP engines
+
+  are idle or a 300s timeout is hit (raising TimeoutError). So enabling it
+
+  inserts a blocking wait (up to drain_timeout) into the scale-up/scale-down
+
+  path, trading scaling latency for a clean quiescent state before the
+
+  topology change. It does NOT affect steady-state inference throughput or
+
+  memory; it only affects the latency of elastic EP reconfiguration events.
+
+  No vllm-ascend override or reference to this env var was found in the
+
+  provided context, so on Ascend it retains upstream semantics (and elastic
+
+  EP itself is an upstream feature not specifically adapted here).
+
+  '
+usage_locations:
+- file: vllm/envs.py:2103
+  context: Definition of the env var, parsed as bool(int(os.getenv(..., '0')))
+- file: vllm/envs.py:316
+  context: 'Type annotation VLLM_ELASTIC_EP_DRAIN_REQUESTS: bool = False'
+- file: vllm/v1/engine/async_llm.py:1191
+  context: Gate in _scale_elastic_ep that triggers request draining before commit_elastic_ep
+- file: vllm/v1/engine/async_llm.py:1142
+  context: _drain_requests_for_elastic_ep logs and awaits wait_for_requests_to_drain
+- file: vllm/v1/engine/async_llm.py:1126
+  context: wait_for_requests_to_drain polls dp_engines_running() with 1s sleep and 300s timeout
+related_parameters:
+- name: VLLM_ELASTIC_EP_SCALE_UP_LAUNCH
+  relation: Companion elastic EP env var; set by EngineCoreClient for scale-up launch
+- name: data_parallel_size
+  relation: Elastic EP scaling changes data_parallel_size; draining occurs around this change
+- name: drain_timeout
+  relation: Timeout (default 300s) for the drain wait; passed to scale_elastic_ep
+constraints:
+- Only meaningful when elastic EP scaling is used; has no effect on non-elastic deployments.
+- Value must be parseable as an integer (0 or 1); non-integer values raise an error at env access.
+- If requests do not drain within drain_timeout (default 300 seconds), a TimeoutError is raised and scaling is aborted.
+tuning_advice:
+  summary: Enable only when you need a clean quiescent state before elastic EP scaling and can tolerate added scaling latency.
+  suggested_values:
+  - scenario: Elastic EP scaling where in-flight requests must complete cleanly before topology change
+    value: 1
+    reason: Waits for all DP engines to become idle before committing the scale operation, avoiding dropped/inconsistent requests.
+  - scenario: Latency-sensitive scaling or continuously loaded servers that rarely go idle
+    value: 0
+    reason: Skips the drain wait, avoiding up to 300s blocking and potential TimeoutError during scaling.
+  caveats:
+  - Drain wait polls every 1 second and can block up to drain_timeout (default 300s).
+  - If engines never idle, scaling fails with TimeoutError; ensure load can quiesce or increase drain_timeout.
+  quick_guide: Set to 1 for clean elastic EP scaling at the cost of scaling latency; leave 0 for fast scaling.
+analysis_date: '2026-10-27'

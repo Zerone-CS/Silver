@@ -1,0 +1,74 @@
+name: profiler.detailed_trace_annotation
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/v1/worker/gpu_worker.py:1040
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only affects the string content of profiler trace annotations emitted
+
+  by Worker.annotate_profile() in vllm/v1/worker/gpu_worker.py:1040. When True, the code
+
+  computes per-request roofline-model metrics (query_len, seq_len, sqsq, sqsk) aggregated
+
+  across context and generation phases, then formats a detailed annotation string such as
+
+  "execute_5_context_1(sq4sk4sqsq16sqsk16)_generation_1(sq1sk11sqsq1sqsk11)". When False,
+
+  it emits a simple annotation like "execute_context_1(4)_generation_1(1)".
+
+  The extra work is a small per-iteration loop over scheduled requests to accumulate
+
+  integer sums — negligible relative to model forward pass. It only executes while the
+
+  profiler is running (guarded by self.profiler.is_running), so it has zero effect on
+
+  normal inference. The annotation string is attached to the profiler context manager
+
+  and only influences trace file size and post-hoc analysis richness, not runtime
+
+  throughput or memory. No definition or override exists in vllm-ascend; the Ascend
+
+  worker path does not reference this field in the provided context, so on Ascend it
+
+  is effectively inert unless the upstream annotate_profile path is used.
+
+  '
+usage_locations:
+- file: vllm/v1/worker/gpu_worker.py:1040
+  context: Branch selecting detailed roofline annotation vs simple annotation in annotate_profile()
+- file: tests/v1/worker/test_gpu_profiler.py:290
+  context: Test toggling detailed flag to verify annotation string formatting
+related_parameters:
+- name: profiler
+  relation: Annotation only emitted when profiler is active and running
+- name: profiler_config
+  relation: Parent config object holding this field
+constraints:
+- Detailed annotations are only produced while the profiler is running; otherwise annotate_profile returns a nullcontext and
+  no annotation is generated.
+tuning_advice:
+  summary: Leave disabled for normal runs; enable only when profiling to get roofline metrics for compute/memory intensity
+    analysis.
+  suggested_values:
+  - scenario: Production inference (no profiling)
+    value: false
+    reason: No annotation is emitted when profiler is off, and detailed mode adds no benefit; keep default to avoid any overhead.
+  - scenario: Performance profiling to analyze compute vs memory intensity per phase
+    value: true
+    reason: Provides sq/sqsq/sqsk roofline metrics per context/generation phase, useful for identifying compute-bound vs memory-bound
+      iterations.
+  caveats:
+  - Only takes effect while the profiler is running; toggling it has no runtime impact during normal serving.
+  - Larger annotation strings slightly increase trace size; disable if trace files become unwieldy.
+  quick_guide: Keep false unless you need roofline metrics in profiler traces.
+analysis_date: '2026-10-27'

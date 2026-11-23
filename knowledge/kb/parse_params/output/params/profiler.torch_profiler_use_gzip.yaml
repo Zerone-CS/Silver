@@ -1,0 +1,75 @@
+name: profiler.torch_profiler_use_gzip
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:223
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is only consumed inside the torch profiler wrapper
+
+  (vllm/profiler/wrapper.py:223) where it is passed as `use_gzip` to
+
+  `torch.profiler.tensorboard_trace_handler`. It controls whether the emitted
+
+  Chrome/tensorboard trace files are gzip-compressed on write. It has no effect
+
+  on the model forward/backward path, kernel dispatch, HCCL communication, or
+
+  memory allocation during normal inference. Its only runtime cost is the
+
+  CPU-side compression work performed by the trace handler when a trace is
+
+  flushed (typically at profiler stop or per schedule cycle). Because profiling
+
+  itself is an opt-in diagnostic mode, this parameter does not affect steady-state
+
+  throughput or latency of serving. On Ascend NPU the trace handler runs on the
+
+  host CPU and is agnostic to the device backend, so there is no Ascend-specific
+
+  override in vllm-ascend (no definition or usage found there). The impact is
+
+  limited to trace-file size on disk (gzip reduces size) versus a small extra
+
+  CPU cost and slightly longer trace finalization time.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:223
+  context: Passed as use_gzip to torch.profiler.tensorboard_trace_handler when no custom on_trace_ready handler is provided
+related_parameters:
+- name: profiler.torch_profiler_dir
+  relation: Trace output directory where gzip-compressed trace files are written
+- name: profiler.torch_profiler_record_shapes
+  relation: Sibling torch profiler option; larger traces (record_shapes/with_stack) benefit more from gzip compression
+- name: profiler.torch_profiler_with_stack
+  relation: Enabling stack traces greatly increases trace size, making gzip compression more valuable
+constraints:
+- This option only takes effect when no custom on_trace_ready handler is supplied; if a custom trace handler is provided,
+  torch_profiler_use_gzip is ignored.
+- The parameter only has meaning when torch profiling is enabled (profiler=torch); otherwise it is never read.
+tuning_advice:
+  summary: Keep gzip enabled to shrink trace files; disable only if trace finalization CPU overhead or downstream tooling
+    compatibility is a concern.
+  suggested_values:
+  - scenario: Default profiling with large traces (record_shapes/with_stack enabled)
+    value: true
+    reason: Gzip substantially reduces trace file size on disk, easing storage and transfer of large Ascend profiling traces.
+  - scenario: Downstream tooling that cannot read .gz traces, or minimizing trace-flush CPU time
+    value: false
+    reason: Produces uncompressed trace files directly readable by all tools and avoids host CPU compression cost at trace
+      finalization.
+  caveats:
+  - Only affects trace file encoding, not inference performance; do not expect throughput changes from toggling it.
+  - Ignored when a custom on_trace_ready handler is configured.
+  - Compression adds host CPU work at trace flush time, which can slightly lengthen profiler stop/finalization on CPU-constrained
+    hosts.
+  quick_guide: Leave at default true unless your trace analysis tool requires uncompressed files.
+analysis_date: '2026-10-27'

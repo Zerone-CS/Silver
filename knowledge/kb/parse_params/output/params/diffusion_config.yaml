@@ -1,0 +1,82 @@
+name: --diffusion-config
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1708
+- vllm/engine/arg_utils.py:1710
+- vllm/engine/arg_utils.py:670
+- vllm/config/vllm.py:395
+- vllm/config/vllm.py:620
+- vllm/model_executor/models/config.py:291
+- vllm/model_executor/models/diffusion_gemma.py:786
+- vllm/model_executor/models/diffusion_gemma.py:829
+value_type: dict
+default: null
+valid_choices: JSON object parsed into DiffusionConfig (fields include canvas_length, max_denoising_steps); null means auto-created
+  from HF config for DiffusionGemma
+cli_example: '--diffusion-config ''{"canvas_length": 256, "max_denoising_steps": 48}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+- throughput
+impact_detail: "--diffusion-config is a JSON-serialized DiffusionConfig used only by diffusion LLM\n(dLLM) models such as\
+  \ DiffusionGemma. It is parsed via optional_type(json.loads) in\nvllm/engine/arg_utils.py:1708-1711 and stored on VllmConfig.diffusion_config\n\
+  (vllm/config/vllm.py:395). Its performance effect is indirect but real:\n1) canvas_length feeds VllmConfig.num_speculative_tokens\
+  \ (vllm/config/vllm.py:620-623),\n   which drives KV-cache block reservation and cudagraph size derivation — a larger\n\
+  \   canvas_length increases per-request KV slots and decode query length, raising memory\n   pressure and per-step compute.\n\
+  2) In DiffusionGemmaModelRunner (vllm/model_executor/models/diffusion_gemma.py:786-804),\n   canvas_length and max_denoising_steps\
+  \ size the DiffusionGemmaRequestStates buffers\n   (canvas_length x vocab_size fp32 transients) and control the number of\
+  \ denoising\n   iterations per request — directly affecting decode latency and memory.\n3) The diffusion sampler materializes\
+  \ [num_seqs, canvas_length, vocab] fp32 tensors, so\n   concurrency is memory-bound; vllm/model_executor/models/config.py:300-310\
+  \ auto-clamps\n   max_num_seqs to 8 when the user did not set it, showing the strong memory coupling.\nNo vllm-ascend override\
+  \ of this parameter was found in the provided context; the\nDiffusionGemma path is upstream-only and not documented for\
+  \ Ascend NPU.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1708
+  context: Sets argparse type to optional_type(json.loads) and registers --diffusion-config/-dc
+- file: vllm/config/vllm.py:620
+  context: num_speculative_tokens property returns diffusion_config.canvas_length when set
+- file: vllm/model_executor/models/config.py:291
+  context: Auto-creates DiffusionConfig from HF config (canvas_length) when not provided
+- file: vllm/model_executor/models/diffusion_gemma.py:786
+  context: Sizes DiffusionGemmaRequestStates buffers from canvas_length and max_denoising_steps
+- file: vllm/model_executor/models/diffusion_gemma.py:829
+  context: Passes diffusion_config into DiffusionSampler for custom sampling
+related_parameters:
+- name: --max-num-seqs
+  relation: Auto-clamped to 8 for DiffusionGemma when not explicitly set, due to fp32 diffusion sampler memory
+- name: --speculative-config
+  relation: num_speculative_tokens prefers speculative_config over diffusion_config.canvas_length
+- name: --attention-backend
+  relation: DiffusionGemma rejects FLASHINFER and sets use_non_causal=True when backend is None
+- name: --max-num-batched-tokens
+  relation: Interacts with canvas_length-derived query length for KV reservation and cudagraph sizing
+constraints:
+- The value must be a valid JSON object that parses into DiffusionConfig, otherwise argument parsing fails.
+- DiffusionGemma requires an EntropyBound sampler_config with a positive entropy_bound, otherwise a ValueError is raised.
+- DiffusionGemma does not support the FLASHINFER attention backend and raises a ValueError if selected.
+- This parameter only has effect for diffusion LLM models (e.g. DiffusionGemma); it is ignored for standard autoregressive
+  models.
+tuning_advice:
+  summary: Only relevant for diffusion LLM models; keep canvas_length and max_denoising_steps modest and cap concurrency to
+    avoid fp32 sampler OOM.
+  suggested_values:
+  - scenario: DiffusionGemma on memory-constrained device (default auto-config)
+    value: '{"canvas_length": 256}'
+    reason: Matches the HF-config default canvas_length; leaves max_denoising_steps to generation config default (48).
+  - scenario: Latency-sensitive decode with limited memory
+    value: '{"canvas_length": 128, "max_denoising_steps": 24}'
+    reason: Smaller canvas and fewer denoising steps reduce per-request fp32 transients and decode iterations.
+  - scenario: High-quality generation, ample memory
+    value: '{"canvas_length": 256, "max_denoising_steps": 48}'
+    reason: Full canvas and default denoising steps for best output quality at higher memory cost.
+  caveats:
+  - Explicitly set --max-num-seqs to a small value (e.g. 8) since the auto-clamp only triggers when the default is used.
+  - Avoid FLASHINFER attention backend with DiffusionGemma; use FLASH_ATTN or TRITON_ATTN.
+  - Verify Ascend NPU support for diffusion LLMs before relying on this parameter in production.
+  quick_guide: For DiffusionGemma, pass a JSON DiffusionConfig with modest canvas_length and max_denoising_steps, and cap
+    --max-num-seqs to control fp32 sampler memory.
+analysis_date: '2026-10-27'

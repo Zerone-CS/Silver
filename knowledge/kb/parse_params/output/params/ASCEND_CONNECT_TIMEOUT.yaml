@@ -1,0 +1,72 @@
+name: ASCEND_CONNECT_TIMEOUT
+type: env
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:80
+value_type: int
+default: <computed>
+valid_choices: Positive integer in milliseconds; must be smaller than mooncake_master default_kv_lease_ttl
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'ASCEND_CONNECT_TIMEOUT is an environment variable consumed by the Ascend KV transfer
+
+  layer (HIXL / ascend_direct / Mooncake Store connector) used by the AscendStoreConnector
+
+  KV cache pool feature. It sets the connection timeout (in milliseconds) for establishing
+
+  connections to the KV store / transfer layer. It does not affect model compute, memory
+
+  allocation, or scheduling throughput directly. Its performance relevance is limited to
+
+  failure/latency behavior: if the timeout is too short, connection attempts to the
+
+  Mooncake master or HIXL transfer layer may fail prematurely, causing KV cache get/put
+
+  operations to error out and forcing recomputation (increasing effective latency). If too
+
+  long, a genuinely failed connection blocks longer before erroring. In the provided test
+
+  it is set to 10000 ms alongside ASCEND_TRANSFER_TIMEOUT. The parameter is not defined in
+
+  vLLM upstream; it is an Ascend-specific env var used only in the KV pool / AscendStore
+
+  connector path.
+
+  '
+usage_locations:
+- file: tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:80
+  context: Set to 10000 in env_dict for the AscendStoreConnector KV pool e2e test
+related_parameters:
+- name: ASCEND_TRANSFER_TIMEOUT
+  relation: Companion timeout for data transfer; both must be smaller than mooncake_master default_kv_lease_ttl
+- name: ASCEND_AUTO_CONNECT
+  relation: Enables automatic connection to the KV store; connect timeout governs that connection attempt
+- name: ASCEND_ENABLE_USE_FABRIC_MEM
+  relation: Fabric memory usage in the same KV pool transfer path
+- name: default_kv_lease_ttl
+  relation: mooncake_master lease TTL must be larger than ASCEND_CONNECT_TIMEOUT and ASCEND_TRANSFER_TIMEOUT
+constraints:
+- The mooncake_master default_kv_lease_ttl must be larger than ASCEND_CONNECT_TIMEOUT and ASCEND_TRANSFER_TIMEOUT, otherwise
+  KV get operations may fail.
+- Only relevant when using the AscendStoreConnector / KV cache pool feature; it has no effect on standard non-KV-pool inference.
+tuning_advice:
+  summary: Set ASCEND_CONNECT_TIMEOUT to a value comfortably below the Mooncake master default_kv_lease_ttl, typically 10000
+    ms for stable KV pool deployments.
+  suggested_values:
+  - scenario: Standard KV cache pool deployment with Mooncake Store
+    value: 10000
+    reason: Matches the e2e test configuration and provides ample time to connect to the Mooncake master without exceeding
+      typical lease TTLs.
+  - scenario: High-latency or congested network to KV store
+    value: 30000
+    reason: Increase to tolerate slower connection establishment, but ensure default_kv_lease_ttl is set larger than this
+      value.
+  caveats:
+  - Always keep default_kv_lease_ttl larger than both ASCEND_CONNECT_TIMEOUT and ASCEND_TRANSFER_TIMEOUT to avoid KV get failures.
+  - This parameter does not affect model compute throughput; tune it only for KV pool connection reliability.
+  quick_guide: Use 10000 ms by default and keep it below the Mooncake master default_kv_lease_ttl.
+analysis_date: '2026-10-27'

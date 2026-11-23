@@ -1,0 +1,78 @@
+name: VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:1705
+- vllm/envs.py:217
+- vllm/envs.py:2270
+- vllm/model_executor/warmup/flashinfer_autotune_cache.py:25
+value_type: str
+default: null
+valid_choices: Any filesystem directory path; unset means use VLLM_CACHE_ROOT/flashinfer_autotune_cache/<workspace>
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only overrides the directory where FlashInfer autotune configs are cached
+
+  (vllm/model_executor/warmup/flashinfer_autotune_cache.py:25-41). When set, resolve_flashinfer_autotune_file
+
+  uses Path(override_dir).expanduser() as the root instead of the default
+
+  VLLM_CACHE_ROOT/flashinfer_autotune_cache/<flashinfer_workspace> path. The autotune config file
+
+  (autotune_configs.json) is then looked up/created under that root keyed by flashinfer_autotune_cache_hash(runner).
+
+  It does NOT change kernel selection, autotuning logic, or runtime compute — it only affects whether a
+
+  previously-tuned config is found (cache hit) or a fresh autotune run is triggered (cache miss), which
+
+  affects startup/warmup latency, not steady-state throughput. It is explicitly listed in the
+
+  compile_factors ignored_factors set (vllm/envs.py:2270 comment), so changing it does not invalidate
+
+  torch.compile caches. FlashInfer is a CUDA/GPU-oriented kernel library; on Ascend NPU the FlashInfer
+
+  backend is not used (vllm-ascend uses CANN/Ascend-native kernels), so this parameter has no effect on
+
+  Ascend runtime performance. No vllm-ascend override or usage of this env var was found.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1705
+  context: Env var definition; reads VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR, default None
+- file: vllm/envs.py:217
+  context: 'Typed envs class field VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR: str | None = None'
+- file: vllm/envs.py:2270
+  context: Listed in compile_factors ignored_factors (does not affect compile cache keys)
+- file: vllm/model_executor/warmup/flashinfer_autotune_cache.py:25
+  context: resolve_flashinfer_autotune_file uses override dir as root for autotune_configs.json
+related_parameters:
+- name: VLLM_CACHE_ROOT
+  relation: Default autotune cache root is derived from VLLM_CACHE_ROOT when this override is unset
+- name: VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS
+  relation: Sibling FlashInfer autotune control; both only affect FlashInfer (GPU) backend
+- name: VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE
+  relation: Related FlashInfer backend tuning env var
+constraints:
+- The value must be a valid filesystem path; the directory is created with mkdir(parents=True, exist_ok=True), so the process
+  must have write permission to it.
+- Only meaningful when the FlashInfer backend is in use; on Ascend NPU the FlashInfer backend is not used, so setting it has
+  no effect.
+tuning_advice:
+  summary: Irrelevant for Ascend NPU deployments; only relevant for GPU/FlashInfer setups where it controls autotune cache
+    location.
+  suggested_values:
+  - scenario: Ascend NPU deployment (vllm-ascend)
+    value: unset
+    reason: FlashInfer backend is not used on Ascend; this env var has no effect on NPU runtime performance.
+  - scenario: GPU deployment with FlashInfer, wanting a persistent shared autotune cache across restarts
+    value: /shared/persistent/flashinfer_autotune
+    reason: Pointing to a persistent directory avoids re-running autotuning on each startup, reducing warmup latency.
+  caveats:
+  - Do not expect any performance change on Ascend NPU from setting this variable.
+  - Ensure the target directory is writable and persistent to actually benefit from cache reuse.
+  quick_guide: Leave unset on Ascend; only tune on GPU/FlashInfer setups to persist autotune caches.
+analysis_date: '2026-10-27'

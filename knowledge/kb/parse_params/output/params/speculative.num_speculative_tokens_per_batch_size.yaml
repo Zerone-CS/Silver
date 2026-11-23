@@ -1,0 +1,113 @@
+name: speculative.num_speculative_tokens_per_batch_size
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/speculative.py
+- vllm/v1/core/sched/scheduler.py:274
+- vllm/v1/worker/gpu/cudagraph_utils.py:280
+- vllm/config/vllm.py:1008
+- vllm/config/vllm.py:2269
+- vllm_ascend/ascend_config.py:104
+- vllm_ascend/platform.py:1724
+value_type: list[list[int]]
+default: null
+valid_choices: list of [start_bs, end_bs, optimal_K] triples; each range is inclusive; optimal_K is clamped against num_speculative_tokens
+cli_example: '--speculative-config ''{"method": "mtp", "num_speculative_tokens": 3, "num_speculative_tokens_per_batch_size":
+  [[1, 16, 3], [17, 64, 2], [65, 256, 1]]}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is the Batch-size based Dynamic Speculative Decoding (DSD) schedule. When set, the
+
+  scheduler builds a dense lookup via build_dynamic_sd_schedule_lookup() (vllm/v1/core/sched/scheduler.py:274)
+
+  that maps the current running batch size to a per-step number of speculative tokens K. Instead of
+
+  always drafting num_speculative_tokens tokens, the engine drafts fewer tokens at high concurrency
+
+  (where verify cost dominates and acceptance drops) and more at low concurrency (where speculation
+
+  pays off). This directly trades draft/verify compute against acceptance, changing both decode
+
+  latency (fewer wasted verify tokens at high batch) and throughput (better compute efficiency).
+
+  On Ascend, the schedule also drives CUDA-graph (ACL graph) capture: cudagraph_utils.py:280
+
+  enumerates every distinct decode query length (K+1) present in the dense schedule and captures a
+
+  graph per tier, and vllm/config/vllm.py:2269 expands cudagraph_capture_sizes per tier so each
+
+  query length is covered. A poorly shaped schedule therefore multiplies graph capture count and
+
+  memory, while a well-shaped one keeps each tier''s graphs small. vllm-ascend does NOT override the
+
+  schedule itself, but it hard-blocks it in two configurations (KVPP and decode context parallelism),
+
+  so on Ascend the parameter is only usable in the plain (non-KVPP, DCP=1) path.
+
+  '
+usage_locations:
+- file: vllm/v1/core/sched/scheduler.py:274
+  context: Scheduler builds dense dynamic_sd_lookup from the schedule; used to pick K per batch size each step.
+- file: vllm/v1/worker/gpu/cudagraph_utils.py:280
+  context: Graph manager enumerates decode query lengths from the dense schedule to capture per-tier graphs.
+- file: vllm/config/vllm.py:2269
+  context: Expands cudagraph_capture_sizes per decode tier derived from the schedule.
+- file: vllm/config/vllm.py:1008
+  context: Disabled (set to None) when data_parallel_size > 1 to avoid DP divergence/deadlock.
+- file: vllm_ascend/ascend_config.py:104
+  context: KVPP validation rejects any non-empty schedule (fixed K only).
+- file: vllm_ascend/platform.py:1724
+  context: Rejects dynamic SD when decode_context_parallel_size > 1.
+- file: examples/offline_DSD_k_tuner/generate_config.py:445
+  context: Ascend offline tuner generates a recommended schedule from profiling data.
+related_parameters:
+- name: speculative_config.num_speculative_tokens
+  relation: Acts as the maximum K; schedule values are clamped to it. Required as the static fallback.
+- name: speculative_config.method
+  relation: Only meaningful for supported speculative methods (mtp/eagle/dflash/dspark); KVPP restricts to mtp/dspark.
+- name: compilation_config.cudagraph_mode
+  relation: Dynamic SD requires PIECEWISE (or eager); FULL_DECODE_ONLY is not compatible with per-tier query lengths.
+- name: compilation_config.cudagraph_capture_sizes
+  relation: Auto-expanded per decode tier when dynamic SD is enabled.
+- name: parallel_config.decode_context_parallel_size
+  relation: 'Mutually exclusive: must be 1 when dynamic SD is enabled on Ascend.'
+- name: additional_config.enable_kvpp
+  relation: 'Mutually exclusive: KVPP requires a fixed number of speculative tokens.'
+- name: parallel_config.data_parallel_size
+  relation: Dynamic SD is auto-disabled when DP size > 1.
+constraints:
+- On Ascend, num_speculative_tokens_per_batch_size must not be set when decode_context_parallel_size > 1; vllm-ascend raises
+  a ValueError.
+- On Ascend, num_speculative_tokens_per_batch_size must not be set when KVPP (enable_kvpp) is enabled; KVPP supports only
+  a fixed number of speculative tokens.
+- When data_parallel_size > 1, vLLM silently disables the schedule and falls back to static num_speculative_tokens.
+- Each schedule entry must be a [start_bs, end_bs, optimal_K] triple with an inclusive batch-size range; optimal_K is clamped
+  to num_speculative_tokens.
+- Dynamic SD requires cudagraph_mode PIECEWISE (or eager); FULL_DECODE_ONLY is not compatible with multiple decode query lengths.
+tuning_advice:
+  summary: Use a small 2-3 tier schedule that lowers K as concurrency grows, generated from profiling, and keep cudagraph_mode
+    PIECEWISE with DCP=1 and KVPP off.
+  suggested_values:
+  - scenario: Low-concurrency / latency-sensitive decode (batch <= 16)
+    value: '[[1, 16, 3], [17, 64, 2], [65, 256, 1]]'
+    reason: High K pays off when acceptance is high and verify cost is amortized; drop K as batch grows to avoid wasted verify
+      compute.
+  - scenario: High-throughput serving with large max_num_seqs
+    value: '[[1, 32, 2], [33, 256, 1]]'
+    reason: Fewer tiers reduce ACL graph capture count and memory while still trimming K at high concurrency.
+  - scenario: Data-driven schedule from Ascend profiling
+    value: generated by examples/offline_DSD_k_tuner/generate_config.py
+    reason: The tuner derives optimal_K per batch range from measured acceptance rate and ITL, matching actual Ascend hardware
+      behavior.
+  caveats:
+  - Must set decode_context_parallel_size=1 and disable KVPP on Ascend, otherwise startup raises ValueError.
+  - Use cudagraph_mode PIECEWISE; FULL_DECODE_ONLY is incompatible with multiple decode query lengths.
+  - Keep the number of distinct K tiers small to limit ACL graph capture overhead.
+  - Data parallel (DP > 1) silently disables the schedule.
+  quick_guide: Set a 2-3 tier [[start_bs, end_bs, K]] schedule with K decreasing as batch grows; requires PIECEWISE graphs,
+    DCP=1, KVPP off.
+analysis_date: '2026-10-27'

@@ -1,0 +1,104 @@
+name: --worker-extension-cls
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:276
+- vllm/engine/arg_utils.py:1253
+- vllm/engine/arg_utils.py:710
+- vllm/engine/arg_utils.py:2383
+- vllm/v1/worker/worker_base.py:285
+- tests/e2e/pull_request/four_card/model_runner_v2/test_qwen38_pp_mtp_prefix_cache.py:91
+- tests/e2e/pull_request/four_card/test_glm5_3_flash.py:128
+value_type: str
+default: ''
+valid_choices: Any fully-qualified Python class name (dotted path) resolvable at worker import time; empty string disables
+  the extension
+cli_example: --worker-extension-cls my_module.MyWorkerExtension
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter does not change any kernel, scheduling, or memory-allocation behavior by
+
+  itself. In vLLM upstream (vllm/v1/worker/worker_base.py:285), when worker_extension_cls is
+
+  non-empty, the worker class is dynamically extended at construction time: the extension
+
+  class is resolved via resolve_obj_by_qualname, its attributes are checked for conflicts
+
+  against the worker class (assert not hasattr(worker_class, attr)), and then it is appended
+
+  to worker_class.__bases__ (worker_class.__bases__ = worker_class.__bases__ + (worker_extension_cls,)).
+
+  This is a one-time class-mutation cost at worker startup, not a per-token cost. The
+
+  extension''s methods are then reachable through collective_rpc calls (as seen in the Ascend
+
+  e2e tests, e.g. runner.model.collective_rpc("install_align_probe") and
+
+  collective_rpc("check_flash_paths")). Any performance effect is therefore indirect: it
+
+  depends entirely on what the injected methods do (e.g. extra probes, alignment checks,
+
+  flash-path validation). On Ascend, vllm-ascend does not override or reinterpret this
+
+  parameter — it is passed through ParallelConfig unchanged (vllm/engine/arg_utils.py:2383)
+
+  and the same dynamic-inheritance mechanism applies to the Ascend worker class. The
+
+  parameter is primarily a testing/debugging hook (all Ascend usage sites are e2e tests
+
+  injecting probe workers), so its runtime performance impact on production inference is
+
+  negligible.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:276
+  context: Field definition of worker_extension_cls on ParallelConfig, default empty string
+- file: vllm/engine/arg_utils.py:1253
+  context: CLI argument registration --worker-extension-cls in the parallel argument group
+- file: vllm/engine/arg_utils.py:710
+  context: EngineArgs field mirroring ParallelConfig.worker_extension_cls
+- file: vllm/engine/arg_utils.py:2383
+  context: Passed into ParallelConfig when building VllmConfig from EngineArgs
+- file: vllm/v1/worker/worker_base.py:285
+  context: Dynamic inheritance of the extension class onto the worker class; conflict assertion and extended_calls collection
+- file: tests/e2e/pull_request/four_card/model_runner_v2/test_qwen38_pp_mtp_prefix_cache.py:91
+  context: Ascend e2e test injecting MambaAlignWorker to expose install_align_probe/read_align_probe via collective_rpc
+- file: tests/e2e/pull_request/four_card/test_glm5_3_flash.py:128
+  context: Ascend e2e test injecting FlashWorker to expose check_flash_paths via collective_rpc
+related_parameters:
+- name: --worker-cls
+  relation: The extension class is dynamically inherited by the worker class selected via --worker-cls; conflicts with existing
+    worker attributes raise an assertion
+- name: --distributed-executor-backend
+  relation: collective_rpc (the primary consumer of extension methods) requires a distributed executor such as mp or ray
+- name: --sd-worker-cls
+  relation: Speculative-decoding worker class; extension is applied to the main worker class, not the SD worker
+constraints:
+- The value must be a fully-qualified dotted Python class path resolvable by resolve_obj_by_qualname on the worker process;
+  otherwise worker construction fails.
+- The extension class must not define any non-dunder attribute that already exists on the worker class, or an assertion error
+  is raised during worker initialization.
+- Passing a class object directly instead of a string is not supported for worker_cls; the extension mechanism likewise expects
+  a string qualname.
+tuning_advice:
+  summary: Leave empty for production; only set it to inject diagnostic/probe methods for testing on Ascend.
+  suggested_values:
+  - scenario: Production inference on Ascend NPU
+    value: unset
+    reason: No extension needed; avoids any startup class-mutation and keeps the worker class clean.
+  - scenario: Ascend e2e/debugging where you need to call custom methods via collective_rpc (e.g. alignment or flash-path
+      probes)
+    value: my_module.MyWorkerExtension
+    reason: Injects the probe methods onto the Ascend worker class so collective_rpc can invoke them, matching the pattern
+      in the Ascend e2e tests.
+  caveats:
+  - Ensure the extension class name does not collide with any existing worker attribute, or worker init asserts.
+  - The module containing the extension class must be importable on every worker process (including spawned mp workers).
+  - Do not use this to add per-step logic; injected methods run only when explicitly invoked via collective_rpc.
+  quick_guide: Keep --worker-extension-cls empty in production; use it only to inject test/probe methods callable via collective_rpc.
+analysis_date: '2026-10-27'

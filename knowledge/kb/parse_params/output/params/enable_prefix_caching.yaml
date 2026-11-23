@@ -1,0 +1,195 @@
+name: --enable-prefix-caching
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1280
+- vllm/engine/arg_utils.py:538
+- vllm/config/cache.py:130
+- vllm/v1/core/sched/scheduler.py:303
+- vllm/v1/engine/core.py:225
+- vllm/v1/core/kv_cache_utils.py:755
+- vllm_ascend/patch/platform/patch_kv_cache_utils.py:112
+- vllm_ascend/patch/platform/patch_kv_cache_utils.py:135
+- vllm_ascend/patch/platform/patch_mamba_config.py:173
+- vllm_ascend/platform.py:416
+- vllm_ascend/models/layer/attention/layer.py:137
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/dspark_context.py:68
+- vllm_ascend/_310p/worker/v2/model_runner.py:412
+- vllm_ascend/_310p/worker/v2/model_runner.py:732
+- vllm_ascend/_310p/model_runner_310p.py:992
+value_type: bool
+default: true
+valid_choices: 'true | false (CLI: --enable-prefix-caching / --no-enable-prefix-caching; argparse default is None, resolved
+  to CacheConfig.enable_prefix_caching=True)'
+cli_example: --enable-prefix-caching
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'Prefix caching (APC) is the KV-cache reuse mechanism: the scheduler hashes prompt
+
+  blocks and, on a cache hit, skips recomputation of the matched prefix, so it directly
+
+  reduces prefill compute and TTFT for workloads with shared prefixes (system prompts,
+
+  multi-turn chat, RAG). In vLLM v1 the flag is consumed at three points:
+
+  (1) vllm/v1/core/sched/scheduler.py:303 passes enable_caching into KVCacheManager,
+
+  which decides whether block hashes are tracked and blocks are retained after free;
+
+  (2) vllm/v1/engine/core.py:225 installs the request_block_hasher (and hash fn) only
+
+  when prefix caching or a KV connector is active — with APC off, no per-request hashing
+
+  cost is paid at all;
+
+  (3) vllm/v1/core/kv_cache_utils.py:755 uses it to decide whether hash_block_size can
+
+  differ from scheduler_block_size (block-hash granularity for hybrid/multi-group caches).
+
+  On Ascend, vllm-ascend patches this logic in
+
+  vllm_ascend/patch/platform/patch_kv_cache_utils.py (lines 112 and 135): when prefix
+
+  caching is disabled it returns scheduler_block_size for both scheduler and hash block
+
+  sizes, avoiding the LCM/GCD alignment computation; when enabled it computes
+
+  hash_block_size = gcd(group block sizes) (or delegates to upstream for dcp==1) so
+
+  hashing granularity stays aligned with the smallest cacheable group. This affects
+
+  hybrid-attention models (MLA + SWA, Mamba) where multiple KV cache groups exist.
+
+  For Mamba/hybrid models, vllm_ascend/patch/platform/patch_mamba_config.py:173 sets
+
+  mamba_block_size = block_size when APC is on (block-aligned mamba cache mode), else
+
+  mamba_block_size = max_model_len — a large memory difference for recurrent state.
+
+  vllm_ascend/platform.py:416 similarly adjusts mamba_block_size when APC is off and
+
+  KV transfer with hybrid cache is used. On the 310P path
+
+  (vllm_ascend/_310p/model_runner_310p.py:992 and _310p/worker/v2/model_runner.py:732),
+
+  MambaSpec block tables allocate max_num_blocks_per_req pages per request when APC is
+
+  on versus a single page when off — a direct KV-cache memory footprint difference.
+
+  On the 310P v2 worker (model_runner.py:412), APC being on combined with FULL cudagraph
+
+  mode forces eager execution for PrefillCacheHit/ChunkedPrefill batches, trading some
+
+  graph-capture benefit for correctness of cache-hit prefill.
+
+  vllm-ascend also silently disables APC in one case:
+
+  vllm_ascend/models/layer/attention/layer.py:137-140 sets
+
+  cache_config.enable_prefix_caching = False when the MLA attention backend is
+
+  TRITON_MLA or FLASHINFER, so on those backends the flag has no effect.
+
+  Finally, vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/dspark_context.py:68
+
+  raises a ValueError if APC is enabled on the P-side DSpark draft-KV path.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1280
+  context: CLI registration of --enable-prefix-caching with default None (resolved later to CacheConfig default True)
+- file: vllm/config/cache.py:130
+  context: CacheConfig.enable_prefix_caching field, default True
+- file: vllm/v1/core/sched/scheduler.py:303
+  context: Passed as enable_caching to KVCacheManager, controlling block hash tracking and cache retention
+- file: vllm/v1/engine/core.py:225
+  context: Gates installation of request_block_hasher and hash function initialization
+- file: vllm/v1/core/kv_cache_utils.py:755
+  context: Decides whether hash_block_size differs from scheduler_block_size for multi-group KV caches
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:112
+  context: 'Ascend patch: when APC off, returns scheduler_block_size for both sizes (skips LCM/GCD alignment)'
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:135
+  context: 'Ascend patch: DCP>1 path, APC off returns scheduler_block_size, APC on uses gcd of group block sizes'
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:173
+  context: Sets mamba_block_size to block_size when APC on, else max_model_len
+- file: vllm_ascend/platform.py:416
+  context: Adjusts mamba_block_size for hybrid KV transfer when APC is off
+- file: vllm_ascend/models/layer/attention/layer.py:137
+  context: Silently disables APC when MLA backend is TRITON_MLA or FLASHINFER
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/dspark_context.py:68
+  context: Raises ValueError if APC enabled on P-side DSpark draft-KV generation
+- file: vllm_ascend/_310p/model_runner_310p.py:992
+  context: 'MambaSpec block table sizing: max_num_blocks_per_req when APC on, 1 when off'
+- file: vllm_ascend/_310p/worker/v2/model_runner.py:732
+  context: 310P v2 worker MambaSpec block table sizing based on APC
+- file: vllm_ascend/_310p/worker/v2/model_runner.py:412
+  context: Forces eager for PrefillCacheHit/ChunkedPrefill when APC on and FULL cudagraph mode active
+related_parameters:
+- name: --prefix-caching-hash-algo
+  relation: Selects the hash function used for block hashing; only relevant when prefix caching is enabled
+- name: --prefix-cache-retention-interval
+  relation: Controls retention of sliding-window/Mamba prefix-cache blocks; only meaningful with APC on
+- name: --block-size
+  relation: Prefix cache matching granularity is block-size based; hash_block_size derives from group block sizes
+- name: --enable-chunked-prefill
+  relation: Commonly enabled together for long-context/multi-user workloads; chunked prefill interacts with cache-hit prefill
+    batching
+- name: --kv-transfer-config
+  relation: KV connectors also require block hashing; upstream enables hashing when either APC or a connector is active
+- name: --compilation-config (cudagraph_mode)
+  relation: On 310P v2 worker, APC + FULL cudagraph mode forces eager for prefill/cache-hit batches
+- name: --mamba-block-size
+  relation: vllm-ascend sets mamba_block_size based on APC state for hybrid/Mamba models
+constraints:
+- P-side DSpark draft-KV generation (SFA PD RD2H) requires local prefix caching to be disabled; enabling --enable-prefix-caching
+  raises a ValueError on that path.
+- When the MLA attention backend resolves to TRITON_MLA or FLASHINFER, vllm-ascend forcibly sets enable_prefix_caching to
+  False, so the flag has no effect on those backends.
+- For hybrid/Mamba models with KV transfer enabled, mamba_cache_mode must be 'align'; mamba_block_size must be a multiple
+  of block_size when explicitly set.
+- KV cache events (--kv-events-config with enable_kv_cache_events) only produce useful events when prefix caching is enabled;
+  otherwise a warning is logged.
+tuning_advice:
+  summary: Enable prefix caching for any workload with shared prompt prefixes (system prompts, multi-turn chat, RAG) to cut
+    prefill compute and TTFT; disable only for single-shot unique prompts or when a feature (DSpark P-side, TRITON_MLA/FLASHINFER
+    MLA backend) forbids it.
+  suggested_values:
+  - scenario: High-throughput serving with shared system prompts / multi-turn chat / RAG (v1 and v2 workers)
+    value: true
+    reason: Reuses KV blocks for matched prefixes, skipping prefill compute and reducing TTFT; docs (GLM5.md, Dots3-Note.md)
+      recommend enabling it for high-throughput and long-context multi-user scenarios.
+  - scenario: Single-shot requests with unique prompts and no prefix overlap
+    value: false
+    reason: No cache hits to exploit; disabling avoids per-request block hashing overhead (vllm/v1/engine/core.py:225 skips
+      hasher install) and simplifies block-size alignment on Ascend.
+  - scenario: MLA models running on TRITON_MLA or FLASHINFER backend
+    value: false
+    reason: vllm-ascend silently forces enable_prefix_caching=False for these backends (layer.py:137), so setting it true
+      has no effect; set false explicitly to avoid confusion.
+  - scenario: P-side DSpark draft-KV generation (SFA PD RD2H)
+    value: false
+    reason: dspark_context.py:68 raises ValueError if prefix caching is enabled on this path; paired AscendStore prefix reuse
+      is handled separately.
+  - scenario: Hybrid/Mamba models where KV memory is tight
+    value: false
+    reason: With APC off, mamba_block_size falls back to max_model_len and MambaSpec block tables allocate only 1 page per
+      request (310P paths), reducing recurrent-state memory at the cost of prefix reuse.
+  caveats:
+  - vllm-ascend silently disables prefix caching when the MLA backend is TRITON_MLA or FLASHINFER (vllm_ascend/models/layer/attention/layer.py:137-140);
+    verify the effective backend before relying on APC.
+  - On the 310P v2 worker, APC combined with FULL cudagraph mode forces eager execution for PrefillCacheHit/ChunkedPrefill
+    batches (model_runner.py:412), partially offsetting graph-capture gains.
+  - For hybrid/Mamba models, APC changes mamba_block_size (block_size vs max_model_len) and MambaSpec block-table sizing,
+    which materially changes KV memory footprint.
+  - With multiple KV cache groups (hybrid attention), the Ascend patch computes hash_block_size as gcd of group block sizes
+    when APC is on, which can differ from scheduler_block_size and affect matching granularity.
+  - Enabling APC adds per-request block hashing cost (sha256 by default); consider --prefix-caching-hash-algo xxhash for lower
+    hashing overhead if collision risk is acceptable.
+  quick_guide: Enable --enable-prefix-caching for shared-prefix/high-throughput workloads; disable for unique single-shot
+    prompts, TRITON_MLA/FLASHINFER MLA backends, or P-side DSpark.
+analysis_date: '2026-10-27'

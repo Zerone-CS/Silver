@@ -1,0 +1,128 @@
+name: --offload-num-in-group
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/offload.py:62
+- vllm/engine/arg_utils.py:1349
+- vllm/engine/arg_utils.py:551
+- vllm/model_executor/offloader/base.py:166
+- vllm_ascend/model_executor/offloader/base.py:23
+value_type: int
+default: 1
+valid_choices: integer >= 1, and must be <= offload_group_size
+cli_example: --offload-num-in-group 2
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'This parameter controls how many layers (the last N of each group of
+
+  offload_group_size layers) are offloaded from NPU/GPU memory to CPU and
+
+  asynchronously prefetched back during the forward pass. It only takes effect
+
+  when the prefetch offload backend is active (offload_backend="prefetch" or
+
+  offload_group_size > 0).
+
+
+  Upstream path: "vllm/config/offload.py defines offload_num_in_group (default 1,"
+
+  ge=1) and validates it against offload_group_size. vllm/model_executor/offloader/base.py
+
+  create_offloader() passes num_in_group into PrefetchOffloader, which uses it to
+
+  determine how many layers per group are held on CPU and streamed back via async
+
+  H2D copies. Larger num_in_group offloads more weight bytes to CPU, freeing NPU
+
+  HBM (memory benefit) but increasing H2D transfer volume per forward pass and
+
+  the risk of prefetch not fully hiding latency (latency/throughput cost).
+
+
+  Ascend path: "vllm_ascend/model_executor/offloader/base.py create_offloader()"
+
+  reads prefetch.offload_num_in_group and constructs AscendPrefetchOffloader with
+
+  num_in_group, prefetch_step, offload_params, mode="cpu". So vllm-ascend does NOT
+
+  override the value or its default — it faithfully forwards the upstream config
+
+  into an Ascend-aware offloader. The Ascend-specific mechanism is that the H2D
+
+  prefetch copies move weights from host memory to NPU HBM (over PCIe/HCCS),
+
+  and the async prefetch is intended to overlap these transfers with NPU compute.
+
+  The e2e test (tests/e2e/pull_request/one_card/test_cpu_weight_offload.py) uses
+
+  offload_group_size=8, offload_num_in_group=2 with offload_params={"gate_up_proj",
+
+  "down_proj"} to verify accuracy under both eager and graph modes, confirming the
+
+  parameter is functional on Ascend.
+
+
+  Net effect: "this is a memory-vs-latency tradeoff knob. It does not change"
+
+  compute kernels; it changes how much weight data lives on CPU and how much
+
+  transfer bandwidth is consumed per step.
+
+  '
+usage_locations:
+- file: vllm/config/offload.py:62
+  context: Field definition offload_num_in_group (default 1, ge=1) with docstring 'Must be <= offload_group_size'
+- file: vllm/config/offload.py:101
+  context: validate_offload_config raises ValueError if offload_num_in_group > offload_group_size when prefetch active
+- file: vllm/engine/arg_utils.py:1349
+  context: CLI argument --offload-num-in-group registered in OffloadConfig argument group
+- file: vllm/model_executor/offloader/base.py:166
+  context: Upstream create_offloader passes num_in_group to PrefetchOffloader
+- file: vllm_ascend/model_executor/offloader/base.py:23
+  context: Ascend create_offloader passes prefetch.offload_num_in_group to AscendPrefetchOffloader
+- file: tests/e2e/pull_request/one_card/test_cpu_weight_offload.py:126
+  context: Ascend e2e test uses offload_group_size=8, offload_num_in_group=2 with selective MLP offload
+related_parameters:
+- name: --offload-group-size
+  relation: offload_num_in_group must be <= offload_group_size; group_size=0 disables prefetch offloading entirely
+- name: --offload-prefetch-step
+  relation: Companion knob controlling how many layers ahead to prefetch; together they determine whether H2D latency is hidden
+- name: --offload-params
+  relation: Restricts which parameter segments are offloaded; if empty all params of offloaded layers are offloaded, changing
+    effective transfer volume
+- name: --offload-backend
+  relation: Must be 'prefetch' (or auto with offload_group_size>0) for this parameter to have any effect
+- name: --cpu-offload-gb
+  relation: Alternative UVA offload backend; mutually exclusive in effect with prefetch offloading
+constraints:
+- offload_num_in_group must be >= 1.
+- offload_num_in_group must be <= offload_group_size, otherwise OffloadConfig validation raises a ValueError.
+- This parameter has no effect unless prefetch offloading is active (offload_backend='prefetch' or offload_group_size > 0).
+- When prefetch offloading is enabled, offload_prefetch_step must be >= 1.
+tuning_advice:
+  summary: Use prefetch offloading only when weights exceed NPU HBM; keep offload_num_in_group small (1-2) and pair with a
+    prefetch_step large enough to hide H2D latency.
+  suggested_values:
+  - scenario: Model slightly exceeds NPU HBM, want minimal transfer overhead
+    value: 1
+    reason: Default; offloads only the last layer of each group, minimizing H2D traffic while freeing some memory.
+  - scenario: Model significantly exceeds NPU HBM, need to free more memory and can tolerate transfer cost
+    value: 2
+    reason: Ascend e2e test uses group_size=8, num_in_group=2 with selective MLP offload; offloads more weight bytes per group
+      to fit larger models.
+  - scenario: Selective offload of only large MLP weights (offload_params set)
+    value: 2
+    reason: Restricting offload_params to gate_up_proj/down_proj limits transfer volume, allowing a higher num_in_group without
+      saturating H2D bandwidth.
+  caveats:
+  - Always keep offload_num_in_group <= offload_group_size to avoid a startup ValueError.
+  - Raise offload_prefetch_step together with offload_num_in_group so async prefetch can hide the larger H2D transfer.
+  - Benchmark both eager and graph modes on Ascend; the e2e test validates accuracy under both, but throughput impact differs.
+  quick_guide: Set offload_group_size>0 and offload_num_in_group=1-2 only when weights don't fit in NPU HBM; increase prefetch_step
+    to hide transfer latency.
+analysis_date: '2026-10-27'

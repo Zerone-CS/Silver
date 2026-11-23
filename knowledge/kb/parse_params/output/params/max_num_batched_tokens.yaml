@@ -1,0 +1,142 @@
+name: --max-num-batched-tokens
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1581
+- vllm/engine/arg_utils.py:373
+- vllm/engine/arg_utils.py:556
+- vllm/config/scheduler.py:49
+- vllm/config/scheduler.py:118
+- vllm/config/compilation.py:592
+- vllm_ascend/ascend_config.py:683
+- vllm_ascend/ascend_config.py:722
+- vllm_ascend/platform.py:1267
+- vllm_ascend/worker/block_table.py:28
+- vllm_ascend/worker/dcp_utils.py:106
+- vllm_ascend/worker/model_runner_v1.py:396
+- vllm_ascend/worker/npu_input_batch.py:48
+value_type: int
+default: null
+valid_choices: integer >= 1; accepts human-readable strings like 1K, 2M, 1G; when unset, vLLM computes a default (2048, or
+  256 for batched-DP)
+cli_example: --max-num-batched-tokens 8192
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This is the per-iteration token budget of the scheduler: \"the maximum number of tokens\"\n(prompt + generated)\
+  \ processed in a single engine step. It directly bounds the prefill\nchunk size (when --enable-chunked-prefill is on, prefill\
+  \ is chunked based on the\nremaining max_num_batched_tokens, see vllm/config/scheduler.py:118) and the decode batch\nwidth.\
+  \ On Ascend NPU it has several concrete, code-visible effects:\n\n1. Scheduler / chunked prefill: larger values give bigger\
+  \ prefill chunks -> higher\n   operator efficiency and throughput, but larger TTFT for individual requests and more\n  \
+  \ activation memory per step. Smaller values reduce per-step compute waste but lower\n   operator efficiency (documented\
+  \ explicitly for CPP: \"if it is too large, it will\n   introduce significant computational waste, and if it is too small,\
+  \ it will lead to a\n   decrease in operator efficiency\").\n\n2. Graph capture sizing: vllm_ascend/platform.py:1267 clamps\
+  \ reduced_cg_cap to\n   min(reduced_cg_cap, max_num_batched_tokens) and feeds it into cudagraph_capture_sizes\n   before\
+  \ vllm_config._set_cudagraph_sizes(). Upstream compile_ranges_endpoints also\n   terminate at max_num_batched_tokens (vllm/config/compilation.py:592).\
+  \ So this value\n   determines the largest graph/compile bucket and thus graph memory and capture time.\n\n3. Worker buffers:\
+  \ vllm_ascend/worker/model_runner_v1.py:396-402 allocates group_len,\n   group_key_idx and group_key_cache_idx buffers of\
+  \ size max_num_batched_tokens (int32)\n   per worker, and dcp_utils.py:106 stores it as self.max_num_tokens. BlockTable\n\
+  \   (vllm_ascend/worker/block_table.py:28/47) and NPUInputBatch\n   (vllm_ascend/worker/npu_input_batch.py:48) also take\
+  \ it as a sizing parameter. Larger\n   values therefore increase NPU host/device buffer footprint.\n\n4. Ascend MC2 path:\
+  \ with additional_config enable_prefill_mc2=True, max_num_batched_tokens\n   is used to compute mc2_token_capacity for prefill\
+  \ batches instead of the decode-only\n   capacity (documented recommended max = tp_size * 512).\n\n5. Ascend profiling_chunk\
+  \ (dynamic chunked PP): max_num_batched_tokens is treated as the\n   initial chunk size for dynamic chunk calculation; if\
+  \ it is smaller than\n   profiling_chunk_config.min_chunk, vllm-ascend clamps min_chunk down to it with a\n   warning (ascend_config.py:718-729).\
+  \ TTFT of CPP is very sensitive to this value.\n\nNet: \"this is a first-order throughput/latency/memory knob on Ascend,\
+  \ not a cosmetic one.\"\n"
+usage_locations:
+- file: vllm/config/scheduler.py:49
+  context: SchedulerConfig field definition, ge=1, default 2048 (256 for batched DP)
+- file: vllm/config/scheduler.py:118
+  context: enable_chunked_prefill chunks prefill based on remaining max_num_batched_tokens
+- file: vllm/config/compilation.py:592
+  context: compile_ranges_endpoints upper bound is max_num_batched_tokens
+- file: vllm_ascend/platform.py:1267
+  context: reduced_cg_cap clamped to max_num_batched_tokens before cudagraph size recompute
+- file: vllm_ascend/ascend_config.py:722
+  context: profiling_chunk_config.min_chunk clamped to max_num_batched_tokens with warning
+- file: vllm_ascend/worker/model_runner_v1.py:396
+  context: group_len / group_key_idx / group_key_cache_idx buffers sized by max_num_batched_tokens
+- file: vllm_ascend/worker/dcp_utils.py:106
+  context: DCP metadata builder stores max_num_tokens = max_num_batched_tokens
+- file: vllm_ascend/worker/block_table.py:28
+  context: BlockTable constructor takes max_num_batched_tokens for table sizing
+- file: vllm_ascend/worker/npu_input_batch.py:48
+  context: NPUInputBatch constructor takes max_num_batched_tokens
+related_parameters:
+- name: --max-num-seqs
+  relation: Together they define the per-step batch shape; decode steps are bounded by max_num_seqs, prefill chunk by max_num_batched_tokens
+- name: --enable-chunked-prefill
+  relation: Chunked prefill splits prefill according to remaining max_num_batched_tokens; disabling it makes this a hard prefill
+    admission limit
+- name: --max-num-scheduled-tokens
+  relation: Defaults to max_num_batched_tokens; can be smaller when the model appends tokens (speculative decoding)
+- name: --cudagraph-capture-sizes / --max-cudagraph-capture-size
+  relation: Graph capture buckets are bounded by max_num_batched_tokens (reduced_cg_cap clamp, compile range endpoint)
+- name: additional_config.enable_prefill_mc2
+  relation: When enabled, max_num_batched_tokens sizes mc2_token_capacity for prefill; recommended max is tp_size * 512
+- name: additional_config.scheduler_config.profiling_chunk_config.min_chunk
+  relation: Clamped down to max_num_batched_tokens if larger; max_num_batched_tokens acts as initial dynamic chunk size
+- name: additional_config.xlite_graph_config.full_mode
+  relation: When full_mode=True the xlite token budget is max_num_batched_tokens instead of max_num_seqs*(1+num_speculative_tokens)
+constraints:
+- max_num_batched_tokens must be >= 1 (Field(ge=1) in SchedulerConfig).
+- When additional_config enable_prefill_mc2 is enabled, the recommended maximum value of --max-num-batched-tokens is tp_size
+  * 512.
+- When profiling_chunk_config is enabled, --pipeline-parallel-size must be greater than 1, and max_num_batched_tokens acts
+  as the initial chunk size for dynamic chunk calculation.
+- If max_num_batched_tokens is smaller than profiling_chunk_config.min_chunk, vllm-ascend clamps min_chunk down to max_num_batched_tokens
+  (the configured min_chunk is not honored).
+- profiling_chunk_config cannot be enabled together with enable_balance_scheduling.
+tuning_advice:
+  summary: 'Tune --max-num-batched-tokens as the primary prefill/throughput knob on Ascend: start
+
+    from a fixed chunk size in the 8192-32768 range, verify operator efficiency and TTFT,
+
+    then adjust for the specific feature in use (CPP, MC2 prefill, xlite full mode).
+
+    '
+  suggested_values:
+  - scenario: General serving, balanced throughput/latency (default starting point)
+    value: 8192
+    reason: Larger than the upstream 2048 default gives bigger prefill chunks and better NPU operator efficiency while keeping
+      per-step activation memory and TTFT reasonable.
+  - scenario: Throughput-oriented offline/batch inference with long prompts
+    value: 16384
+    reason: Documented typical optimization search space for fixed chunk size is [8192, 16384, 24576, 32768]; larger chunks
+      amortize kernel launch and improve MFU on Ascend.
+  - scenario: Dynamic chunked pipeline parallel (profiling_chunk_config) with 64k sequences
+    value: 20480
+    reason: Docs recommend 20480 for 64k sequence length when dynamic chunking is enabled; the optimal value is generally
+      2-4x the fixed chunk size.
+  - scenario: Dynamic chunked pipeline parallel (profiling_chunk_config) with 128k sequences
+    value: 32768
+    reason: Docs recommend 32768 for 128k sequence length; longer sequences need more headroom for dynamic adjustment.
+  - scenario: additional_config enable_prefill_mc2=True (MC2 prefill capacity)
+    value: tp_size * 512
+    reason: Docs state that with enable_prefill_mc2 the recommended maximum of --max-num-batched-tokens is tp_size * 512,
+      since it sizes mc2_token_capacity for prefill batches.
+  - scenario: Latency-sensitive online chat with short prompts
+    value: 4096
+    reason: Smaller budget lowers per-step compute and TTFT for short requests; keep it a multiple of the graph capture buckets
+      to avoid padding waste.
+  caveats:
+  - Too large a value introduces significant computational waste (padding to graph buckets) and raises TTFT; too small a value
+    lowers operator efficiency on Ascend NPU.
+  - This value bounds cudagraph capture sizes (reduced_cg_cap clamp in vllm_ascend/platform.py) and compile range endpoints,
+    so changing it changes graph memory and capture/compile time at startup.
+  - vllm-ascend allocates per-worker int32 buffers (group_len, group_key_idx, group_key_cache_idx) of size max_num_batched_tokens
+    in model_runner_v1.py; very large values increase NPU memory footprint.
+  - With profiling_chunk_config enabled, a max_num_batched_tokens below min_chunk silently clamps min_chunk (warning logged)
+    — set them consistently.
+  - With xlite_graph_config.full_mode=True the xlite token budget becomes max_num_batched_tokens, ACLGraph capture is not
+    used, and --enforce-eager is recommended.
+  - When speculative decoding is active, max_num_scheduled_tokens may be smaller than max_num_batched_tokens because the model
+    can append tokens into the batch.
+  quick_guide: Start at 8192, sweep [8192, 16384, 24576, 32768] for fixed chunks; use 2-4x that for dynamic CPP; cap at tp_size*512
+    when enable_prefill_mc2 is on.
+analysis_date: '2026-10-27'

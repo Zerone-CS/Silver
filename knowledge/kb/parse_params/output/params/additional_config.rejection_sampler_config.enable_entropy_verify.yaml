@@ -1,0 +1,86 @@
+name: additional_config.rejection_sampler_config.enable_entropy_verify
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:349
+- vllm_ascend/sample/rejection_sampler.py:436
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is a vllm-ascend-only parameter (defined in vllm_ascend/ascend_config.py:349 as part of
+
+  RejectionSamplerConfig, no upstream vLLM equivalent). It is read in
+
+  vllm_ascend/sample/rejection_sampler.py:436 via
+
+  `using_entropy_verify = bool(get_ascend_config().rejection_sampler_config.enable_entropy_verify)`
+
+  and passed into the rejection-sampling kernel path for speculative decoding. When enabled, the
+
+  acceptance threshold for each draft token is adjusted by the entropy of the target distribution:
+
+  the effective threshold is `min(exp(-entropy * posterior_alpha), posterior_threshold)`, so
+
+  high-entropy (uncertain) tokens get a lower threshold and are easier to accept, while low-entropy
+
+  (confident) tokens get a stricter threshold. A higher acceptance rate means more draft tokens are
+
+  kept per verification step, which raises speculative-decoding throughput and lowers per-token
+
+  latency (fewer wasted draft tokens / fewer re-computations). The cost is reduced sampling
+
+  precision (output quality) and a small amount of extra compute in the sampler to compute entropy
+
+  and the adjusted threshold. The effect is confined to the sampling/verification stage, not the
+
+  model forward pass, so the impact is medium rather than high.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:349
+  context: Field definition in RejectionSamplerConfig pydantic dataclass, default False.
+- file: vllm_ascend/sample/rejection_sampler.py:436
+  context: Reads config to set using_entropy_verify, which selects the entropy-adjusted acceptance threshold in the rejection
+    sampling kernel.
+- file: tests/ut/sample/test_rejection_sampler.py:757
+  context: Unit test helper sets enable_entropy_verify on a mocked ascend config.
+related_parameters:
+- name: additional_config.rejection_sampler_config.enable_block_verify
+  relation: Sibling verify mode; block verify uses joint cumulative-product verification. In synthetic_mode block verify is
+    rejected, but entropy verify is left as-is (short-circuited by the SYNTHETIC_MODE branch).
+- name: additional_config.rejection_sampler_config.posterior_threshold
+  relation: Upper bound on the entropy-adjusted acceptance threshold; effective threshold = min(exp(-entropy*posterior_alpha),
+    posterior_threshold).
+- name: additional_config.rejection_sampler_config.posterior_alpha
+  relation: Scales entropy sensitivity; higher values make high-entropy tokens easier to accept.
+- name: speculative_config
+  relation: Entropy verify only matters when speculative decoding / rejection sampling is active.
+constraints:
+- enable_entropy_verify must be a boolean; pydantic enforces the type.
+- Entropy verify only has an effect when speculative decoding with rejection sampling is active.
+- In synthetic_mode the SYNTHETIC_MODE branch short-circuits entropy verify, so enabling it has no effect there.
+tuning_advice:
+  summary: Enable entropy verify to raise speculative-decoding acceptance rate and throughput when some quality loss is acceptable;
+    keep disabled for precision-critical workloads.
+  suggested_values:
+  - scenario: Throughput-oriented serving where minor quality loss is acceptable
+    value: true
+    reason: Lowers acceptance threshold for high-entropy tokens, increasing accepted draft tokens and reducing per-token latency.
+  - scenario: Precision-critical or quality-sensitive applications
+    value: false
+    reason: Default off; entropy verify reduces sampling precision.
+  - scenario: Synthetic-mode rejection sampling
+    value: false
+    reason: SYNTHETIC_MODE branch short-circuits entropy verify, so enabling it provides no benefit.
+  caveats:
+  - Pair with a moderate posterior_alpha (e.g. default 0.4) to avoid over-aggressive acceptance and quality degradation.
+  - Benchmark acceptance rate and output quality on your model before enabling in production.
+  quick_guide: Enable only when you want higher spec-decode acceptance/throughput and can tolerate reduced sampling precision.
+analysis_date: '2026-10-27'

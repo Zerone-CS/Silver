@@ -1,0 +1,109 @@
+name: profiler.profiler
+type: nested
+category: observability
+scope: both
+source_file:
+- vllm/config/profiler.py:181
+- vllm/config/vllm.py:3042
+- vllm_ascend/profiler/torch_npu_profiler.py:38
+- vllm_ascend/worker/worker.py:1225
+value_type: str
+default: null
+valid_choices:
+- torch
+- cuda
+- proton
+cli_example: --profiler-config.profiler torch
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter selects which profiling backend is instantiated when profiling is
+
+  explicitly started (via the /start_profile API or --profiler-config). It does not
+
+  affect steady-state inference unless profiling is active.
+
+  On Ascend (vllm-ascend), the only accepted value is "torch": in
+
+  vllm_ascend/profiler/torch_npu_profiler.py:38-39, TorchNPUProfilerWrapper._create_profiler
+
+  raises RuntimeError("Unrecognized profiler: ...") for any value other than "torch".
+
+  When "torch" is selected, vllm-ascend builds a torch_npu.profiler.profile with
+
+  activities=[CPU, NPU], profiler_level=Level1, aic_metrics=PipeUtilization,
+
+  data_simplification=True, with_stack=False (with_modules mapped from
+
+  torch_profiler_with_stack). These settings determine the runtime overhead of the
+
+  profiler itself: "with_stack/with_modules introduces significant time overhead per the"
+
+  inline comment at torch_npu_profiler.py:69-70, and profile_memory adds memory-tracking
+
+  overhead. So while the parameter itself is a selector, the chosen backend and its
+
+  fixed experimental config directly govern the latency/throughput penalty incurred
+
+  while a trace is being collected.
+
+  Upstream vLLM additionally supports "cuda" and "proton"; vllm/config/vllm.py:3042-3048
+
+  rejects "proton" on non-CUDA platforms ("The Proton profiler currently supports NVIDIA
+
+  CUDA only"), so on Ascend "proton" is doubly unsupported. "cuda" is meaningless on NPU.
+
+  The profiler is only instantiated on profile start (worker.py:1239-1242), so there is
+
+  no impact on normal serving when profiling is not triggered.
+
+  '
+usage_locations:
+- file: vllm_ascend/profiler/torch_npu_profiler.py:38
+  context: Rejects any profiler value other than 'torch' on Ascend
+- file: vllm_ascend/profiler/torch_npu_profiler.py:50
+  context: Builds torch_npu _ExperimentalConfig (Level1, PipeUtilization, data_simplification) governing profiling overhead
+- file: vllm_ascend/worker/worker.py:1225
+  context: profile() raises if profiler_config.profiler is None; instantiates TorchNPUProfilerWrapper on start
+- file: vllm/config/profiler.py:181
+  context: Validates torch_profiler_dir only applicable when profiler == 'torch'
+- file: vllm/config/vllm.py:3042
+  context: Rejects 'proton' on non-CUDA platforms
+related_parameters:
+- name: profiler.torch_profiler_dir
+  relation: Required when profiler is 'torch'; empty value raises RuntimeError in vllm-ascend
+- name: profiler.torch_profiler_with_stack
+  relation: Maps to torch_npu with_modules; enabling adds significant profiling overhead
+- name: profiler.torch_profiler_with_memory
+  relation: Maps to profile_memory; adds memory-tracking overhead during profiling
+- name: additional_config.msmonitor_use_daemon
+  relation: Mutually exclusive with torch profiler; enabling both raises RuntimeError
+- name: profiler.proton_profiler_dir
+  relation: Only valid when profiler == 'proton'; proton unsupported on Ascend
+constraints:
+- On Ascend, profiler must be set to 'torch'; any other value raises RuntimeError 'Unrecognized profiler'.
+- torch_profiler_dir must be set when profiler is 'torch', otherwise a RuntimeError is raised.
+- torch_profiler_dir is only applicable when profiler is 'torch'; setting it with another profiler raises ValueError.
+- The 'proton' profiler is only supported on NVIDIA CUDA and raises ValueError on non-CUDA platforms including Ascend.
+- additional_config.msmonitor_use_daemon and the torch profiler cannot be enabled at the same time.
+- Calling the profile API without setting profiler raises RuntimeError 'Profiling is not enabled'.
+tuning_advice:
+  summary: On Ascend always use 'torch' (torch_npu profiler); keep with_stack/with_memory off to minimize profiling overhead.
+  suggested_values:
+  - scenario: Ascend NPU operator-level performance analysis
+    value: torch
+    reason: Only 'torch' is accepted by vllm-ascend; it wires in torch_npu.profiler with CPU+NPU activities and Level1 metrics.
+  - scenario: Minimizing profiling overhead during trace collection
+    value: torch
+    reason: Pair with torch_profiler_with_stack=false and torch_profiler_with_memory=false; with_modules/with_stack adds significant
+      time overhead per the code comment.
+  caveats:
+  - Profiling is only active between start/stop calls; it does not affect steady-state serving when not triggered.
+  - torch_npu profiler with_stack (mapped to with_modules) introduces significant time overhead; leave it disabled unless
+    call stacks are needed.
+  - Do not combine with additional_config.msmonitor_use_daemon; they are mutually exclusive.
+  - '''cuda'' and ''proton'' are not usable on Ascend; ''proton'' is explicitly rejected on non-CUDA platforms.'
+  quick_guide: Set --profiler-config.profiler torch with a valid torch_profiler_dir on Ascend.
+analysis_date: '2026-10-27'

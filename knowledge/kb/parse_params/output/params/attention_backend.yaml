@@ -1,0 +1,106 @@
+name: --attention-backend
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1008
+- vllm/engine/arg_utils.py:731
+- vllm/engine/arg_utils.py:2494
+- vllm_ascend/platform.py:273
+- vllm_ascend/worker/model_runner_v1.py:6113
+- vllm_ascend/device/hardware_profile.py:232
+value_type: str
+default: null
+valid_choices: auto, or any AttentionBackendEnum member name (e.g. FLASH_ATTN, TRITON_ATTN, MLA); on Ascend the value is largely
+  overridden by the platform's backend selection
+cli_example: --attention-backend <backend-name>
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'On Ascend, the effective attention backend is NOT chosen directly from this flag.
+
+  vllm_ascend/platform.py get_attn_backend_cls builds a backend_map keyed by
+
+  (use_mla, use_sparse, use_dsa) tuples and returns Ascend-native backends:
+
+  AscendMLABackend, AscendAttentionBackend, AscendSFABackend, AscendDSABackend
+
+  (and AscendFABackend when FA3 validation passes). The hardware profile''s
+
+  attention_backend_family (STANDARD vs COMPATIBILITY) further selects between
+
+  the standard map and the 310P compatibility map (AscendAttentionBackend310).
+
+  The chosen backend determines which attention kernel (PagedAttention / MLA /
+
+  SFA / DSA / FA3) executes, which directly controls prefill/decode latency,
+
+  throughput, and KV-cache memory layout. In v1-ascend model_runner_v1.py the
+
+  backend list feeds _check_and_update_cudagraph_mode, so the backend also
+
+  influences whether/how ACL graph capture is applied. Upstream, arg_utils.py
+
+  maps --attention-backend into AttentionConfig.backend (mutually exclusive with
+
+  attention_config.backend) and validates via AttentionConfig.validate_backend_before.
+
+  The doc migration guide shows --attention-backend FLASH_ATTN was previously used
+
+  for FA3 consistency mode, now replaced by rl_config.enable_training_consistency.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1008
+  context: CLI flag registered from AttentionConfig.backend field
+- file: vllm/engine/arg_utils.py:2494
+  context: Merged into attention_config.backend; raises if both set; 'auto' normalized to None
+- file: vllm_ascend/platform.py:273
+  context: Selects Ascend backend class based on hardware attention_backend_family and (use_mla, use_sparse, use_dsa) key
+- file: vllm_ascend/worker/model_runner_v1.py:6113
+  context: Backend list drives attention group creation and cudagraph mode update
+- file: vllm_ascend/device/hardware_profile.py:232
+  context: attention_backend_family field on HardwareProfile gates STANDARD vs COMPATIBILITY backend maps
+related_parameters:
+- name: --attention-config.backend
+  relation: Mutually exclusive with --attention-backend; setting both raises ValueError
+- name: --kv-cache-dtype
+  relation: Backend must support the chosen KV cache dtype; affects kernel selection
+- name: --tensor-parallel-size
+  relation: MLA/SFA/DSA backend selection depends on parallel config (use_mla, use_sparse, use_dsa)
+- name: --speculative-config.attention_backend
+  relation: Draft model can use a different attention backend than the target model
+- name: rl_config.enable_training_consistency
+  relation: Replaces the old --attention-backend FLASH_ATTN FA3 consistency mode per migration guide
+constraints:
+- --attention-backend and attention_config.backend are mutually exclusive; setting both raises a ValueError.
+- The value 'auto' (or None) is normalized to None, meaning the platform selects the backend automatically.
+- On Ascend the requested backend name is largely ignored; the platform picks an Ascend-native backend from its backend_map
+  based on model/parallel/hardware characteristics.
+- On 310P (COMPATIBILITY attention_backend_family) only the AscendAttentionBackend310 compatibility backend is available;
+  MLA/SFA variants are not implemented.
+- KPool sparse attention requires Ascend A2, A3 or A5 and raises NotImplementedError on COMPATIBILITY hardware.
+- Ascend MRV2 PCP raises NotImplementedError for unsupported attention backend key combinations.
+tuning_advice:
+  summary: Leave --attention-backend at auto on Ascend; the platform selects the optimal Ascend-native backend, and manual
+    overrides are largely ignored.
+  suggested_values:
+  - scenario: Default Ascend deployment (A2/A3, standard models)
+    value: auto
+    reason: Platform backend_map selects AscendAttentionBackend/AscendMLABackend/AscendSFABackend based on model and parallel
+      config, which is the intended and best-tuned path.
+  - scenario: RL training consistency / FA3 consistency mode
+    value: auto
+    reason: Per migration guide, use rl_config.enable_training_consistency instead of --attention-backend FLASH_ATTN.
+  - scenario: 310P compatibility hardware
+    value: auto
+    reason: Only AscendAttentionBackend310 is available; explicit backend names are overridden by the compatibility map.
+  caveats:
+  - Do not rely on this flag to force a specific kernel on Ascend; verify the effective backend via logs.
+  - Ensure the chosen backend supports your KV cache dtype and parallel config to avoid graph-mode restrictions.
+  quick_guide: Keep --attention-backend auto on Ascend; use rl_config.enable_training_consistency for FA3 consistency instead
+    of FLASH_ATTN.
+analysis_date: '2026-10-27'

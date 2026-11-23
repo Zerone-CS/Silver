@@ -1,0 +1,71 @@
+name: profiler.torch_profiler_record_shapes
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:209
+- vllm/profiler/wrapper.py:249
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter is passed directly to torch.profiler.profile(record_shapes=...) in
+
+  vllm/profiler/wrapper.py:249. When enabled, the PyTorch profiler records the input
+
+  tensor shapes for every operator invocation, which adds per-op bookkeeping overhead
+
+  and increases the size of the generated trace file. It only has an effect while
+
+  profiling is active (i.e. when the profiler is enabled via --profiler-config or the
+
+  VLLM_TORCH_PROFILER_DIR mechanism). It does not alter model execution, kernel
+
+  selection, memory allocation, or HCCL communication behavior on Ascend NPU. The
+
+  overhead is confined to the profiling window and is not present during normal
+
+  inference. No vllm-ascend override of this parameter was found; the upstream
+
+  ProfilerConfig field is consumed unchanged by the shared profiler wrapper.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:209
+  context: Logged in the debug message describing the profiler configuration (record_shapes=%s).
+- file: vllm/profiler/wrapper.py:249
+  context: Passed as record_shapes to torch.profiler.profile(), enabling per-op tensor shape recording.
+related_parameters:
+- name: profiler.torch_profiler_with_memory
+  relation: Sibling torch.profiler option (profile_memory); both increase trace size and profiling overhead.
+- name: profiler.torch_profiler_with_stack
+  relation: Sibling torch.profiler option (with_stack); combined with record_shapes further increases trace size and overhead.
+- name: profiler.torch_profiler_with_flops
+  relation: Sibling torch.profiler option (with_flops); record_shapes is often needed to compute FLOPs meaningfully.
+- name: profiler.torch_profiler_dir
+  relation: Profiling must be enabled (trace dir set) for this option to have any effect.
+constraints:
+- This option only takes effect while the torch profiler is active; it has no effect during normal inference.
+- Enabling record_shapes increases trace file size and profiling overhead, so it should be used only for targeted profiling
+  runs.
+tuning_advice:
+  summary: Leave disabled for routine profiling; enable only when per-operator tensor shapes are needed for analysis.
+  suggested_values:
+  - scenario: Routine latency/throughput profiling on Ascend NPU
+    value: false
+    reason: Avoids extra per-op bookkeeping and smaller trace files; shapes are rarely needed for high-level bottleneck identification.
+  - scenario: Debugging operator-level issues, memory analysis, or FLOPs estimation
+    value: true
+    reason: Tensor shapes are required to attribute operators, compute FLOPs, and diagnose shape-related inefficiencies.
+  caveats:
+  - Only affects behavior during an active profiling session; no impact on steady-state inference performance.
+  - Combining with torch_profiler_with_stack and torch_profiler_with_memory can substantially inflate trace size and profiling
+    overhead.
+  - No vllm-ascend-specific override exists; behavior matches upstream vLLM on Ascend NPU.
+  quick_guide: Keep false unless you specifically need per-op tensor shapes in the trace.
+analysis_date: '2026-10-27'

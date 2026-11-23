@@ -1,0 +1,81 @@
+name: VLLM_LORA_RESOLVER_CACHE_DIR
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1154
+- vllm/envs.py:116
+- vllm/plugins/lora_resolver_filesystem.py:52
+value_type: str
+default: null
+valid_choices: Any existing directory path on the local filesystem; unset (None) disables the Filesystem Resolver plugin
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only controls whether the Filesystem LoRA Resolver plugin is
+
+  registered at startup. In vllm/plugins/lora_resolver_filesystem.py:52-60,
+
+  register_filesystem_resolver() reads envs.VLLM_LORA_RESOLVER_CACHE_DIR; if set
+
+  and it is a valid directory, a FilesystemResolver is constructed and registered
+
+  into LoRAResolverRegistry. The resolver is only consulted when a request
+
+  references an unrecognized LoRA adapter name and runtime LoRA updating is
+
+  enabled (VLLM_ALLOW_RUNTIME_LORA_UPDATING). It performs a local filesystem
+
+  lookup (os.path.exists / directory scan) to resolve the adapter path, then the
+
+  normal LoRA loading path runs. There is no per-token or per-step hot-path cost;
+
+  the only runtime effect is a small one-time filesystem lookup latency when an
+
+  unknown adapter is first requested. It does not change NPU kernel selection,
+
+  memory allocation, HCCL communication, or graph capture. No vllm-ascend
+
+  override or reference to this variable was found in the provided context, so
+
+  behavior on Ascend matches upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1154
+  context: Defines the env var accessor returning os.getenv(..., None)
+- file: vllm/envs.py:116
+  context: 'Type annotation VLLM_LORA_RESOLVER_CACHE_DIR: str | None = None'
+- file: vllm/plugins/lora_resolver_filesystem.py:52
+  context: Reads the cache dir and registers FilesystemResolver if it is a valid directory
+related_parameters:
+- name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+  relation: Must be enabled for the resolver to be usable at runtime; the resolver only matters when runtime LoRA updating
+    is on
+- name: VLLM_PLUGINS
+  relation: Plugins must be enabled (not set to empty string) for the filesystem resolver plugin to load
+- name: VLLM_LORA_RESOLVER_HF_REPO_LIST
+  relation: Alternative resolver source (remote HF repo) for unrecognized LoRA adapters
+constraints:
+- VLLM_LORA_RESOLVER_CACHE_DIR must point to an existing directory; otherwise a ValueError is raised at plugin registration.
+- The filesystem resolver only functions if plugins are enabled (VLLM_PLUGINS not set to an empty string).
+- The resolver is only effective when VLLM_ALLOW_RUNTIME_LORA_UPDATING is enabled.
+tuning_advice:
+  summary: Set only when using runtime LoRA loading with locally cached adapters; it has negligible performance impact and
+    mainly affects adapter resolution latency.
+  suggested_values:
+  - scenario: Serving many LoRA adapters pre-downloaded to local disk with runtime LoRA updating enabled
+    value: /path/to/lora_cache
+    reason: Enables the Filesystem Resolver to locate adapters by name without remote downloads, reducing per-adapter resolution
+      latency.
+  - scenario: No runtime LoRA updating or adapters are passed explicitly at startup
+    value: unset
+    reason: Leave unset to avoid registering an unnecessary resolver and any filesystem lookup overhead.
+  caveats:
+  - Ensure the directory exists before launch; a missing path raises ValueError during plugin registration.
+  - Must be combined with VLLM_ALLOW_RUNTIME_LORA_UPDATING=1 and enabled plugins for the resolver to take effect.
+  quick_guide: Set VLLM_LORA_RESOLVER_CACHE_DIR to an existing local directory only when using runtime LoRA loading; otherwise
+    leave it unset.
+analysis_date: '2026-10-27'

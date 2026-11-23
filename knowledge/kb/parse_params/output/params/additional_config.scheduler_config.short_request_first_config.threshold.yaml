@@ -1,0 +1,97 @@
+name: additional_config.scheduler_config.short_request_first_config.threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1570
+- vllm_ascend/ascend_config.py:1575
+- vllm_ascend/patch/platform/patch_balance_schedule.py:131
+- vllm_ascend/core/scheduler_profiling_chunk.py:104
+- vllm_ascend/core/short_request_first_scheduler.py:382
+value_type: int
+default: 256
+valid_choices: Any non-negative integer (>= 0); negative values raise ValueError
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter is an Ascend-only scheduler extension (defined in
+
+  vllm_ascend/ascend_config.py as part of ShortRequestFirstConfig, nested under
+
+  additional_config["scheduler_config"]["short_request_first_config"]). It is only
+
+  consumed when short_request_first_config.enabled is True. When enabled, the
+
+  scheduler constructors (BalanceScheduler in patch_balance_schedule.py:131,
+
+  ProfilingChunkScheduler in scheduler_profiling_chunk.py:104, and
+
+  ShortRequestFirstAsyncScheduler in short_request_first_scheduler.py:382) call
+
+  install_short_request_first_waiting_queue(self, threshold=..., long_max_wait_ms=...).
+
+  The threshold is the request-length cutoff used by the short-request-first waiting
+
+  queue to classify a request as "short" and prioritize it ahead of longer requests.
+
+  By reordering admission, it reduces head-of-line blocking and tail latency for short
+
+  requests (interactive/chat traffic) at the cost of potentially delaying long
+
+  requests (which is bounded by long_max_wait_ms). Because it changes the order in
+
+  which requests are batched, it indirectly affects NPU utilization and throughput:
+
+  prioritizing short requests can improve time-to-first-token and per-request latency
+
+  but may reduce batch token density (lower throughput) if long requests are starved.
+
+  The parameter itself does not touch memory allocation or HCCL communication; its
+
+  effect is purely on scheduling order.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1570
+  context: Field definition with default 256 and non-negative validation in _validate_config.
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:131
+  context: Passed as threshold to install_short_request_first_waiting_queue when balance scheduling is active.
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:104
+  context: Passed as threshold to install_short_request_first_waiting_queue in the profiling-chunk scheduler.
+- file: vllm_ascend/core/short_request_first_scheduler.py:382
+  context: Passed as threshold to install_short_request_first_waiting_queue in ShortRequestFirstAsyncScheduler.
+related_parameters:
+- name: additional_config.scheduler_config.short_request_first_config.enabled
+  relation: Master switch; threshold has no effect unless enabled is True.
+- name: additional_config.scheduler_config.short_request_first_config.long_max_wait_ms
+  relation: Companion bound that limits how long a long request can be delayed by short-request prioritization.
+- name: additional_config.scheduler_config.enable_balance_scheduling
+  relation: When balance scheduling is enabled, the BalanceScheduler also installs the short-request-first queue using this
+    threshold.
+constraints:
+- threshold must be a non-negative integer; a negative value raises ValueError at config init.
+- threshold only takes effect when short_request_first_config.enabled is True.
+- Unknown keys under short_request_first_config are rejected (extra='forbid').
+tuning_advice:
+  summary: Set threshold near the upper bound of your 'short' request length distribution to cut tail latency without starving
+    long requests.
+  suggested_values:
+  - scenario: Interactive/chat workload with mostly short prompts (<256 tokens)
+    value: 256
+    reason: Default value matches typical short chat requests; keeps prioritization meaningful without over-classifying.
+  - scenario: Mixed workload with short interactive plus long batch jobs
+    value: 512
+    reason: Raises the cutoff so moderately sized requests also benefit from prioritization; pair with a nonzero long_max_wait_ms
+      to bound long-request delay.
+  - scenario: Long-context RAG/summarization where most requests are long
+    value: 128
+    reason: Keep the short bucket narrow so only genuinely short requests jump the queue, preserving throughput for long sequences.
+  caveats:
+  - Always enable short_request_first_config.enabled first; threshold is ignored otherwise.
+  - Monitor long-request latency when raising threshold; use long_max_wait_ms to cap starvation.
+  - Very high thresholds neutralize the feature and add scheduling overhead.
+  quick_guide: Set threshold to the 75th-90th percentile of your request length distribution; keep enabled=True and long_max_wait_ms>0.
+analysis_date: '2026-10-27'

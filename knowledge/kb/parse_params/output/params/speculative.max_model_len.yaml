@@ -1,0 +1,115 @@
+name: speculative.max_model_len
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/config/speculative.py:1613
+- vllm/config/speculative.py:1615
+- vllm/config/speculative.py:1631
+- vllm/config/speculative.py:1644
+value_type: int
+default: null
+valid_choices: Any positive integer; must be <= draft model max_model_len and <= target model max_model_len
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'speculative.max_model_len (the `max_model_len` field of SpeculativeConfig) sets the
+
+  maximum sequence length the draft model is allowed to handle. In
+
+  `_maybe_override_draft_max_model_len` (vllm/config/speculative.py:1613-1656), when this
+
+  value is provided it is validated against both the draft model''s max_model_len and the
+
+  target model''s max_model_len, and then returned as the effective draft max length. When
+
+  it is None (the default), the effective draft length is `min(draft_max_model_len,
+
+  target_max_model_len)`.
+
+
+  The value flows into the draft model''s ModelConfig.max_model_len, which in turn sizes
+
+  the draft model''s KV cache and attention metadata. A smaller value reduces draft-model
+
+  KV cache memory footprint and can reduce per-step attention work in the draft model,
+
+  but it also means sequences longer than this value will skip speculation entirely
+
+  (the docstring explicitly notes it is "mainly used for testing that sequences can skip
+
+  speculation"). In the v1 upstream speculator (vllm/v1/worker/gpu/spec_decode/
+
+  autoregressive/speculator.py:236-238) the draft max seq len is clamped to
+
+  `self.max_model_len`, and in suffix decoding (vllm/v1/spec_decode/suffix_decoding.py:85)
+
+  the number of speculative tokens is bounded by `self.max_model_len - num_tokens - 1`.
+
+
+  On Ascend, vllm-ascend does not define or override this parameter; it is consumed
+
+  through the upstream SpeculativeConfig path. The vllm-ascend e2e test
+
+  (tests/e2e/pull_request/two_card/spec_decode/test_spec_decode_heavy.py:269) exercises
+
+  the boundary where `prompt_len + num_speculative_tokens > max_model_len`, which
+
+  deterministically triggers the `input_fits_in_drafter=False` path (skip speculation).
+
+  Because it primarily controls whether speculation is skipped at the length boundary
+
+  and the draft KV cache size, its steady-state throughput impact is low; it is mainly a
+
+  correctness/testing knob rather than a primary tuning lever.
+
+  '
+usage_locations:
+- file: vllm/config/speculative.py:1613
+  context: _maybe_override_draft_max_model_len validates and returns the effective draft max length
+- file: vllm/config/speculative.py:1631
+  context: Raises ValueError if speculative_max_model_len exceeds draft or target max_model_len
+- file: vllm/v1/worker/gpu/spec_decode/autoregressive/speculator.py:237
+  context: Draft max seq len clamped to self.max_model_len during proposal
+- file: vllm/v1/spec_decode/suffix_decoding.py:85
+  context: Number of speculative tokens bounded by max_model_len - num_tokens - 1
+- file: tests/e2e/pull_request/two_card/spec_decode/test_spec_decode_heavy.py:269
+  context: vllm-ascend e2e test triggering input_fits_in_drafter=False at the max_model_len boundary
+related_parameters:
+- name: max_model_len
+  relation: Target model max length; speculative.max_model_len must not exceed it
+- name: speculative.num_speculative_tokens
+  relation: Combined with prompt length, determines whether speculation is skipped at the boundary
+- name: speculative.method
+  relation: Only relevant when speculative decoding is enabled
+- name: speculative.draft_model_config.max_model_len
+  relation: Upper bound for speculative.max_model_len
+constraints:
+- speculative.max_model_len must not be larger than the draft model's max_model_len, otherwise a ValueError is raised.
+- speculative.max_model_len must not be larger than the target model's max_model_len, otherwise a ValueError is raised.
+- When speculative.max_model_len is not set, the effective draft max length is min(draft_max_model_len, target_max_model_len).
+tuning_advice:
+  summary: Leave unset in production; only set it to a value <= both draft and target max_model_len when you intentionally
+    want to test or force speculation skipping at a length boundary.
+  suggested_values:
+  - scenario: Production deployment (default behavior)
+    value: unset
+    reason: Leaving it unset lets the effective draft length be min(draft_max_model_len, target_max_model_len), maximizing
+      speculation coverage.
+  - scenario: Testing speculation-skip boundary behavior
+    value: 1024
+    reason: A small value like 1024 (as used in the vllm-ascend e2e test) deterministically triggers input_fits_in_drafter=False
+      when prompt_len + num_speculative_tokens exceeds it.
+  - scenario: Reducing draft-model KV cache memory for long-context serving
+    value: 4096
+    reason: A conservative draft max length caps draft KV cache growth while remaining <= target max_model_len; verify it
+      does not cause excessive speculation skipping.
+  caveats:
+  - Do not set it larger than either the draft or target model max_model_len; this raises a ValueError at config validation.
+  - On Ascend, this is not a primary performance lever; prefer tuning num_speculative_tokens and max_model_len for throughput.
+  quick_guide: Leave speculative.max_model_len unset unless you need to test speculation skipping; if set, keep it <= min(draft,
+    target) max_model_len.
+analysis_date: '2026-10-27'

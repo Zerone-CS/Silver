@@ -1,0 +1,106 @@
+name: compilation.ir_enable_torch_wrap
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/vllm.py:1602
+- vllm/v1/worker/worker_base.py:100
+- vllm/platforms/cpu.py:353
+value_type: bool
+default: <computed>
+valid_choices:
+- true
+- false
+- null
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls whether vLLM''s IR layer wraps selected ops as torch custom ops
+
+  during the forward pass (vllm.ir.set_default_torch_wrap). It is resolved in
+
+  VllmConfig.__post_init__ (vllm/config/vllm.py:1602): when left as None it defaults to
+
+  True only if compilation mode == VLLM_COMPILE AND backend == "inductor"; otherwise it
+
+  is False. The resolved value is pushed to the IR layer once per worker lifetime in
+
+  WorkerBase.__init__ (vllm/v1/worker/worker_base.py:100) via
+
+  vllm.ir.set_default_torch_wrap(...). When True, ops are wrapped as torch custom ops,
+
+  which lets Dynamo/Inductor treat them as opaque callable units (custom Inductor
+
+  lowering path) and can reduce graph-break/tracing overhead and enable custom kernel
+
+  dispatch. When False, Dynamo traces the selected implementation directly (or eager
+
+  mode avoids the custom-op wrapper overhead). On Ascend, vllm-ascend does not define
+
+  or override this parameter; it only appears in a unit-test mock
+
+  (tests/ut/worker/test_worker_v1.py:53) where it is set to False to satisfy the
+
+  worker init path. Because Ascend typically runs with CompilationMode.NONE or a
+
+  non-inductor backend, the computed default resolves to False, so the torch-wrap path
+
+  is generally inactive on Ascend. The performance effect is therefore indirect and
+
+  small: "it only matters when the IR/custom-op wrapping path is actually exercised"
+
+  (compile mode + inductor backend), which is not the common Ascend configuration.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1602
+  context: Resolves the None default to (mode == VLLM_COMPILE and backend == inductor).
+- file: vllm/v1/worker/worker_base.py:100
+  context: Pushes resolved value into vllm.ir.set_default_torch_wrap at worker init.
+- file: vllm/platforms/cpu.py:353
+  context: CPU platform forces ir_enable_torch_wrap = False for its compile path.
+- file: tests/ut/worker/test_worker_v1.py:53
+  context: vllm-ascend unit test sets the mock compilation_config.ir_enable_torch_wrap = False.
+related_parameters:
+- name: compilation_config.mode
+  relation: Default resolution depends on mode == VLLM_COMPILE.
+- name: compilation_config.backend
+  relation: Default resolution requires backend == 'inductor'.
+- name: compilation_config.custom_ops
+  relation: Interacts with custom op selection; wrapping affects how custom ops are traced.
+- name: kernel_config.ir_op_priority
+  relation: Set alongside torch-wrap state at worker init; both are constant for worker lifetime.
+constraints:
+- When left unset (None), the value is auto-derived and cannot be True unless compilation mode is VLLM_COMPILE and backend
+  is 'inductor'.
+- The value is fixed for the worker's lifetime; changing it after worker init has no effect.
+tuning_advice:
+  summary: 'On Ascend this flag is effectively inactive under the common non-inductor / NONE
+
+    compilation configuration; leave it at its computed default unless you are
+
+    deliberately running the inductor compile path.
+
+    '
+  suggested_values:
+  - scenario: Default Ascend deployment (CompilationMode.NONE or non-inductor backend)
+    value: false
+    reason: The auto-derived default resolves to False because mode != VLLM_COMPILE or backend != inductor; no action needed.
+  - scenario: Running vLLM compile path with inductor backend on Ascend (experimental)
+    value: true
+    reason: Enables torch custom-op wrapping so Dynamo/Inductor treat IR ops as opaque units, matching the upstream intended
+      compile behavior.
+  - scenario: Eager mode / debugging tracing issues
+    value: false
+    reason: Avoids custom-op wrapper overhead and lets Dynamo trace the selected implementation directly.
+  caveats:
+  - vllm-ascend does not override this parameter; it only appears in a unit-test mock, so Ascend behavior follows upstream
+    resolution logic.
+  - Because Ascend commonly runs without inductor compilation, the flag usually resolves to False and has negligible runtime
+    effect.
+  - The value is set once at worker init and is constant for the worker lifetime; toggling it later will not take effect.
+  quick_guide: Leave unset on Ascend; it auto-resolves to False unless you run the inductor compile path.
+analysis_date: '2026-10-27'

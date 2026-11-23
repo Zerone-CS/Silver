@@ -1,0 +1,133 @@
+name: additional_config.scheduler_config.recompute_scheduler_enable
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1634
+- vllm_ascend/ascend_config.py:1674
+- vllm_ascend/platform.py:1109
+- vllm_ascend/platform.py:1372
+- vllm_ascend/ascend_forward_context.py:64
+- vllm_ascend/utils.py:1242
+- vllm_ascend/utils.py:1310
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This is a vllm-ascend-only flag (no upstream vLLM equivalent) that swaps the
+
+  scheduler class on PD-disaggregated Decode nodes. In platform.py:1109-1138, when
+
+  enabled and kv_role == "kv_consumer", the platform builds a RecomputeSchedulerConfig
+
+  via RecomputeSchedulerConfig.initialize_from_config() and replaces
+
+  vllm_config.scheduler_config with it, selecting the scheduler class through
+
+  _get_recompute_scheduler_cls(async_scheduling, dyntra_lb_enabled). The RecomputeScheduler
+
+  changes the decode-node execution model: "after KV recv it sets num_computed_tokens to"
+
+  N-1 so the decode node recomputes the last prompt token before MTP decode
+
+  (utils.py:1217-1242 docstring). This keeps decode-node steps decode-shaped, which is
+
+  the precondition for fine-grained TP (ascend_config.py:826-830 asserts
+
+  oproj_tensor_parallel_size / mlp_tensor_parallel_size require this flag). It also
+
+  enables skipping the all-reduce across the DP group for MoE models on KV-consumer ranks
+
+  (utils.py:1304-1340): when decode requires MC2 and recompute_scheduler_enable is True,
+
+  each rank may hold a different token count, so MC2 uses a non-zero global_bs and no
+
+  mc2_mask — removing a per-step DP all-reduce and its padding overhead. Additionally,
+
+  ascend_forward_context.py:42-64 uses it to classify the node as decode-only, and
+
+  attention metadata builders (mla_v1, attention_cp, sfa_cp) use it to reclassify
+
+  recomputed prompt tokens as decodes rather than prefills, avoiding prefill-shaped
+
+  metadata/kernels on D nodes. Net effect: lower decode-step latency and higher decode
+
+  throughput on D nodes, at the cost of recomputing one prompt token per request and
+
+  extra KV/offload bookkeeping. It also gates scheduler-class selection: when enabled,
+
+  the DyntraLB-only scheduler is NOT installed (platform.py:1372) because the combined
+
+  DyntraLB recompute scheduler is chosen instead.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1634
+  context: Field definition on SchedulerConfig (pydantic dataclass), default False.
+- file: vllm_ascend/ascend_config.py:1674
+  context: Resolved from nested scheduler_config with legacy top-level fallback via _resolve().
+- file: vllm_ascend/ascend_config.py:826
+  context: 'Assertion: fine-grained TP (oproj/mlp_tensor_parallel_size) requires recompute_scheduler_enable=true.'
+- file: vllm_ascend/platform.py:1109
+  context: 'Validation and scheduler swap: ignored on kv_producer (written back to False), error on non-consumer, RecomputeSchedulerConfig
+    installed on kv_consumer.'
+- file: vllm_ascend/platform.py:1372
+  context: DyntraLB-only scheduler is skipped when recompute_scheduler_enable is true (combined scheduler used instead).
+- file: vllm_ascend/ascend_forward_context.py:64
+  context: _is_decode_only_node() returns true on KV-consumer nodes with recompute enabled.
+- file: vllm_ascend/utils.py:1242
+  context: is_pd_decode_recompute_scheduler_enabled() gates worker metadata treating the recomputed step as decode, not prefill.
+- file: vllm_ascend/utils.py:1310
+  context: should_skip_allreduce_across_dp_group() allows skipping DP all-reduce for MoE on KV consumers when recompute is
+    enabled.
+related_parameters:
+- name: kv_transfer_config.kv_role
+  relation: Must be kv_consumer (PD-disaggregated D node); ignored on kv_producer, error on kv_both/None.
+- name: additional_config.finegrained_tp_config.oproj_tensor_parallel_size
+  relation: Requires recompute_scheduler_enable=true (assertion in ascend_config.py:826).
+- name: additional_config.finegrained_tp_config.mlp_tensor_parallel_size
+  relation: Requires recompute_scheduler_enable=true (assertion in ascend_config.py:826).
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Independent sibling; when both true, the combined DyntraLB recompute scheduler is selected.
+- name: scheduler_config.async_scheduling
+  relation: Selects the async vs sync recompute scheduler class via _get_recompute_scheduler_cls.
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: Mutually exclusive with DyntraLB; profiling chunk scheduler selection is separate.
+constraints:
+- recompute_scheduler_enable can only be enabled on PD-disaggregated Decode nodes where kv_role is kv_consumer; enabling it
+  with no kv_transfer_config, kv_role kv_both, or PD-mixed mode raises a ValueError at startup.
+- On PD-disaggregated P nodes (kv_role kv_producer) the flag is ignored with a warning and forcibly written back to false
+  in additional_config.
+- Enabling fine-grained TP via oproj_tensor_parallel_size or mlp_tensor_parallel_size without recompute_scheduler_enable=true
+  raises an AssertionError.
+- The nested scheduler_config value takes precedence over the deprecated top-level additional_config.recompute_scheduler_enable
+  key.
+tuning_advice:
+  summary: Enable only on PD-disaggregated Decode (kv_consumer) nodes to keep decode steps decode-shaped, unlock fine-grained
+    TP, and skip DP all-reduce for MoE.
+  suggested_values:
+  - scenario: PD-disaggregated Decode node (kv_role=kv_consumer) running MoE models with DP > 1
+    value: true
+    reason: Allows skipping the DP all-reduce for MoE on KV-consumer ranks and keeps decode steps decode-shaped, reducing
+      decode latency.
+  - scenario: PD-disaggregated Decode node using fine-grained TP (oproj/mlp_tensor_parallel_size > 0)
+    value: true
+    reason: Required by assertion in ascend_config.py:826; fine-grained TP cannot start without it.
+  - scenario: PD-disaggregated Prefill node (kv_role=kv_producer) or PD-mixed / single-node deployment
+    value: false
+    reason: Ignored on P nodes and rejected with an error on non-consumer nodes; leave disabled.
+  caveats:
+  - Do not set this on P nodes; it is silently disabled there and will be deprecated for P nodes in a future release.
+  - If you also enable dyntra_lb_config.enabled, the combined DyntraLB recompute scheduler is selected automatically — do
+    not expect the plain DyntraLB scheduler.
+  - DP all-reduce skipping is suppressed under mc2_comm_alg=hierarchy or MegaMoe, so the throughput benefit may be smaller
+    in those configurations.
+  quick_guide: Set additional_config.scheduler_config.recompute_scheduler_enable=true only on PD-disaggregated Decode (kv_consumer)
+    nodes.
+analysis_date: '2026-10-27'

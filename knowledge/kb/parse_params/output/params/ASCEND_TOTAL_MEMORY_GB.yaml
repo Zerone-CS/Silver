@@ -1,0 +1,75 @@
+name: ASCEND_TOTAL_MEMORY_GB
+type: env
+category: memory
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/lmcache_ascend_deployment.md:40
+value_type: int
+default: <computed>
+valid_choices: positive integer (GB); no explicit range enforced in provided context
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'ASCEND_TOTAL_MEMORY_GB is not defined or read anywhere in the vllm or vllm-ascend
+
+  source code provided in the context; it appears only in the vllm-ascend LMCache
+
+  deployment documentation as a docker `-e` environment variable. In that documented
+
+  usage it is passed into the container alongside ASCEND_VISIBLE_DEVICES /
+
+  ASCEND_RT_VISIBLE_DEVICES and VLLM_TARGET_DEVICE=npu. Its role is to advertise the
+
+  total NPU memory (in GB) available to the process/container so that memory-sizing
+
+  logic (e.g. KV-cache sizing, LMCache offload buffers) can compute how much device
+
+  memory exists. Because no code path in the provided context reads it, its direct
+
+  runtime effect on vLLM/vllm-ascend scheduling or throughput cannot be confirmed from
+
+  source; any impact is indirect, via memory accounting used by downstream components
+
+  (LMCache / KV-cache sizing). It does not alter kernel dispatch, HCCL communication,
+
+  or graph compilation.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/lmcache_ascend_deployment.md:40
+  context: Passed as docker env var (-e ASCEND_TOTAL_MEMORY_GB=32) when launching the LMCache-Ascend container; no source-code
+    read site found in vllm or vllm-ascend.
+related_parameters:
+- name: ASCEND_RT_VISIBLE_DEVICES
+  relation: Set together in the same documented docker launch to select visible NPU devices.
+- name: ASCEND_VISIBLE_DEVICES
+  relation: Set together in the same documented docker launch to select visible NPU devices.
+- name: VLLM_TARGET_DEVICE
+  relation: Set to npu in the same launch; indicates the Ascend target device.
+- name: gpu_memory_utilization
+  relation: Both influence how much device memory vLLM reserves for KV cache; ASCEND_TOTAL_MEMORY_GB advertises total memory
+    while gpu_memory_utilization sets the fraction used.
+constraints:
+- Value must be a positive integer number of gigabytes; the documented example uses 32.
+- Only meaningful in Ascend NPU deployments (VLLM_TARGET_DEVICE=npu); it has no effect on non-Ascend targets.
+tuning_advice:
+  summary: Set ASCEND_TOTAL_MEMORY_GB to the actual per-device NPU memory (GB) so memory-sizing components see the correct
+    capacity; it is a deployment/container hint, not a throughput knob.
+  suggested_values:
+  - scenario: Ascend 910B (64GB HBM) container deployment
+    value: 64
+    reason: Advertise the true per-device HBM capacity so memory accounting matches hardware.
+  - scenario: Ascend 910B (32GB) or documented LMCache example
+    value: 32
+    reason: Matches the value used in the vllm-ascend LMCache deployment doc example.
+  caveats:
+  - No source-code read site was found in the provided vllm/vllm-ascend context; treat this as a deployment hint whose effect
+    depends on the consuming component (e.g. LMCache), not a core vLLM scheduler parameter.
+  - Setting it inconsistent with actual device memory can mislead memory-sizing logic and cause over/under-provisioning of
+    KV-cache or offload buffers.
+  - It does not override gpu_memory_utilization; the fraction of memory vLLM actually uses for KV cache is still governed
+    by gpu_memory_utilization.
+  quick_guide: Set ASCEND_TOTAL_MEMORY_GB to the real per-NPU memory in GB (e.g. 32 or 64) in Ascend container launches.
+analysis_date: '2026-10-27'

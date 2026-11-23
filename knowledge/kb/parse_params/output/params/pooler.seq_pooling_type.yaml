@@ -1,0 +1,112 @@
+name: pooler.seq_pooling_type
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:742
+- vllm/config/model.py:2067
+- vllm/model_executor/layers/pooler/seqwise/poolers.py:99
+- vllm/model_executor/layers/pooler/seqwise/poolers.py:120
+- vllm/model_executor/models/bert.py:101
+- vllm/model_executor/models/clip.py:177
+- vllm/model_executor/models/config.py:567
+value_type: str
+default: <computed>
+valid_choices:
+- MEAN
+- CLS
+- LAST
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'pooler.seq_pooling_type selects the sequence-pooling reduction applied to the
+
+  final hidden states of a pooling/embedding model (MEAN, CLS, LAST). It is
+
+  resolved in ModelConfig.__post_init__ (vllm/config/model.py:742): if the user
+
+  did not set it, it falls back to the model''s default_seq_pooling_type from
+
+  model info, or to a value derived from the HF config''s `pooling` field via
+
+  VerifyAndUpdateConfig handlers (vllm/model_executor/models/config.py:567,606).
+
+  The chosen method is consumed by get_seq_pooling_method() in
+
+  pooler_for_embed/pooler_for_classify (poolers.py:99,120) and by model-specific
+
+  poolers (bert.py:101, clip.py:177). The pooling op itself is a cheap reduction
+
+  over the sequence dimension (mean/max/take-first-token), so its direct compute
+
+  cost is negligible relative to the transformer forward pass. The main
+
+  performance-relevant effect is indirect: "in ModelConfig.is_chunked_prefill_supported"
+
+  (model.py:2067), a decoder-attention pooling model with seq_pooling_type in
+
+  ("MEAN","CLS") (or tok_pooling_type == "STEP") disables chunked prefill. On
+
+  Ascend NPU, disabling chunked prefill reduces prefill batching efficiency and
+
+  can lower throughput for long-input embedding workloads. No vllm-ascend
+
+  override of this parameter was found in the provided context; it is a pure
+
+  upstream vLLM config field with no Ascend-specific dispatch.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:742
+  context: Resolves seq_pooling_type from user value, sentence-transformers config, or model default during ModelConfig init.
+- file: vllm/config/model.py:2067
+  context: is_chunked_prefill_supported returns False for decoder-attn pooling models when seq_pooling_type is MEAN or CLS.
+- file: vllm/model_executor/layers/pooler/seqwise/poolers.py:99
+  context: pooler_for_embed builds the SequencePooler using get_seq_pooling_method(seq_pooling_type).
+- file: vllm/model_executor/layers/pooler/seqwise/poolers.py:120
+  context: pooler_for_classify builds the SequencePooler using the configured pooling method.
+- file: vllm/model_executor/models/bert.py:101
+  context: BertPooler asserts seq_pooling_type is set and constructs its pooling method from it.
+- file: vllm/model_executor/models/clip.py:177
+  context: CLIP uses seq_pooling_type to derive the vision feature select strategy and image token count.
+- file: vllm/model_executor/models/config.py:567
+  context: LlamaBidirectionalConfig maps HF `pooling` field (avg/cls/last) to seq_pooling_type.
+related_parameters:
+- name: pooler.tok_pooling_type
+  relation: Sibling pooling config; tok_pooling_type == STEP also disables chunked prefill for decoder-attn pooling models.
+- name: pooler.use_activation
+  relation: Part of the same PoolerConfig; controls activation applied after pooling.
+- name: enable_chunked_prefill
+  relation: seq_pooling_type in (MEAN, CLS) forces chunked prefill off for decoder-attn pooling models.
+- name: runner_type
+  relation: PoolerConfig is only populated when runner_type == 'pooling'.
+constraints:
+- seq_pooling_type must be one of MEAN, CLS, or LAST; other values are not valid pooling methods.
+- For bidirectional Llama embedding models, the HF config must contain a `pooling` field (avg/cls/last) or model init raises
+  a ValueError.
+- BertPooler and CLIP require seq_pooling_type to be non-None (asserted); it is normally filled from the model default.
+- PoolerConfig is only populated when runner_type is 'pooling'; for generation models this field has no effect.
+tuning_advice:
+  summary: Leave seq_pooling_type at the model default unless you need to match a specific embedding model's training config;
+    be aware MEAN/CLS disables chunked prefill for decoder-attn pooling models.
+  suggested_values:
+  - scenario: Standard embedding model (BERT/Sentence-Transformers) with model-provided default
+    value: <computed>
+    reason: The model default from default_seq_pooling_type or HF config is correct for producing valid embeddings; overriding
+      risks wrong outputs.
+  - scenario: Decoder-attention pooling model where chunked prefill throughput matters
+    value: LAST
+    reason: LAST does not disable chunked prefill (only MEAN/CLS do), preserving prefill batching efficiency on Ascend NPU.
+  - scenario: Bidirectional encoder embedding model (LlamaBidirectional)
+    value: MEAN
+    reason: Must match the HF config `pooling` field (avg maps to MEAN); chunked prefill is already unsupported for bidirectional
+      attention.
+  caveats:
+  - Do not override this value arbitrarily; it must match the model's training-time pooling to avoid degraded embedding quality.
+  - On Ascend NPU, MEAN/CLS with decoder attention turns off chunked prefill, which may lower throughput for long-sequence
+    embedding workloads.
+  quick_guide: Keep the model default; only set explicitly to match the checkpoint's pooling config.
+analysis_date: '2026-10-27'

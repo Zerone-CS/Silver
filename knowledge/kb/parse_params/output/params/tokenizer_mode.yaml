@@ -1,0 +1,125 @@
+name: --tokenizer-mode
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:145
+- vllm/engine/arg_utils.py:881
+- vllm/engine/arg_utils.py:1827
+- vllm/config/speculative.py:1277
+- vllm/entrypoints/llm.py:79
+- tests/e2e/conftest.py:987
+value_type: str
+default: auto
+valid_choices:
+- auto
+- hf
+- slow
+- mistral
+- deepseek_v32
+- deepseek_v4
+- deepseek_v41
+- kimi_k3
+- cohere
+- <plugin-provided custom values>
+cli_example: --tokenizer-mode auto
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--tokenizer-mode selects which tokenizer implementation is used to convert
+
+  prompt text into token IDs and to detokenize outputs. It is consumed in
+
+  vllm/config/model.py (ModelConfig.tokenizer_mode) and threaded through
+
+  EngineArgs.create_model_config (vllm/engine/arg_utils.py:1827) and into the
+
+  draft ModelConfig for speculative decoding (vllm/config/speculative.py:1277).
+
+  Crucially, tokenizer_mode is listed in ModelConfig.compute_hash''s
+
+  ignored_factors set (vllm/config/model.py:435), meaning it does NOT affect the
+
+  computation graph, KV cache layout, or any NPU kernel selection. It therefore
+
+  has no effect on the model forward pass, ACL graph capture, or HCCL
+
+  communication on Ascend.
+
+
+  The only performance-relevant effect is on the CPU-side tokenization /
+
+  detokenization path: "\"hf\" uses the fast (Rust BPE) tokenizer, \"slow\" uses the"
+
+  pure-Python tokenizer (materially slower per token), and specialized modes
+
+  ("mistral", "deepseek_v4", "kimi_k3", "cohere") route through alternate
+
+  encoders (e.g. mistral_common, custom prompt encoders). For very high request
+
+  rates or long prompts, the tokenizer can become a CPU bottleneck that shows up
+
+  as increased TTFT, but this is independent of the Ascend NPU and is dwarfed by
+
+  model compute for typical LLM serving. vllm-ascend does not override or
+
+  monkey-patch tokenizer_mode; the Ascend e2e tests simply pass it through to
+
+  LLM(...) (tests/e2e/conftest.py:1007) and use model-specific values such as
+
+  "deepseek_v4" for DeepSeek-V4 checkpoints.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:145
+  context: ModelConfig field definition and docstring enumerating valid modes
+- file: vllm/engine/arg_utils.py:881
+  context: CLI argument registration --tokenizer-mode
+- file: vllm/engine/arg_utils.py:1827
+  context: Passed into ModelConfig during engine arg -> config conversion
+- file: vllm/config/speculative.py:1277
+  context: Propagated to draft model config for speculative decoding
+- file: vllm/config/model.py:435
+  context: Listed in compute_hash ignored_factors (no graph impact)
+- file: tests/e2e/conftest.py:1007
+  context: vllm-ascend e2e VllmRunner forwards tokenizer_mode to LLM()
+related_parameters:
+- name: --tokenizer
+  relation: Selects the tokenizer path; tokenizer_mode selects the implementation used for that path
+- name: --skip-tokenizer-init
+  relation: When set, tokenizer is not initialized and tokenizer_mode has no effect
+- name: --trust-remote-code
+  relation: Required for some custom tokenizers loaded via HF
+- name: --speculative-config
+  relation: Draft model inherits the target's tokenizer_mode (speculative.py:1277)
+constraints:
+- When --skip-tokenizer-init is set, the tokenizer is not initialized and --tokenizer-mode has no effect.
+- Model-specific modes such as deepseek_v4, deepseek_v32, kimi_k3, and cohere must match the checkpoint's expected prompt/chat
+  format or tokenization will be incorrect.
+- Custom tokenizer modes beyond the built-in set require a plugin to be registered.
+tuning_advice:
+  summary: Leave at "auto" for standard models; set the model-specific mode only when the checkpoint requires it — this parameter
+    does not affect NPU compute performance.
+  suggested_values:
+  - scenario: Standard HF models (Qwen, Llama, etc.) on Ascend
+    value: auto
+    reason: Uses the fast HF tokenizer when available, giving the best CPU-side tokenization throughput without special handling.
+  - scenario: DeepSeek-V4 / V4.1 checkpoints
+    value: deepseek_v4
+    reason: Required by vllm-ascend DeepSeek-V4 docs to enable the correct prompt encoder; pair with --reasoning-parser deepseek_v4
+      and --tool-call-parser deepseek_v4.
+  - scenario: Kimi-K3 checkpoints
+    value: kimi_k3
+    reason: Doc specifies --tokenizer-mode kimi_k3 to select the Kimi-K3 request/response format.
+  - scenario: Mistral models with mistral_common installed
+    value: mistral
+    reason: Forces the mistral_common tokenizer for correct Mistral prompt handling.
+  caveats:
+  - Do not use "slow" in production; it degrades tokenization throughput and can bottleneck TTFT at high concurrency.
+  - This setting has no impact on NPU kernels, ACL graphs, or HCCL — do not expect throughput gains from changing it.
+  - Ensure the chosen mode matches the checkpoint; a wrong mode produces incorrect tokens/text rather than a performance regression.
+  quick_guide: Keep "auto" unless the model docs mandate a specific mode (deepseek_v4, kimi_k3, mistral); it affects only
+    CPU tokenization, not NPU performance.
+analysis_date: '2026-10-27'

@@ -1,0 +1,111 @@
+name: VLLM_ENGINE_READY_TIMEOUT_S
+type: env
+category: other
+scope: both
+source_file:
+- vllm/envs.py:798
+- vllm/v1/engine/core_client.py:26
+- vllm/v1/engine/core_client.py:714
+- vllm/v1/utils.py:261
+- vllm/v1/utils.py:396
+value_type: int
+default: 600
+valid_choices: any positive integer number of seconds
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_ENGINE_READY_TIMEOUT_S is a startup-phase timeout, not a steady-state
+
+  performance knob. In vLLM upstream it is read in vllm/envs.py:798 (default 600s)
+
+  and consumed in vllm/v1/engine/core_client.py:714, where the client polls the
+
+  ZMQ input socket for EngineCoreReadyResponse messages from each engine core
+
+  process, using `timeout=VLLM_ENGINE_READY_TIMEOUT_S * 1000` (ms). If all engine
+
+  identities do not report ready within this window, a TimeoutError is raised and
+
+  startup fails. It is also used as the default timeout for
+
+  gather_actual_addresses() in vllm/v1/utils.py:261 (waiting for API server child
+
+  processes to report their bound addresses) and forwarded explicitly to the Rust
+
+  frontend via args_dict["engine_ready_timeout_secs"] in vllm/v1/utils.py:396-399.
+
+  On Ascend NPU, engine-core startup is dominated by weight loading (large MoE
+
+  checkpoints, lazy safetensors loading), CANN graph capture / ACL Graph
+
+  preparation, and HCCL communicator initialization across DP/TP ranks — all of
+
+  which are significantly slower than on GPU. The vllm-ascend docs explicitly
+
+  recommend raising this to 36000s for DeepSeek-V4.1-Flash deployments. The
+
+  parameter does not change throughput or memory once the engine is running; it
+
+  only determines whether a slow-but-healthy Ascend startup is allowed to complete
+
+  or is aborted. Hence low performance impact, but high operational importance:
+
+  too small a value causes spurious startup failures on Ascend.
+
+  '
+usage_locations:
+- file: vllm/envs.py:798
+  context: Definition of the env var with default 600 seconds.
+- file: vllm/v1/engine/core_client.py:714
+  context: ZMQ poll timeout (converted to ms) while waiting for engine core ready messages; raises TimeoutError on expiry.
+- file: vllm/v1/utils.py:261
+  context: Default timeout for gather_actual_addresses() waiting on API server child processes.
+- file: vllm/v1/utils.py:396
+  context: Forwarded as engine_ready_timeout_secs to the Rust frontend so both frontends honor the same env var.
+related_parameters:
+- name: VLLM_ENGINE_ITERATION_TIMEOUT_S
+  relation: Sibling timeout for per-iteration engine steps (default 60s); distinct from the startup-ready timeout.
+- name: VLLM_HTTP_TIMEOUT_KEEP_ALIVE
+  relation: Forwarded alongside this variable to the Rust frontend in vllm/v1/utils.py.
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: Model runner version affects startup duration (graph capture, warmup) and thus how much headroom this timeout
+    needs.
+- name: --compilation-config
+  relation: Graph capture mode (e.g. FULL_DECODE_ONLY) adds to startup time and may require a larger ready timeout.
+constraints:
+- The value must be a positive integer number of seconds; it is parsed with int() and a non-integer value will raise at env
+  load.
+- If engine cores do not all report ready within this many seconds, startup aborts with a TimeoutError.
+tuning_advice:
+  summary: 'Keep the default 600s for small/simple models; raise substantially (e.g. 3600-36000s)
+
+    for large MoE models, multi-node DP/TP deployments, or heavy graph capture on Ascend,
+
+    where weight loading and CANN/ACL graph preparation can take tens of minutes.
+
+    '
+  suggested_values:
+  - scenario: Small dense model, single node, default graph mode
+    value: 600
+    reason: Default is sufficient; startup completes well within 10 minutes.
+  - scenario: Large MoE model (e.g. DeepSeek-V4.1-Flash) single-node DP4/TP4 on A3
+    value: 36000
+    reason: vllm-ascend docs recommend 36000s to cover slow weight loading and Decode graph preparation on Ascend.
+  - scenario: PD-disaggregated multi-node deployment (Prefill + Decode engines)
+    value: 36000
+    reason: Docs recommend 36000s so every Prefill and Decode engine has time to finish startup including graph preparation.
+  - scenario: Multi-node DP with HCCL communicator init and lazy safetensors loading
+    value: 1800
+    reason: HCCL init and lazy checkpoint materialization add startup latency; 1800s gives headroom without masking real hangs.
+  caveats:
+  - This is a startup-only timeout; it does not affect steady-state throughput, latency, or memory once the engine is serving.
+  - On Ascend, CANN graph capture and HCCL communicator setup make startup much slower than GPU; the 600s default can cause
+    spurious TimeoutError on large models.
+  - Setting it very large can mask genuine hangs (e.g. HCCL deadlock, missing device) — pair with monitoring of startup logs.
+  - The value is forwarded to the Rust frontend as engine_ready_timeout_secs, so it behaves consistently across Python and
+    Rust frontends.
+  quick_guide: Raise VLLM_ENGINE_READY_TIMEOUT_S (e.g. 36000) for large Ascend MoE / multi-node deployments to avoid startup
+    timeouts; leave at 600 for small models.
+analysis_date: '2026-10-27'

@@ -1,0 +1,125 @@
+name: VLLM_MOE_SKIP_PADDING
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:1579
+- vllm/envs.py:210
+- vllm/v1/worker/gpu/model_runner.py:1279
+- vllm/model_executor/layers/fused_moe/router/fused_topk_router.py:20
+- vllm/model_executor/layers/fused_moe/router/fused_topk_bias_router.py:24
+- vllm/models/deepseek_v4/nvidia/fi_moe.py:50
+- vllm/models/deepseek_v4/nvidia/model.py:691
+- vllm_ascend/models/deepseek_v4/model.py:929
+- vllm_ascend/models/deepseek_v4/dspark.py:271
+- vllm_ascend/models/deepseek_v4/mtp.py:137
+- vllm_ascend/models/deepseek_v41/model.py:1542
+- vllm_ascend/models/deepseek_v41/dspark.py:252
+- vllm_ascend/models/kimi_k3.py:855
+- vllm_ascend/models/minimax_m3/minimax_m3.py:1187
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(os.getenv(...))))
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'Upstream vLLM: "when enabled, the model runner marks trailing cudagraph/DP padding"
+
+  rows in `is_padding` (vllm/v1/worker/gpu/model_runner.py:1279), and MoE routers
+
+  (fused_topk_router.py:20, fused_topk_bias_router.py:24) and MegaMoE
+
+  (deepseek_v4/nvidia/model.py:691, fi_moe.py:50) read this mask to force padding
+
+  tokens'' topk_ids to -1 so dispatch and expert GEMMs drop them. This reduces wasted
+
+  expert compute on padding rows, improving throughput/latency when padding is
+
+  significant (small batches, cudagraph padding, DP padding).
+
+
+  vllm-ascend: "the flag is consumed in the sequence-parallel MoE path of several"
+
+  Ascend models (deepseek_v4/model.py:929, deepseek_v4/dspark.py:271,
+
+  deepseek_v4/mtp.py:137, deepseek_v41/model.py:1542, deepseek_v41/dspark.py:252,
+
+  kimi_k3.py:855, minimax_m3/minimax_m3.py:1187). When enabled and a forward context
+
+  is available, it computes `sp_padding_mask(...)` from the current `is_padding` and
+
+  installs it into `forward_context.is_padding` before `sp_shard` splits the token
+
+  axis. This propagates the padding mask into the sharded MoE computation so that
+
+  padding tokens are skipped in the expert dispatch/GEMM. The mask is restored after
+
+  the SP region (e.g. dspark/mtp save `orig_is_padding` and restore it) to avoid
+
+  leaking a sharded mask into subsequent steps. Net effect on Ascend: avoids wasted
+
+  expert compute on padding tokens under sequence-parallel MoE, improving effective
+
+  throughput; the mask computation itself is a small overhead. It only takes effect
+
+  when sequence-parallel MoE is active and a forward context exists.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1579
+  context: Env var definition, default 1 (enabled)
+- file: vllm/v1/worker/gpu/model_runner.py:1279
+  context: Marks trailing cudagraph/DP padding rows in is_padding
+- file: vllm/model_executor/layers/fused_moe/router/fused_topk_router.py:20
+  context: Router reads is_padding mask to skip padding tokens
+- file: vllm/models/deepseek_v4/nvidia/model.py:691
+  context: MegaMoE forces topk_ids=-1 for padding rows
+- file: vllm_ascend/models/deepseek_v4/model.py:929
+  context: 'Ascend SP MoE: installs sp_padding_mask into forward_context before sp_shard'
+- file: vllm_ascend/models/deepseek_v4/dspark.py:271
+  context: 'Ascend DSpark SP path: saves/restores is_padding around sharded forward'
+- file: vllm_ascend/models/deepseek_v4/mtp.py:137
+  context: 'Ascend MTP SP path: shards mask only for the duration of the forward'
+- file: vllm_ascend/models/deepseek_v41/model.py:1542
+  context: 'Ascend DeepSeek V4.1 SP path: installs sp_padding_mask before sp_shard'
+- file: vllm_ascend/models/kimi_k3.py:855
+  context: 'Ascend Kimi-K3 SP path: installs sp_padding_mask from positions'
+- file: vllm_ascend/models/minimax_m3/minimax_m3.py:1187
+  context: 'Ascend MiniMax-M3: toggles is_padding per layer based on SP usage'
+related_parameters:
+- name: VLLM_USE_FUSED_MOE_GROUPED_TOPK
+  relation: Both affect MoE expert selection; grouped topk is the router that consumes the padding mask
+- name: --enable-expert-parallel
+  relation: Padding skipping reduces wasted expert compute, most beneficial with EP MoE dispatch
+- name: compilation_config.cudagraph_mode
+  relation: Padding rows originate from cudagraph/DP padding; more padding means larger benefit
+constraints:
+- The value is parsed as bool(int(...)), so only '0' or '1' are valid; other strings raise a ValueError at import time.
+- On Ascend, the flag only has an effect when sequence-parallel MoE is active and a forward context is available; otherwise
+  the mask logic is skipped.
+- Requires a MoE kernel that treats topk_id == -1 as a skip sentinel; kernels that do not support the sentinel will not benefit
+  and may misbehave.
+tuning_advice:
+  summary: Keep enabled (default) for sequence-parallel MoE models on Ascend to skip expert compute on padding tokens; disable
+    only if a kernel lacks -1 sentinel support.
+  suggested_values:
+  - scenario: DeepSeek V4/V4.1, Kimi-K3, MiniMax-M3 with sequence-parallel MoE on Ascend
+    value: 1
+    reason: Enables sp_padding_mask propagation so padding tokens are dropped from expert dispatch/GEMM, improving effective
+      throughput.
+  - scenario: Small-batch decode or DP/cudagraph padding-heavy workloads
+    value: 1
+    reason: Padding fraction is largest here, so skipping padding expert compute yields the biggest latency/throughput gain.
+  - scenario: MoE kernel without topk_id == -1 skip-sentinel support
+    value: 0
+    reason: Without sentinel support the mask cannot be honored; disabling avoids relying on unsupported behavior.
+  caveats:
+  - Only effective under sequence-parallel MoE with an available forward context on Ascend.
+  - Mask bookkeeping (save/restore is_padding) is required to avoid leaking sharded masks across draft steps; keep the flag
+    consistent across a run.
+  quick_guide: Leave VLLM_MOE_SKIP_PADDING=1 (default) for SP-MoE models on Ascend; set 0 only if your MoE kernel cannot handle
+    -1 skip sentinels.
+analysis_date: '2026-10-27'

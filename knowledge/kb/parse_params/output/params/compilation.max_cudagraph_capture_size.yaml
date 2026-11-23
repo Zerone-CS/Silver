@@ -1,0 +1,122 @@
+name: compilation.max_cudagraph_capture_size
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1661
+- vllm/engine/arg_utils.py:2606
+- vllm/config/vllm.py:1029
+- vllm/config/vllm.py:1783
+- vllm_ascend/platform.py:361
+- vllm_ascend/platform.py:1271
+- vllm_ascend/utils.py:779
+- vllm_ascend/ascend_config.py:1394
+- vllm_ascend/ascend_forward_context.py:257
+- vllm_ascend/attention/dsa_v1.py:724
+- vllm_ascend/attention/context_parallel/dsa_cp.py:293
+- vllm_ascend/attention/context_parallel/sfa_cp.py:116
+- vllm_ascend/models/deepseek_v41/model.py:1071
+value_type: int
+default: <computed>
+valid_choices: Any positive integer; must equal the largest value in cudagraph_capture_sizes when that list is explicitly
+  set. 0 disables capture (set automatically under enforce_eager or CUDAGraphMode.NONE).
+cli_example: '--compilation-config ''{"max_cudagraph_capture_size": 512}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This field is the upper bound on the token/batch size for which ACLGraph (Ascend's\nCUDA-graph equivalent)\
+  \ buckets are captured. It is consumed in several distinct ways:\n\n1. Graph bucket coverage (throughput/latency): vLLM's\
+  \ `_set_cudagraph_sizes()` derives\n   `cudagraph_capture_sizes` from this max. Any decode step whose padded token count\n\
+  \   exceeds the largest captured bucket falls back to eager execution, which on Ascend\n   is significantly slower and,\
+  \ in cross-DP setups, can desync HCCL collectives.\n   vllm_ascend/ascend_config.py:1394-1413 explicitly disables\n   `oproj_tensor_parallel_size`/`mlp_tensor_parallel_size`\
+  \ (with a warning) when\n   `max_cudagraph_capture_size` does not cover `max_num_seqs * (1 + num_speculative_tokens)`,\n\
+  \   because an oversized step would dispatch to eager and hang cross-DP HCCL collectives.\n\n2. Memory (memory): larger\
+  \ capture sizes reserve more NPU memory for graph-private\n   buffers. vllm_ascend/platform.py:361 applies a \"reduced cg\
+  \ cap\" (`_get_reduced_cg_cap`)\n   as an Ascend-specific memory-saving override when MC2 is used, then\n   platform.py:1271\
+  \ restores it by injecting the reduced cap into\n   `cudagraph_capture_sizes` and resetting `max_cudagraph_capture_size\
+  \ = None` before\n   upstream rebuilds the list. So on Ascend the effective value may be silently\n   reduced from what\
+  \ the user set.\n\n3. Buffer sizing (memory): several Ascend attention paths size persistent per-request\n   buffers using\
+  \ this value — dsa_v1.py:724 (`max_qli_reqs`), dsa_cp.py:293\n   (`max_padded_reqs`), sfa_cp.py:116 (`_pcp_o_proj_token_capacity`),\
+  \ and\n   deepseek_v41/model.py:1071 (`_engram_max_tokens`). A larger value directly increases\n   these allocations; a\
+  \ too-small value can truncate views and corrupt memory.\n\n4. MC2 token capacity (communication): ascend_forward_context.py:257\
+  \ uses it as\n   `max_num_tokens` for computing `_mc2_tokens_capacity` when prefill MC2 is off,\n   which bounds HCCL comm\
+  \ buffer sizing.\n\n5. Consistency enforcement: vllm_ascend/utils.py:779 raises ValueError if a user-set\n   max disagrees\
+  \ with the max of an explicitly-set `cudagraph_capture_sizes`, otherwise\n   truncates with a warning.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:361
+  context: apply_config_platform_defaults overrides max_cudagraph_capture_size with a reduced MC2 memory-saving cap
+- file: vllm_ascend/platform.py:1271
+  context: Restores reduced cap into cudagraph_capture_sizes and resets max to None before _set_cudagraph_sizes
+- file: vllm_ascend/utils.py:779
+  context: update_cudagraph_capture_sizes validates/truncates max against cudagraph_capture_sizes
+- file: vllm_ascend/ascend_config.py:1394
+  context: Disables oproj/mlp tensor parallelism if capture bound does not cover max step
+- file: vllm_ascend/ascend_forward_context.py:257
+  context: Used as max_num_tokens to compute MC2 token capacity
+- file: vllm_ascend/attention/dsa_v1.py:724
+  context: Sizes QLI per-request buffers for graph-mode maximum
+- file: vllm_ascend/attention/context_parallel/dsa_cp.py:293
+  context: Sizes DSA-CP per-request buffers
+- file: vllm_ascend/attention/context_parallel/sfa_cp.py:116
+  context: Sizes PCP O-projection token capacity buffers
+- file: vllm_ascend/models/deepseek_v41/model.py:1071
+  context: Sizes engram max tokens
+- file: vllm/engine/arg_utils.py:2606
+  context: CLI override into compilation_config; mutually exclusive with compilation_config.max_cudagraph_capture_size
+- file: vllm/config/vllm.py:1783
+  context: Set to 0 when enforce_eager; also 0 when CUDAGraphMode.NONE
+related_parameters:
+- name: compilation.cudagraph_capture_sizes
+  relation: Mutually exclusive with the CLI flag; if set, max must equal its largest element or a ValueError is raised (vllm_ascend/utils.py:779)
+- name: compilation.cudagraph_mode
+  relation: Set to 0 when mode is NONE; FULL/FULL_DECODE_ONLY benefit most from adequate capture size
+- name: enforce_eager
+  relation: When true, forces max_cudagraph_capture_size to 0 and disables capture
+- name: max_num_seqs
+  relation: Upper bound should be >= max_num_seqs * (1 + num_speculative_tokens) to cover decode steps
+- name: speculative_config.num_speculative_tokens
+  relation: Multiplies per-request token count in decode; raises required capture size
+- name: additional_config.oproj_tensor_parallel_size
+  relation: Disabled if capture bound does not cover max step (ascend_config.py:1394)
+- name: additional_config.mlp_tensor_parallel_size
+  relation: Disabled if capture bound does not cover max step (ascend_config.py:1394)
+- name: additional_config.enable_prefill_mc2
+  relation: When enabled, MC2 token capacity uses max_num_batched_tokens instead of this value
+constraints:
+- If cudagraph_capture_sizes is explicitly set, max_cudagraph_capture_size must equal the largest element of that list, otherwise
+  a ValueError is raised.
+- The CLI flag --max-cudagraph-capture-size and compilation_config.max_cudagraph_capture_size are mutually exclusive; setting
+  both raises a ValueError.
+- When enforce_eager is true or cudagraph_mode resolves to NONE, max_cudagraph_capture_size is forced to 0 and cudagraph_capture_sizes
+  to an empty list.
+- To keep oproj_tensor_parallel_size / mlp_tensor_parallel_size enabled, max_cudagraph_capture_size must be >= min(max_num_batched_tokens,
+  max_num_seqs * (1 + num_speculative_tokens)).
+tuning_advice:
+  summary: Set max_cudagraph_capture_size to cover the largest realistic decode step (max_num_seqs * (1 + num_speculative_tokens)
+    per DP rank) while staying within NPU memory for graph capture.
+  suggested_values:
+  - scenario: Uniform decode workload, no speculative decoding, DP=1
+    value: max_num_seqs
+    reason: Covers the largest decode batch so all decode steps hit captured graphs; avoids eager fallback.
+  - scenario: EAGLE3/MTP speculative decoding with num_speculative_tokens=3, DP2, max_num_seqs=256
+    value: 1024
+    reason: Per-rank batch is 128 requests * 4 tokens = 512; setting 1024 gives headroom for concurrency growth to 257+ per
+      the MiniMax-M3 doc guidance.
+  - scenario: Memory-constrained single-card deployment (e.g. Dots3-Note)
+    value: 16
+    reason: Doc example uses max_cudagraph_capture_size=16 = max_num_seqs(4) * (1+num_spec_tokens(3)); keeps graph capture
+      peak memory low.
+  - scenario: ACLGraph capture fails with insufficient stream resources
+    value: reduce current value
+    reason: graph_mode.md recommends lowering max_cudagraph_capture_size to mitigate capture failures.
+  caveats:
+  - On Ascend the value may be silently reduced by the MC2 reduced-cg-cap override; verify effective capture sizes in logs.
+  - Keep max_cudagraph_capture_size consistent with cudagraph_capture_sizes to avoid ValueError or truncation warnings.
+  - If you rely on oproj/mlp tensor parallelism, ensure the bound covers the max step or those features are disabled with
+    a warning.
+  quick_guide: Set to max_num_seqs * (1 + num_speculative_tokens) per DP rank; raise to 1024 for high-concurrency spec-decode,
+    lower to reduce graph memory.
+analysis_date: '2026-10-27'

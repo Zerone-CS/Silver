@@ -1,0 +1,77 @@
+name: HCCL_RDMA_SL
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/developer_guide/performance_and_debug/optimization_and_tuning.md:147
+value_type: int
+default: <computed>
+valid_choices: HCCL service level (SL) value for RDMA NIC; valid range depends on the RDMA fabric configuration (typically
+  0-7 for RoCE SL/priority mapping)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_RDMA_SL is not defined or read anywhere in vllm or vllm-ascend source code; it is a
+
+  CANN/HCCL runtime environment variable consumed by the Huawei Collective Communication
+
+  Library (HCCL) when it initializes RDMA NIC transport. It configures the RDMA Service Level
+
+  (SL) field used for RoCE traffic, which maps to a hardware queue/priority on the RDMA NIC.
+
+  On Ascend, this only takes effect when inter-node communication uses RDMA links (e.g. when
+
+  HCCL_INTRA_ROCE_ENABLE is set to use RDMA instead of SDMA between 8P nodes, or for
+
+  cross-node tensor/data/pipeline parallel traffic). The SL value influences traffic
+
+  prioritization and QoS on the RoCE fabric; a mismatched or congested SL can increase
+
+  collective-communication latency and reduce effective throughput for distributed inference,
+
+  but it does not change per-token compute or memory usage. Because vllm-ascend does not read
+
+  or override it, its effect is entirely mediated by HCCL at runtime and is only relevant for
+
+  multi-node RDMA deployments.
+
+  '
+usage_locations:
+- file: docs/source/developer_guide/performance_and_debug/optimization_and_tuning.md:147
+  context: Documented as an HCCL env var to configure the service level of the RDMA NIC for performance tuning.
+related_parameters:
+- name: HCCL_RDMA_TC
+  relation: Companion RDMA NIC setting; TC configures traffic class while SL configures service level for the same RoCE traffic.
+- name: HCCL_INTRA_ROCE_ENABLE
+  relation: When enabled, RDMA links are used between 8P nodes, making RDMA SL/TC settings relevant.
+- name: HCCL_BUFFSIZE
+  relation: Another HCCL tuning env var controlling inter-NPU shared data cache size; both affect collective communication
+    performance.
+constraints:
+- HCCL_RDMA_SL only has an effect when inter-node communication actually uses RDMA links; on single-node or SDMA-only fabrics
+  it is ignored.
+- The SL value must be consistent with the RoCE fabric's configured priority/QoS mapping, otherwise traffic may be dropped
+  or deprioritized.
+tuning_advice:
+  summary: Set HCCL_RDMA_SL to match the RoCE fabric's QoS priority for collective traffic in multi-node RDMA deployments
+    to reduce communication latency.
+  suggested_values:
+  - scenario: Multi-node deployment using RoCE/RDMA interconnect with a configured QoS priority for HCCL traffic
+    value: 3
+    reason: Align the RDMA service level with the switch/fabric priority assigned to collective communication traffic to avoid
+      deprioritization.
+  - scenario: Single-node or SDMA-only interconnect
+    value: unset
+    reason: RDMA SL has no effect when RDMA links are not used; leaving it unset avoids misconfiguration.
+  caveats:
+  - vllm-ascend does not read or override this variable; it is consumed directly by HCCL/CANN, so behavior depends on the
+    installed CANN version.
+  - Incorrect SL values that do not match the fabric QoS mapping can cause packet drops or degraded collective performance
+    rather than an error.
+  - Only relevant for distributed (multi-node) inference; no impact on single-node throughput or memory.
+  quick_guide: For multi-node RoCE deployments, set HCCL_RDMA_SL to the fabric's QoS priority for HCCL traffic; otherwise
+    leave unset.
+analysis_date: '2026-10-27'

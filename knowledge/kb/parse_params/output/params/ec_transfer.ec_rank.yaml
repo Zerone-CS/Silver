@@ -1,0 +1,65 @@
+name: ec_transfer.ec_rank
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/ec_transfer.py:1
+value_type: int
+default: 0
+valid_choices: integer rank index; currently only 1P1D topology is supported (encoder rank 0, PD instance rank 1)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ec_transfer.ec_rank identifies this vLLM instance''s rank within the EC (encoder cache)
+
+  transfer group. It is a configuration/identity field rather than a tuning knob: it selects
+
+  which peer this instance connects to for EC cache transfer. No definition or usage site was
+
+  found in the provided vllm or vllm-ascend source context, so the exact code path could not be
+
+  verified. Based on the parameter hint, it is consumed during EC transfer connector setup to
+
+  determine the peer rank for cache handoff between an encoder instance (rank 0) and a PD
+
+  (prefill-decode) instance (rank 1). Its performance effect is indirect: a correct rank
+
+  assignment enables the EC transfer path (affecting latency of encoder-cache reuse and
+
+  throughput of the pipeline), while an incorrect rank breaks the transfer entirely. It does
+
+  not itself change kernel selection, memory allocation, or scheduling behavior.
+
+  '
+usage_locations:
+- file: vllm/config/ec_transfer.py:1
+  context: EC transfer configuration field defining this instance's rank in the EC transfer group (definition not present
+    in provided context)
+related_parameters:
+- name: kv_transfer_config
+  relation: EC transfer is a KV/cache transfer mechanism; ec_transfer settings are typically configured alongside KV transfer
+    configuration
+- name: ec_transfer.ec_role
+  relation: Companion field describing whether this instance acts as encoder or PD; ec_rank must be consistent with the role
+constraints:
+- Currently only the 1P1D topology is supported, so ec_rank must be 0 (encoder) or 1 (PD instance).
+- ec_rank must be unique across the instances participating in the same EC transfer group.
+tuning_advice:
+  summary: Set ec_rank to 0 on the encoder instance and 1 on the PD instance; it is an identity field, not a performance knob.
+  suggested_values:
+  - scenario: Encoder instance in a 1P1D EC transfer deployment
+    value: 0
+    reason: Encoder is assigned rank 0 in the only supported 1P1D topology.
+  - scenario: Prefill-decode (PD) instance in a 1P1D EC transfer deployment
+    value: 1
+    reason: PD instance is assigned rank 1 in the only supported 1P1D topology.
+  caveats:
+  - Only 1P1D topology is supported; other rank assignments or multi-instance topologies are not validated by the provided
+    context.
+  - An incorrect ec_rank will misroute or break EC cache transfer, causing latency regressions or failures rather than a tunable
+    performance change.
+  quick_guide: Use ec_rank=0 for the encoder and ec_rank=1 for the PD instance in a 1P1D setup.
+analysis_date: '2026-10-27'

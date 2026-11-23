@@ -1,0 +1,101 @@
+name: --block-size
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1268
+- vllm_ascend/ascend_config.py:1474
+- vllm_ascend/_310p/attention/attention_v1.py:58
+- vllm_ascend/_310p/attention/attention_v1.py:81
+- vllm_ascend/_310p/block_table.py:26
+- vllm_ascend/_310p/block_table.py:42
+- vllm_ascend/_310p/model_runner_310p.py:99
+value_type: int
+default: 128
+valid_choices: Positive integer; on 310P the attention backend supports kernel block sizes [128, 64]; xlite graph mode recommends
+  128
+cli_example: --block-size 128
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "--block-size sets the number of tokens per contiguous KV-cache block (CacheConfig.block_size).\nIt directly\
+  \ determines KV-cache memory granularity and the shape of the paged KV tensors, so it\naffects both memory footprint and\
+  \ attention kernel efficiency.\n\nUpstream (vllm): the flag is registered from CacheConfig (vllm/engine/arg_utils.py:1268)\
+  \ and\nflows into the attention backend's get_kv_cache_shape and the block table / slot-mapping logic.\nLarger blocks reduce\
+  \ block-table size and per-block bookkeeping overhead but increase internal\nfragmentation (tokens wasted at the tail of\
+  \ each request's last block); smaller blocks reduce\nfragmentation but increase metadata overhead and can hurt kernel efficiency.\n\
+  \nAscend-specific behavior:\n- \"310P (Atlas 300I DUO): AscendAttentionBackend310.get_kv_cache_shape builds a 5D NZ-aligned\"\
+  \n  tensor (2, num_blocks, (num_kv_heads*head_size)//16, block_size, 16) — block_size is a tensor\n  dimension, so it must\
+  \ be compatible with the 16-alignment requirement. The backend explicitly\n  advertises get_supported_kernel_block_sizes()\
+  \ == [128, 64], so only 128 or 64 are valid kernel\n  block sizes on 310P.\n- \"310P block_table.py uses block_size in slot-mapping\
+  \ arithmetic (positions // block_size,\"\n  block_numbers * block_size + block_offsets); with DCP enabled it uses a virtual_block_size\
+  \ =\n  block_size * dcp_world_size, so block_size interacts with decode context parallelism.\n- \"310P model_runner_310p.py\
+  \ passes block_sizes=[self.block_size] and\"\n  kernel_block_sizes=[[self.cache_config.block_size]] into NPUInputBatch,\
+  \ so the value must be\n  consistent between the logical block size and the kernel block size.\n- \"xlite graph mode (vllm_ascend/ascend_config.py:1474)\
+  \ warns if block_size != 128, indicating 128\"\n  is the recommended/optimal value for that graph mode.\n- \"Batch invariance\
+  \ docs require --block-size 128 together with --no-enable-chunked-prefill.\"\n- \"Context-parallel / KV-transfer docs recommend\
+  \ setting cp_kv_cache_interleave_size to the\"\n  KV-cache block_size (default 128).\n- \"Sparse KV offload docs require\
+  \ topk_buffer_size to be divisible by block_size.\"\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1268
+  context: Registers --block-size CLI flag from CacheConfig.block_size
+- file: vllm_ascend/_310p/attention/attention_v1.py:81
+  context: block_size is a dimension of the 5D NZ-aligned KV cache tensor on 310P
+- file: vllm_ascend/_310p/attention/attention_v1.py:99
+  context: get_supported_kernel_block_sizes returns [128, 64] on 310P
+- file: vllm_ascend/_310p/block_table.py:26
+  context: block_size used in slot-mapping arithmetic, scaled by dcp_world_size under DCP
+- file: vllm_ascend/_310p/model_runner_310p.py:99
+  context: block_sizes and kernel_block_sizes passed to NPUInputBatch
+- file: vllm_ascend/ascend_config.py:1474
+  context: xlite graph mode warns when block_size != 128
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: Together with block_size determines how many KV blocks fit in the available NPU memory
+- name: --kv-cache-memory-bytes
+  relation: Alternative explicit KV memory budget; block_size determines block count from it
+- name: --num-gpu-blocks-override
+  relation: Overrides computed block count; interacts with block_size for total KV capacity
+- name: --enable-prefix-caching
+  relation: Prefix caching hashes at block granularity; block_size affects cache hit granularity
+- name: --decode-context-parallel-size
+  relation: Under DCP, virtual_block_size = block_size * dcp_world_size in slot mapping
+- name: cp_kv_cache_interleave_size
+  relation: Docs recommend setting it equal to block_size for KV transfer scenarios
+- name: --no-enable-chunked-prefill
+  relation: Batch invariance requires block_size=128 together with chunked prefill disabled
+constraints:
+- On 310P the attention backend only supports kernel block sizes 128 and 64 (get_supported_kernel_block_sizes returns [128,
+  64]).
+- On 310P the KV cache tensor shape requires the head-size dimension to be aligned to a multiple of 16, so block_size must
+  be compatible with the NZ-aligned 5D layout.
+- For batch invariance, block_size must be 128 and chunked prefill must be explicitly disabled.
+- When using sparse KV offload, topk_buffer_size must be divisible by block_size.
+- The logical block size and kernel block size passed to NPUInputBatch must be consistent.
+tuning_advice:
+  summary: Keep block_size at 128 on Ascend NPU (the default and the value recommended by xlite graph mode and batch-invariance
+    docs); use 64 only when 310P memory fragmentation demands it.
+  suggested_values:
+  - scenario: Default / general Ascend NPU deployment (910B, 910C, xlite graph mode)
+    value: 128
+    reason: 128 is the default, the value recommended by xlite graph mode (ascend_config.py:1474 warns otherwise), and required
+      for batch invariance.
+  - scenario: 310P (Atlas 300I DUO) with tight KV memory or high fragmentation
+    value: 64
+    reason: 310P backend advertises supported kernel block sizes [128, 64]; 64 reduces internal fragmentation at the cost
+      of more block-table overhead.
+  - scenario: Batch invariance enabled
+    value: 128
+    reason: Docs require --block-size 128 together with --no-enable-chunked-prefill for batch invariance.
+  - scenario: KV pooling / P/D disaggregation with context parallelism
+    value: 128
+    reason: Docs recommend setting cp_kv_cache_interleave_size to the KV-cache block_size (default 128) for KV transfer scenarios.
+  caveats:
+  - Do not use values other than 128 or 64 on 310P; the backend only supports those kernel block sizes.
+  - Changing block_size changes KV-cache memory granularity; re-tune --gpu-memory-utilization or --kv-cache-memory-bytes accordingly.
+  - Under DCP, block_size multiplies into virtual_block_size, so verify slot mapping correctness when changing it.
+  quick_guide: Use --block-size 128 on Ascend NPU; only drop to 64 on 310P when fragmentation is a problem.
+analysis_date: '2026-10-27'

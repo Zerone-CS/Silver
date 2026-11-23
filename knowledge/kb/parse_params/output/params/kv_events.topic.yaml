@@ -1,0 +1,77 @@
+name: kv_events.topic
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/config/kv_events.py:1
+value_type: str
+default: kv@
+valid_choices: any non-empty string; used as the ZeroMQ subscription topic prefix
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'kv_events.topic is a field of KVEventsConfig (vllm/config/kv_events.py) that sets the
+
+  ZeroMQ publisher topic string used when enable_kv_cache_events=True and publisher="zmq".
+
+  It is consumed only by the KV event publisher (ZmqEventPublisher) and by external
+
+  subscribers (e.g. MockSubscriber in tests, KV-aware routers). The topic is prepended to
+
+  each published event message; subscribers filter on it. It does NOT participate in the
+
+  inference compute path, scheduler decisions, memory allocation, or HCCL communication.
+
+  On Ascend, vllm-ascend does not override or patch this field — the only Ascend-side
+
+  reference is in tests/e2e/pull_request/one_card/test_cpu_offloading.py, which constructs
+
+  KVEventsConfig(topic="test") and passes it to LLM. The performance effect is limited to
+
+  the event-publishing path: "a longer topic string slightly increases per-event serialization"
+
+  and network payload size on the ZMQ socket, and a mismatched topic causes subscribers to
+
+  receive no events (functional, not compute, impact). Because event publishing is
+
+  asynchronous and off the critical inference path, the runtime throughput/latency impact
+
+  on NPU is negligible.
+
+  '
+usage_locations:
+- file: tests/e2e/pull_request/one_card/test_cpu_offloading.py:192
+  context: Ascend e2e test constructs KVEventsConfig with topic='test' and passes it to LLM
+- file: tests/e2e/pull_request/one_card/test_cpu_offloading.py:203
+  context: Ascend test subscribes MockSubscriber using kv_events_config.topic
+- file: tests/v1/kv_connector/unit/test_offloading_connector.py:312
+  context: Upstream test subscribes MockSubscriber with kv_events_config.topic
+- file: tests/v1/kv_connector/unit/test_offloading_connector.py:503
+  context: Upstream test passes topic to MockSubscriber for event filtering
+related_parameters:
+- name: kv_events_config.enable_kv_cache_events
+  relation: Topic is only used when KV cache events are enabled; otherwise the publisher is not created
+- name: kv_events_config.publisher
+  relation: Topic applies to the zmq publisher; other publishers may ignore it
+- name: kv_events_config.endpoint
+  relation: Topic is paired with the ZMQ endpoint that subscribers connect to
+constraints:
+- The topic only takes effect when enable_kv_cache_events is True and publisher is 'zmq'.
+- Subscribers must use the exact same topic string as the publisher, otherwise they receive no events.
+tuning_advice:
+  summary: Use a short, unique topic string shared consistently between the vLLM publisher and all subscribers; it has no
+    meaningful NPU performance impact.
+  suggested_values:
+  - scenario: Single deployment with one KV-aware router/subscriber
+    value: kv@
+    reason: Default topic is sufficient and keeps event payloads minimal.
+  - scenario: Multiple concurrent deployments sharing a ZMQ broker
+    value: deployment-a-kv@
+    reason: A unique topic per deployment prevents subscribers from receiving events belonging to another instance.
+  caveats:
+  - Keep the topic short to minimize per-event serialization overhead, though the effect is negligible.
+  - Ensure the subscriber's topic exactly matches the publisher's topic; there is no validation error on mismatch.
+  quick_guide: Set kv_events.topic to a short unique string and use the identical value in every subscriber.
+analysis_date: '2026-10-27'

@@ -1,0 +1,80 @@
+name: MOONCAKE_CONFIG_PATH
+type: env
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:568
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:204
+value_type: str
+default: null
+valid_choices: Absolute or relative path to a JSON file readable by the process
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "MOONCAKE_CONFIG_PATH points to the mooncake.json file that configures the Mooncake\ndistributed KV store used\
+  \ by AscendStoreConnector (KV cache pooling / prefix cache\nsharing across prefill and decode instances). It is read in\n\
+  MooncakeStoreConfig.load_from_env() (vllm-ascend) and load_from_config() (upstream v1).\nThe file's contents directly control\
+  \ the performance-critical store parameters:\n- global_segment_size: \"size of the in-process KV segment contributed per\
+  \ rank; larger\"\n  segments hold more KV blocks in the pool, raising cache hit rate and reducing\n  recompute (throughput/latency).\
+  \ On Ascend it can be overridden by MOONCAKE_GLOBAL_SEGMENT_SIZE.\n- local_buffer_size: \"staging buffer for transfers;\
+  \ too small throttles RDMA/HCCS\"\n  transfer bandwidth, too large wastes NPU/host memory.\n- protocol: \"on Ascend defaults\
+  \ to \\\"ascend\\\" (HCCS/RoCE path) vs upstream \\\"rdma\\\"; this\"\n  selects the transport used for KV block movement,\
+  \ directly affecting transfer latency.\n- \"preferred_segment / prefer_alloc_in_same_node: allocation locality hints that\
+  \ affect\"\n  cross-node transfer volume.\n- \"enable_ssd_offload / ssd_offload_path: enables SSD tiering, trading latency\
+  \ for\"\n  capacity.\n- \"master_server_address / metadata_server: control which store cluster is joined;\"\n  misconfiguration\
+  \ causes connection retries and stalls.\nThe env var itself is just a path, but it is the sole entry point for all of the\
+  \ above,\nso its correctness and the values it points to determine whether KV pooling delivers\nthroughput gains or becomes\
+  \ a bottleneck. If unset, load_from_env raises ValueError and\nthe connector cannot initialize.\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:568
+  context: load_from_env reads MOONCAKE_CONFIG_PATH and raises ValueError if unset, then parses JSON via from_file
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:544
+  context: from_file applies MOONCAKE_MASTER and MOONCAKE_GLOBAL_SEGMENT_SIZE env overrides on top of file values
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:204
+  context: Upstream v1 MooncakeStoreConfig.load_from_config reads the same env var (GPU reference path)
+- file: tests/e2e/common/single_node/kv_pool_runtime.py:158
+  context: Test harness writes mooncake.json and exports MOONCAKE_CONFIG_PATH for the server process
+related_parameters:
+- name: MOONCAKE_MASTER
+  relation: Overrides master_server_address from the JSON file when set (vllm-ascend from_file)
+- name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+  relation: Overrides global_segment_size from the JSON file when set (vllm-ascend from_file)
+- name: MOONCAKE_LIB_DIRS
+  relation: Optional library path for Mooncake; complements the config file setup
+- name: ASCEND_ENABLE_USE_FABRIC_MEM
+  relation: A3 HCCS fabric-memory pooling mode that changes how the store allocates/transfers KV
+- name: kv_transfer_config.kv_connector
+  relation: Must be AscendStoreConnector for this config to be consumed
+constraints:
+- MOONCAKE_CONFIG_PATH must be set when using AscendStoreConnector; otherwise load_from_env raises ValueError.
+- The path must point to a valid JSON file; a missing or malformed file causes json.load to fail during startup.
+- If enable_ssd_offload is true in the JSON, ssd_offload_path must be a non-empty absolute path or a ValueError is raised.
+- The JSON must contain metadata_server and master_server_address (or MOONCAKE_MASTER must be set) for the store to connect.
+tuning_advice:
+  summary: Point MOONCAKE_CONFIG_PATH at a per-node mooncake.json whose global_segment_size, local_buffer_size, and protocol
+    are tuned for the Ascend KV-pool topology.
+  suggested_values:
+  - scenario: Single-node Ascend KV pool (A2/A3, AscendStoreConnector)
+    value: /path/to/mooncake.json
+    reason: Absolute path avoids CWD ambiguity across prefill/decode processes; file should set protocol 'ascend' and a master_server_address
+      reachable by all ranks.
+  - scenario: Multi-node disaggregated prefill/decode with A3 HCCS fabric memory
+    value: /shared/config/mooncake.json
+    reason: Shared config with ASCEND_ENABLE_USE_FABRIC_MEM=1 and consistent master_server_address lets ranks join the same
+      fabric-memory pool; keep global_segment_size large enough to hold hot KV blocks.
+  - scenario: Memory-constrained deployment
+    value: /path/to/mooncake.json with reduced global_segment_size
+    reason: Lower global_segment_size reduces per-rank memory contribution at the cost of pool capacity; use MOONCAKE_GLOBAL_SEGMENT_SIZE
+      to override without editing the file.
+  caveats:
+  - Tune global_segment_size and local_buffer_size inside the JSON, not via the path; use MOONCAKE_GLOBAL_SEGMENT_SIZE for
+    quick overrides.
+  - Verify protocol is 'ascend' on NPU; upstream examples use 'rdma' and will not match the Ascend transport.
+  - Keep the file identical in structure across nodes and ensure PYTHONHASHSEED matches to preserve cache key consistency.
+  quick_guide: Export MOONCAKE_CONFIG_PATH to an absolute mooncake.json with protocol 'ascend', reachable master_server_address,
+    and sized global_segment_size/local_buffer_size.
+analysis_date: '2026-10-27'

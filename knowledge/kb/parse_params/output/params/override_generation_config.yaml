@@ -1,0 +1,101 @@
+name: --override-generation-config
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:337
+- vllm/engine/arg_utils.py:727
+- vllm/engine/arg_utils.py:949
+- vllm/config/model.py:1731
+- vllm/entrypoints/openai/chat_completion/serving.py:177
+value_type: dict
+default: {}
+valid_choices: Any dict of generation-config keys (e.g. temperature, top_p, top_k, max_new_tokens, repetition_penalty, seed)
+cli_example: '--override-generation-config ''{"temperature": 0.5}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only affects the default sampling parameters applied to requests,
+
+  not the model execution path, memory layout, or scheduling on Ascend NPU.
+
+  In vllm/config/model.py:get_diff_sampling_param (line 1728-1748), the override
+
+  dict is merged into the model''s generation config (config.update(self.override_generation_config))
+
+  and returned as default_sampling_params. These defaults are consumed by the
+
+  OpenAI serving layers (chat_completion/serving.py:172, completion/serving.py:80,
+
+  responses/serving.py:140, scale_out/*/serving.py) to set per-request sampling
+
+  defaults and override_max_tokens. The actual token generation still runs through
+
+  the same Ascend model forward / sampler path; only the sampling hyperparameters
+
+  (temperature, top_p, max_new_tokens, etc.) change. Indirect performance effects:
+
+  setting a large max_new_tokens raises output length and thus decode latency and
+
+  KV-cache pressure; greedy-like settings (temperature=0) do not change throughput
+
+  materially. No vllm-ascend override of this parameter was found in the provided
+
+  context — it is a pure upstream vLLM config field.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:337
+  context: Field definition of override_generation_config with docstring describing merge semantics with --generation-config
+    auto/vllm.
+- file: vllm/config/model.py:1731
+  context: get_diff_sampling_param merges override_generation_config into the loaded generation config to produce default
+    sampling params.
+- file: vllm/engine/arg_utils.py:727
+  context: EngineArgs field mirroring ModelConfig.override_generation_config.
+- file: vllm/engine/arg_utils.py:949
+  context: CLI argument registration for --override-generation-config.
+- file: vllm/engine/arg_utils.py:1876
+  context: Passed into ModelConfig construction from EngineArgs.
+- file: vllm/entrypoints/openai/chat_completion/serving.py:177
+  context: Reads override_generation_config['max_new_tokens'] to set server-wide override_max_tokens when generation_config
+    is auto/vllm.
+related_parameters:
+- name: --generation-config
+  relation: Determines the base config that override_generation_config is merged into (auto merges with model defaults; vllm
+    uses only overrides).
+- name: --max-model-len
+  relation: max_new_tokens in the override must be consistent with the context window; large values increase KV-cache usage.
+- name: --max-num-seqs
+  relation: Longer default max_new_tokens increases per-request KV-cache footprint, reducing effective batch capacity.
+constraints:
+- When --generation-config is set to a folder path, override_generation_config is not used for override_max_tokens; only the
+  loaded config's max_tokens applies.
+- The override dict must contain valid generation-config keys; unknown keys are filtered by the available_params check in
+  get_diff_sampling_param.
+- max_new_tokens set here acts as a server-wide default output-token limit only when --generation-config is auto or vllm.
+tuning_advice:
+  summary: Use this to set sane default sampling parameters (temperature, top_p, max_new_tokens) without editing model files;
+    it has minimal direct Ascend performance impact but max_new_tokens affects decode latency and KV-cache pressure.
+  suggested_values:
+  - scenario: Deterministic/low-latency serving on Ascend
+    value: '{"temperature": 0.0, "top_p": 1.0}'
+    reason: Greedy sampling avoids sampling overhead and gives reproducible outputs; no extra NPU cost.
+  - scenario: Bounding output length to control decode latency and KV-cache
+    value: '{"max_new_tokens": 512}'
+    reason: Caps server-wide default output tokens, limiting per-request decode time and KV-cache growth on NPU.
+  - scenario: Balanced chat quality
+    value: '{"temperature": 0.7, "top_p": 0.9}'
+    reason: Common chat defaults; sampling cost is negligible relative to model forward on Ascend.
+  caveats:
+  - Setting a very large max_new_tokens increases decode latency and KV-cache memory pressure, which can reduce effective
+    batch size on Ascend NPU.
+  - When --generation-config points to a folder path, this override is not used for override_max_tokens; the loaded config's
+    max_tokens takes precedence.
+  - This parameter does not alter the Ascend execution path, graph compilation, or HCCL communication; it only changes sampling
+    defaults.
+  quick_guide: 'Set default sampling params via --override-generation-config ''{"temperature": 0.7, "max_new_tokens": 512}'';
+    keep max_new_tokens modest to bound decode latency and KV-cache on NPU.'
+analysis_date: '2026-10-27'

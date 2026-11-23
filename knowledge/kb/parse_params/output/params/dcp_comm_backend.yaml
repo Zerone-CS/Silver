@@ -1,0 +1,87 @@
+name: --dcp-comm-backend
+type: cli
+category: communication
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1103
+- vllm/engine/arg_utils.py:492
+- vllm/config/parallel.py:365
+- vllm/config/parallel.py:585
+- vllm/v1/attention/backends/flash_attn.py:1154
+- vllm/v1/attention/backends/flashinfer.py:762
+- vllm/v1/attention/backends/flashinfer.py:1879
+- vllm/v1/attention/backends/mla/flashmla_sparse.py:386
+value_type: str
+default: null
+valid_choices:
+- ag_rs
+- a2a
+cli_example: --dcp-comm-backend a2a
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This parameter selects the collective communication strategy used by Decode\nContext Parallel (DCP) attention\
+  \ on the decode path. It only takes effect when\n--decode-context-parallel-size (-dcp) > 1.\n\n- \"\\\"ag_rs\\\" (default):\
+  \ the existing AllGather + ReduceScatter path. In the\"\n  upstream attention backends (flash_attn.py:1151-1156, flashinfer.py:1876-1884)\n\
+  \  the combine function is set to cp_lse_ag_out_rs, which performs the\n  AllGather of partial outputs plus ReduceScatter\
+  \ per layer.\n- \"\\\"a2a\\\": the combine function is switched to dcp_a2a_lse_reduce, which does an\"\n  All-to-All exchange\
+  \ of partial outputs + LSE and then combines them with a\n  Triton kernel. Per the docstring in vllm/config/parallel.py:365-374,\
+  \ this\n  reduces the number of NCCL collective calls from 3 to 2 per layer for MLA\n  models, lowering per-layer communication\
+  \ latency and thus decode-step\n  latency.\n\nThe selection is made at attention-backend construction time by comparing\n\
+  vllm_config.parallel_config.dcp_comm_backend == \"a2a\" (flash_attn.py:1154,\nflashinfer.py:762 and :1879). When the value\
+  \ is None, the model default is\nresolved via ParallelConfig.set_dcp_defaults (parallel.py:575-588), which\ndefaults to\
+  \ \"ag_rs\" unless a model overrides it in verify_and_update_config.\n\nOn Ascend NPU, the underlying collectives are HCCL\
+  \ AllGather/ReduceScatter/\nAllToAll rather than NCCL, but the same structural tradeoff applies: \"a2a\"\nreplaces the AG+RS\
+  \ pair with a single All-to-All plus a Triton combine kernel,\nreducing collective launch overhead per decode layer. The\
+  \ Triton combine\nkernel (dcp_a2a_lse_reduce) must be supported/compiled for the Ascend backend;\nif the Ascend attention\
+  \ backend does not implement the a2a combine path, the\nparameter has no effect or the backend falls back to ag_rs. No vllm-ascend\n\
+  override of this parameter was found in the provided context, so behavior\nfollows upstream vLLM semantics.\n"
+usage_locations:
+- file: vllm/config/parallel.py:365
+  context: Field definition and docstring describing ag_rs vs a2a semantics and NCCL call reduction.
+- file: vllm/config/parallel.py:585
+  context: set_dcp_defaults fills dcp_comm_backend to 'ag_rs' when unset (model default resolution).
+- file: vllm/v1/attention/backends/flash_attn.py:1154
+  context: Selects dcp_combine = dcp_a2a_lse_reduce when backend == 'a2a', else cp_lse_ag_out_rs.
+- file: vllm/v1/attention/backends/flashinfer.py:762
+  context: Sets self.dcp_a2a flag based on dcp_comm_backend == 'a2a'.
+- file: vllm/v1/attention/backends/flashinfer.py:1879
+  context: Chooses dcp_combine partial(dcp_a2a_lse_reduce) vs partial(cp_lse_ag_out_rs).
+- file: vllm/v1/attention/backends/mla/flashmla_sparse.py:386
+  context: Raises NotImplementedError if DCP is enabled with a non-'ag_rs' backend for FlashMLA sparse.
+related_parameters:
+- name: --decode-context-parallel-size
+  relation: dcp_comm_backend only has effect when DCP size > 1; DCP must be enabled for this backend to be used.
+- name: --dcp-q-replicate
+  relation: Companion DCP option resolved together via set_dcp_defaults; both affect the decode collective path.
+- name: --cp-kv-cache-interleave-size
+  relation: DCP KV cache interleave size affects the layout consumed by the DCP combine path.
+- name: --attention-backend
+  relation: The a2a combine path is only wired into specific attention backends (flash_attn, flashinfer, MLA); other backends
+    may ignore it.
+constraints:
+- The parameter only takes effect when --decode-context-parallel-size is greater than 1; with DCP disabled it is unused.
+- FlashMLA sparse DCP only supports the default 'ag_rs' backend and raises NotImplementedError for any other value.
+- When left unset (None), the value is resolved to 'ag_rs' unless the model overrides it via set_dcp_defaults.
+tuning_advice:
+  summary: For MLA models with DCP enabled on Ascend, try 'a2a' to cut one collective per decode layer; keep 'ag_rs' for FlashMLA
+    sparse or unsupported backends.
+  suggested_values:
+  - scenario: MLA model with DCP > 1 and an attention backend that supports the a2a combine kernel
+    value: a2a
+    reason: Reduces per-layer collectives from 3 to 2, lowering decode-step latency for MLA models.
+  - scenario: FlashMLA sparse attention with DCP enabled
+    value: ag_rs
+    reason: FlashMLA sparse raises NotImplementedError for any backend other than 'ag_rs'.
+  - scenario: Default / unsure whether the Ascend backend supports the a2a Triton combine
+    value: ag_rs
+    reason: Safe default that matches upstream behavior and is universally supported.
+  caveats:
+  - Confirm the active Ascend attention backend implements dcp_a2a_lse_reduce before switching to 'a2a'; otherwise the setting
+    may be ignored or fall back.
+  - Benchmark decode latency with both values on your HCCL topology, since All-to-All performance varies with interconnect.
+  - Only meaningful when --decode-context-parallel-size > 1.
+  quick_guide: 'MLA + DCP on Ascend: try ''a2a'' for fewer collectives; use ''ag_rs'' for FlashMLA sparse or unsupported backends.'
+analysis_date: '2026-10-27'

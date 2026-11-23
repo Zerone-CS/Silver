@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "min_pairs": 5,
+  "confidence": 0.95,
+  "bootstrap_samples": 2000,
+  "seed": 42,
+  "scenarios": {
+    "W8_c64": {
+      "primary": {"metric": "output_token_throughput", "direction": "higher", "min_relative_improvement": 0.02},
+      "guardrails": [
+        {"metric": "ttft_p99_s", "direction": "lower", "max_relative_regression": 0.06},
+        {"metric": "e2e_p99_s", "direction": "lower", "max_relative_regression": 0.06},
+        {"metric": "failure_rate", "max_value": 0.0}
+      ]
+    },
+    "W4": {
+      "primary": null,
+      "guardrails": [
+        {"metric": "ttft_p99_s", "direction": "lower", "max_relative_regression": 0.06},
+        {"metric": "e2e_p99_s", "direction": "lower", "max_relative_regression": 0.06},
+        {"metric": "failure_rate", "max_value": 0.0}
+      ]
+    }
+  }
+}

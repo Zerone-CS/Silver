@@ -1,0 +1,118 @@
+name: additional_config.finegrained_tp_config.mlp_tensor_parallel_size
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1340
+- vllm_ascend/ascend_config.py:1362
+- vllm_ascend/ascend_config.py:824
+- vllm_ascend/distributed/parallel_state.py:201
+- vllm_ascend/utils.py:994
+value_type: int
+default: 0
+valid_choices: non-negative integer; 0 or 1 disables fine-grained MLP TP; values > 1 enable it and must divide data_parallel_size
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This is a vllm-ascend-only parameter (defined in FinegrainedTPConfig, vllm_ascend/ascend_config.py:1340).
+
+  It sets a custom tensor-parallel size for the MLP (down_proj) module, independent of the global
+
+  tensor_parallel_size. When > 1, vllm_ascend creates a dedicated MLP-TP process group
+
+  (parallel_state.py:201-212, group name "mlptp", cached as _MLP_TP) and the MLP''s row-parallel
+
+  linear (AscendRowParallelLinear for down_proj) uses this group for its all-reduce instead of the
+
+  default TP group (see tests/ut/ops/test_linear.py:187-195 asserting custom_op.comm_group == _MLP_TP).
+
+  mlp_tp_enable() (utils.py:994) gates this path. The mechanism: in a PD-disaggregated decode (D) node
+
+  with data_parallel_size > 1, the MLP weights are sharded across the DP dimension rather than the
+
+  TP dimension, so each DP rank computes a slice of the MLP and the all-reduce is done over the
+
+  smaller MLP-TP group. This reduces per-rank MLP compute and weight memory footprint while keeping
+
+  the collective within a DP group, improving decode latency/throughput and lowering per-NPU memory.
+
+  It is only active in graph mode (cudagraph) and requires recompute_scheduler_enable=true so that
+
+  decode-node steps stay decode-shaped and cross-DP HCCL collectives stay aligned.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1340
+  context: Field definition in FinegrainedTPConfig pydantic dataclass, default 0.
+- file: vllm_ascend/ascend_config.py:1362
+  context: 'Precondition validation: requires tp_size==1, graph mode, kv_consumer (PD D node), pcp_size==1, and cudagraph
+    capture bound >= max step; otherwise silently reset to 0.'
+- file: vllm_ascend/ascend_config.py:824
+  context: Requires recompute_scheduler_enable=true when mlp_tensor_parallel_size > 0, else AssertionError.
+- file: vllm_ascend/distributed/parallel_state.py:201
+  context: Creates the dedicated MLP-TP process group (_MLP_TP) when mlp_tp_size > 0.
+- file: vllm_ascend/utils.py:994
+  context: mlp_tp_enable() returns True when mlp_tensor_parallel_size > 0, gating the fine-grained MLP path.
+- file: vllm_ascend/model_loader/rfork/identity.py:279
+  context: Fine-grained TP shards content across DP, so DP rank is included in the weight seed key.
+related_parameters:
+- name: additional_config.finegrained_tp_config.oproj_tensor_parallel_size
+  relation: Shares the same preconditions and validation block; both are reset to 0 together if the cudagraph capture bound
+    is insufficient.
+- name: tensor_parallel_size
+  relation: Must be 1 when mlp_tensor_parallel_size > 1 (hard requirement).
+- name: data_parallel_size
+  relation: mlp_tensor_parallel_size must divide data_parallel_size.
+- name: compilation_config.cudagraph_mode
+  relation: Must not be NONE; fine-grained MLP TP only works in graph mode.
+- name: compilation_config.max_cudagraph_capture_size
+  relation: Must cover the largest possible step (min(max_num_batched_tokens, max_num_seqs*decode_query_len)) or the feature
+    is disabled.
+- name: kv_transfer_config
+  relation: Must be a KV consumer (PD decode node); otherwise the feature is rejected.
+- name: scheduler_config.recompute_scheduler_enable
+  relation: Must be true when mlp_tensor_parallel_size > 0.
+- name: parallel_config.prefill_context_parallel_size
+  relation: Must be 1; PCP > 1 is not supported.
+- name: model_config.is_moe
+  relation: Model must be a MoE model.
+constraints:
+- mlp_tensor_parallel_size must be non-negative; negative values raise ValueError.
+- mlp_tensor_parallel_size > 1 requires tensor_parallel_size == 1.
+- mlp_tensor_parallel_size > 1 requires cudagraph_mode to not be NONE (graph mode only).
+- mlp_tensor_parallel_size > 1 requires a PD-disaggregated deployment and can only be used on the decode (D) node (kv_transfer_config
+  must be a KV consumer).
+- mlp_tensor_parallel_size > 1 is not supported with prefill_context_parallel_size > 1.
+- mlp_tensor_parallel_size > 0 requires recompute_scheduler_enable=true.
+- mlp_tensor_parallel_size can only be enabled for MoE models.
+- mlp_tensor_parallel_size must divide data_parallel_size.
+- If the largest cudagraph capture size does not cover the largest possible step, mlp_tensor_parallel_size is silently reset
+  to 0 with a warning.
+tuning_advice:
+  summary: Enable fine-grained MLP TP only on PD decode nodes with DP>1, tp_size=1, graph mode, and recompute_scheduler_enable=true
+    to shard MLP across DP and cut decode latency/memory.
+  suggested_values:
+  - scenario: PD-disaggregated decode node, MoE model, tp_size=1, data_parallel_size=8, want to shard MLP across DP
+    value: 2
+    reason: Shards MLP across 2 DP ranks, reducing per-rank MLP compute and weight memory while keeping the all-reduce within
+      a small DP group; 2 must divide data_parallel_size=8.
+  - scenario: Larger DP deployment where MLP is the decode bottleneck
+    value: 4
+    reason: Shards MLP across 4 DP ranks for more compute/memory reduction; must divide data_parallel_size and requires the
+      cudagraph capture bound to cover the max step.
+  - scenario: Non-PD, single-node, or tp_size>1 deployment
+    value: 0
+    reason: Feature is unsupported outside PD decode nodes with tp_size=1; leave disabled to avoid assertion errors.
+  caveats:
+  - Set max_cudagraph_capture_size >= min(max_num_batched_tokens, max_num_seqs * (1 + num_speculative_tokens)) or the feature
+    is silently disabled.
+  - Must set scheduler_config.recompute_scheduler_enable=true or startup raises AssertionError.
+  - Ensure mlp_tensor_parallel_size divides data_parallel_size and the model is MoE.
+  - Do not combine with prefill_context_parallel_size > 1.
+  quick_guide: On a PD decode node with DP>1, tp=1, graph mode and recompute_scheduler_enable=true, set mlp_tensor_parallel_size
+    to a divisor of data_parallel_size (e.g. 2) to shard MLP across DP.
+analysis_date: '2026-10-27'

@@ -1,0 +1,71 @@
+name: --cpu-distributed-timeout-seconds
+type: cli
+category: communication
+scope: vllm
+source_file:
+- vllm/config/parallel.py:334
+- vllm/engine/arg_utils.py:482
+- vllm/engine/arg_utils.py:1070
+- vllm/distributed/utils.py:532
+value_type: int
+default: null
+valid_choices: any positive integer (seconds); None means PyTorch default (1800s for gloo)
+cli_example: --cpu-distributed-timeout-seconds 1800
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only sets the timeout for CPU (gloo) communication groups via
+
+  get_cpu_distributed_timeout_or_none() in vllm/distributed/utils.py:532, which converts
+
+  the configured seconds into a timedelta passed to torch.distributed.init_process_group
+
+  for CPU process groups. It does NOT affect the NPU/HCCL data path, kernel execution,
+
+  or per-token latency/throughput. Its only runtime effect is on failure/robustness
+
+  behavior: "if a CPU collective (e.g. during init or coordination) stalls longer than the"
+
+  timeout, the process group aborts. On Ascend, the actual tensor communication runs over
+
+  HCCL (governed by --distributed-timeout-seconds), so this CPU timeout is largely a
+
+  safety net for gloo-based coordination groups. No vllm-ascend override of this parameter
+
+  was found in the provided context; it is read from ParallelConfig as-is.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:334
+  context: ParallelConfig field definition with docstring describing gloo default of 1800s
+- file: vllm/engine/arg_utils.py:482
+  context: EngineArgs field mapping to ParallelConfig.cpu_distributed_timeout_seconds
+- file: vllm/engine/arg_utils.py:1070
+  context: CLI argument registration under the ParallelConfig argument group
+- file: vllm/distributed/utils.py:532
+  context: get_cpu_distributed_timeout_or_none() converts seconds to timedelta for CPU process groups
+related_parameters:
+- name: --distributed-timeout-seconds
+  relation: Sibling timeout for the main (NCCL/HCCL) process group; this one applies only to CPU/gloo groups
+- name: --nnodes
+  relation: Multi-node deployments are the primary reason to raise timeouts for slow init/coordination
+constraints:
+- The value must be a positive integer number of seconds; None falls back to PyTorch's default gloo timeout of 1800s.
+- This timeout applies only to CPU communication groups, not to the NPU/HCCL data path.
+tuning_advice:
+  summary: Leave at default for single-node; raise modestly on large multi-node Ascend clusters where CPU coordination/init
+    is slow.
+  suggested_values:
+  - scenario: Single-node Ascend deployment (default)
+    value: unset
+    reason: PyTorch gloo default (1800s) is ample; no CPU coordination bottleneck expected.
+  - scenario: Large multi-node Ascend cluster with slow init/model loading
+    value: 3600
+    reason: Extends the CPU group timeout to avoid spurious gloo collective aborts during slow startup, without affecting
+      NPU throughput.
+  caveats:
+  - Do not use this to fix NPU communication stalls — those are governed by --distributed-timeout-seconds (HCCL).
+  - Overly small values risk aborting CPU coordination collectives on busy multi-node clusters.
+  quick_guide: Only relevant for CPU/gloo coordination timeouts; tune --distributed-timeout-seconds for NPU/HCCL performance.
+analysis_date: '2026-10-27'

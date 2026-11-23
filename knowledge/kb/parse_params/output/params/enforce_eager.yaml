@@ -1,0 +1,154 @@
+name: --enforce-eager
+type: cli
+category: compilation
+scope: both
+source_file:
+- vllm/config/model.py:242
+- vllm/engine/arg_utils.py:584
+- vllm/engine/arg_utils.py:908
+- vllm/config/vllm.py:1546
+- vllm/config/vllm.py:1779
+- vllm_ascend/platform.py:1167
+- vllm_ascend/platform.py:1200
+- vllm_ascend/worker/model_runner_v1.py:822
+- vllm_ascend/worker/model_runner_v1.py:2389
+- vllm_ascend/worker/v2/model_runner.py:189
+- vllm_ascend/ascend_config.py:93
+- vllm_ascend/ascend_config.py:946
+- vllm_ascend/patch/platform/patch_minimax_m2_config.py:116
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag; pass --enforce-eager to enable)
+cli_example: --enforce-eager
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--enforce-eager is the master switch that disables both torch.compile (CompilationMode.NONE)
+
+  and graph capture (CUDAGraphMode.NONE) on Ascend. Upstream vllm/config/vllm.py:1546-1552
+
+  sets compilation_config.mode = NONE and cudagraph_mode = NONE when enforce_eager is True,
+
+  and vllm/config/vllm.py:1779-1784 additionally zeroes max_cudagraph_capture_size and
+
+  cudagraph_capture_sizes. On Ascend this is re-derived in vllm_ascend/platform.py:1167
+
+  (_update_compilation_modes): when enforce_eager is truthy it logs "Compilation disabled,
+
+  using eager mode by default", forces compilation_config.mode = CompilationMode.NONE and
+
+  sets splitting_ops = [] (platform.py:1210-1214). The Ascend model runners then gate ACL
+
+  graph usage on this flag: "v1 worker _use_aclgraph() returns False when"
+
+  model_config.enforce_eager (model_runner_v1.py:815-823), and the v2 worker sets
+
+  self.use_aclgraph = ... and not self.model_config.enforce_eager (v2/model_runner.py:183-190).
+
+  The v1 runner also passes force_eager=self.model_config.enforce_eager into
+
+  _determine_batch_execution_and_padding (model_runner_v1.py:2389), so the batch dispatcher
+
+  never selects a captured graph. Consequence: every forward pass runs op-by-op in eager
+
+  PyTorch, losing ACL graph replay (kernel-launch overhead amortization) and any
+
+  torch.compile fusion — this typically costs a large fraction of decode throughput and
+
+  raises per-token latency, while slightly reducing host memory used for graph capture.
+
+  enforce_eager also feeds Ascend feature gating: "enable_sp_by_pass requires"
+
+  not enforce_eager (ascend_config.py:944-948), KVPP validation requires eager or PIECEWISE
+
+  (ascend_config.py:93-97), and the MiniMax-M2 patch only sets HCCL_OP_EXPANSION_MODE=AIV
+
+  when not enforce_eager (patch_minimax_m2_config.py:113-121). With xlite_graph_config
+
+  enabled, platform.py:1200-1203 may force enforce_eager=True when full_mode is set or no
+
+  cudagraph mode remains, and propagates it to speculative_config.enforce_eager.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:242
+  context: ModelConfig field definition; docstring states it disables torch.compile and CUDA graphs, equivalent to -cc.mode=none
+    -cc.cudagraph_mode=none
+- file: vllm/config/vllm.py:1546
+  context: Sets compilation_config.mode = CompilationMode.NONE and cudagraph_mode = CUDAGraphMode.NONE when enforce_eager
+- file: vllm/config/vllm.py:1779
+  context: Zeroes max_cudagraph_capture_size and cudagraph_capture_sizes under eager mode
+- file: vllm_ascend/platform.py:1167
+  context: _update_compilation_modes derives CompilationMode/CUDAGraphMode from enforce_eager and xlite graph config
+- file: vllm_ascend/platform.py:1200
+  context: xlite full_mode / no-cudagraph path forces enforce_eager and propagates to speculative_config.enforce_eager
+- file: vllm_ascend/worker/model_runner_v1.py:822
+  context: v1 _use_aclgraph() returns False when enforce_eager, disabling ACL graph replay
+- file: vllm_ascend/worker/model_runner_v1.py:2389
+  context: v1 passes force_eager into _determine_batch_execution_and_padding
+- file: vllm_ascend/worker/v2/model_runner.py:189
+  context: v2 sets self.use_aclgraph = ... and not enforce_eager
+- file: vllm_ascend/ascend_config.py:93
+  context: 'KVPP validation: requires eager or PIECEWISE cudagraph mode'
+- file: vllm_ascend/ascend_config.py:946
+  context: enable_sp_by_pass requires not enforce_eager
+- file: vllm_ascend/patch/platform/patch_minimax_m2_config.py:116
+  context: MiniMax-M2 sets HCCL_OP_EXPANSION_MODE=AIV only when not enforce_eager
+related_parameters:
+- name: --compilation-config (-cc) / cudagraph_mode
+  relation: enforce_eager forces cudagraph_mode to NONE; setting -cc.cudagraph_mode=none is equivalent
+- name: --compilation-config (-cc) / mode
+  relation: enforce_eager forces CompilationMode.NONE, disabling torch.compile
+- name: max_cudagraph_capture_size / cudagraph_capture_sizes
+  relation: Zeroed when enforce_eager is set
+- name: additional_config.xlite_graph_config.full_mode
+  relation: When enabled, platform.py may force enforce_eager=True and disable ACLGraph capture
+- name: additional_config.enable_sp_by_pass
+  relation: Only enabled when enforce_eager is False
+- name: speculative_config.enforce_eager
+  relation: Inherits target model enforce_eager; disables draft-model cudagraphs
+- name: KVPP (kv_pooling / KVPP feature)
+  relation: Requires eager mode or PIECEWISE cudagraph mode
+constraints:
+- When KVPP is enabled, enforce_eager must be True or cudagraph_mode must be PIECEWISE, otherwise a ValueError is raised.
+- When xlite_graph_config.full_mode is enabled, ACLGraph capture is not used and --enforce-eager is recommended; the platform
+  may force enforce_eager=True.
+- enable_sp_by_pass is silently disabled whenever --enforce-eager is set.
+- On Ascend, compilation modes other than NONE or VLLM_COMPILE are not supported and cudagraph_mode is forced to NONE.
+tuning_advice:
+  summary: Keep --enforce-eager off in production to retain ACL graph replay and torch.compile; enable it only as a fallback
+    for graph-capture failures or when a feature (KVPP, xlite full_mode) requires eager mode.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU with stable ACL graph capture (v1 and v2 workers)
+    value: false
+    reason: Leaving enforce_eager False keeps use_aclgraph True in both v1 (model_runner_v1.py:822) and v2 (v2/model_runner.py:189)
+      runners, enabling graph replay and compile fusion for maximal throughput and lowest latency.
+  - scenario: ACL graph capture fails with stream-resource errors (207008 / Insufficient_Stream_Resources)
+    value: true
+    reason: Docs recommend falling back to eager mode as a temporary mitigation; alternatively reduce cudagraph_capture_sizes
+      or max_cudagraph_capture_size first.
+  - scenario: KVPP enabled
+    value: true
+    reason: KVPP validation requires eager mode or PIECEWISE cudagraph mode (ascend_config.py:93-97); eager is the simplest
+      supported configuration.
+  - scenario: xlite_graph_config.full_mode enabled
+    value: true
+    reason: Docs state --enforce-eager is recommended with full_mode since ACLGraph capture is not used and the platform may
+      force enforce_eager=True (platform.py:1200-1203).
+  - scenario: Debugging model correctness or new model bring-up
+    value: true
+    reason: Eager mode removes graph/compile complexity, isolating model-level issues from capture issues.
+  caveats:
+  - Do not enable --enforce-eager as a default production setting; it disables ACL graph replay and torch.compile, costing
+    substantial decode throughput.
+  - Enabling it silently disables enable_sp_by_pass, which may reduce sequence-parallel optimization benefits.
+  - When using speculative decoding, enforce_eager propagates to speculative_config.enforce_eager, disabling draft-model cudagraphs
+    as well.
+  - Prefer tuning cudagraph_capture_sizes / max_cudagraph_capture_size or switching to FULL / FULL_DECODE_ONLY before falling
+    back to eager mode.
+  quick_guide: Leave --enforce-eager off for performance; turn it on only as a fallback for graph-capture failures or when
+    KVPP / xlite full_mode requires eager execution.
+analysis_date: '2026-10-27'

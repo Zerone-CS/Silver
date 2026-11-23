@@ -1,0 +1,76 @@
+name: profiler.ignore_frontend
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/config/profiler.py:174
+- vllm/v1/engine/async_llm.py:205
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only affects the profiling path, not normal inference. In
+
+  vllm/v1/engine/async_llm.py:203-218, when profiler == "torch" and
+
+  ignore_frontend is False, AsyncLLM wraps itself in a TorchProfilerWrapper
+
+  with activities=["CPU"] to collect front-end (CPU) traces. When
+
+  ignore_frontend is True, this wrapper is skipped (self.profiler stays as the
+
+  passed-in profiler). The front-end profiler does not track delay_iterations /
+
+  max_iterations, so it captures the entire profiling range, adding CPU-side
+
+  tracing overhead during profiling. The validator at
+
+  vllm/config/profiler.py:171-178 only emits a warning_once when torch profiler
+
+  is combined with delay/limit and ignore_frontend is False. There is no
+
+  vllm-ascend override of this parameter; it is a pure upstream vLLM config
+
+  field. Impact is confined to profiling runs (extra CPU trace collection
+
+  overhead), not steady-state throughput or memory.
+
+  '
+usage_locations:
+- file: vllm/config/profiler.py:174
+  context: Validator warns when torch profiler + delay/limit used with ignore_frontend False
+- file: vllm/v1/engine/async_llm.py:205
+  context: Gates creation of front-end TorchProfilerWrapper (CPU activities) in AsyncLLM
+related_parameters:
+- name: profiler
+  relation: Only relevant when profiler is set to 'torch'
+- name: delay_iterations
+  relation: Front-end profiling does not track delay; combined use triggers overhead warning
+- name: max_iterations
+  relation: Front-end profiling does not track iteration limit; combined use triggers overhead warning
+- name: torch_profiler_dir
+  relation: Required when profiler is 'torch'; output directory for traces
+constraints:
+- ignore_frontend only has an effect when profiler is set to 'torch'.
+- torch_profiler_dir must be set when profiler is 'torch', otherwise a ValueError is raised.
+tuning_advice:
+  summary: Set ignore_frontend to true when using the torch profiler with delay_iterations or max_iterations to avoid capturing
+    the entire range and reduce CPU tracing overhead.
+  suggested_values:
+  - scenario: Torch profiler with delay_iterations or max_iterations on Ascend NPU
+    value: true
+    reason: Front-end profiling does not track iterations and captures the whole range, adding overhead; disabling it keeps
+      profiling scoped to the intended window.
+  - scenario: Torch profiler without delay/limit, wanting full CPU-side traces
+    value: false
+    reason: Keeps front-end CPU trace collection enabled for complete AsyncLLM profiling.
+  caveats:
+  - This parameter only affects profiling runs, not steady-state inference throughput or memory.
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM on Ascend.
+  - Setting it true disables AsyncLLM CPU trace collection, so front-end traces will be missing from the profile output.
+  quick_guide: Use true with torch profiler + delay/limit to cut profiling overhead; otherwise leave false.
+analysis_date: '2026-10-27'

@@ -1,0 +1,89 @@
+name: HCCL_INTRA_ROCE_ENABLE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1331
+- docs/source/developer_guide/performance_and_debug/optimization_and_tuning.md:145
+value_type: int
+default: 0
+valid_choices: 0 or 1 (boolean-like integer)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_INTRA_ROCE_ENABLE is a CANN/HCCL runtime environment variable (not defined in vllm or
+
+  vllm-ascend source code — it is consumed by the underlying HCCL communication library). It
+
+  controls the mesh interconnect link type used between two 8-NPU (8P) super-nodes: when set to
+
+  1, HCCL uses an RDMA (RoCE) link instead of the default SDMA link for inter-super-node
+
+  communication. This directly affects collective communication latency and bandwidth for
+
+  tensor-parallel / data-parallel / expert-parallel all-reduce, all-gather and all-to-all
+
+  operations that cross the 8P boundary, which in turn affects end-to-end token latency and
+
+  throughput for multi-node deployments. On A2 (800 I/T A2) hardware the vllm-ascend docs
+
+  recommend HCCL_INTRA_ROCE_ENABLE=1 as the direct-transfer path for KV cache pool / PD
+
+  disaggregation traffic. It also interacts with the KV Pool Remote H2D feature: under HIXL
+
+  RoCE direct mode (HCCL_INTRA_ROCE_ENABLE=1) the remote_h2d_hccs_buffer_pool parameter is
+
+  ignored.
+
+  '
+usage_locations:
+- file: docs/source/developer_guide/performance_and_debug/optimization_and_tuning.md:145
+  context: Listed as a performance optimization env var to use RDMA link instead of SDMA link between two 8Ps as the mesh
+    interconnect link.
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1560
+  context: A2 hardware compatibility reference recommends HCCL_INTRA_ROCE_ENABLE=1 direct transfer.
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1331
+  context: When HCCL_INTRA_ROCE_ENABLE=1 (HIXL RoCE direct mode), remote_h2d_hccs_buffer_pool is ignored.
+related_parameters:
+- name: HCCL_RDMA_TC
+  relation: Configures RDMA NIC traffic class; relevant when RoCE link is enabled via HCCL_INTRA_ROCE_ENABLE.
+- name: HCCL_RDMA_SL
+  relation: Configures RDMA NIC service level; relevant when RoCE link is enabled via HCCL_INTRA_ROCE_ENABLE.
+- name: HCCL_BUFFSIZE
+  relation: Controls inter-NPU shared data cache size; complements communication tuning.
+- name: remote_h2d_hccs_buffer_pool
+  relation: Ignored when HCCL_INTRA_ROCE_ENABLE=1 (HIXL RoCE direct mode).
+- name: remote_h2d_link_type
+  relation: KV Pool Remote H2D link type; ROCE maps to P2P_TRANSFER, HCCS maps to HIXL.
+constraints:
+- This is a CANN/HCCL runtime env var, not a vLLM or vllm-ascend parameter; it must be exported in the process environment
+  before HCCL initializes.
+- When HCCL_INTRA_ROCE_ENABLE=1, the KV Pool remote_h2d_hccs_buffer_pool parameter is ignored (HIXL RoCE direct mode).
+- For KV Pool Remote H2D with link_type=HCCS, the client process must also export DS_RH2D_LINK_TYPE=HCCS; ROCE is the datasystem
+  default and needs no env var.
+tuning_advice:
+  summary: 'Enable HCCL_INTRA_ROCE_ENABLE=1 on A2 multi-node deployments to use RDMA/RoCE links instead
+
+    of SDMA between 8P super-nodes, improving inter-node collective communication performance.
+
+    '
+  suggested_values:
+  - scenario: A2 (800 I/T A2) multi-node deployment with RoCE NICs available
+    value: 1
+    reason: Docs recommend HCCL_INTRA_ROCE_ENABLE=1 direct transfer on A2; RDMA link reduces inter-8P collective latency.
+  - scenario: Single-node (within one 8P) deployment or no RoCE NIC
+    value: 0
+    reason: No inter-8P traffic; SDMA default is sufficient and avoids RoCE configuration overhead.
+  - scenario: KV Pool Remote H2D using HIXL RoCE direct mode
+    value: 1
+    reason: Enables HIXL RoCE direct mode; note remote_h2d_hccs_buffer_pool is then ignored.
+  caveats:
+  - Requires RoCE-capable NICs and correct RDMA configuration; enabling without proper RoCE setup can degrade or break communication.
+  - Pair with HCCL_RDMA_TC and HCCL_RDMA_SL to tune RDMA traffic class and service level for best results.
+  - Enabling this disables the HIXL buffer-pool path (remote_h2d_hccs_buffer_pool is ignored).
+  - Behavior is hardware-dependent; A3 uses HCCS for PD transfer and may set store protocol to roce:device separately.
+  quick_guide: Set HCCL_INTRA_ROCE_ENABLE=1 on A2 multi-node clusters with RoCE NICs to use RDMA links between 8P super-nodes.
+analysis_date: '2026-10-27'

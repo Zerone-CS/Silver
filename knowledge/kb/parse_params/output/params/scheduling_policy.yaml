@@ -1,0 +1,69 @@
+name: --scheduling-policy
+type: cli
+category: scheduling
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1615
+- vllm/engine/arg_utils.py:697
+- vllm/engine/arg_utils.py:2441
+value_type: str
+default: fcfs
+valid_choices:
+- fcfs
+- priority
+cli_example: --scheduling-policy priority
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "--scheduling-policy selects the request ordering strategy in the vLLM scheduler\n(SchedulerConfig.policy,\
+  \ passed through EngineArgs.scheduling_policy at\nvllm/engine/arg_utils.py:697 and :2441 into SchedulerConfig). It does\
+  \ not change\nkernel execution or NPU compute, but it changes which requests are admitted and\nin what order, which directly\
+  \ affects:\n- \"\\\"fcfs\\\": requests are handled in arrival order. This maximizes fairness and\"\n  typically maximizes\
+  \ aggregate throughput under homogeneous workloads because\n  the scheduler keeps a stable, predictable batch composition\
+  \ (good for\n  continuous batching and for keeping the NPU's batched matmuls well-utilized).\n- \"\\\"priority\\\": requests\
+  \ are ordered by a user-supplied priority (lower value =\"\n  earlier handling), with arrival time breaking ties. This can\
+  \ reduce latency for\n  high-priority requests but may cause more preemption/recompute and less stable\n  batch shapes,\
+  \ which on Ascend NPU can hurt throughput because dynamic batch\n  composition interacts with graph capture / CANN compilation\
+  \ caches.\nThe parameter is defined and consumed entirely in upstream vLLM; no vllm-ascend\noverride of the policy value\
+  \ was found in the provided context. The Ascend-specific\neffect is indirect: \"batch composition changes affect how well\
+  \ captured graphs and\"\ncompiled kernels are reused, and preemption causes KV-cache recompute on NPU.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1615
+  context: CLI argument registration for --scheduling-policy from SchedulerConfig.policy
+- file: vllm/engine/arg_utils.py:697
+  context: EngineArgs.scheduling_policy field defaulting to SchedulerConfig.policy
+- file: vllm/engine/arg_utils.py:2441
+  context: Passed as policy= into SchedulerConfig construction in create_engine_config
+- file: tests/v1/core/utils.py:118
+  context: Test helper passes policy=scheduling_policy into SchedulerConfig
+related_parameters:
+- name: --max-num-seqs
+  relation: Batch size cap that interacts with policy; priority scheduling may reorder which seqs fill the batch
+- name: --max-num-batched-tokens
+  relation: Token budget per step; policy determines which requests consume it
+- name: --enable-chunked-prefill
+  relation: Chunked prefill changes how prefill/decode are interleaved, which policy ordering affects
+- name: --async-scheduling
+  relation: Async scheduling changes scheduling loop timing; policy still governs request ordering
+- name: --scheduler-cls
+  relation: Custom scheduler class may override or ignore the built-in policy
+constraints:
+- 'The value must be one of the supported choices: fcfs or priority.'
+- Priority scheduling requires requests to carry a priority value; lower numeric value means earlier handling.
+tuning_advice:
+  summary: Use fcfs for maximum throughput on homogeneous workloads; use priority only when per-request latency SLAs require
+    reordering.
+  suggested_values:
+  - scenario: Standard high-throughput serving with homogeneous requests (v1 and v2 Ascend)
+    value: fcfs
+    reason: Stable arrival-order batching maximizes NPU utilization and graph/kernel reuse, giving best aggregate throughput.
+  - scenario: Mixed workloads with latency-sensitive high-priority requests (v1 and v2 Ascend)
+    value: priority
+    reason: Allows low-priority-value requests to be served first, meeting latency SLAs at the cost of some throughput.
+  caveats:
+  - Monitor preemption and recompute rates when using priority; excessive preemption hurts NPU throughput.
+  - Keep batch shapes stable where possible to preserve Ascend graph capture benefits.
+  quick_guide: Default to fcfs for throughput; switch to priority only for latency-SLA-driven serving.
+analysis_date: '2026-10-27'

@@ -1,0 +1,92 @@
+name: compilation.compile_mm_encoder
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/vllm.py:489
+- vllm/compilation/decorators.py:55
+- vllm/model_executor/models/transformers/multimodal.py:963
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter controls whether the multimodal encoder (vision tower) is wrapped
+
+  with torch.compile via the `should_torch_compile_mm_encoder` predicate
+
+  (vllm/compilation/decorators.py:55), which is passed as the `enable_if` argument
+
+  to `@support_torch_compile`. When true, the encoder forward pass is compiled into
+
+  a graph, potentially reducing per-image encoder latency and CPU launch overhead.
+
+  It also affects the config hash (vllm/config/vllm.py:489) by folding in the
+
+  multimodal_config hash, which can invalidate compilation caches when multimodal
+
+  settings change.
+
+  On Ascend NPU, torch.compile is backed by the CANN/torch-npu graph backend rather
+
+  than CUDA graphs, and vllm-ascend does not define or override this parameter
+
+  (no definition found in vllm-ascend). The encoder compilation path is only
+
+  exercised for models loaded with the Transformers modeling backend (see
+
+  vllm/model_executor/models/transformers/multimodal.py:963) and only for
+
+  Qwen2_5_vl / mLLaMa4 on selected platforms. For native vLLM Ascend model
+
+  implementations, the encoder is not compiled through this path, so the practical
+
+  runtime effect on Ascend is limited and model-dependent. Hence low impact.
+
+  '
+usage_locations:
+- file: vllm/compilation/decorators.py:55
+  context: Predicate `should_torch_compile_mm_encoder` returns this flag to gate @support_torch_compile on the encoder.
+- file: vllm/model_executor/models/transformers/multimodal.py:963
+  context: Decorate encoder classes for torch.compile when the flag is set (Transformers backend only).
+- file: vllm/config/vllm.py:489
+  context: Folds multimodal_config hash into the vLLM config hash when encoder compilation is enabled.
+related_parameters:
+- name: compilation.level
+  relation: Encoder compilation is part of the broader torch.compile pipeline; level must enable compilation for the encoder
+    graph to be built.
+- name: compilation.cudagraph_mode
+  relation: Graph capture mode interacts with compiled encoder graphs; encoder compilation is separate from decoder CUDA/NPU
+    graph capture.
+- name: model_config.multimodal_config
+  relation: Its hash is included in the config hash only when compile_mm_encoder is true.
+constraints:
+- Encoder compilation via the Transformers backend requires transformers version 5.0.0 or newer.
+- When enabled with the Transformers backend, the model must expose detectable encoder classes or a ValueError is raised.
+- The encoder must be torch-compilable and all encoder tensor inputs must be type-hinted as torch.Tensor or torch.FloatTensor.
+- The 0-th dimension of all tensor inputs to the encoder must be the dynamic dimension (e.g. sequence length, number of patches).
+- This only works for Qwen2_5_vl and mLLaMa4 models on selected platforms, and for Transformers-backend models whose encoder
+  is compilable.
+tuning_advice:
+  summary: Leave disabled by default on Ascend; only enable for supported Transformers-backend multimodal models after verifying
+    torch-npu compile works.
+  suggested_values:
+  - scenario: Default Ascend deployment with native vLLM Ascend models
+    value: false
+    reason: The encoder compile path is not exercised for native Ascend model implementations, so enabling it yields no benefit
+      and risks compile failures.
+  - scenario: Qwen2_5_vl or mLLaMa4 loaded via Transformers backend on Ascend, encoder latency is a bottleneck
+    value: true
+    reason: Compiling the encoder can reduce per-image encoder latency and CPU launch overhead, but only after confirming
+      torch-npu compilation succeeds.
+  caveats:
+  - Verify transformers >= 5.0.0 and that the model exposes detectable encoder classes before enabling.
+  - Expect longer warmup/compile time on first run; benchmark steady-state throughput before adopting.
+  - If compilation errors occur on NPU, revert to false — the flag is experimental.
+  quick_guide: Keep false on Ascend unless using a supported Transformers-backend multimodal model and encoder latency is
+    proven to matter.
+analysis_date: '2026-10-27'

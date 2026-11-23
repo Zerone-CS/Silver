@@ -1,0 +1,98 @@
+name: compilation.pass_config.fuse_allreduce_rms
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:2433
+- vllm/compilation/passes/pass_manager.py:149
+- vllm/compilation/passes/pass_manager.py:176
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag enables the AllReduce+RMSNorm fusion compilation pass. In upstream vLLM
+
+  (vllm/compilation/passes/pass_manager.py:176), when fuse_allreduce_rms is true the
+
+  pass manager appends either RocmAiterAllReduceFusionPass (ROCm/AITER) or
+
+  AllReduceFusionPass (generic) to the inductor pass pipeline. The pass fuses the
+
+  tensor-parallel all-reduce collective with the following RMSNorm, eliminating a
+
+  separate kernel launch and a round-trip of the intermediate tensor through HBM.
+
+  In vllm/config/vllm.py:2433, enabling it also extends the compile ranges: it computes
+
+  max_token_num = max_size // (hidden_size * dtype.itemsize) and clamps the compile
+
+  range endpoint, so the fused kernel is captured for the relevant token sizes.
+
+  On Ascend, vllm-ascend implements its own Matmul-AllReduce-RMSNorm fusion pass
+
+  (PR #5034, release notes) which is DISABLED by default and must be enabled via
+
+  fuse_allreduce_rms=True in --additional_config. This is a distinct Ascend-native
+
+  implementation (HCCL all-reduce fused with matmul + rmsnorm) rather than the
+
+  upstream inductor pass. The fusion reduces HCCL communication overhead and kernel
+
+  launch count, improving both latency and throughput for tensor-parallel inference.
+
+  '
+usage_locations:
+- file: vllm/compilation/passes/pass_manager.py:176
+  context: Adds AllReduceFusionPass (or RocmAiterAllReduceFusionPass) to the inductor pass pipeline when enabled.
+- file: vllm/compilation/passes/pass_manager.py:149
+  context: Triggers transformers-backend norm canonicalization (AddRMSNormFusionPass) prerequisite when enabled.
+- file: vllm/config/vllm.py:2433
+  context: Extends/clamps compile ranges based on fused allreduce max size and hidden size.
+related_parameters:
+- name: compilation.pass_config.fuse_norm_quant
+  relation: Both trigger the transformers-backend norm canonicalization prerequisite (AddRMSNormFusionPass).
+- name: compilation.pass_config.fuse_act_padding
+  relation: Also triggers norm canonicalization; ordering matters relative to AR+RMS fusion.
+- name: tensor_parallel_size
+  relation: Fusion only benefits when TP > 1 (all-reduce collective exists); compile range computation uses tp_size.
+- name: compilation.mode
+  relation: Pass only runs under VLLM_COMPILE compilation mode; no effect in eager mode.
+constraints:
+- The fusion pass only takes effect when compilation mode is VLLM_COMPILE; it has no effect in eager (no-compile) mode.
+- On Ascend, the Matmul-AllReduce-RMSNorm fusion is disabled by default and must be explicitly enabled via fuse_allreduce_rms=True
+  in --additional_config.
+- The fusion requires a tensor-parallel all-reduce followed by an RMSNorm pattern; models without this pattern gain no benefit.
+tuning_advice:
+  summary: 'Enable fuse_allreduce_rms=True (via --additional_config on Ascend) for tensor-parallel
+
+    deployments to fuse HCCL all-reduce with matmul/rmsnorm, reducing communication and
+
+    kernel-launch overhead; keep disabled for TP=1 or when correctness issues arise.
+
+    '
+  suggested_values:
+  - scenario: Tensor-parallel inference (TP > 1) on Ascend with compile mode enabled
+    value: true
+    reason: Fuses HCCL all-reduce with matmul+rmsnorm, cutting communication round-trips and kernel launches for lower latency
+      and higher throughput.
+  - scenario: Single-NPU (TP=1) or eager/no-compile mode
+    value: false
+    reason: No all-reduce collective exists and the pass only runs under VLLM_COMPILE, so enabling it yields no benefit and
+      only adds compile overhead.
+  - scenario: Debugging correctness or numerical issues
+    value: false
+    reason: Disabling isolates the fusion pass as a potential source of numerical discrepancies.
+  caveats:
+  - On Ascend set it through --additional_config (fuse_allreduce_rms=True), not the upstream compilation-config path, since
+    vllm-ascend uses its own pass.
+  - Benchmark with your actual TP size and model; gains depend on communication-to-compute ratio.
+  - Watch for increased compile time and graph capture memory when enabled.
+  quick_guide: Set fuse_allreduce_rms=True in --additional_config for TP>1 Ascend deployments to fuse all-reduce with matmul/rmsnorm.
+analysis_date: '2026-10-27'

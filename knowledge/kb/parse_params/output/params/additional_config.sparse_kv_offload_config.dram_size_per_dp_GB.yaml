@@ -1,0 +1,87 @@
+name: additional_config.sparse_kv_offload_config.dram_size_per_dp_GB
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1695
+- vllm_ascend/ascend_config.py:1715
+- vllm_ascend/worker/worker.py:522
+- vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:557
+value_type: int
+default: 128
+valid_choices: positive integer (must be > 0); effectively bounded by available host DRAM per DP rank
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+impact_detail: "This field sets the host (CPU DRAM) KV-cache pool budget per data-parallel rank for the\nsparse KV offload\
+  \ feature. It is consumed in two places:\n1. vllm_ascend/worker/worker.py:522 — during decode memory profiling,\n   `_apply_kv_offload_decode_memory_constraints`\
+  \ converts it to bytes\n   (`dram_size_per_dp_GB * GiB_bytes`) and passes it as `dram_limit_bytes` to\n   `plan_sparse_kv_offload_memory`.\
+  \ The planner computes `dram_limit_blocks` and picks\n   `final_num_blocks = min(npu_limit, dram_limit, workload_limit)`.\
+  \ So this value directly\n   caps how many KV blocks can be offloaded to host memory, which in turn determines the\n   maximum\
+  \ sequence length / batch size the decode node can serve. A larger value raises\n   `dram_limit_blocks` and can unlock more\
+  \ concurrent tokens (throughput) at the cost of\n   host DRAM.\n2. vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:557\
+  \ —\n   the manager computes `dram_limit_bytes` and compares against\n   `planned_pool_size_bytes` (the CPU pool size derived\
+  \ from `kv_cache_config.num_blocks`).\n   If the planned pool exceeds the limit it raises ValueError; otherwise\n   `actual_pool_size_bytes\
+  \ = min(planned, limit)` is used to size the offload store\n   (`config.reserve_size` / `config.alloc_size`). TP ranks share\
+  \ this pool\n   (`config.world_size = tp_size`, `alloc_size` only on tp_rank 0), so the value is a\n   per-DP-rank budget\
+  \ shared across TP ranks.\nBecause the offloaded KV cache lives in host DRAM rather than NPU HBM, this parameter is the\n\
+  primary lever controlling how much KV state can be kept off-device, freeing NPU memory for\nweights/activations and enabling\
+  \ longer contexts or larger batches on the decode node.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1695
+  context: SparseKVOffloadConfig dataclass field definition, default 128
+- file: vllm_ascend/ascend_config.py:1715
+  context: model_validator rejects non-positive values
+- file: vllm_ascend/worker/worker.py:522
+  context: converted to bytes and passed as dram_limit_bytes to plan_sparse_kv_offload_memory during decode memory profiling
+- file: vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:557
+  context: compared against planned CPU pool size; raises if exceeded, otherwise sizes the offload store
+related_parameters:
+- name: additional_config.sparse_kv_offload_config.enabled
+  relation: Master switch; this field is only used when enabled=true
+- name: additional_config.sparse_kv_offload_config.keep_device_kv_cache
+  relation: When true, device KV cache is still allocated and offload cannot improve seq len/batch size; debug only
+- name: additional_config.sparse_kv_offload_config.topk_buffer_size
+  relation: Device hot-buffer size; must be >= index_topk and divisible by block_size
+- name: additional_config.sparse_kv_offload_config.fused_op_type
+  relation: Selects fused LIM+Copy-SFA path; changes memory layout but not the DRAM budget semantics
+- name: kv_transfer_config
+  relation: Sparse KV offload requires PD disaggregation and must run on the decode (kv consumer) node unless keep_device_kv_cache
+    is set
+constraints:
+- dram_size_per_dp_GB must be a positive integer; zero or negative raises ValueError.
+- The planned CPU KV pool size (derived from num_blocks) must not exceed dram_size_per_dp_GB after alignment, otherwise SparseKVOffloadManager
+  raises ValueError at startup.
+- Sparse KV offload is only supported for sparse attention models that expose index_topk; models with compress_ratios are
+  rejected.
+- Sparse KV offload does not support context parallel (prefill_context_parallel_size * decode_context_parallel_size > 1) or
+  pipeline parallel (pipeline_parallel_size > 1).
+- Unless keep_device_kv_cache is true, sparse KV offload requires PD disaggregation and can only be used on the decode (kv
+  consumer) node.
+- The value is a per-DP-rank budget shared across all TP ranks in that DP group; it is not multiplied by TP size.
+tuning_advice:
+  summary: Size the host DRAM KV pool per DP rank to hold the full offloaded KV cache, large enough to avoid being DRAM-limited
+    but within available host memory.
+  suggested_values:
+  - scenario: Default / typical decode node with ample host DRAM
+    value: 128
+    reason: Documented default and example value; a practical starting point that holds a full KV cache for common sparse-attention
+      models.
+  - scenario: Long-context or high-concurrency decode where NPU HBM is the bottleneck
+    value: 256
+    reason: Raising the DRAM budget lifts dram_limit_blocks so more KV blocks can be offloaded, enabling longer sequences
+      / larger batches, provided host DRAM allows.
+  - scenario: Host DRAM constrained environment
+    value: 64
+    reason: Lower the budget to fit available host memory; verify the planned CPU pool does not exceed it to avoid startup
+      ValueError.
+  caveats:
+  - Confirm host DRAM per DP rank can accommodate the value; the pool is pinned host memory and TP ranks share it.
+  - If startup logs show 'dram_limit' as the limiting factor in the memory plan, increase this value to unlock more blocks.
+  - Do not rely on this to improve seq len/batch size when keep_device_kv_cache=true (debug only).
+  quick_guide: Set dram_size_per_dp_GB to comfortably exceed the planned KV pool size per DP rank; 128 is the default, raise
+    it for long-context/high-concurrency decode if host DRAM permits.
+analysis_date: '2026-10-27'

@@ -1,0 +1,91 @@
+name: --enable-sleep-mode
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/model.py:342
+- vllm/engine/arg_utils.py:952
+- vllm/config/model.py:614
+- vllm_ascend/platform.py:1441
+- vllm_ascend/worker/worker.py:176
+- vllm_ascend/worker/worker.py:838
+- vllm_ascend/_310p/worker/v2/model_runner.py:176
+- vllm_ascend/model_loader/rfork/safety.py:12
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: --enable-sleep-mode
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+impact_detail: "Sleep mode lets the engine release NPU memory (model weights and/or KV cache) via\nllm.sleep() and restore\
+  \ it via llm.wake_up(), primarily for RL / co-located\ntrainer+rollout deployments where the trainer needs the NPU memory\
+  \ back.\n\nUpstream (vllm/config/model.py:614): when enable_sleep_mode is set, ModelConfig\nvalidates current_platform.is_sleep_mode_available()\
+  \ and, on CUDA-alike platforms,\nauto-enables enable_cumem_allocator. On Ascend, vllm-ascend provides its own\nCaMemAllocator\
+  \ path instead of CuMemAllocator.\n\nvllm-ascend overrides / Ascend-specific behavior:\n- \"vllm_ascend/platform.py:1441:\
+  \ when enable_sleep_mode is True, vllm-ascend does\"\n  NOT set PYTORCH_NPU_ALLOC_CONF=expandable_segments:True. This is\
+  \ deliberate:\n  expandable_segments is incompatible with the sleep-mode memory pool (RL scenario).\n  Consequence: \"without\
+  \ expandable_segments, NPU memory fragmentation is higher and\"\n  peak memory usage can be worse during normal serving.\n\
+  - \"vllm_ascend/worker/worker.py:176: initializes _sleep_saved_buffers and a\"\n  SleepWakeupManager when sleep mode is\
+  \ on.\n- \"vllm_ascend/worker/worker.py:838: load_model() wraps model loading in\"\n  CaMemAllocator.use_memory_pool(tag=\"\
+  weights\") and asserts current usage == 0,\n  meaning only one sleep-mode instance per process is allowed.\n- \"vllm_ascend/_310p/worker/v2/model_runner.py:176:\
+  \ on 310P with model runner v2,\"\n  sleep mode raises NotImplementedError.\n- \"vllm_ascend/model_loader/rfork/safety.py:12:\
+  \ RFork refuses to register mutable\"\n  weights when sleep mode is enabled (weights can be replaced on wake_up).\n\nPerformance\
+  \ mechanism: \"sleep mode itself does not change steady-state token\"\nthroughput, but it (a) forces a different NPU allocator\
+  \ configuration that can\nincrease fragmentation/peak memory, (b) adds wake_up latency (weight restore or\nreload, plus\
+  \ optional HCCL/ACL-graph cleanup), and (c) enables memory reclamation\nthat is essential for co-located RL workloads. With\
+  \ rl_config.sleep_mode_extra_cleanup,\nsleep() additionally releases HCCL process groups and ACL graph workspaces, trading\n\
+  lower sleep-time memory for longer wake_up latency.\n"
+usage_locations:
+- file: vllm/config/model.py:614
+  context: ModelConfig validates platform sleep-mode availability and auto-enables cumem allocator on CUDA-alike.
+- file: vllm_ascend/platform.py:1441
+  context: Skips setting PYTORCH_NPU_ALLOC_CONF=expandable_segments:True when sleep mode is enabled.
+- file: vllm_ascend/worker/worker.py:176
+  context: Initializes sleep-saved buffers and SleepWakeupManager.
+- file: vllm_ascend/worker/worker.py:838
+  context: Wraps model loading in CaMemAllocator memory pool tagged 'weights'.
+- file: vllm_ascend/_310p/worker/v2/model_runner.py:176
+  context: Raises NotImplementedError for sleep mode on 310P model runner v2.
+- file: vllm_ascend/model_loader/rfork/safety.py:12
+  context: Disables RFork mutable-weight registration under sleep mode.
+related_parameters:
+- name: --enable-cumem-allocator
+  relation: Upstream auto-enables cumem allocator when sleep mode is on (CUDA-alike); Ascend uses CaMemAllocator instead.
+- name: rl_config.sleep_mode_extra_cleanup
+  relation: Optional Ascend RL option that releases HCCL/ACL-graph resources during sleep at the cost of slower wake_up.
+- name: VLLM_WORKER_MULTIPROC_METHOD
+  relation: Docs recommend spawn as the supported worker start method for sleep mode.
+- name: PYTORCH_NPU_ALLOC_CONF
+  relation: expandable_segments is not set when sleep mode is enabled, changing NPU allocator behavior.
+- name: --weight-transfer-config
+  relation: RFork/weight-transfer paths interact with sleep mode; mutable weight registration is disabled under sleep mode.
+constraints:
+- Sleep mode is only supported on platforms where is_sleep_mode_available() returns true; otherwise ModelConfig raises ValueError.
+- On 310P with model runner v2, enabling sleep mode raises NotImplementedError.
+- Sleep mode can only be used for one instance per process (CaMemAllocator asserts current usage == 0 at model load).
+- When sleep mode is enabled, PYTORCH_NPU_ALLOC_CONF=expandable_segments:True is not applied by vllm-ascend.
+- RFork will not register mutable weights when sleep mode is enabled.
+tuning_advice:
+  summary: Enable only when the trainer and rollout engine share NPUs and you need to reclaim NPU memory between phases; otherwise
+    leave disabled to keep expandable_segments memory optimization.
+  suggested_values:
+  - scenario: RL co-located trainer + rollout engine sharing NPUs
+    value: true
+    reason: Sleep mode enables the CaMemAllocator memory pool so llm.sleep() can return weights/KV memory to the trainer.
+  - scenario: Pure online serving without memory sharing
+    value: false
+    reason: Keeps PYTORCH_NPU_ALLOC_CONF=expandable_segments:True, reducing fragmentation and peak memory; avoids wake_up
+      latency.
+  - scenario: RL with tight sleep-time memory budget
+    value: true
+    reason: Combine with rl_config.sleep_mode_extra_cleanup=true to release HCCL/ACL-graph workspaces during sleep, accepting
+      slower wake_up.
+  caveats:
+  - Set VLLM_WORKER_MULTIPROC_METHOD=spawn when using sleep mode as recommended by vllm-ascend docs.
+  - Do not enable on 310P model runner v2; it raises NotImplementedError.
+  - Keep rl_config.sleep_mode_extra_cleanup disabled if wake_up latency matters more than releasing HCCL/ACL-graph memory.
+  quick_guide: Use --enable-sleep-mode only for RL co-location; pair with rl_config.enabled=true and VLLM_WORKER_MULTIPROC_METHOD=spawn.
+analysis_date: '2026-10-27'

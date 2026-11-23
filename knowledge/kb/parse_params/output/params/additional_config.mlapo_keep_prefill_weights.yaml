@@ -1,0 +1,80 @@
+name: additional_config.mlapo_keep_prefill_weights
+type: nested
+category: memory
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:615
+- vllm_ascend/ascend_config.py:444
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This is a vllm-ascend-only switch defined in AscendConfig (vllm_ascend/ascend_config.py:615)
+
+  as a plain bool field with default False. It is not present in upstream vLLM. Its purpose is
+
+  to control whether MLAPO (Model Layer-wise Adaptive Parallel Optimization) prefill weights are
+
+  retained on NPU memory on kv_consumer (decode-only "D") nodes in a PD-disaggregated deployment.
+
+  By default (False), the prefill weights are freed on D nodes to save NPU memory. Setting it to
+
+  True keeps those weights resident, trading additional NPU memory for stability: the code comment
+
+  (lines 610-614) states that D nodes have normal local-prefill paths (recompute / fallback /
+
+  preempt) that crash when the weights are freed (issue #11882). The performance effect is therefore
+
+  primarily a memory-footprint tradeoff (higher steady-state NPU memory usage when True) rather than
+
+  a direct latency/throughput change. It only has any effect when MLAPO is enabled (enable_mlapo,
+
+  default True) and in a PD-disaggregated (kv_consumer / D-node) topology; in non-PD or non-MLAPO
+
+  setups it is inert. Because it does not alter the compute path itself, its runtime performance
+
+  impact is low, but it can indirectly affect achievable concurrency by consuming memory that would
+
+  otherwise be available for KV cache.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:615
+  context: Field definition in AscendConfig with default False and explanatory comment about keeping MLAPO prefill weights
+    on D nodes.
+- file: vllm_ascend/ascend_config.py:444
+  context: Listed in the documented example additional_config dict showing all supported keys and defaults.
+related_parameters:
+- name: enable_mlapo
+  relation: Parent feature switch; mlapo_keep_prefill_weights only matters when MLAPO is enabled.
+- name: enable_fused_mc2
+  relation: Related MoE/MC2 optimization path; MLAPO interacts with the same prefill/decode weight handling.
+constraints:
+- The value must be a boolean; AscendConfig uses extra=forbid and lax bool coercion, so unknown keys or invalid types fail
+  fast.
+- This option only has an effect when MLAPO is enabled (enable_mlapo is True) and in a PD-disaggregated deployment with kv_consumer
+  (decode-only D) nodes.
+tuning_advice:
+  summary: Leave at the default False unless you hit crashes on decode-only D nodes from freed MLAPO prefill weights, in which
+    case set True at the cost of extra NPU memory.
+  suggested_values:
+  - scenario: Standard PD-disaggregated deployment with sufficient NPU memory and no D-node crashes
+    value: false
+    reason: Default preserves memory-saving behavior by freeing MLAPO prefill weights on D nodes, leaving more memory for
+      KV cache.
+  - scenario: 'D nodes crash on local-prefill paths (recompute / fallback / preempt) because MLAPO prefill weights were freed
+      (issue #11882)'
+    value: true
+    reason: Keeps prefill weights resident on NPU to avoid the crash, trading NPU memory for stability.
+  caveats:
+  - Setting True increases steady-state NPU memory usage on decode-only D nodes, which can reduce available KV cache and thus
+    achievable batch size/throughput.
+  - Has no effect when MLAPO is disabled or when not running a PD-disaggregated (kv_consumer) topology.
+  - This is a vllm-ascend-only option; it does not exist in upstream vLLM and must be passed via --additional-config.
+  quick_guide: Keep False by default; set True only to fix D-node crashes from freed MLAPO prefill weights, accepting higher
+    NPU memory use.
+analysis_date: '2026-10-27'

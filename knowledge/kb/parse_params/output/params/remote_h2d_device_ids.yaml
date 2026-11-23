@@ -1,0 +1,96 @@
+name: --remote_h2d_device_ids
+type: cli
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1329
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1402
+value_type: str
+default: ''
+valid_choices: Comma-separated NPU device IDs, e.g. "0,1,2,3,4,5,6,7"; empty string disables Remote H2D
+cli_example: --remote_h2d_device_ids "0,1,2,3,4,5,6,7"
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is NOT a vLLM or vllm-ascend engine parameter. It is a command-line flag of the
+
+  external Yuanrong Datasystem worker process (started via `dscli start -w`), documented in
+
+  vllm-ascend''s KV cache pool feature guide. It has no definition or usage site in either
+
+  the vllm or vllm-ascend Python source trees.
+
+  Mechanism: "when non-empty, it enables worker-side Remote Host-to-Device (Remote H2D)"
+
+  transfer in the Datasystem KV cache store backend. Remote H2D lets the Datasystem worker
+
+  push KV cache blocks directly from host shared memory into NPU device memory (HBM) over
+
+  the configured link (ROCE -> P2P_TRANSFER, or HCCS -> HIXL), bypassing a copy through the
+
+  vLLM process. This reduces KV-cache load latency and CPU-side copy overhead during prefix
+
+  cache / KV pool restore, which indirectly improves TTFT and overall throughput for
+
+  workloads that heavily reuse KV cache (e.g. prefix caching, multi-turn serving).
+
+  The device IDs listed determine which NPUs the worker is allowed to DMA into; using
+
+  multiple available NPU IDs spreads transfer across devices and avoids serializing on a
+
+  single device''s copy engines.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1402
+  context: Datasystem worker start command must include --remote_h2d_device_ids together with --enable_huge_tlb true, --arena_per_tenant
+    1, --enable_fallocate false to enable Remote H2D.
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1329
+  context: yuanrong.json field remote_h2d_device_ids (str, default empty); non-empty enables worker-side Remote H2D.
+related_parameters:
+- name: DS_ENABLE_REMOTE_H2D
+  relation: Client-side env var (or enable_remote_h2d in yuanrong.json) that must be set to 1/true to actually use Remote
+    H2D; the worker flag alone is insufficient.
+- name: --remote_h2d_link_type
+  relation: Selects ROCE (P2P_TRANSFER) or HCCS (HIXL) transport for the Remote H2D path; HCCS requires DS_RH2D_LINK_TYPE=HCCS
+    exported in the client process.
+- name: --enable_huge_tlb
+  relation: Must be true for Remote H2D; requires reserving enough 2 MiB HugeTLB pages (e.g. 20480 pages for 40 GiB shared
+    memory).
+- name: --arena_per_tenant
+  relation: Must be 1 when Remote H2D is enabled.
+- name: --enable_fallocate
+  relation: Must be false when Remote H2D is enabled (recommended false with HugeTLB).
+constraints:
+- The Datasystem worker start command must include --remote_h2d_device_ids, --enable_huge_tlb true, --arena_per_tenant 1,
+  and --enable_fallocate false together for Remote H2D to work.
+- Remote H2D is only active when DS_ENABLE_REMOTE_H2D=1 (or enable_remote_h2d=true in yuanrong.json) is set on the client
+  side.
+- Enough 2 MiB HugeTLB pages must be reserved before starting the worker (at least 20480 pages for 40 GiB shared memory).
+- Device IDs listed must be available NPU device IDs on the node.
+tuning_advice:
+  summary: Enable Remote H2D with a comma-separated list of all available NPU IDs to accelerate KV cache restore from the
+    Ascend store, but only after verifying the Yuanrong deployment supports it.
+  suggested_values:
+  - scenario: 8-NPU Ascend node with Remote H2D verified in Yuanrong Datasystem deployment
+    value: '"0,1,2,3,4,5,6,7"'
+    reason: Using all available NPU device IDs spreads Remote H2D transfers across devices, maximizing KV cache load bandwidth
+      and reducing TTFT for prefix-cache-heavy workloads.
+  - scenario: Remote H2D not enabled or not verified in the deployment
+    value: '""'
+    reason: Leave empty (default) to disable worker-side Remote H2D; enabling it without proper HugeTLB reservation and client-side
+      DS_ENABLE_REMOTE_H2D will not function.
+  caveats:
+  - This flag belongs to the external Yuanrong Datasystem worker, not to vLLM/vllm-ascend; it is passed to `dscli start -w`,
+    not to the vLLM server.
+  - Setting the worker flag alone does nothing unless the client exports DS_ENABLE_REMOTE_H2D=1 (or enable_remote_h2d=true
+    in yuanrong.json).
+  - For HCCS link type, the client process must also export DS_RH2D_LINK_TYPE=HCCS before starting vLLM; the backend does
+    not export it automatically.
+  - Insufficient HugeTLB reservation will cause worker startup or transfer failures; reserve 2 MiB huge pages proportional
+    to shared_memory_size_mb.
+  quick_guide: Set to a comma-separated list of all available NPU IDs (e.g. "0,1,2,3,4,5,6,7") only when Remote H2D is enabled
+    and verified; otherwise leave empty.
+analysis_date: '2026-10-27'

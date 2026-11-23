@@ -1,0 +1,86 @@
+name: additional_config.mega_moe_max_tokens
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:600
+- vllm_ascend/ascend_config.py:440
+- tests/ut/test_ascend_config.py:412
+- tests/ut/test_ascend_config.py:489
+value_type: int
+default: 65536
+valid_choices: positive integer (> 0); 0 and negative values raise ValueError
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: "mega_moe_max_tokens is a vllm-ascend-only nested config field (AscendConfig, pydantic\ndataclass with extra=\"\
+  forbid\"). It defines the per-rank token capacity after dispatch in\nthe fused MC2/MegaMoe path. Per the source comment\
+  \ (ascend_config.py:593-599), the same\nvalue is passed as dispatch_ffn_combine's max_output_size and as the CANN MegaMoe\
+  \ buffer's\nmax_recv_token_num. This means it directly sizes the workspace/buffer allocated for the\nfused dispatch-FFN-combine\
+  \ (or CANN MegaMoe) operator on each NPU rank.\nPerformance mechanism:\n- Memory: \"workspace memory scales linearly with\
+  \ this value (explicit comment: \\\"Do not set\"\n  it too large because workspace memory scales linearly with this value\"\
+  ). A larger value\n  reserves more device memory per rank, reducing memory available for KV cache and weights.\n- \"Throughput/latency:\
+  \ the value is a reference capacity. If a rank's actual received token\"\n  count after dispatch exceeds it, tokens may\
+  \ be truncated, causing precision degradation\n  (not a crash, but incorrect output). Setting it too small risks silent\
+  \ accuracy loss;\n  setting it too large wastes NPU memory.\n- \"It only takes effect when the fused MC2/MegaMoe path is\
+  \ active, i.e. when\"\n  enable_fused_mc2 selects the MegaMoe/dispatch-FFN-combine path (enable_fused_mc2=2 maps\n  to MegaMoe\
+  \ when cann_ops_transformer is available, otherwise falls back to\n  dispatch_ffn_combine with enable_fused_mc2=1). With\
+  \ enable_fused_mc2=0 (default) the\n  MegaMoe path is disabled and this value has no runtime effect.\n- \"The doc gives\
+  \ the absolute safe upper bound as\"\n  num_max_tokens_per_rank * ep_world_size * min(num_topk, experts_per_rank), but warns\
+  \ that\n  using it directly can consume very large device memory.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:600
+  context: 'Field definition mega_moe_max_tokens: int = 65536 with comment describing it as per-rank token capacity passed
+    to dispatch_ffn_combine max_output_size and CANN MegaMoe max_recv_token_num.'
+- file: vllm_ascend/ascend_config.py:440
+  context: Documented in the AscendConfig example dict as a supported additional_config key with default 65536.
+- file: tests/ut/test_ascend_config.py:489
+  context: Unit test asserts that values 0 and -1 raise ValueError with message 'mega_moe_max_tokens must be ...'.
+- file: tests/ut/test_ascend_config.py:412
+  context: Unit test passes mega_moe_max_tokens=65536 in additional_config and verifies config init succeeds.
+related_parameters:
+- name: enable_fused_mc2
+  relation: Gates whether the MegaMoe/dispatch-FFN-combine path (which consumes mega_moe_max_tokens) is active; enable_fused_mc2=0
+    disables it, =2 selects CANN MegaMoe when supported.
+- name: max_num_batched_tokens
+  relation: Upper bound on tokens per batch; the per-rank post-dispatch load that mega_moe_max_tokens must cover is derived
+    from batch composition and expert routing.
+- name: enable_prefill_mc2
+  relation: Related MC2 token capacity switch; when enabled, max_num_batched_tokens is used to compute mc2_token_capacity
+    instead of decode-only capacity.
+- name: mc2_comm_alg
+  relation: Selects dispatch/combine communication algorithm used alongside the fused MC2 path.
+constraints:
+- mega_moe_max_tokens must be a positive integer; values of 0 or negative raise a ValueError at config initialization.
+- Unknown keys in additional_config are rejected (extra="forbid"), so the key must be spelled exactly mega_moe_max_tokens.
+- The value only has effect when the fused MC2/MegaMoe path is enabled via enable_fused_mc2 (MegaMoe requires enable_fused_mc2=2
+  and the cann_ops_transformer package to be installed).
+tuning_advice:
+  summary: Size mega_moe_max_tokens to cover the worst-case per-rank post-dispatch token load while keeping workspace memory
+    bounded; tune based on actual expert load distribution.
+  suggested_values:
+  - scenario: Default / general MoE serving with balanced expert load
+    value: 65536
+    reason: Default value; a reasonable balance between covering per-rank dispatch load and workspace memory usage for typical
+      batch sizes.
+  - scenario: Long-context prefill-heavy deployment (e.g. 1M context prefill nodes)
+    value: 8192
+    reason: Documented GLM5.2 1M prefill example uses mega_moe_max_tokens=8192 to limit per-rank capacity and workspace memory
+      on prefill nodes.
+  - scenario: High-throughput decode with large batches and skewed expert routing
+    value: 131072
+    reason: Increase above default when per-rank received token counts risk exceeding 65536 and truncation/precision loss
+      is observed, accepting higher workspace memory.
+  - scenario: Memory-constrained deployment where KV cache is the bottleneck
+    value: 32768
+    reason: Reduce to free device memory for KV cache when actual per-rank dispatch load stays well below the default.
+  caveats:
+  - Do not set to the theoretical safe upper bound directly; it can consume very large device memory.
+  - Monitor for precision degradation as a signal that the value is too small for the actual expert load.
+  - Only meaningful when enable_fused_mc2 selects the MegaMoe/dispatch-FFN-combine path.
+  quick_guide: Keep the 65536 default unless you observe truncation (raise it) or memory pressure (lower it); prefill-heavy
+    1M setups may use 8192.
+analysis_date: '2026-10-27'

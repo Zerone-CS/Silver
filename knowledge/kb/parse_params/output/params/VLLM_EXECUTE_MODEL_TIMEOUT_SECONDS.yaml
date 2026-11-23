@@ -1,0 +1,85 @@
+name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+type: env
+category: communication
+scope: both
+source_file:
+- vllm/envs.py:1762
+- vllm/envs.py:242
+- vllm/v1/executor/multiproc_executor.py:348
+- vllm/v1/executor/multiproc_executor.py:361
+- vllm_ascend/platform.py:941
+value_type: int
+default: 300
+valid_choices: positive integer (seconds); vllm-ascend forces >= 1836, resetting to 3000
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var sets the timeout (in seconds) for execute_model / sample_tokens RPC calls
+
+  in the multiprocessing executor (vllm/v1/executor/multiproc_executor.py:348 and :361),
+
+  passed as the `timeout` argument to collective_rpc. It does NOT change the compute path,
+
+  kernel selection, or memory usage — it only bounds how long the engine waits for worker
+
+  ranks to return a model output before declaring failure.
+
+
+  On Ascend, vllm_ascend/platform.py:941-948 overrides this value: if the configured value
+
+  is below 1836 seconds, it is silently reset to 3000. The rationale in the log message is
+
+  that the HCCL operator timeout interval is 1836s, so the execute_model RPC timeout must
+
+  exceed it. This means on Ascend the effective minimum is 3000s regardless of what the
+
+  user sets below 1836.
+
+
+  Performance impact is low: "it does not affect steady-state throughput or latency. It only"
+
+  matters for robustness — a too-small value causes spurious timeouts/engine failures on
+
+  slow multi-node or long-context runs (e.g. 1M context), while a too-large value delays
+
+  failure detection. The Ascend override prevents the most common misconfiguration.
+
+  '
+usage_locations:
+- file: vllm/v1/executor/multiproc_executor.py:348
+  context: execute_model collective_rpc timeout for multiprocessing executor
+- file: vllm/v1/executor/multiproc_executor.py:361
+  context: sample_tokens collective_rpc timeout
+- file: vllm_ascend/platform.py:941
+  context: Ascend platform check that raises the value to 3000 if below 1836
+related_parameters:
+- name: VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS
+  relation: Sibling timeout for worker shutdown; both govern multiprocessing executor lifecycle
+- name: HCCL_EXEC_TIMEOUT
+  relation: Ascend HCCL operator execution timeout; the 1836s floor for this parameter derives from it
+- name: VLLM_RPC_TIMEOUT
+  relation: Related RPC timeout used in Ascend multi-node deployments
+constraints:
+- On Ascend, values below 1836 seconds are silently overridden to 3000 seconds by vllm_ascend/platform.py.
+- Only applies to the multiprocessing executor path (TP > 1); single-process execution does not use this timeout.
+tuning_advice:
+  summary: Leave at the Ascend-forced 3000s default for normal workloads; raise it for slow multi-node or 1M-context deployments.
+  suggested_values:
+  - scenario: Standard single-node TP>1 deployment
+    value: 3000
+    reason: Ascend platform forces at least 3000s (above the 1836s HCCL operator timeout); this is the effective default and
+      is sufficient for normal runs.
+  - scenario: Multi-node / 1M-context deployment (GLM5.2 docs)
+    value: 30000
+    reason: Docs recommend VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=30000 for slow multi-node startup and model execution in the
+      1M context scenario.
+  - scenario: A2 validated startup defaults (GLM5.3-Flash docs)
+    value: 3000
+    reason: Docs list this among validated A2 startup defaults; keep unless environment requires otherwise.
+  caveats:
+  - Values below 1836 are ignored on Ascend and reset to 3000.
+  - This parameter does not affect steady-state throughput or latency, only failure/timeout robustness.
+  quick_guide: Keep at 3000s (Ascend default); bump to ~30000 for 1M-context or slow multi-node runs.
+analysis_date: '2026-10-27'

@@ -1,0 +1,109 @@
+name: additional_config.finegrained_tp_config.lmhead_tensor_parallel_size
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1338
+- vllm_ascend/ascend_config.py:1419
+- vllm_ascend/ascend_config.py:960
+- vllm_ascend/distributed/parallel_state.py:199
+- vllm_ascend/ops/vocab_parallel_embedding.py:120
+- vllm_ascend/utils.py:959
+value_type: int
+default: 0
+valid_choices: non-negative integer; 0 disables fine-grained LM-head TP; when > 0 it must divide data_parallel_size
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: 'This is a vllm-ascend-only parameter (no upstream vLLM equivalent) that overrides the
+
+  tensor-parallel degree used specifically for the LM head (vocab projection) of MoE models.
+
+  When lmhead_tensor_parallel_size > 0, lmhead_tp_enable() returns True
+
+  (vllm_ascend/utils.py:959) and init_ascend_model_parallel creates a dedicated "lmheadtp"
+
+  process group via _create_or_get_group (vllm_ascend/distributed/parallel_state.py:207-208).
+
+  The vocab-parallel embedding plan then routes the LM head through VocabParallelMode.FINE_GRAINED
+
+  using get_lmhead_tp_group() (vllm_ascend/ops/vocab_parallel_embedding.py:135-139), so the
+
+  LM-head weight and its matmul are sharded across the lmheadtp group instead of the full TP
+
+  group. This reduces per-rank LM-head compute and weight memory (the vocab projection is large
+
+  for big vocabularies), lowering decode latency for the LM-head matmul and freeing HBM, at the
+
+  cost of an extra all-gather/reduce collective over the lmheadtp group. Because the LM head is
+
+  executed every decode step, sharding it can meaningfully improve decode throughput and memory
+
+  for MoE models with large vocabularies. The effect is indirect (medium): it does not change
+
+  the core MoE expert computation, only the LM-head projection path and its communication.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1338
+  context: Field definition in FinegrainedTPConfig pydantic dataclass, default 0.
+- file: vllm_ascend/ascend_config.py:1419
+  context: _validate_preconditions appends to enabled_configs when > 0 and enforces MoE + DP divisibility.
+- file: vllm_ascend/ascend_config.py:960
+  context: Mutually exclusive with enable_batch_sharded_sampling (raises ValueError).
+- file: vllm_ascend/distributed/parallel_state.py:199
+  context: Reads lmhead_tp_size and creates the "lmheadtp" process group when > 0.
+- file: vllm_ascend/ops/vocab_parallel_embedding.py:120
+  context: LM head uses FINE_GRAINED vocab-parallel plan over lmheadtp group; conflicts with PCP LM-head sharding.
+- file: vllm_ascend/utils.py:959
+  context: lmhead_tp_enable() gate returning True when size > 0.
+related_parameters:
+- name: additional_config.finegrained_tp_config.embedding_tensor_parallel_size
+  relation: Sibling fine-grained TP field; both must be non-negative and divide data_parallel_size.
+- name: additional_config.finegrained_tp_config.oproj_tensor_parallel_size
+  relation: Sibling field; oproj/mlp have stricter preconditions (TP==1, graph mode, PD decode node).
+- name: additional_config.finegrained_tp_config.mlp_tensor_parallel_size
+  relation: Sibling field with the same strict preconditions as oproj.
+- name: enable_batch_sharded_sampling
+  relation: Mutually exclusive — enabling both raises ValueError.
+- name: prefill_context_parallel_size
+  relation: PCP LM-head weight sharding cannot be combined with lmhead_tensor_parallel_size (raises ValueError).
+- name: data_parallel_size
+  relation: lmhead_tensor_parallel_size must divide data_parallel_size.
+constraints:
+- lmhead_tensor_parallel_size must be non-negative; negative values raise ValueError.
+- The fine-grained TP sizes can be enabled only for MoE models; setting this on a dense model raises AssertionError.
+- lmhead_tensor_parallel_size must divide data_parallel_size, otherwise an AssertionError is raised.
+- enable_batch_sharded_sampling is incompatible with lmhead_tensor_parallel_size; enabling both raises ValueError.
+- PCP LM-head weight sharding (prefill_context_parallel_size > 1 with PCP embedding/lmhead sharding enabled) cannot be combined
+  with lmhead_tensor_parallel_size and raises ValueError.
+tuning_advice:
+  summary: 'Enable lmhead_tensor_parallel_size on MoE models with large vocabularies to shard the
+
+    LM-head projection across a dedicated group, reducing per-rank LM-head compute/memory at
+
+    the cost of an extra collective; keep it 0 (default) otherwise.
+
+    '
+  suggested_values:
+  - scenario: MoE model with large vocabulary and spare DP ranks, decode-bound workload
+    value: 2
+    reason: Shards the LM-head matmul and weight across 2 ranks, cutting per-rank LM-head compute and HBM; must divide data_parallel_size.
+  - scenario: Default / dense model / no LM-head bottleneck
+    value: 0
+    reason: Disables fine-grained LM-head TP; required for dense models and avoids the extra lmheadtp collective.
+  - scenario: MoE with data_parallel_size = 8 and LM-head-bound decode
+    value: 4
+    reason: A larger lmheadtp group further reduces per-rank LM-head work; 4 divides 8, satisfying the divisibility constraint.
+  caveats:
+  - Do not combine with enable_batch_sharded_sampling — it raises ValueError.
+  - Do not combine with PCP LM-head weight sharding (prefill_context_parallel_size > 1) — it raises ValueError.
+  - Verify data_parallel_size % lmhead_tensor_parallel_size == 0 before launch to avoid AssertionError.
+  - Benchmark the added lmheadtp collective; for small vocabularies the communication may outweigh the compute savings.
+  quick_guide: Set to a divisor of data_parallel_size (e.g. 2 or 4) on MoE models with large vocabularies to shard the LM
+    head; leave 0 otherwise.
+analysis_date: '2026-10-27'

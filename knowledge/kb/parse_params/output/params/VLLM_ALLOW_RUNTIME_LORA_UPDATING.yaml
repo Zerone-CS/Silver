@@ -1,0 +1,112 @@
+name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:1175
+- vllm/envs.py:125
+- vllm/entrypoints/serve/lora/api_router.py:25
+- vllm/entrypoints/serve/engine/serving.py:51
+- vllm/entrypoints/pooling/base/serving.py:225
+- vllm/entrypoints/cli/serve.py:304
+- examples/rl/rlhf_http_lora.py:286
+value_type: bool
+default: false
+valid_choices: 'Boolean-like strings: ''1'', ''true'' (case-insensitive) enable; anything else (including unset) disables'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This env var is a feature gate, not a tuning knob. In vllm/envs.py:1175 it is parsed as a
+
+  boolean (default "0"/false). Its primary effect is to conditionally register the
+
+  /v1/load_lora_adapter and /v1/unload_lora_adapter HTTP routes in
+
+  vllm/entrypoints/serve/lora/api_router.py:25 (attach_router returns early if disabled).
+
+  It also enables lazy LoRA resolution in request handling: in
+
+  vllm/entrypoints/serve/engine/serving.py:51 and vllm/entrypoints/pooling/base/serving.py:225,
+
+  when a request''s `model` field is not a known model, the server attempts
+
+  `self.models.resolve_lora(request.model)` to dynamically load an adapter on demand.
+
+  On Ascend, vllm-ascend does not override this env var; it is consumed by the upstream
+
+  serving layer and the LoRA runtime path (add_lora/remove_lora on the engine). The
+
+  performance impact is indirect: "enabling it does not change the hot inference loop, but"
+
+  it allows runtime adapter load/unload, which triggers LoRA weight loading into NPU memory
+
+  (via the LoRA manager) and can cause transient latency spikes and memory growth when
+
+  adapters are added/removed. The vllm-ascend example examples/rl/rlhf_http_lora.py:286
+
+  demonstrates the intended RLHF use case (in-place LoRA weight push without pausing
+
+  inference or rebuilding KV cache). The actual per-token compute cost of LoRA is governed
+
+  by --enable-lora, --max-lora-rank, and --max-cpu-loras, not by this flag.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1175
+  context: Parses VLLM_ALLOW_RUNTIME_LORA_UPDATING into a bool (default false).
+- file: vllm/entrypoints/serve/lora/api_router.py:25
+  context: Gates registration of /v1/load_lora_adapter and /v1/unload_lora_adapter routes.
+- file: vllm/entrypoints/serve/engine/serving.py:51
+  context: Enables lazy LoRA resolution when request model is unknown.
+- file: vllm/entrypoints/pooling/base/serving.py:225
+  context: Same lazy LoRA resolution for pooling/embedding serving.
+- file: vllm/entrypoints/cli/serve.py:304
+  context: Raises ValueError if combined with api_server_count > 1.
+- file: examples/rl/rlhf_http_lora.py:286
+  context: vllm-ascend RLHF example sets it to '1' to enable runtime LoRA endpoints.
+related_parameters:
+- name: --enable-lora
+  relation: Must be set for LoRA to work at all; this env var only enables runtime load/unload endpoints on top of it.
+- name: --max-lora-rank
+  relation: Determines LoRA adapter memory footprint and compute; governs actual LoRA performance cost.
+- name: --max-cpu-loras
+  relation: Bounds number of adapters cached in CPU memory; interacts with runtime load/unload churn.
+- name: --lora-modules
+  relation: Static adapter registration; alternative to runtime loading.
+- name: VLLM_LORA_RESOLVER_CACHE_DIR
+  relation: Only effective when this env var and plugins are enabled.
+- name: VLLM_LORA_RESOLVER_HF_REPO_LIST
+  relation: Only effective when this env var and plugins are enabled.
+- name: --api-server-count
+  relation: 'Mutually exclusive: runtime LoRA updating cannot be used with api_server_count > 1.'
+constraints:
+- VLLM_ALLOW_RUNTIME_LORA_UPDATING cannot be used when --api-server-count (api_server_count) is greater than 1; the server
+  raises a ValueError.
+- The /v1/load_lora_adapter and /v1/unload_lora_adapter endpoints are only registered when this env var is enabled.
+- VLLM_LORA_RESOLVER_CACHE_DIR and VLLM_LORA_RESOLVER_HF_REPO_LIST only take effect when this env var and plugins are enabled.
+- Runtime LoRA loading requires --enable-lora to be set on the server.
+tuning_advice:
+  summary: Enable only when you need dynamic LoRA load/unload (e.g. RLHF); otherwise leave disabled to avoid extra endpoints
+    and lazy-resolution overhead.
+  suggested_values:
+  - scenario: Online RLHF / dynamic adapter sync (v1 and v2 Ascend workers)
+    value: '1'
+    reason: Required to expose /v1/load_lora_adapter and /v1/unload_lora_adapter so trainers can push updated LoRA weights
+      without restarting the server, as shown in examples/rl/rlhf_http_lora.py.
+  - scenario: Static LoRA deployment with pre-registered adapters
+    value: '0'
+    reason: If adapters are fixed via --lora-modules, runtime updating is unnecessary; leaving it disabled avoids the lazy-resolution
+      path and extra endpoints.
+  - scenario: Multi-API-server deployment (--api-server-count > 1)
+    value: '0'
+    reason: Combining this flag with api_server_count > 1 raises a ValueError, so it must remain disabled.
+  caveats:
+  - Pair with --enable-lora and set --max-lora-rank / --max-cpu-loras to bound adapter memory.
+  - Do not enable with --api-server-count > 1.
+  - Expect transient latency and NPU memory spikes during adapter load/unload; use load_inplace to avoid full unload cycles.
+  quick_guide: Set VLLM_ALLOW_RUNTIME_LORA_UPDATING=1 only for dynamic LoRA/RLHF workflows with --enable-lora; keep it off
+    for static deployments.
+analysis_date: '2026-10-27'

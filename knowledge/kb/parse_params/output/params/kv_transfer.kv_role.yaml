@@ -1,0 +1,126 @@
+name: kv_transfer.kv_role
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/vllm.py:1066
+- vllm_ascend/ascend_config.py:89
+- vllm_ascend/ascend_config.py:927
+- vllm_ascend/platform.py:1031
+- vllm_ascend/platform.py:1046
+- vllm_ascend/ascend_forward_context.py:48
+- vllm_ascend/patch/platform/patch_pp_mtp.py:42
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_scheduler.py:52
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:79
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2152
+value_type: str
+default: kv_both
+valid_choices:
+- kv_producer
+- kv_consumer
+- kv_both
+cli_example: '--kv-transfer-config ''{"kv_connector": "MooncakeConnectorV2", "kv_role": "kv_producer"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "kv_role selects the P/D-disaggregation role of a vLLM instance and is the master switch\nthat determines which\
+  \ KV-transfer code paths are active on Ascend. It is not a tunable\nknob in the usual sense — it changes the entire execution\
+  \ topology:\n- \"On a kv_producer (prefill) node, vllm-ascend enables prefill-only optimizations. In\"\n  vllm_ascend/ascend_config.py:927\
+  \ the `is_prefill_node` flag (derived from\n  kv_role == \"kv_producer\") gates `_c8_reshape_optim_enabled`, which enables\
+  \ the SFA/LI\n  C8 packed-KV reshape optimization only on P nodes. So kv_role directly toggles a\n  compute-path optimization.\n\
+  - \"On a kv_consumer (decode) node, vllm_ascend/ascend_forward_context.py:48 uses\"\n  kv_role == \"kv_consumer\" to identify\
+  \ decode-only nodes, which combined with\n  recompute_scheduler_enable changes preemption behavior (offload KV or send request\n\
+  \  back to P instead of local prefill). This affects decode latency and memory pressure.\n- \"The Mooncake connector (vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2152)\"\
+  \n  reads kv_role to decide whether the engine sends or receives KV blocks; a kv_consumer\n  with PCP>1 is rejected. The\
+  \ transfer itself is the dominant inter-node latency cost in\n  PD-disaggregated serving, so role assignment determines\
+  \ whether a node pays send cost,\n  receive cost, or both.\n- \"kv_role == \\\"kv_both\\\" (the default when kv_transfer_config\
+  \ is created for offloading,\"\n  vllm/config/vllm.py:1066) means the instance both stores and loads KV, e.g. for CPU\n\
+  \  offload (OffloadingConnector) — this trades NPU HBM for host memory and adds\n  store/load latency but raises effective\
+  \ KV capacity.\n- kv_role also gates scheduler features: \"enable_balance_scheduling requires kv_both\"\n  (PD-mixed), short_request_first\
+  \ requires non-consumer, dyntra_lb/recompute_scheduler\n  require kv_consumer. Choosing the wrong role either disables these\
+  \ features or fails\n  startup, which indirectly changes throughput.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:89
+  context: 'KVPP validation: rejects kv_role == kv_consumer on decode-only node when KVPP enabled.'
+- file: vllm_ascend/ascend_config.py:927
+  context: Derives is_prefill_node from kv_role == kv_producer to gate C8 reshape optimization.
+- file: vllm_ascend/platform.py:1031
+  context: enable_balance_scheduling requires kv_role == kv_both (PD-mixed).
+- file: vllm_ascend/platform.py:1046
+  context: short_request_first_config rejects kv_role == kv_consumer.
+- file: vllm_ascend/ascend_forward_context.py:48
+  context: Identifies decode-only node (kv_consumer) for recompute scheduler behavior.
+- file: vllm_ascend/patch/platform/patch_pp_mtp.py:42
+  context: Detects PD prefill node from kv_role == kv_producer for PP+MTP patch.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_scheduler.py:52
+  context: Mooncake scheduler requires exactly one role (producer XOR consumer).
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:79
+  context: Mooncake worker requires exactly one role.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2152
+  context: Rejects kv_consumer with PCP>1; role drives send/recv path.
+- file: vllm/config/vllm.py:1066
+  context: Upstream sets kv_role = kv_both when building kv_transfer_config for offloading.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: kv_role only takes effect when a kv_connector is configured; MooncakeConnectorV2 requires exactly one role.
+- name: additional_config.enable_kvpp
+  relation: KVPP requires kv_role != kv_consumer on the decode node and MooncakeConnectorV2.
+- name: scheduler_config.enable_balance_scheduling
+  relation: Requires kv_role == kv_both (PD-mixed); incompatible with kv_producer/kv_consumer.
+- name: scheduler_config.short_request_first_config
+  relation: Not supported on kv_consumer (decode) nodes.
+- name: scheduler_config.recompute_scheduler_enable
+  relation: Only valid on kv_consumer (decode) nodes.
+- name: scheduler_config.dyntra_lb_config
+  relation: Only valid on kv_consumer decode nodes with data_parallel_size > 1.
+- name: prefill_context_parallel_size
+  relation: Mooncake rejects PCP>1 on kv_consumer; PCP only allowed on kv_producer.
+- name: decode_context_parallel_size
+  relation: KVPP (which depends on kv_role) cannot be enabled together with DCP.
+constraints:
+- 'Mooncake connector requires exactly one KV transfer role: kv_role must be either kv_producer or kv_consumer, not kv_both.'
+- In P/D disaggregation, Mooncake supports prefill_context_parallel_size > 1 only on the kv_producer engine; the kv_consumer
+  engine must set prefill_context_parallel_size=1.
+- When KVPP (additional_config.enable_kvpp) is enabled, kv_role must not be kv_consumer on the decode-only node.
+- enable_balance_scheduling is only supported in PD-mixed mode, i.e. kv_role must be kv_both or no kv_transfer_config may
+  be set.
+- ShortRequestFirst scheduling is not supported on PD-disaggregated decode nodes (kv_role == kv_consumer).
+- recompute_scheduler_enable is only valid on PD-disaggregated decode nodes (kv_role == kv_consumer); enabling it on P nodes
+  or PD-mixed mode fails startup.
+- DyntraLB (dyntra_lb_config) is only supported on PD-disaggregated decode nodes (kv_role == kv_consumer) with data_parallel_size
+  > 1.
+tuning_advice:
+  summary: 'Set kv_role to match the node''s actual function: kv_producer on prefill nodes, kv_consumer
+
+    on decode nodes, and kv_both only for PD-mixed or KV-offload deployments. The role must be
+
+    consistent with the connector and the scheduler features you enable.
+
+    '
+  suggested_values:
+  - scenario: PD-disaggregated prefill (P) node with MooncakeConnectorV2
+    value: kv_producer
+    reason: Enables prefill-side C8 reshape optimization and allows PCP>1; required for the P engine in P/D disaggregation.
+  - scenario: PD-disaggregated decode (D) node with MooncakeConnectorV2
+    value: kv_consumer
+    reason: Decode node receives KV from P; required for recompute_scheduler and dyntra_lb; PCP must be 1.
+  - scenario: Single-instance KV cache CPU offload (OffloadingConnector)
+    value: kv_both
+    reason: OffloadingConnector stores and loads KV; kv_both is the upstream default set in vllm/config/vllm.py:1066 and required
+      by the offload docs.
+  - scenario: PD-mixed deployment using enable_balance_scheduling
+    value: kv_both
+    reason: enable_balance_scheduling only supports PD-mixed mode (kv_role == kv_both or no kv_transfer_config).
+  caveats:
+  - Do not set kv_role=kv_consumer on a node that also performs prefill; it disables prefill optimizations and may route requests
+    back to P.
+  - Mooncake requires exactly one role — kv_both is rejected by the Mooncake scheduler/worker.
+  - If you enable KVPP, ensure the decode node is not kv_consumer; KVPP also requires MooncakeConnectorV2 and PIECEWISE cudagraph
+    mode.
+  - Keep kv_role consistent with is_kv_producer/is_kv_consumer booleans; vllm-ascend falls back to them when the string role
+    is absent.
+  quick_guide: P node -> kv_producer, D node -> kv_consumer, offload/PD-mixed -> kv_both; never kv_both with Mooncake.
+analysis_date: '2026-10-27'

@@ -1,0 +1,94 @@
+name: kernel.enable_flashinfer_autotune
+type: nested
+category: hardware
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1673
+- vllm/engine/arg_utils.py:2553
+- vllm/config/vllm.py:1624
+- vllm/model_executor/warmup/kernel_warmup.py:251
+- vllm/model_executor/warmup/flashinfer_autotune_cache.py:51
+- vllm/model_executor/warmup/flashinfer_sparse_mla_warmup.py:129
+- vllm/distributed/elastic_ep/elastic_execute.py:177
+value_type: bool
+default: <computed>
+valid_choices: true or false (bool); None means unset and is resolved by optimization-level defaults
+cli_example: --enable-flashinfer-autotune
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter controls whether vLLM runs FlashInfer autotuning during kernel warmup.
+
+  In vllm upstream, kernel_warmup.py reads kernel_config.enable_flashinfer_autotune and,
+
+  when it is not False and has_flashinfer() and current_platform.has_device_capability(90)
+
+  (Hopper SM90+), calls flashinfer_autotune(worker.model_runner). The autotune cache is then
+
+  broadcast across ranks via sync_flashinfer_autotune_cache (flashinfer_autotune_cache.py:51),
+
+  and the SM120 sparse-MLA decode autotune path (flashinfer_sparse_mla_warmup.py:129) also
+
+  gates on this flag being exactly True. All of these code paths are guarded by
+
+  has_flashinfer() and CUDA device-capability checks (has_device_capability(90),
+
+  is_device_capability_family(120)). On Ascend NPU there is no FlashInfer library and no
+
+  CUDA device capability, so has_flashinfer() returns False and the autotune branch is never
+
+  entered. The flag therefore has no runtime effect on Ascend NPU — it only affects warmup
+
+  behavior on NVIDIA Hopper/Blackwell GPUs. No vllm-ascend override of this parameter was
+
+  found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/model_executor/warmup/kernel_warmup.py:251
+  context: Reads enable_flashinfer_autotune; skips autotune if False, otherwise runs flashinfer_autotune only when has_flashinfer()
+    and device capability >= 90 (CUDA-only).
+- file: vllm/model_executor/warmup/flashinfer_autotune_cache.py:51
+  context: Rank-0 broadcasts the FlashInfer autotune cache to other ranks when the flag is enabled (CUDA-only path).
+- file: vllm/model_executor/warmup/flashinfer_sparse_mla_warmup.py:129
+  context: SM120 sparse-MLA decode autotune only runs when the flag is exactly True and FlashInfer + SM120 capability are
+    present.
+- file: vllm/distributed/elastic_ep/elastic_execute.py:177
+  context: Temporarily disables the flag during elastic EP reconfiguration to avoid re-autotuning.
+- file: vllm/config/vllm.py:1624
+  context: Validates that the flag is resolved (non-None) after optimization-level defaults are applied.
+- file: vllm/engine/arg_utils.py:2553
+  context: CLI override handling; raises if both top-level and kernel_config values are set.
+related_parameters:
+- name: --optimization-level
+  relation: Optimization-level defaults set enable_flashinfer_autotune when it is None; the value must be resolved before
+    validation.
+- name: kernel_config
+  relation: Parent config object; the top-level --enable-flashinfer-autotune and kernel_config.enable_flashinfer_autotune
+    are mutually exclusive.
+- name: --moe-backend
+  relation: Sibling KernelConfig field; FlashInfer autotune is relevant to FlashInfer-based MoE/attention kernels on CUDA.
+constraints:
+- The top-level --enable-flashinfer-autotune flag and kernel_config.enable_flashinfer_autotune cannot both be set; doing so
+  raises a ValueError.
+- KernelConfig.enable_flashinfer_autotune must be resolved to a non-None value after optimization-level defaults are applied,
+  otherwise a ValueError is raised.
+- FlashInfer autotuning only runs when the FlashInfer library is installed and the device has CUDA compute capability 9.0
+  or higher; on Ascend NPU this condition is never met.
+tuning_advice:
+  summary: No tuning needed on Ascend NPU — the flag is inert because FlashInfer and CUDA capability checks gate all autotune
+    paths.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: false
+    reason: FlashInfer is unavailable on Ascend and all autotune branches are guarded by has_flashinfer()/CUDA capability
+      checks, so the value has no runtime effect; leaving it at the resolved default is fine.
+  - scenario: NVIDIA Hopper/Blackwell GPU reference deployment
+    value: true
+    reason: Enables FlashInfer autotuning during warmup to select faster kernels for steady-state latency.
+  caveats:
+  - Do not expect any latency or throughput change on Ascend from toggling this flag.
+  - Setting both the CLI flag and kernel_config.enable_flashinfer_autotune raises an error.
+  quick_guide: Ignore on Ascend — it only affects CUDA FlashInfer autotuning.
+analysis_date: '2026-10-27'

@@ -1,0 +1,130 @@
+name: HCCL_BUFFSIZE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/utils.py:1186
+- vllm_ascend/ascend_forward_context.py:252
+- tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:85
+- tests/e2e/cases/features/structured_output/conftest.py:35
+- tests/e2e/pull_request/four_card/context_parallel/test_accuracy.py:215
+- tests/e2e/pull_request/four_card/model_runner_v2/test_deepseek_v4.py:28
+value_type: int
+default: <computed>
+valid_choices: positive integer (MB); commonly 256, 768, 1024, 1800, 2048, 2560 in vllm-ascend tests/docs
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'HCCL_BUFFSIZE is a CANN/HCCL environment variable (not a vLLM or vllm-ascend config field) that
+
+  sets the size of the HCCL communication buffer used to share data between NPUs. It is read by the
+
+  HCCL runtime at process-group creation time, so it directly governs how much data can be in flight
+
+  per collective (AllReduce/AllGather/ReduceScatter/AlltoAll) and how much device memory is reserved
+
+  for communication buffers.
+
+
+  In vllm-ascend, the parameter is tightly coupled to MC2 (fused communication-compute) operators.
+
+  vllm_ascend/utils.py:1186 documents that "Current mc2 operators only perform communication space
+
+  partitioning based on HCCL_BUFFSIZE configuration" — meaning the MC2 fused kernels size their
+
+  communication workspace from HCCL_BUFFSIZE, and passing pg_options to the mc2 group would cause
+
+  memory misalignment. This is why get_hccl_config_for_pg_options() returns None for any group whose
+
+  name contains "mc2" (vllm_ascend/utils.py:1188-1189), while other groups (dp, dynamic_eplb,
+
+  sleep-lifecycle-anchor) get explicit hccl_buffer_size values.
+
+
+  vllm_ascend/ascend_forward_context.py:252 further ties the MC2 token capacity to the HCCL comm
+
+  buffer: "regular MC2 (gated by enable_prefill_mc2) uses the HCCL comm buffer sized by HCCL_BUFFSIZE,"
+
+  whereas MegaMoe uses a separate symmetric buffer (torch alloc, not HCCL_BUFFSIZE). set_mc2_tokens_capacity()
+
+  caps num_tokens_per_tp_rank by _MC2_TOKENS_PER_RANK_LIMIT / _DISPATCH_FFN_COMBINE_TOKENS_PER_RANK_LIMIT /
+
+  _MEGA_MOE_TOKENS_PER_RANK_LIMIT, so an undersized HCCL_BUFFSIZE can force a smaller MC2 token
+
+  capacity and reduce effective batch throughput, while an oversized value wastes HBM that would
+
+  otherwise go to KV cache.
+
+
+  Net effect on Ascend: "too small → communication bottleneck / MC2 capacity cap / potential HCCL"
+
+  errors under large messages; too large → HBM consumed by comm buffers, shrinking KV cache and
+
+  lowering max concurrency. It is a genuine throughput/latency/memory tradeoff knob.
+
+  '
+usage_locations:
+- file: vllm_ascend/utils.py:1186
+  context: 'Comment: MC2 operators partition communication space based on HCCL_BUFFSIZE; mc2 groups skip pg_options to avoid
+    memory misalignment.'
+- file: vllm_ascend/utils.py:1188
+  context: get_hccl_config_for_pg_options returns None for mc2 groups; other groups get explicit hccl_buffer_size.
+- file: vllm_ascend/ascend_forward_context.py:252
+  context: 'set_mc2_tokens_capacity: regular MC2 uses HCCL comm buffer (HCCL_BUFFSIZE); MegaMoe uses separate symm buffer.'
+- file: tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:85
+  context: E2E test sets HCCL_BUFFSIZE=1024 for KV-pool / Mooncake disaggregated scenario.
+- file: tests/e2e/pull_request/four_card/context_parallel/test_accuracy.py:215
+  context: Context-parallel accuracy tests set HCCL_BUFFSIZE=768.
+- file: tests/e2e/pull_request/four_card/model_runner_v2/test_deepseek_v4.py:28
+  context: MRv2 DeepSeek-V4 test sets HCCL_BUFFSIZE=2048.
+related_parameters:
+- name: enable_prefill_mc2
+  relation: When enabled, MC2 token capacity is derived from max_num_batched_tokens and bounded by MC2 per-rank limits that
+    depend on HCCL_BUFFSIZE-sized comm buffers.
+- name: enable_fused_mc2
+  relation: Fused MC2 (MegaMoe / dispatch-ffn-combine) uses per-rank token limits; MegaMoe uses a separate symm buffer rather
+    than HCCL_BUFFSIZE.
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Frequently set together (e.g. AIV) in vllm-ascend test envs to select the AIV communication path.
+- name: PYTORCH_NPU_ALLOC_CONF
+  relation: Co-set with expandable_segments:True to reduce fragmentation alongside the comm buffer allocation.
+- name: gpu_memory_utilization
+  relation: Larger HCCL_BUFFSIZE reserves more HBM, reducing KV cache available under a fixed gpu_memory_utilization.
+constraints:
+- HCCL_BUFFSIZE must be a positive integer (buffer size in MB); invalid or zero values cause HCCL initialization failure.
+- For MC2 communication groups, pg_options must not be supplied because MC2 operators partition communication space solely
+  from HCCL_BUFFSIZE; doing so causes memory misalignment.
+- The value must be set before the process starts (it is read by the HCCL runtime at process-group creation), so it cannot
+  be changed at runtime.
+tuning_advice:
+  summary: Size HCCL_BUFFSIZE to balance collective bandwidth against HBM reserved for KV cache, using role-specific values
+    in PD deployments.
+  suggested_values:
+  - scenario: PD-disaggregated prefill node (large-scale EP, Mooncake)
+    value: 256
+    reason: Docs recommend HCCL_BUFFSIZE=256 on prefill to leave HBM for KV cache; prefill is compute-bound and needs less
+      comm buffer.
+  - scenario: PD-disaggregated decode node (large-scale EP)
+    value: 1024
+    reason: Docs recommend 1024 on decode where communication dominates; DeepSeek-V4.1-Flash tutorial uses 1800 for decode.
+  - scenario: General single-node TP/EP serving (Kimi-K2-Thinking, KV-pool tests)
+    value: 1024
+    reason: Validated baseline in vllm-ascend docs and e2e tests; balances comm bandwidth and memory.
+  - scenario: Context-parallel / DSA-CP accuracy and full-graph tests
+    value: 768
+    reason: Used in vllm-ascend four-card context-parallel tests to fit memory while supporting CP collectives.
+  - scenario: DeepSeek-V4 MRv2 with MTP/DSpark, high comm volume
+    value: 2048
+    reason: Used in vllm-ascend MRv2 DeepSeek-V4 tests (2560 in another) to sustain large speculative/EP collectives.
+  caveats:
+  - Set HCCL_BUFFSIZE before launching the process; it is read at HCCL init and cannot be changed at runtime.
+  - Do not pass pg_options to mc2 groups; MC2 relies solely on HCCL_BUFFSIZE for comm space partitioning.
+  - Validate any non-default value with throughput, TTFT, TPOT, and HCCL stability checks; oversized values shrink KV cache.
+  - MegaMoe uses a separate symmetric buffer, so HCCL_BUFFSIZE tuning has limited effect on that path.
+  quick_guide: Start at 1024 for mixed serving; use 256 (prefill) / 1024-1800 (decode) in PD setups, and raise toward 2048-2560
+    only if comm-bound and HBM allows.
+analysis_date: '2026-10-27'

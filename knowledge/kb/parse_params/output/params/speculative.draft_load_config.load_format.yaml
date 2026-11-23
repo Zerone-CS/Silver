@@ -1,0 +1,112 @@
+name: speculative.draft_load_config.load_format
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm_ascend/spec_decode/llm_base_proposer.py:356
+- vllm_ascend/spec_decode/llm_base_proposer.py:360
+- vllm_ascend/spec_decode/llm_base_proposer.py:367
+value_type: str
+default: auto
+valid_choices:
+- auto
+- pt
+- safetensors
+- dummy
+- npcache
+- gguf
+- bitsandbytes
+- sharded_state
+- mistral
+- runai_streamer
+- tensorizer
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is the load_format field of the LoadConfig used specifically for the
+
+  speculative draft model (draft_load_config), distinct from the top-level
+
+  load_format used for the target model. In vllm-ascend v1, the value is read
+
+  in LLMBaseProposer._get_model() (vllm_ascend/spec_decode/llm_base_proposer.py:356-368):
+
+  draft_load_config = self.speculative_config.draft_load_config is passed directly
+
+  into get_model(..., load_config=self.speculative_config.draft_load_config) under
+
+  the "eagle_head" model tag. The load_format therefore only affects how the draft
+
+  model weights are materialized at engine startup (weight file parsing, host->NPU
+
+  copy, possible dequantization), not the steady-state decode loop. It has no
+
+  effect on per-token latency or throughput once the model is loaded. Its only
+
+  runtime-relevant effects are (a) startup/load time (safetensors is generally
+
+  faster to parse than pytorch .bin, and "dummy" skips weight loading entirely,
+
+  which is why the Ascend e2e tests use load_format: "\"dummy\" for both dspark and"
+
+  mtp drafters in tests/e2e/pull_request/four_card/test_kimi_k3.py:354 and :496),
+
+  and (b) transient host/device memory during loading. vllm-ascend does not
+
+  override or reinterpret this field; it is forwarded verbatim to the upstream
+
+  get_model() loader. Because the draft model is typically small (EAGLE/MTP head),
+
+  the absolute impact is minor.
+
+  '
+usage_locations:
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:356
+  context: Reads self.speculative_config.draft_load_config into draft_load_config for the draft model loader.
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:360
+  context: Logs getattr(draft_load_config, 'load_format', None) when loading the draft model.
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:367
+  context: Passes draft_load_config as load_config to get_model() for the eagle_head draft model.
+- file: tests/e2e/pull_request/four_card/test_kimi_k3.py:354
+  context: Ascend e2e test sets draft_load_config.load_format to 'dummy' for dspark drafter.
+- file: tests/e2e/pull_request/four_card/test_kimi_k3.py:496
+  context: Ascend e2e test sets draft_load_config.load_format to 'dummy' for mtp drafter.
+related_parameters:
+- name: speculative_config.draft_load_config
+  relation: Parent LoadConfig object; load_format is one field of it.
+- name: speculative_config.method
+  relation: Determines which proposer (eagle/eagle3/mtp/dspark) consumes the draft model and thus this load config.
+- name: speculative_config.model
+  relation: The draft model whose weights are loaded using this format.
+- name: load_format
+  relation: Top-level target-model load format; independent of the draft model's load format.
+constraints:
+- The value must be a load format supported by the installed vLLM loader; unsupported formats raise an error at draft-model
+  load time.
+- When set to 'dummy', no real weights are loaded, so the draft model produces meaningless outputs and must only be used for
+  benchmarking or tests.
+- The draft model is loaded on the last pipeline stage only (asserted in load_model), so this format applies only to that
+  rank's draft weights.
+tuning_advice:
+  summary: Leave at 'auto' for production; use 'dummy' only for startup-time benchmarking or tests where draft weights are
+    irrelevant.
+  suggested_values:
+  - scenario: Production deployment with a real EAGLE/MTP/dspark draft model
+    value: auto
+    reason: Automatically selects safetensors when available and falls back to pytorch bin, giving the fastest reliable draft-model
+      load without manual format selection.
+  - scenario: Startup-time or throughput benchmarking where draft weights are not needed
+    value: dummy
+    reason: Skips draft weight loading entirely, as done in Ascend e2e tests (test_kimi_k3.py), reducing engine startup time;
+      not valid for real inference.
+  - scenario: Draft model shipped only as safetensors and you want to avoid fallback probing
+    value: safetensors
+    reason: Explicitly uses the faster safetensors parser, avoiding the auto-detection fallback path.
+  caveats:
+  - Does not affect per-token latency or throughput after load; only startup time and transient memory.
+  - Do not use 'dummy' in production — the drafter will emit invalid speculative tokens.
+  quick_guide: Keep 'auto' for real runs; use 'dummy' only for fast-startup tests/benchmarks.
+analysis_date: '2026-10-27'

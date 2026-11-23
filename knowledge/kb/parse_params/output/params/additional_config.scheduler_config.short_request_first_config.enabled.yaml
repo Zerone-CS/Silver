@@ -1,0 +1,107 @@
+name: additional_config.scheduler_config.short_request_first_config.enabled
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1569
+- vllm_ascend/ascend_config.py:504
+- vllm_ascend/platform.py:1044
+- vllm_ascend/patch/platform/patch_balance_schedule.py:126
+- vllm_ascend/core/scheduler_profiling_chunk.py:95
+- vllm_ascend/core/short_request_first_scheduler.py:379
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch (defined in AscendConfig.ShortRequestFirstConfig,
+
+  vllm_ascend/ascend_config.py:1569, default False). When enabled, it installs a custom
+
+  waiting-queue policy (ShortRequestFirstRequestQueue) into the scheduler via
+
+  install_short_request_first_waiting_queue(). The installation happens in three places:
+
+  - "BalanceScheduler.__init__ (patch_balance_schedule.py:126) when balance scheduling is used"
+
+  - "ProfilingChunkScheduler.__init__ (scheduler_profiling_chunk.py:95)"
+
+  - "ShortRequestFirstAsyncScheduler.__init__ (short_request_first_scheduler.py:379) for async scheduling"
+
+  The mechanism reorders the waiting queue so that short requests (below `threshold` tokens)
+
+  are dispatched before ordinary long requests, while immediate requests always win and the
+
+  oldest long request can be promoted after `long_max_wait_ms`. This changes batching order,
+
+  which affects TTFT/ITL latency distribution and overall throughput: short requests get
+
+  lower latency, but long requests may be delayed (head-of-line reordering). It does not
+
+  change memory footprint directly. The effect is purely on scheduling order, so it is a
+
+  medium impact on latency/throughput rather than a hard throughput multiplier.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1569
+  context: 'Field definition `enabled: bool = False` in ShortRequestFirstConfig pydantic dataclass.'
+- file: vllm_ascend/platform.py:1044
+  context: 'Validation gate: requires scheduler policy ''fcfs'', forbids batch_job_sched_config, forbids kv_role=''kv_consumer'',
+    and adjusts scheduler_cls for async_scheduling.'
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:126
+  context: BalanceScheduler installs the ShortRequestFirst waiting queue when enabled.
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:95
+  context: ProfilingChunkScheduler stores the flag and installs the SRF waiting queue when enabled.
+- file: vllm_ascend/core/short_request_first_scheduler.py:379
+  context: ShortRequestFirstAsyncScheduler installs the SRF waiting queue when enabled.
+related_parameters:
+- name: additional_config.scheduler_config.short_request_first_config.threshold
+  relation: Token-length cutoff below which a request is treated as short; only meaningful when enabled=true.
+- name: additional_config.scheduler_config.short_request_first_config.long_max_wait_ms
+  relation: Max wait before the oldest long request is promoted ahead of waiting short requests; only meaningful when enabled=true.
+- name: scheduler_config.policy
+  relation: Must be 'fcfs' when enabled; otherwise platform.py raises ValueError.
+- name: additional_config.scheduler_config.batch_job_sched_config.enabled
+  relation: Mutually exclusive; enabling both raises ValueError.
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: When profiling-chunk is enabled, the profiling chunk scheduler installs the SRF waiting queue itself; docs state
+    SRF is not supported with profiling-chunk scheduling.
+- name: additional_config.scheduler_config.enable_balance_scheduling
+  relation: SRF is installed independently of balance scheduling; balance-disabled path still uses the SRF waiting queue.
+- name: kv_transfer_config.kv_role
+  relation: Must not be 'kv_consumer' (PD-disaggregated D node) when enabled.
+- name: scheduler_config.async_scheduling
+  relation: When enabled with async_scheduling, platform.py rewrites scheduler_cls to ShortRequestFirstAsyncScheduler.
+constraints:
+- scheduler_config.policy must be 'fcfs' when short_request_first_config.enabled is true, otherwise a ValueError is raised.
+- short_request_first_config.enabled cannot be combined with batch_job_sched_config.enabled; enabling both raises a ValueError.
+- short_request_first_config.enabled is not supported on PD-disaggregated D nodes where kv_role='kv_consumer'; it raises a
+  ValueError.
+- short_request_first_config.threshold must be a non-negative int.
+- short_request_first_config.long_max_wait_ms must be >= 0.
+- Unknown keys under short_request_first_config are rejected (extra='forbid').
+tuning_advice:
+  summary: Enable only when short-request latency matters and the workload mixes short and long requests under FCFS scheduling;
+    otherwise leave disabled.
+  suggested_values:
+  - scenario: Mixed short/long interactive traffic where short-request TTFT is critical
+    value: true
+    reason: Reorders the waiting queue so short requests dispatch before ordinary long requests, reducing short-request latency.
+  - scenario: Uniform long-request batch workloads or throughput-only serving
+    value: false
+    reason: Reordering provides no benefit and may delay long requests; default false keeps standard FCFS behavior.
+  - scenario: PD-disaggregated D node (kv_role='kv_consumer') or batch-job scheduling
+    value: false
+    reason: Not supported in these configurations; enabling raises ValueError.
+  caveats:
+  - Tune threshold together with enabled; a too-small threshold causes long-request promotion and degradation warnings.
+  - Set long_max_wait_ms to bound how long the oldest long request can be starved.
+  - Requires scheduler_config.policy='fcfs'; do not combine with batch_job_sched_config.
+  quick_guide: Set enabled=true only for FCFS mixed-traffic serving that needs short-request priority; tune threshold and
+    long_max_wait_ms accordingly.
+analysis_date: '2026-10-27'

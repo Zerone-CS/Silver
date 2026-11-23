@@ -1,0 +1,67 @@
+name: VLLM_ASCEND_KVPOOL_RANGE_DEBUG
+type: env
+category: observability
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:84
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/kv_transfer.py:74
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/kv_transfer.py:85
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:48
+value_type: bool
+default: false
+valid_choices:
+- '0'
+- '1'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This is a debug-only instrumentation switch for the Ascend KV cache store\n(ascend_store) used by the Mooncake\
+  \ layerwise KV transfer path. When enabled\n(value \"1\"), three emit helpers become active:\n- \"_emit_range_debug_event\
+  \ (kv_transfer.py:74) — builds a JSON payload per layer\"\n  from sizes/object_offsets/results and logs it via logger.info.\n\
+  - \"_emit_commit_debug_event (kv_transfer.py:85) — logs commit events per layer.\"\n- \"_emit_whole_key_debug_event (mooncake_backend.py:48)\
+  \ — logs whole-key events.\"\nWhen disabled (default \"0\"), each helper returns immediately after a single\nenv lookup,\
+  \ so the hot transfer path incurs only a cheap boolean check.\nWhen enabled, the cost is per-layer JSON serialization (json.dumps)\
+  \ plus\nlogger.info formatting and I/O on every layer transfer/commit. In a\nlayerwise-prefetch KV transfer workload this\
+  \ fires once per layer per\ntransfer, so it adds measurable CPU-side latency and log volume that can\nthrottle the transfer\
+  \ pipeline and reduce effective throughput. It does not\nchange memory footprint of the KV pool itself, only adds transient\
+  \ payload\ndicts and log strings. The env is read via _strict_binary_env, so it is\nparsed strictly and cached per access\
+  \ (lazy __getattr__ evaluation).\n"
+usage_locations:
+- file: vllm_ascend/envs.py:84
+  context: Definition via _strict_binary_env; strict 0/1 parsing, default disabled.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/kv_transfer.py:74
+  context: Gate for per-layer ranged transfer audit event emission.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/kv_transfer.py:85
+  context: Gate for per-layer commit audit event emission.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:48
+  context: Gate for whole-key audit event emission in Mooncake backend.
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_BATCH_MEMCPY
+  relation: Both are Ascend KV-cache offload/transfer related env vars; batch memcpy controls the actual transfer compile
+    path while this only adds audit logging.
+- name: layerwise_prefetch_layers
+  relation: Layerwise prefetch drives the per-layer transfer path where these debug events fire; higher prefetch depth means
+    more debug events per request when enabled.
+constraints:
+- The value must be exactly "0" or "1"; any other value (including empty string, "2", "true", "-1") raises ValueError via
+  _strict_binary_env.
+- The variable is only meaningful for the Ascend KV store / Mooncake layerwise KV transfer path; it has no effect on other
+  backends.
+tuning_advice:
+  summary: Keep disabled (0) in production; enable (1) only temporarily during KV transfer integration/debugging.
+  suggested_values:
+  - scenario: Normal production serving
+    value: '0'
+    reason: Avoids per-layer JSON logging overhead on the KV transfer hot path, preserving transfer throughput and latency.
+  - scenario: Integration testing / debugging Mooncake layerwise KV transfer
+    value: '1'
+    reason: Emits whole-key, per-layer range, and commit audit events to validate transfer correctness; disable again after
+      validation.
+  caveats:
+  - Do not leave enabled during benchmarking — per-layer logging will skew latency/throughput measurements.
+  - Only affects the ascend_store/Mooncake KV transfer path; irrelevant for non-offload deployments.
+  quick_guide: Set to 1 only while debugging KV transfer, otherwise leave at 0.
+analysis_date: '2026-10-27'

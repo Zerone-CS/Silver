@@ -1,0 +1,87 @@
+name: additional_config.ascend_fusion_config.fusion_ops_gmmswigluquant
+type: nested
+category: model
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:183
+- vllm_ascend/ops/fused_moe/moe_utils.py:386
+value_type: bool
+default: true
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls whether the Ascend fused MoE operator "gmmswigluquant" (grouped matmul +
+
+  SwiGLU + quantization fused into a single CANN kernel) is used in the fused-MoE path.
+
+  It is read via enable_fusion_gmmswigluquant() in vllm_ascend/ops/fused_moe/moe_utils.py:386,
+
+  which returns ascend_config.ascend_fusion_config.fusion_ops_gmmswigluquant. When True, the
+
+  MoE forward path dispatches to the fused GmmSwigluQuant kernel, collapsing the grouped-matmul,
+
+  activation (SwiGLU) and quantization steps into one kernel launch, reducing kernel launch
+
+  overhead and intermediate tensor traffic (HBM read/write) on the NPU. When False, the same
+
+  computation is decomposed into separate ops, which increases launch overhead and memory
+
+  traffic. The vllm-ascend docs (tutorials/models/GLM4.x.md:161) note that the fused operator''s
+
+  performance tends to degrade when the total number of NPUs is <= 16, meaning the fused kernel
+
+  is beneficial mainly at larger scale where the per-token compute/communication balance favors
+
+  fusion. This is an Ascend-only parameter (no upstream vLLM equivalent); it is a nested field
+
+  of additional_config.ascend_fusion_config and is parsed by the pydantic @config dataclass
+
+  AscendFusionConfig (extra="forbid", lax bool coercion so "false" -> False).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:183
+  context: Field definition in AscendFusionConfig pydantic dataclass, default True.
+- file: vllm_ascend/ops/fused_moe/moe_utils.py:386
+  context: enable_fusion_gmmswigluquant() reads the flag to decide whether to use the fused GmmSwigluQuant MoE kernel.
+- file: tests/ut/test_ascend_config.py:357
+  context: Asserts default is True when no additional_config is provided.
+- file: tests/ut/test_ascend_config.py:475
+  context: Asserts the flag can be set to False via additional_config.
+related_parameters:
+- name: additional_config.ascend_fusion_config
+  relation: Parent config object; this field is one member of it.
+- name: additional_config.ascend_compilation_config.fuse_norm_quant
+  relation: Sibling fusion toggle; both control operator fusion in the Ascend graph.
+- name: additional_config.enable_fused_mc2
+  relation: Related MoE communication/fusion path; both affect the fused-MoE dispatch.
+constraints:
+- The value must be a boolean; the pydantic dataclass uses lax coercion so string values like "false" are converted to False.
+- Unknown keys under ascend_fusion_config are rejected (extra="forbid"), so the field name must be spelled exactly fusion_ops_gmmswigluquant.
+tuning_advice:
+  summary: Keep enabled by default; disable only on small deployments (<=16 NPUs) where the fused GmmSwigluQuant kernel is
+    documented to degrade performance.
+  suggested_values:
+  - scenario: Large-scale deployment with more than 16 NPUs
+    value: true
+    reason: Fused GmmSwigluQuant reduces kernel launches and intermediate HBM traffic, improving MoE throughput/latency at
+      scale.
+  - scenario: Small deployment with total NPUs <= 16
+    value: false
+    reason: vllm-ascend docs (GLM4.x.md) state the fused operator's performance tends to degrade when total NPUs <= 16; disabling
+      avoids the regression.
+  - scenario: Debugging or validating numerical correctness of the MoE path
+    value: false
+    reason: Disabling falls back to decomposed ops, making it easier to isolate fusion-related issues.
+  caveats:
+  - This is an Ascend-only parameter with no upstream vLLM equivalent; it only affects the vllm-ascend fused-MoE path.
+  - The fused kernel benefit is scale-dependent; the docs explicitly warn of degradation at <=16 NPUs.
+  - Because extra="forbid" is set, a typo in the field name raises an error rather than being silently ignored.
+  quick_guide: Leave true for >16 NPUs; set false for <=16 NPUs or when debugging MoE numerics.
+analysis_date: '2026-10-27'

@@ -1,0 +1,77 @@
+name: MOONCAKE_REQUESTER_LOCAL_HOSTNAME
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1701
+- vllm/envs.py:237
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/rdma_utils.py:22
+value_type: str
+default: null
+valid_choices: any hostname string, optionally with port suffix (e.g. 'worker-a:50053'); unset means use the rank's local
+  IP
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only overrides the hostname string that a Mooncake requester rank
+
+  registers with the Mooncake master during KV-store setup. In
+
+  vllm/distributed/kv_transfer/kv_connector/v1/mooncake/rdma_utils.py:22,
+
+  get_requester_local_hostname() returns the override if set, otherwise falls back
+
+  to the rank''s local IP. The value is passed to store.setup() (see
+
+  test_requester_worker_init_prefers_local_hostname_override) and is used purely for
+
+  addressing/registration of the requester segment. It does not change transfer
+
+  buffer sizes, thread counts, RDMA queue depth, or any compute path, so it has no
+
+  direct effect on throughput or memory. Its only performance relevance is indirect:
+
+  if the auto-detected local IP is unreachable or resolves slowly across nodes, KV
+
+  transfer handshakes can stall or fail, adding latency; setting a correct routable
+
+  hostname avoids that. This is a Mooncake KV-connector (v1 upstream) parameter;
+
+  no vllm-ascend override or usage was found in the provided context, and Mooncake
+
+  KV transfer is not an Ascend-specific mechanism.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1701
+  context: Env var definition; reads MOONCAKE_REQUESTER_LOCAL_HOSTNAME, default None
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/rdma_utils.py:22
+  context: get_requester_local_hostname() returns override if set, else local_ip
+related_parameters:
+- name: MOONCAKE_PREFERRED_SEGMENT
+  relation: Both control Mooncake requester/owner segment addressing; PREFERRED_SEGMENT pins to an owner segment, this overrides
+    the requester's own registered hostname
+- name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+  relation: Mooncake handshake port; the hostname override may include a port that must be reachable for handshake
+constraints:
+- The value must be a hostname (optionally host:port) that is resolvable and routable from the Mooncake master and peer ranks,
+  otherwise KV-store setup/handshake fails.
+- Only applies to the Mooncake KV connector path; it has no effect when a different kv_connector is used.
+tuning_advice:
+  summary: Leave unset to use the auto-detected local IP; set it only when multi-node addressing requires an explicit routable
+    hostname for the Mooncake requester.
+  suggested_values:
+  - scenario: Default single-node or correctly auto-detected IP environments
+    value: <unset>
+    reason: Falls back to local_ip, which is normally correct and requires no configuration.
+  - scenario: Multi-node deployment where the auto-detected IP is not routable between ranks
+    value: worker-a:50053
+    reason: Explicitly registers a reachable hostname:port so Mooncake handshake and KV transfer succeed without address-resolution
+      stalls.
+  caveats:
+  - This is not a throughput/memory tuning knob; do not expect performance gains beyond fixing connectivity.
+  - Ensure the hostname is resolvable from all peer ranks and the master server.
+  quick_guide: Set only if the default local IP is unreachable across nodes; otherwise leave unset.
+analysis_date: '2026-10-27'

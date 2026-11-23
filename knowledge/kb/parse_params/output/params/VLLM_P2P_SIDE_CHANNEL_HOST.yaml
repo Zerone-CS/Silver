@@ -1,0 +1,87 @@
+name: VLLM_P2P_SIDE_CHANNEL_HOST
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1661
+- vllm/envs.py:228
+- vllm/v1/kv_offload/tiering/p2p/manager.py:239
+- vllm/v1/kv_offload/tiering/p2p/manager.py:290
+value_type: str
+default: localhost
+valid_choices: Any resolvable hostname or IP address string; must be an address reachable by remote peers for cross-host P2P
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only controls the bind/dial-back address of the ZMQ control socket used by the
+
+  P2P KV-offload secondary tier (vllm/v1/kv_offload/tiering/p2p/manager.py). In
+
+  P2PSecondaryTierManager.__init__, when the `host` kwarg is None it falls back to
+
+  envs.VLLM_P2P_SIDE_CHANNEL_HOST (line 290), and the value is used verbatim to build
+
+  `self._local_id = f"{host}:{port}"` (line 307), which is both the ZMQ bind address and the
+
+  identity peers dial back. It does not affect the actual KV data path (NIXL/RDMA transfer
+
+  backends, num_threads, or block hashing) — only the control-plane handshake reachability.
+
+  Consequently it has no direct effect on token throughput or NPU memory. Its only performance
+
+  relevance is indirect: "if left at the default `localhost` in a cross-host P2P deployment,"
+
+  remote peers cannot reach the control socket, so the P2P KV-offload tier fails to establish
+
+  connections and KV reuse across hosts silently does not happen — which removes the latency/
+
+  throughput benefit of KV offloading (prefill recompute instead of remote KV fetch). There is
+
+  no vllm-ascend override of this variable in the provided context; it is an upstream-only
+
+  parameter and is not referenced in vllm-ascend source.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1661
+  context: Environment variable definition with default 'localhost'
+- file: vllm/envs.py:228
+  context: 'Type annotation declaration VLLM_P2P_SIDE_CHANNEL_HOST: str = ''localhost'''
+- file: vllm/v1/kv_offload/tiering/p2p/manager.py:290
+  context: 'Fallback when host kwarg is None: host = envs.VLLM_P2P_SIDE_CHANNEL_HOST'
+- file: vllm/v1/kv_offload/tiering/p2p/manager.py:307
+  context: Used to construct self._local_id = f'{host}:{port}' (ZMQ bind + dial-back identity)
+related_parameters:
+- name: VLLM_P2P_SIDE_CHANNEL_PORT
+  relation: Companion port; combined with this host to form the ZMQ control socket identity (host:port), offset by data_parallel_index
+- name: VLLM_NIXL_SIDE_CHANNEL_HOST
+  relation: Analogous side-channel host for the NIXL connector; P2P manager mirrors its behavior (no auto-detection)
+- name: VLLM_EC_SIDE_CHANNEL_HOST
+  relation: Analogous side-channel host for the EC connector's ZMQ channel
+constraints:
+- The value is used verbatim as both the bind address and the dial-back identity; there is no auto-detection, so it must be
+  an address that is actually assigned to the node.
+- For cross-host P2P, VLLM_P2P_SIDE_CHANNEL_HOST must be set to the node's routable IP; the default 'localhost' binds loopback
+  only and remote peers cannot reach the socket.
+- An explicit `host` passed via the secondary_tiers kv_connector_extra_config takes precedence over this environment variable.
+tuning_advice:
+  summary: Set to the node's routable IP for any cross-host P2P KV-offload deployment; leave default only for single-host/loopback
+    setups.
+  suggested_values:
+  - scenario: Single-host P2P KV-offload (all replicas on one node)
+    value: localhost
+    reason: Default loopback binding is sufficient and avoids exposing the control socket externally.
+  - scenario: Multi-host / cross-host P2P KV-offload
+    value: <node_routable_IP>
+    reason: Remote peers must be able to dial back the ZMQ control socket; the default localhost is unreachable across hosts,
+      which disables cross-host KV reuse.
+  caveats:
+  - Ensure the chosen IP is reachable from all peer nodes (firewall/security group must allow the control port range base+dp_index).
+  - Prefer setting host explicitly in kv_connector_extra_config secondary_tiers if you need per-tier control, since explicit
+    config overrides this env var.
+  - No Ascend-specific override exists; the same guidance applies on NPU deployments as on GPU.
+  quick_guide: 'Cross-host P2P: export VLLM_P2P_SIDE_CHANNEL_HOST=<node IP>; single-host: leave default localhost.'
+analysis_date: '2026-10-27'

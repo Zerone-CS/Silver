@@ -1,0 +1,84 @@
+name: additional_config.pd_tp_ratio
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:647
+- vllm_ascend/ascend_config.py:556
+value_type: int
+default: 1
+valid_choices: positive integer; derived automatically from parallel config (not user-settable)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'pd_tp_ratio is a pure-derived field on the AscendConfig pydantic model
+
+  (vllm_ascend/ascend_config.py:647). The class docstring explicitly lists it
+
+  under "Pure-derived fields computed automatically and not user-settable"
+
+  (line 556), alongside enable_sp_by_pass, pd_head_ratio and num_head_replica.
+
+  It is populated by the derive_and_validate() business-validation pass
+
+  (invoked by init_ascend_config) from the vLLM parallel configuration, not
+
+  from user input. Because the model uses ConfigDict(extra="forbid"), a user
+
+  cannot meaningfully set it via additional_config — it is overwritten during
+
+  derivation. Its runtime effect is indirect: it encodes the ratio between the
+
+  prefill (P) and decode (D) tensor-parallel sizes in a PD-disaggregated
+
+  deployment, which downstream Ascend code uses to size head replicas and
+
+  communication/weight-sharding layouts. Any performance effect (throughput,
+
+  memory) is therefore a consequence of the P/D TP topology the user actually
+
+  chooses via --tensor-parallel-size and the PD disaggregation setup, not of
+
+  this field itself. No direct usage sites were found in the provided context,
+
+  so its concrete hot-path impact cannot be confirmed from source alone.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:647
+  context: Field declaration on AscendConfig; sentinel default 1, overwritten by after-validator/derivation.
+- file: vllm_ascend/ascend_config.py:556
+  context: Docstring lists pd_tp_ratio as a pure-derived, non-user-settable field.
+- file: vllm_ascend/ascend_config.py:684
+  context: derive_and_validate() is the business-validation pass that computes derived fields from vllm_config.
+related_parameters:
+- name: additional_config.pd_head_ratio
+  relation: Sibling derived field computed in the same derivation pass; together they describe P/D head layout.
+- name: additional_config.num_head_replica
+  relation: Sibling derived field; head replica count derived from the same P/D topology.
+- name: tensor_parallel_size
+  relation: Upstream vLLM parameter from which pd_tp_ratio is derived; changing TP size changes the ratio.
+- name: additional_config.enable_sp_by_pass
+  relation: Another pure-derived field in the same non-user-settable group.
+constraints:
+- pd_tp_ratio is a pure-derived field and is not user-settable; setting it in additional_config has no effect because it is
+  overwritten during config derivation.
+- additional_config uses extra='forbid', so unknown or misspelled keys raise a validation error at startup.
+tuning_advice:
+  summary: Do not set pd_tp_ratio manually — it is derived from the P/D tensor-parallel topology; tune the topology itself.
+  suggested_values:
+  - scenario: Default / any deployment
+    value: 1
+    reason: Leave the derived default; the field is computed automatically from the parallel config and is not user-settable.
+  - scenario: PD-disaggregated deployment with differing prefill and decode TP sizes
+    value: <computed>
+    reason: The ratio is derived from the actual P/D TP sizes; configure --tensor-parallel-size and PD settings correctly
+      and let vllm-ascend compute it.
+  caveats:
+  - Setting this key in additional_config is ineffective and may be overwritten; rely on the derivation pass.
+  - extra='forbid' means typos in additional_config fail fast at startup.
+  quick_guide: Ignore pd_tp_ratio — it is auto-derived; tune P/D tensor-parallel sizes instead.
+analysis_date: '2026-10-27'

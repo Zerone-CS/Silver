@@ -1,0 +1,116 @@
+name: VLLM_COMPILE
+type: env
+category: compilation
+scope: both
+source_file:
+- vllm/config/compilation.py:48
+- vllm/config/compilation.py:466
+- vllm/config/vllm.py:1016
+- vllm/config/vllm.py:1567
+- vllm/v1/cudagraph_dispatcher.py:54
+- vllm/v1/worker/gpu_worker.py:776
+- vllm_ascend/platform.py:1216
+- vllm_ascend/platform.py:1312
+- vllm_ascend/worker/model_runner_v1.py:819
+- vllm_ascend/worker/v2/model_runner.py:186
+value_type: str
+default: VLLM_COMPILE
+valid_choices:
+- NONE
+- STOCK_TORCH_COMPILE
+- DYNAMO_TRACE_ONCE
+- VLLM_COMPILE
+cli_example: --compilation-config.mode VLLM_COMPILE
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "VLLM_COMPILE is the CompilationMode enum value 3 (vllm/config/compilation.py:48), the custom\nvLLM Inductor-based\
+  \ backend with caching, piecewise compilation, shape specialization and\ncustom passes. It is the default compilation mode\
+  \ for the V1 engine (compilation.py:458-459).\nOn Ascend, vllm-ascend's platform.check_and_update_config explicitly gates\
+  \ the whole graph\npipeline on this mode:\n- \"vllm_ascend/platform.py:1216-1221: if compilation_config.mode is not NONE\
+  \ or VLLM_COMPILE,\"\n  vllm-ascend logs \"NPU does not support compilation mode\" and forces mode = NONE. So on\n  Ascend\
+  \ only NONE and VLLM_COMPILE are meaningful; STOCK_TORCH_COMPILE and DYNAMO_TRACE_ONCE\n  are silently downgraded to eager.\n\
+  - \"vllm_ascend/platform.py:1310-1318: when cudagraph_mode requires piecewise compilation\"\n  (e.g. PIECEWISE / FULL_DECODE_ONLY),\
+  \ vllm-ascend raises AssertionError unless\n  compilation_config.mode == VLLM_COMPILE (or VLLM_USE_BREAKABLE_CUDAGRAPH is\
+  \ set). This is\n  the hard dependency that makes VLLM_COMPILE mandatory for ACL graph capture on Ascend.\n- \"vllm_ascend/platform.py:1305-1309:\
+  \ if cudagraph_mode == NONE, mode is forced to NONE and\"\n  the Ascend-specific compilation features (enable_npugraph_ex,\
+  \ enable_static_kernel,\n  enable_super_kernel) are disabled in additional_config[\"ascend_compilation_config\"].\n- \"\
+  vllm_ascend/worker/model_runner_v1.py:815-823 and vllm_ascend/worker/v2/model_runner.py:183-190:\"\n  use_aclgraph is True\
+  \ only when cudagraph_mode != NONE AND (mode == VLLM_COMPILE OR\n  breakable cudagraph enabled) AND not enforce_eager. So\
+  \ VLLM_COMPILE is what actually turns\n  on ACL graph replay in both v1 and v2 Ascend workers.\n- \"vllm_ascend/platform.py:1303-1304:\
+  \ vllm-ascend sets compilation_config.oot_compiler to the\"\n  Ascend compile backend and forces use_inductor = False, so\
+  \ the \"Inductor\" part of\n  VLLM_COMPILE is replaced by the Ascend graph-fusion backend (npugraph_ex / static kernel /\n\
+  \  super kernel) rather than real Inductor.\nPerformance mechanism: \"with VLLM_COMPILE + a piecewise/full cudagraph_mode,\
+  \ decode steps run\"\nas captured ACL graphs, eliminating per-step Python dispatch and kernel-launch overhead\n(large latency\
+  \ win, especially at small batch), and enabling graph-fusion passes that raise\nthroughput. Without it (mode NONE), the\
+  \ model runs fully eager, ACL graphs are disabled, and\nthe Ascend compilation features are turned off — significantly higher\
+  \ per-token latency.\nMemory: \"graph capture reserves extra device memory (docs note ~3.76 GiB peak during capture),\"\n\
+  so VLLM_COMPILE increases peak memory during warmup/capture.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1216
+  context: Forces mode to NONE if it is not NONE or VLLM_COMPILE (NPU only supports these two).
+- file: vllm_ascend/platform.py:1312
+  context: Raises AssertionError if piecewise cudagraph is requested without VLLM_COMPILE (unless breakable cudagraph).
+- file: vllm_ascend/platform.py:1305
+  context: If cudagraph_mode is NONE, forces mode NONE and disables npugraph_ex/static_kernel/super_kernel.
+- file: vllm_ascend/worker/model_runner_v1.py:819
+  context: 'v1 worker: use_aclgraph requires mode == VLLM_COMPILE (or breakable cudagraph) and not enforce_eager.'
+- file: vllm_ascend/worker/v2/model_runner.py:186
+  context: 'v2 worker: same use_aclgraph gating on VLLM_COMPILE.'
+- file: vllm/config/vllm.py:1016
+  context: 'Upstream: piecewise cudagraph mode incompatible with non-VLLM_COMPILE falls back to without_piecewise.'
+- file: vllm/config/vllm.py:1567
+  context: 'Upstream: warns that inductor-only optimizations are ignored when mode != VLLM_COMPILE.'
+- file: vllm/v1/worker/gpu_worker.py:776
+  context: 'Upstream: warmup/compile sizes only processed when mode == VLLM_COMPILE.'
+related_parameters:
+- name: --compilation-config.cudagraph_mode
+  relation: VLLM_COMPILE is required when cudagraph_mode requires piecewise compilation; if cudagraph_mode is NONE, mode is
+    forced to NONE.
+- name: --enforce-eager
+  relation: enforce_eager forces mode to NONE and disables ACL graphs, overriding VLLM_COMPILE.
+- name: VLLM_USE_BREAKABLE_CUDAGRAPH
+  relation: When set, allows piecewise cudagraph without VLLM_COMPILE (breakable cudagraph path).
+- name: --compilation-config.cudagraph_capture_sizes
+  relation: Only effective when VLLM_COMPILE + non-NONE cudagraph_mode enable ACL graph capture.
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: Disabled automatically when mode resolves to NONE.
+- name: additional_config.ascend_compilation_config.enable_static_kernel
+  relation: Disabled automatically when mode resolves to NONE.
+- name: additional_config.ascend_compilation_config.enable_super_kernel
+  relation: Disabled automatically when mode resolves to NONE.
+constraints:
+- On Ascend, only NONE and VLLM_COMPILE are supported; any other mode (STOCK_TORCH_COMPILE, DYNAMO_TRACE_ONCE) is silently
+  reset to NONE with a warning.
+- If cudagraph_mode requires piecewise compilation (e.g. PIECEWISE or FULL_DECODE_ONLY), compilation mode must be VLLM_COMPILE
+  or VLLM_USE_BREAKABLE_CUDAGRAPH must be set, otherwise startup raises an AssertionError.
+- Setting --enforce-eager forces compilation mode to NONE regardless of VLLM_COMPILE.
+- If cudagraph_mode is NONE, compilation mode is forced to NONE and Ascend compilation features (npugraph_ex, static_kernel,
+  super_kernel) are disabled.
+tuning_advice:
+  summary: Keep VLLM_COMPILE (the default) on Ascend to enable ACL graph capture and Ascend graph-fusion passes; only disable
+    it for debugging or when eager mode is required.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU (default, recommended)
+    value: VLLM_COMPILE
+    reason: Enables ACL graph replay and Ascend graph-fusion (npugraph_ex/static_kernel/super_kernel), giving the lowest decode
+      latency and highest throughput; required for piecewise/full cudagraph modes.
+  - scenario: Debugging, unsupported ops, or graph capture OOM
+    value: NONE
+    reason: Falls back to fully eager execution; disables ACL graphs and Ascend compilation features, avoiding capture-time
+      memory overhead at the cost of higher latency.
+  - scenario: Documented Dots3-Note deployment (TP16, FULL_DECODE_ONLY)
+    value: VLLM_COMPILE
+    reason: Docs pair VLLM_COMPILE with cudagraph_mode=FULL_DECODE_ONLY and capture sizes to reduce capture peak memory while
+      keeping graph replay.
+  caveats:
+  - Do not set STOCK_TORCH_COMPILE or DYNAMO_TRACE_ONCE on Ascend — they are silently downgraded to NONE.
+  - If you set cudagraph_mode to a piecewise mode, you must keep VLLM_COMPILE or set VLLM_USE_BREAKABLE_CUDAGRAPH, else startup
+    fails.
+  - Watch capture-time memory; combine with explicit --kv-cache-memory-bytes and modest cudagraph_capture_sizes if OOM occurs.
+  quick_guide: Leave --compilation-config.mode at VLLM_COMPILE on Ascend; use NONE only for debugging or when eager execution
+    is required.
+analysis_date: '2026-10-27'

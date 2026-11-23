@@ -1,0 +1,108 @@
+name: additional_config.eplb_config.load_collection_phase
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:299
+- vllm_ascend/ascend_config.py:331
+- vllm_ascend/platform.py:983
+- vllm_ascend/worker/v2/eplb.py:48
+value_type: str
+default: all
+valid_choices:
+- all
+- prefill
+- decode
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is a vllm-ascend-only extension field (Model Runner V2 only) that restricts which
+
+  batch phase contributes to the upstream EPLB expert-load window. In
+
+  vllm_ascend/worker/v2/eplb.py:48 the value is stored on AscendEPLBController as
+
+  self.load_collection_phase, and set_batch_phase() (line 68) calls
+
+  is_eplb_load_collection_phase_matched(phase, batch_has_prefill) to set
+
+  self._load_collection_phase_matched. When the current batch phase does not match the
+
+  configured phase, the batch''s expert load is not submitted to the EPLB load window, so
+
+  the recorded expert heat distribution only reflects the selected phase. This changes
+
+  which experts the EPLB policy (STAIR by default on Ascend) considers hot, which in turn
+
+  drives redundant-expert placement and rearrangement decisions. Better-targeted load
+
+  statistics can improve expert balance and thus MoE throughput/latency, but a mismatched
+
+  or overly narrow phase can starve the window of samples and produce a stale or skewed
+
+  expert map. The parameter itself does not add runtime work per token; its impact is
+
+  indirect, via the quality of EPLB rebalancing. It is validated in
+
+  vllm_ascend/platform.py:983-985 (requires --enable-eplb when not "all") and in
+
+  vllm_ascend/ascend_config.py:331-332 (must be one of all/prefill/decode).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:299
+  context: EplbConfig field definition with default 'all'; comment notes Model Runner V2 only and that any prefill request
+    marks the batch as prefill.
+- file: vllm_ascend/ascend_config.py:331
+  context: model_validator rejects values outside ['all', 'prefill', 'decode'].
+- file: vllm_ascend/platform.py:983
+  context: _validate_eplb_config reads the value; raises if not 'all' and --enable-eplb is not set; also enforces MRv2-only
+    schema (only load_collection_phase and stair_config allowed).
+- file: vllm_ascend/worker/v2/eplb.py:48
+  context: AscendEPLBController stores the phase and uses it in set_batch_phase() to gate load submission via is_eplb_load_collection_phase_matched().
+related_parameters:
+- name: --enable-eplb
+  relation: Required when load_collection_phase is not 'all'; otherwise startup raises ValueError.
+- name: additional_config.eplb_config.stair_config
+  relation: The only other field accepted alongside load_collection_phase under Model Runner V2.
+- name: additional_config.eplb_config.eplb_heat_collection_stage
+  relation: MRv1 analogue for phase-filtered heat collection; load_collection_phase is the MRv2 equivalent and MRv1 does not
+    accept it.
+- name: --eplb-config.window_size
+  relation: Determines how many recent steps feed the load window; interacts with how many samples a phase filter yields.
+- name: --eplb-config.policy
+  relation: The policy (stair/default) consumes the collected load statistics; phase filtering changes its input distribution.
+constraints:
+- load_collection_phase must be one of 'all', 'prefill', or 'decode'; any other value raises ValueError at startup.
+- load_collection_phase is only accepted under Model Runner V2; Model Runner V1 does not accept this field and mixing schemas
+  fails during startup.
+- When load_collection_phase is not 'all', --enable-eplb must be set or startup raises ValueError.
+- Under Model Runner V2, additional_config.eplb_config may only contain load_collection_phase and stair_config; any other
+  field raises ValueError.
+- DYNAMIC_EPLB and EXPERT_MAP_RECORD environment variables must be unset when using Model Runner V2 EPLB configuration.
+tuning_advice:
+  summary: Keep 'all' unless you have a clear phase-specific imbalance; use 'decode' for decode-dominated serving and 'prefill'
+    only when prefill expert skew is the bottleneck.
+  suggested_values:
+  - scenario: General MoE serving with mixed prefill/decode traffic (Model Runner V2)
+    value: all
+    reason: Default; collects load from every batch so the EPLB policy sees the full distribution and avoids a starved or
+      skewed window.
+  - scenario: Decode-heavy online serving where decode expert imbalance dominates latency
+    value: decode
+    reason: Restricts the load window to decode batches so redundant-expert placement targets the phase that dominates steady-state
+      latency.
+  - scenario: Prefill-heavy or long-prompt workloads where prefill expert skew is the bottleneck
+    value: prefill
+    reason: Filters load collection to prefill batches so the policy optimizes expert placement for the dominant phase.
+  caveats:
+  - Requires --enable-eplb when set to anything other than 'all'.
+  - Model Runner V2 only; MRv1 rejects this field.
+  - Mixed batches count as prefill, so 'decode' may under-sample in workloads with frequent chunked prefill.
+  - Pair with a sufficiently large --eplb-config.window_size so the filtered phase yields enough samples.
+  quick_guide: Leave load_collection_phase at 'all' unless decode or prefill expert imbalance is clearly the bottleneck, then
+    match it to the dominant phase.
+analysis_date: '2026-10-27'

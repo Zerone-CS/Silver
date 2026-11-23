@@ -1,0 +1,71 @@
+name: ASCEND_TOOLKIT_HOME
+type: env
+category: hardware
+scope: vllm-ascend
+source_file:
+- csrc/scripts/build_cache.py:700
+value_type: str
+default: /usr/local/Ascend/ascend-toolkit/latest
+valid_choices: Any valid filesystem path to an Ascend toolkit installation directory
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'ASCEND_TOOLKIT_HOME is read only in csrc/scripts/build_cache.py
+
+  (_candidate_cann_metadata_files) to locate CANN metadata files such as
+
+  version.info and ascend_toolkit_install.info. These files are used to
+
+  determine the CANN toolkit version for build-cache keying / compilation
+
+  caching. It does not participate in any runtime inference code path
+
+  (no usage in vllm_ascend worker, model runner, attention backend, or
+
+  HCCL setup). Its only performance-relevant effect is indirect: if the
+
+  path is wrong, the CANN version cannot be detected, which may invalidate
+
+  or mis-key the build cache and force recompilation of Ascend kernels
+
+  (longer first-run latency / startup time). Once the cache is warm, the
+
+  variable has no effect on steady-state throughput or memory.
+
+  '
+usage_locations:
+- file: csrc/scripts/build_cache.py:700
+  context: Reads ASCEND_TOOLKIT_HOME (alongside ASCEND_HOME_PATH) to build candidate paths for CANN version metadata files
+    used in build-cache keying.
+related_parameters:
+- name: ASCEND_HOME_PATH
+  relation: Alternative env var checked first in the same loop; either can supply the toolkit root for CANN metadata discovery.
+- name: ASCEND_OPP_PATH
+  relation: Also consulted (its parent dir) as a root for CANN metadata files.
+constraints:
+- The value must point to an existing Ascend toolkit installation directory containing version.info or ascend_toolkit_install.info,
+  otherwise CANN version detection falls back to other candidates or /etc/ascend_install.info.
+- Must be set (typically via source set_env.sh) before running build-cache tooling for the CANN version to be detected correctly.
+tuning_advice:
+  summary: Set ASCEND_TOOLKIT_HOME to the actual Ascend toolkit install path (usually via set_env.sh) so CANN version detection
+    and build-cache keying work correctly; it has no steady-state runtime performance effect.
+  suggested_values:
+  - scenario: Standard CANN installation via set_env.sh
+    value: /usr/local/Ascend/ascend-toolkit/latest
+    reason: Default path used in vllm-ascend docs; matches the toolkit root where version.info lives, enabling correct CANN
+      version detection for build caching.
+  - scenario: Custom toolkit install location
+    value: <actual toolkit root, e.g. /opt/Ascend/ascend-toolkit/8.0.RC1>
+    reason: Point to the real install directory so metadata files are found and the build cache is keyed to the correct CANN
+      version.
+  caveats:
+  - This variable is only used by build-cache tooling (csrc/scripts/build_cache.py), not by the runtime inference path; do
+    not expect throughput or latency gains from tuning it.
+  - A wrong or missing value can cause CANN version misdetection, leading to unnecessary kernel recompilation and longer startup/first-run
+    latency.
+  - ASCEND_HOME_PATH is checked first; if both are set, ensure they are consistent to avoid ambiguous metadata discovery.
+  quick_guide: Set it to your Ascend toolkit root (default /usr/local/Ascend/ascend-toolkit/latest) via set_env.sh; it only
+    affects build-cache/CANN version detection, not runtime performance.
+analysis_date: '2026-10-27'

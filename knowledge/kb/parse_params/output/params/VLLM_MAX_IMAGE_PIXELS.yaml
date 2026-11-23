@@ -1,0 +1,105 @@
+name: VLLM_MAX_IMAGE_PIXELS
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1038
+- vllm/envs.py:86
+- vllm/envs.py:2322
+- vllm/multimodal/media/image.py:83
+- vllm/multimodal/video_decoders/base.py:29
+value_type: int
+default: 178956970
+valid_choices: positive integer (pixel count); 0 or negative disables the limit
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'VLLM_MAX_IMAGE_PIXELS is a safety guard on decoded raster size, not a
+
+  compute-tuning knob. In vllm/multimodal/media/image.py:83-89, ImageMediaIO.load_bytes
+
+  reads the image header (Image.open), computes w*h, and raises ValueError before
+
+  image.load() if the pixel count exceeds the limit. Because the check happens
+
+  before decoding, it prevents a small compressed image (decompression bomb) from
+
+  expanding into hundreds of MB of host RAM. Similarly,
+
+  vllm/multimodal/video_decoders/base.py:29 check_frame_pixel_limit rejects
+
+  oversized video frames before decoding.
+
+  On Ascend NPU this parameter has no direct effect on NPU compute, HCCL
+
+  communication, or device memory (HBM) allocation — image preprocessing runs on
+
+  CPU and the resulting pixel tensors are later transferred to the NPU. Its
+
+  performance relevance is indirect: "(1) it bounds host-side CPU memory and"
+
+  preprocessing latency for multimodal requests, and (2) it indirectly bounds the
+
+  size of the vision-encoder input that will eventually be copied to and processed
+
+  on the NPU, so an overly permissive value can let very large images through and
+
+  inflate vision-encoder latency and activation memory. No vllm-ascend override of
+
+  this env var was found in the provided context; it is read directly from
+
+  vllm.envs in the upstream multimodal media path.
+
+  '
+usage_locations:
+- file: vllm/multimodal/media/image.py:83
+  context: ImageMediaIO.load_bytes checks w*h against VLLM_MAX_IMAGE_PIXELS before image.load() and raises ValueError if exceeded.
+- file: vllm/multimodal/video_decoders/base.py:29
+  context: check_frame_pixel_limit rejects video frames whose width*height exceeds VLLM_MAX_IMAGE_PIXELS.
+- file: vllm/envs.py:1038
+  context: Environment variable definition with default 178956970 (~179M pixels, PIL 2x decompression-bomb threshold).
+- file: vllm/envs.py:2322
+  context: Listed in the set of env vars propagated to worker processes.
+related_parameters:
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Complements this limit at the download layer — bounds compressed media size before decode, while VLLM_MAX_IMAGE_PIXELS
+    bounds decoded raster size.
+- name: VLLM_MAX_EMBED_DECODE_BYTES
+  relation: Sibling decode-safety limit for embedding payloads; same 'check before allocate' pattern.
+- name: VLLM_MAX_AUDIO_DECODE_BYTES
+  relation: Sibling decode-safety limit for audio; analogous guard for a different modality.
+- name: VLLM_VIDEO_LOADER_BACKEND
+  relation: Video decoding path that calls check_frame_pixel_limit, so this limit also applies to video frames.
+constraints:
+- If the decoded image or video frame pixel count (width × height) exceeds VLLM_MAX_IMAGE_PIXELS, loading raises a ValueError
+  and the request fails.
+- A value of 0 or negative disables the pixel limit entirely, removing the decompression-bomb protection.
+- The limit is checked against the image header dimensions before decoding, so it must be set high enough to admit the largest
+  legitimate image your workload serves.
+tuning_advice:
+  summary: Keep the default unless your workload serves very high-resolution images; raise it only as far as your largest
+    legitimate image requires, and never disable it in production.
+  suggested_values:
+  - scenario: Default multimodal serving with typical web/document images
+    value: 178956970
+    reason: Matches PIL's 2x decompression-bomb threshold (~179M pixels, ~680 MB RGB); safe for most workloads and prevents
+      host-memory blowups.
+  - scenario: High-resolution image workloads (e.g. 4K photos, large scans) that legitimately exceed the default
+    value: 268435456
+    reason: Raises the cap to ~256M pixels to admit larger images while still bounding host memory; verify vision-encoder
+      latency and NPU activation memory remain acceptable.
+  - scenario: Untrusted / public-facing endpoints
+    value: 178956970
+    reason: Keep the protective default (or lower it) to guard against decompression bombs; do not set 0 on untrusted input.
+  caveats:
+  - This is a CPU-side decode guard; it does not tune NPU compute. Raising it lets larger images reach the vision encoder,
+    which can increase NPU vision-encoder latency and activation memory.
+  - Setting the value to 0 disables the limit and removes decompression-bomb protection — avoid in production.
+  - No vllm-ascend override was found; the value is read directly from vllm.envs in the upstream multimodal media path, so
+    behavior is identical on Ascend and GPU.
+  quick_guide: Leave at the default 178956970 unless serving legitimately larger images; raise only as needed and never set
+    0 in production.
+analysis_date: '2026-10-27'

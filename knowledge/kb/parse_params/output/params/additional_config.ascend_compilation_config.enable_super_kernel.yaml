@@ -1,0 +1,136 @@
+name: additional_config.ascend_compilation_config.enable_super_kernel
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:126
+- vllm_ascend/ascend_config.py:131
+- vllm_ascend/ascend_config.py:147
+- vllm_ascend/platform.py:1309
+- vllm_ascend/platform.py:1333
+- vllm_ascend/compilation/compiler_interface.py:130
+- vllm_ascend/compilation/acl_graph.py:111
+- vllm_ascend/worker/v2/utils.py:68
+value_type: bool
+default: false
+valid_choices: true or false (when omitted, inherits the value of enable_static_kernel)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'enable_super_kernel controls whether the Ascend Super Kernel optimization is applied
+
+  during ACL graph capture / static-kernel compilation. It is a vllm-ascend-only nested
+
+  config field (no upstream vLLM equivalent).
+
+
+  Mechanism (v1 path, vllm_ascend/compilation/compiler_interface.py:122-135): when
+
+  enable_static_kernel is true, the compiler sets options["static_kernel_compile"]=True
+
+  and a sym_range for static-shape kernels. Only if enable_super_kernel is also true does
+
+  it additionally set options["super_kernel_optimize"]=True and
+
+  options["super_kernel_optimize_options"]={"dcci_after_kernel_end": [".*"]}. This asks
+
+  the CANN/npugraph_ex compiler to fuse/optimize kernels into a Super Kernel and to insert
+
+  DCCI (data cache clean/invalidate) after each kernel end, reducing per-kernel launch and
+
+  cache-maintenance overhead during graph replay — directly lowering decode-step latency
+
+  and raising throughput for static-shape workloads.
+
+
+  Mechanism (v2 path, vllm_ascend/worker/v2/utils.py:68-79): torch_npu_graph_wrapper reads
+
+  enable_super_kernel, wraps graph capture in super_kernel_scope("full_model",
+
+  enable_super_kernel), and after capture calls graph.super_kernel_optimize(...) with the
+
+  same dcci_after_kernel_end option. So on v2 the optimization is applied to the captured
+
+  full-model ACL graph.
+
+
+  Mechanism (v1 ACLGraphWrapper, vllm_ascend/compilation/acl_graph.py:111): the wrapper
+
+  stores self.enable_super_kernel from the Ascend config and uses it to bracket graph
+
+  execution with super_kernel_scope_begin/end (see test at tests/ut/compilation/test_acl_graph.py:398).
+
+
+  The flag is also part of AscendCompiler.compute_hash (compiler_interface.py:252), so
+
+  toggling it invalidates the compilation cache and forces recompilation.
+
+
+  vllm-ascend overrides: "platform.py forcibly sets enable_super_kernel=False whenever"
+
+  cudagraph_mode is NONE (line 1309), when piecewise compilation is required (line 1333),
+
+  or when the mode is unsupported and falls back to NONE (line 1343). The after-validator
+
+  in ascend_config.py also disables it on hardware lacking NPUGRAPH_EX support and asserts
+
+  it cannot be enabled without enable_static_kernel.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:126
+  context: Field definition, default False; before-validator inherits value from enable_static_kernel when omitted.
+- file: vllm_ascend/ascend_config.py:147
+  context: after-validator disables super kernel on unsupported hardware and asserts static kernel dependency.
+- file: vllm_ascend/platform.py:1309
+  context: Forces enable_super_kernel=False when cudagraph_mode is NONE.
+- file: vllm_ascend/platform.py:1333
+  context: Forces enable_super_kernel=False when piecewise compilation is required.
+- file: vllm_ascend/compilation/compiler_interface.py:130
+  context: Sets super_kernel_optimize options for npugraph_ex compiler when static kernel enabled.
+- file: vllm_ascend/compilation/acl_graph.py:111
+  context: ACLGraphWrapper reads flag to bracket graph execution with super_kernel_scope.
+- file: vllm_ascend/worker/v2/utils.py:68
+  context: v2 graph wrapper applies super_kernel_scope and graph.super_kernel_optimize after capture.
+related_parameters:
+- name: additional_config.ascend_compilation_config.enable_static_kernel
+  relation: 'Hard dependency: super kernel requires static kernel to be enabled; when enable_super_kernel is omitted it inherits
+    enable_static_kernel''s value.'
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: 'Transitive dependency: static kernel (and thus super kernel) requires npugraph_ex; disabling npugraph_ex disables
+    both.'
+- name: compilation_config.cudagraph_mode
+  relation: When cudagraph_mode is NONE or requires piecewise compilation, vllm-ascend forcibly disables super kernel.
+constraints:
+- enable_super_kernel can only be enabled when enable_static_kernel is also enabled; otherwise an assertion error is raised.
+- enable_static_kernel (and therefore enable_super_kernel) requires enable_npugraph_ex to be enabled.
+- On hardware profiles that do not support NPUGRAPH_EX, enable_super_kernel is forcibly disabled at config validation time.
+- When cudagraph_mode is NONE, requires piecewise compilation, or is unsupported and falls back to NONE, vllm-ascend forcibly
+  sets enable_super_kernel to false.
+- If enable_super_kernel is omitted but enable_static_kernel is set, enable_super_kernel inherits the enable_static_kernel
+  value.
+tuning_advice:
+  summary: Enable super kernel only alongside static kernel for static-shape, latency-sensitive decode workloads; otherwise
+    leave it off.
+  suggested_values:
+  - scenario: Static-shape decode-heavy serving where shapes are stable and extra compile time is acceptable (v1 and v2)
+    value: true
+    reason: Adds super_kernel_optimize with dcci_after_kernel_end to the npugraph_ex compiler options / full-model graph,
+      reducing per-kernel launch and cache overhead and lowering decode latency.
+  - scenario: Dynamic-shape or highly variable batch workloads
+    value: false
+    reason: Static kernel compilation (a prerequisite) is only beneficial when shape changes are minimal; super kernel adds
+      compile cost without payoff otherwise.
+  - scenario: Want static kernel but not super kernel
+    value: false
+    reason: Explicitly set false to override the inheritance from enable_static_kernel, as shown in the graph_mode docs example.
+  caveats:
+  - Must be paired with enable_static_kernel=true and enable_npugraph_ex=true, or config validation fails.
+  - Forcibly disabled when cudagraph_mode is NONE or piecewise; verify cudagraph_mode is FULL to keep it active.
+  - Toggling it invalidates the compilation cache, so expect a recompile on the first run after changing it.
+  quick_guide: Set enable_super_kernel=true only with enable_static_kernel=true and enable_npugraph_ex=true for static-shape
+    latency-sensitive decode; set false to opt out of the static-kernel inheritance.
+analysis_date: '2026-10-27'

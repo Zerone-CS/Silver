@@ -1,0 +1,114 @@
+name: --kv-cache-memory-bytes
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:228
+- vllm/engine/arg_utils.py:1273
+- vllm/engine/arg_utils.py:375
+- vllm/v1/worker/gpu_worker.py:542
+- vllm_ascend/worker/worker.py:572
+- vllm_ascend/_310p/worker_310p.py:138
+value_type: int
+default: null
+valid_choices: Any positive integer number of bytes; accepts human-readable suffixes (e.g. 1K, 2M, 1G, 2816M, 4G) via human_readable_int
+cli_example: --kv-cache-memory-bytes 4G
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This parameter directly controls how much NPU device memory is reserved for the KV cache,
+
+  which determines the number of KV cache blocks (num_gpu_blocks) and therefore the maximum
+
+  batch concurrency and prefix-cache capacity. In vllm-ascend''s NPUWorker.determine_available_memory
+
+  (vllm_ascend/worker/worker.py:572), when kv_cache_memory_bytes is set, the worker takes a fast
+
+  path: "it still calls model_runner.profile_run() to compile the model for max_num_batched_tokens,"
+
+  but skips the entire memory_profiling calculation and returns the user-specified value (after
+
+  applying KV offload decode constraints and the KVPP memory budget via _apply_kvpp_memory_budget).
+
+  This means gpu_memory_utilization is completely ignored for KV sizing. The returned byte count
+
+  is divided by page size to derive num_gpu_blocks, so a larger value yields more blocks -> higher
+
+  achievable concurrency/throughput and longer context capacity, but less headroom for activation
+
+  workspace and graph capture. A too-large value causes OOM during graph capture or decode
+
+  (documented: image form OOMs at 3328MB but works at 2816M). A too-small value starves the KV
+
+  cache, capping concurrency and forcing preemption/recompute, hurting throughput and latency.
+
+  On 310P (vllm_ascend/_310p/worker_310p.py:138) the auto path halves available memory for
+
+  workspace; explicit kv_cache_memory_bytes bypasses that heuristic entirely.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:228
+  context: CacheConfig field definition; docstring states it ignores gpu_memory_utilization when not None
+- file: vllm/engine/arg_utils.py:1273
+  context: CLI flag registration under CacheConfig argument group
+- file: vllm/engine/arg_utils.py:375
+  context: Registered as human_readable_int arg, so values like 4G/2816M are parsed
+- file: vllm/v1/worker/gpu_worker.py:542
+  context: 'Upstream GPU worker fast path: profile_run then return kv_cache_memory_bytes, skipping memory profiling'
+- file: vllm_ascend/worker/worker.py:572
+  context: 'Ascend NPUWorker fast path: profile_run, log, then _apply_kvpp_memory_budget(_apply_kv_offload_decode_memory_constraints(kv_cache_memory_bytes))'
+- file: vllm_ascend/worker/worker.py:549
+  context: _apply_kvpp_memory_budget stores available_kv_cache_memory_bytes and rounds down to whole blocks via KVPP plan
+- file: vllm_ascend/_310p/worker_310p.py:138
+  context: 310P worker computes available_kv_cache_memory_bytes from requested_memory minus system usage, halved for workspace
+    (auto path)
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: 'Mutually exclusive for KV sizing: when kv_cache_memory_bytes is set, gpu_memory_utilization is ignored for KV
+    cache allocation'
+- name: --num-gpu-blocks-override
+  relation: Alternative manual control of KV cache size expressed in blocks rather than bytes
+- name: --max-model-len
+  relation: Together with KV bytes determines max concurrency; larger max_model_len consumes more KV per request
+- name: --max-num-batched-tokens
+  relation: Docs recommend pairing explicit KV with a smaller max-num-batched-tokens to chunk large prefill and avoid OOM
+- name: --kv-cache-dtype
+  relation: Affects bytes-per-token, so the same byte budget yields different token capacity
+- name: --block-size
+  relation: KV bytes are divided by page/block size to derive num_gpu_blocks
+constraints:
+- When --kv-cache-memory-bytes is set, --gpu-memory-utilization is ignored for KV cache sizing.
+- The value must fit within available NPU memory after model weights and workspace; exceeding it causes OOM during graph capture
+  or decode.
+- The value is rounded down to a whole number of KV cache blocks, so the effective KV memory may be slightly less than requested.
+- On the CPU backend, an explicit kv_cache_memory_bytes larger than available node memory raises a ValueError.
+tuning_advice:
+  summary: Use --kv-cache-memory-bytes for deterministic, conservative KV sizing on Ascend when auto profiling over-allocates
+    and causes graph-capture OOM; otherwise prefer --gpu-memory-utilization.
+  suggested_values:
+  - scenario: Text-only long-context deployment where auto profiling is validated
+    value: unset (use --gpu-memory-utilization 0.92)
+    reason: Docs show text-only form works reliably with automatic profiling at 0.92; no need for manual KV.
+  - scenario: Multimodal image workload (FusedMC2 peak ~3.64 GiB/card) where auto KV OOMs
+    value: 2816M
+    reason: Docs report 3328MB causes OOM but 2816M is stable; pair with --max-num-batched-tokens 1024 to chunk large-image
+      prefill.
+  - scenario: Audio workload needing ~1131 tokens per single request
+    value: 4G
+    reason: 1GB only provides ~2220 tokens (insufficient), 4GB provides ~8956 tokens (2.19x headroom) per docs.
+  - scenario: Small test / CI with dummy weights
+    value: 512M
+    reason: Test config uses 512*1024**2 bytes to keep KV small and deterministic for e2e validation.
+  caveats:
+  - Setting this flag disables gpu_memory_utilization-based KV sizing; you lose automatic adaptation to environment changes.
+  - Always leave headroom for graph capture (~3.76 GiB peak per docs) and activation workspace, especially on 310P where the
+    auto path normally halves memory.
+  - If you OOM, compare initial free memory between runs and lower the value accordingly (per the worker log message).
+  - Combine with a reduced --max-num-batched-tokens for large-prefill multimodal workloads to avoid transient OOM.
+  quick_guide: Prefer --gpu-memory-utilization; switch to --kv-cache-memory-bytes (e.g. 2816M for image, 4G for audio) only
+    when auto profiling over-allocates and causes graph-capture OOM.
+analysis_date: '2026-10-27'

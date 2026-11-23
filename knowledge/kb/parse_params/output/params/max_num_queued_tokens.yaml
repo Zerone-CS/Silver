@@ -1,0 +1,113 @@
+name: --max-num-queued-tokens
+type: cli
+category: scheduling
+scope: vllm
+source_file:
+- vllm/config/scheduler.py:87
+- vllm/engine/arg_utils.py:1605
+- vllm/engine/arg_utils.py:561
+- vllm/engine/arg_utils.py:377
+- vllm/v1/engine/async_llm.py:306
+- vllm/v1/engine/async_llm.py:321
+value_type: int
+default: null
+valid_choices: int >= 0, or None (no limit); accepts human-readable suffixes (e.g. 1K, 2M)
+cli_example: --max-num-queued-tokens 1000000
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is an admission-control (TTFT QoS) parameter enforced in the API server
+
+  process, not in the scheduler or on the NPU itself. In vllm/v1/engine/async_llm.py
+
+  check_admission() reads scheduler_config.max_num_queued_tokens and compares it
+
+  against output_processor.get_num_queued_tokens(), which sums prompt_len over all
+
+  requests still in the prefill phase. If the incoming request would push the total
+
+  over the limit, MaxQueuedTokensError is raised and mapped to HTTP 503, so the
+
+  client/load balancer retries elsewhere.
+
+  Performance mechanism: "it does not change per-token compute, kernel selection,"
+
+  or memory allocation on Ascend NPU. Instead it bounds the prefill backlog, which
+
+  indirectly controls TTFT (time-to-first-token) latency and protects the NPU from
+
+  being flooded with long prompts that would starve decode steps. By capping the
+
+  aggregate prompt tokens in prefill, it keeps the scheduler''s prefill/decode mix
+
+  stable, which on Ascend matters because large prefill batches inflate TTFT and
+
+  can reduce decode throughput. The count is conservative: a partially-prefilled
+
+  request still contributes its full prompt_len until it leaves the prefill phase,
+
+  because num_computed_tokens/num_cached_tokens are only propagated to the API
+
+  server after prefill completes. This overestimation causes earlier rejection,
+
+  preserving TTFT targets but potentially lowering effective throughput if set too
+
+  low. No vllm-ascend override of this parameter was found in the provided context;
+
+  it is a pure upstream vLLM v1 admission-control knob that applies equally on
+
+  Ascend NPU deployments.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:87
+  context: SchedulerConfig field definition with ge=0 validation and TTFT QoS docstring
+- file: vllm/engine/arg_utils.py:1605
+  context: CLI argument registration in SchedulerConfig argument group
+- file: vllm/engine/arg_utils.py:377
+  context: Registered as human_readable_int arg (accepts 1K/2M suffixes)
+- file: vllm/v1/engine/async_llm.py:321
+  context: check_admission() raises MaxQueuedTokensError when prefill token backlog exceeds limit
+related_parameters:
+- name: --max-num-queued-reqs
+  relation: Sibling admission-control limit on number of in-flight requests; both enforced in API server and return HTTP 503
+- name: --max-num-seqs
+  relation: Per-DP-rank concurrency limit; max_num_queued_tokens is a global prefill-token cap across DP ranks
+- name: --max-num-batched-tokens
+  relation: Controls per-iteration prefill/decode token budget; interacts with prefill throughput used to size the queued-token
+    limit
+- name: --enable-chunked-prefill
+  relation: Chunked prefill progress is not subtracted from queued tokens, so the count stays conservative
+- name: --data-parallel-size
+  relation: Limit is enforced across all DP ranks the API server routes to; size relative to aggregate prefill throughput
+constraints:
+- The value must be a non-negative integer (Field ge=0) or None for no limit.
+- The limit is enforced in the API server process and covers the prefill backlog across all DP ranks it routes to, not per
+  rank.
+- A partially prefilled request contributes its full prompt_len until it transitions out of the prefill phase; chunked-prefill
+  progress and prefix-cache hits are not subtracted.
+tuning_advice:
+  summary: Set to target_TTFT * aggregate_prefill_throughput to bound prefill backlog and protect TTFT without over-rejecting
+    requests.
+  suggested_values:
+  - scenario: Latency-sensitive online serving with strict TTFT SLA
+    value: target_TTFT_seconds * aggregate_prefill_tokens_per_sec
+    reason: Directly implements the documented TTFT QoS formula, rejecting requests when the prefill backlog would exceed
+      the latency target.
+  - scenario: Throughput-oriented batch/offline workloads
+    value: unset
+    reason: Leave unset (None) to avoid 503 rejections and maximize throughput when TTFT is not a concern.
+  - scenario: Disaggregated prefill-decode deployment
+    value: prefill_pool_capacity_in_tokens
+    reason: Maps directly to the prefill pool's capacity so the prefill workers are not oversubscribed.
+  - scenario: Multi-DP-rank deployment
+    value: data_parallel_size * per_rank_prefill_throughput * target_TTFT
+    reason: The limit is enforced across all DP ranks the API server routes to, so use aggregate throughput in the formula.
+  caveats:
+  - Because the count is conservative, add headroom above the theoretical value to avoid premature 503s.
+  - Coordinate with --max-num-queued-reqs so neither limit binds unexpectedly before per-rank admission does.
+  - Monitor HTTP 503 rate; frequent rejections indicate the limit is too tight for the offered load.
+  quick_guide: Set to target_TTFT × aggregate prefill throughput, or leave None for throughput-first workloads.
+analysis_date: '2026-10-27'

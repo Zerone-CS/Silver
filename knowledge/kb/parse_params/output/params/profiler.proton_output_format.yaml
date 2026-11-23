@@ -1,0 +1,69 @@
+name: profiler.proton_output_format
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:399
+value_type: str
+default: null
+valid_choices: Any format string supported by Triton Proton's finalize step; None uses the default format for proton_data
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is only read in the ProtonProfilerWrapper constructor
+
+  (vllm/profiler/wrapper.py:399) and stored as self._output_format. It is
+
+  passed to Triton Proton when finalizing a profile to control the serialization
+
+  format of the collected trace data. It has no effect on the model execution
+
+  path, kernel dispatch, memory allocation, or HCCL communication. Its only
+
+  runtime cost is the (one-time, off the hot path) cost of writing the profile
+
+  output in the chosen format when profiling is stopped. There is no definition
+
+  or override of this parameter in vllm-ascend, and no Ascend-specific handling.
+
+  Because Proton relies on Triton''s profiler, and Triton profiling support on
+
+  Ascend NPU is limited, this parameter is effectively inert on Ascend unless a
+
+  Triton build with proton support is present.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:399
+  context: Read from profiler_config.proton_output_format and stored as self._output_format for use when finalizing the Proton
+    profile.
+related_parameters:
+- name: profiler.proton_data
+  relation: The output format applies to the serialization of proton_data; None falls back to the default format for proton_data.
+- name: profiler.proton_profiler_dir
+  relation: Determines the output directory where the formatted profile is written.
+- name: profiler.proton_backend
+  relation: Selects the Proton backend whose collected data is serialized using this format.
+constraints:
+- Requires a Triton installation with triton.profiler support, otherwise a RuntimeError is raised at wrapper construction.
+- The value must be a format recognized by Triton Proton's finalize step; an unsupported format will fail during profile finalization.
+tuning_advice:
+  summary: Leave at default (None) unless you specifically need a particular Proton output format; it does not affect model
+    runtime performance.
+  suggested_values:
+  - scenario: Default profiling on Ascend NPU
+    value: unset
+    reason: None uses Proton's default format for proton_data, which is sufficient for most profiling workflows and avoids
+      format-compatibility issues.
+  - scenario: Downstream tooling requires a specific trace format
+    value: <format supported by your Triton Proton version>
+    reason: Only set this when a specific consumer of the profile output requires a non-default serialization format.
+  caveats:
+  - Proton profiling depends on Triton's profiler module; on Ascend NPU this may not be available, making this parameter effectively
+    unused.
+  - Format selection only affects the one-time profile finalization step, not steady-state inference latency or throughput.
+  - No vllm-ascend override exists for this parameter; behavior is identical to upstream vLLM.
+  quick_guide: Keep default None; only change if your profiling toolchain demands a specific Proton output format.
+analysis_date: '2026-10-27'

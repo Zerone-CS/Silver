@@ -1,0 +1,91 @@
+name: additional_config.ascend_compilation_config.fuse_norm_quant
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:127
+- vllm_ascend/compilation/graph_fusion_pass_manager.py:58
+value_type: bool
+default: true
+valid_choices: true or false (boolean; note that string values like "false" are coerced by the pydantic config validator)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'fuse_norm_quant controls whether the AddRMSNormQuantFusionPass is registered in the
+
+  Ascend graph fusion pass manager. In vllm_ascend/compilation/graph_fusion_pass_manager.py:58,
+
+  the pass is only appended when BOTH fuse_norm_quant is true AND the current hardware
+
+  profile supports HardwareCapability.GRAPH_NORM_QUANT_FUSION. When enabled, the pass fuses
+
+  the RMSNorm (AddRMSNorm) operation with the following quantization op into a single
+
+  AscendC/CANN fused kernel during torch.compile/ACLGraph capture, eliminating one kernel
+
+  launch and one intermediate tensor round-trip per norm+quant site (present in every
+
+  transformer layer). This reduces per-layer launch overhead and memory traffic, improving
+
+  decode latency and throughput. When disabled, the two ops execute separately, adding
+
+  kernel launch overhead and intermediate memory writes. The pass is a compile-time graph
+
+  transformation, so its effect is baked into the captured graph and applies to both
+
+  prefill and decode. On hardware profiles that do not support GRAPH_NORM_QUANT_FUSION
+
+  (e.g. Atlas 300I DUO / 310P), the flag has no effect regardless of value — the pass is
+
+  skipped by the profile check, which is why 310P test cases and docs set it to false.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:127
+  context: Field definition in AscendCompilationConfig pydantic dataclass, default True.
+- file: vllm_ascend/compilation/graph_fusion_pass_manager.py:58
+  context: GraphFusionPassManager.configure gates AddRMSNormQuantFusionPass registration on fuse_norm_quant AND hardware GRAPH_NORM_QUANT_FUSION
+    support.
+- file: tests/ut/compilation/test_graph_fusion_pass_manager.py:29
+  context: Unit test verifies string "false" is coerced to boolean False and no passes are registered.
+- file: tests/e2e/pull_request/one_card/_310p/test_dense_model_310p.py:36
+  context: 310P e2e tests disable fuse_norm_quant for ACLGraph dense model runs.
+related_parameters:
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: The fusion pass runs inside the compiled graph; disabling npugraph_ex removes the graph compilation path where
+    this pass applies.
+- name: additional_config.ascend_compilation_config.fuse_qknorm_rope
+  relation: Sibling graph fusion pass toggled independently in the same pass manager.
+- name: additional_config.ascend_compilation_config.fuse_muls_add
+  relation: Sibling graph fusion pass toggled independently in the same pass manager.
+- name: compilation_config.cudagraph_mode
+  relation: Fusion passes are applied during graph capture; graph mode determines whether the fused graph is used at runtime.
+constraints:
+- The norm-quant fusion pass is only registered when the current hardware profile supports GRAPH_NORM_QUANT_FUSION; on unsupported
+  hardware (e.g. Atlas 300I DUO / 310P) setting it to true has no effect.
+- The value must be a boolean; string values such as "false" are coerced by the pydantic config validator rather than treated
+  as truthy.
+tuning_advice:
+  summary: Keep fuse_norm_quant enabled (default true) on hardware that supports GRAPH_NORM_QUANT_FUSION to fuse RMSNorm+quant
+    kernels; disable only on unsupported hardware or when debugging numerics.
+  suggested_values:
+  - scenario: Atlas 800/A2/A3 class NPUs with GRAPH_NORM_QUANT_FUSION support, W8A8 quantized models
+    value: true
+    reason: Enables AddRMSNormQuantFusionPass, fusing norm and quant into one kernel to cut launch overhead and memory traffic
+      per layer.
+  - scenario: Atlas 300I DUO / 310P hardware (no GRAPH_NORM_QUANT_FUSION support)
+    value: false
+    reason: The pass is gated off by the hardware profile anyway; docs and 310P e2e tests set it false to match the supported
+      path.
+  - scenario: Debugging numerical accuracy of norm/quant layers
+    value: false
+    reason: Disabling the fusion keeps norm and quant as separate ops, making intermediate values inspectable.
+  caveats:
+  - Setting it true on unsupported hardware is a no-op, not an error — do not expect a speedup there.
+  - The flag only matters when graph compilation (npugraph_ex / ACLGraph) is active; in eager mode the pass does not apply.
+  - Requires a restart to take effect since it changes the compiled graph.
+  quick_guide: Leave at default true on supported NPUs; set false on Atlas 300I DUO/310P or when debugging numerics.
+analysis_date: '2026-10-27'

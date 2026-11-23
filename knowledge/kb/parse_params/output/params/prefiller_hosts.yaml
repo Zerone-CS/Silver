@@ -1,0 +1,88 @@
+name: --prefiller-hosts
+type: cli
+category: other
+scope: vllm-ascend
+source_file:
+- examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:321
+- examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:706
+- examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:287
+- tools/docs_codegen/converters.py:489
+value_type: list[str]
+default:
+- localhost
+valid_choices: Any list of hostnames or IP addresses; length must equal the number of --prefiller-ports
+cli_example: --prefiller-hosts 192.0.0.1 192.0.0.2
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is not a vLLM engine parameter but a CLI argument of the standalone
+
+  disaggregated-prefill (P/D) load-balance proxy example scripts shipped in
+
+  vllm-ascend (examples/disaggregated_prefill_v1/*.py and
+
+  examples/epd_disaggregated/*.py). It is parsed in parse_args() and zipped with
+
+  --prefiller-ports into args.prefiller_instances, which the proxy uses to route
+
+  prefill requests to P instances. It has no effect on the vLLM/vllm-ascend
+
+  engine runtime itself; it only determines which prefiller endpoints the proxy
+
+  forwards to. Its performance relevance is indirect: the set of prefiller hosts
+
+  determines the fan-out of prefill work across P nodes, so an incorrect or
+
+  undersized list can bottleneck prefill throughput or add routing latency, but
+
+  the parameter does not touch NPU kernels, HCCL, or KV-cache allocation.
+
+  '
+usage_locations:
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:345
+  context: Validates prefiller host strings and zips them with ports into prefiller_instances for request routing
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:706
+  context: Checks host/port count match before building prefiller_instances
+- file: examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:302
+  context: EPD proxy validates prefiller host/port count parity
+- file: tools/docs_codegen/converters.py:489
+  context: Docs codegen expands routing.groups.prefiller into --prefiller-hosts/--prefiller-ports for generated proxy commands
+related_parameters:
+- name: --prefiller-ports
+  relation: Must have the same number of entries as --prefiller-hosts; zipped pairwise into prefiller_instances
+- name: --decoder-hosts
+  relation: Companion argument for decoder instances in the same P/D proxy
+- name: --host
+  relation: Proxy listen address; layerwise mode rejects wildcard addresses so decoder hosts can reach the proxy
+constraints:
+- The number of --prefiller-hosts entries must equal the number of --prefiller-ports entries, otherwise the proxy raises ValueError
+  at startup.
+- Each prefiller host string must be a valid hostname/IP; malformed values (e.g. shell-escaping typos with embedded newlines)
+  are rejected by _validate_hosts.
+- In layerwise mode the proxy --host must not be a wildcard address (0.0.0.0, ::) because decoder hosts must reach the proxy
+  metaserver.
+tuning_advice:
+  summary: List every prefiller instance host so the proxy can fan out prefill requests across all P nodes; keep it exactly
+    aligned with --prefiller-ports.
+  suggested_values:
+  - scenario: Single-node P/D disaggregation test
+    value:
+    - localhost
+    reason: Default single prefiller on the local host is sufficient for functional testing.
+  - scenario: Multi-node large-scale EP / P/D deployment
+    value:
+    - 192.0.0.1
+    - 192.0.0.1
+    - 192.0.0.2
+    - 192.0.0.2
+    reason: Docs example lists each P-instance host (repeated per port) so the proxy load-balances prefill across all P nodes,
+      avoiding a single-prefiller bottleneck.
+  caveats:
+  - This is an example proxy script argument, not a vLLM engine flag; it does not affect NPU kernel execution or HCCL directly.
+  - Host and port lists are zipped positionally, so ordering must be consistent between --prefiller-hosts and --prefiller-ports.
+  - Each host-port pair should be unique and reachable from the proxy; unreachable prefiller hosts cause request failures/timeouts
+    rather than a clean startup error.
+  quick_guide: Provide one host per prefiller instance, matching --prefiller-ports count and order.
+analysis_date: '2026-10-27'

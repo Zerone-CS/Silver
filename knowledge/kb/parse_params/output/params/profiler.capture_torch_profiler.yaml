@@ -1,0 +1,68 @@
+name: profiler.capture_torch_profiler
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/v1/worker/gpu_model_runner.py:6856
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only gates an optional torch.profiler session around CUDA graph capture
+
+  on rank 0 (vllm/v1/worker/gpu_model_runner.py:6854-6874). When enabled, the code
+
+  wraps the graph-capture loop in torch.profiler.profile with CPU+CUDA activities,
+
+  record_shapes=True, profile_memory=True, with_stack=True, and a tensorboard trace
+
+  handler writing gzipped traces to <torch_profiler_dir>/capture_traces. This adds
+
+  profiling overhead (extra CPU/CUDA event recording, shape/memory bookkeeping,
+
+  stack unwinding, and trace serialization) during the one-time graph capture phase,
+
+  increasing startup latency. It does NOT affect steady-state inference throughput
+
+  or memory footprint of the model. On Ascend NPU, the CUDA profiler activities map
+
+  to the torch_npu profiler backend; the same capture-time overhead applies. There is
+
+  no vllm-ascend override of this parameter found in the provided context — it is a
+
+  pure upstream vLLM observability knob.
+
+  '
+usage_locations:
+- file: vllm/v1/worker/gpu_model_runner.py:6856
+  context: Conditional check gating torch.profiler setup around CUDA graph capture on local_rank 0
+- file: vllm/v1/worker/gpu_model_runner.py:6861
+  context: torch.profiler.profile(...) instantiation with CPU/CUDA activities and tensorboard trace handler
+related_parameters:
+- name: profiler
+  relation: Must be set to 'torch' for this flag to take effect
+- name: profiler.torch_profiler_dir
+  relation: Traces are written to a capture_traces subdirectory under this directory
+constraints:
+- This option only takes effect when profiler is set to 'torch'.
+- Profiling is only enabled on local rank 0; other ranks do not capture traces.
+tuning_advice:
+  summary: Keep disabled for production; enable only when debugging graph-capture performance or memory issues.
+  suggested_values:
+  - scenario: Production deployment
+    value: false
+    reason: Avoids profiling overhead and trace disk usage during startup; no benefit to steady-state throughput.
+  - scenario: Debugging CUDA/NPU graph capture latency or memory
+    value: true
+    reason: Captures detailed CPU/NPU traces of the graph-capture phase for offline analysis in TensorBoard.
+  caveats:
+  - Ensure profiler is set to 'torch' and torch_profiler_dir points to a writable location with sufficient space.
+  - Only rank 0 produces traces; correlate with other ranks' logs if diagnosing distributed capture issues.
+  quick_guide: Leave false unless diagnosing graph-capture performance; requires profiler='torch'.
+analysis_date: '2026-10-27'

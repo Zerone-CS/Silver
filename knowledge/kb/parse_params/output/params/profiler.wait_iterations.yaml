@@ -1,0 +1,80 @@
+name: profiler.wait_iterations
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:230
+- vllm/profiler/wrapper.py:241
+value_type: int
+default: 0
+valid_choices: non-negative integer (>= 0)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is part of the PyTorch profiler schedule configuration in
+
+  vllm/profiler/wrapper.py. It is passed to torch.profiler.schedule(wait=...) at
+
+  line 233. During the "wait" phase the profiler is completely off (zero overhead),
+
+  so it does not add profiling instrumentation cost to those iterations. It only
+
+  takes effect when profiling is enabled (profiler config present) and when either
+
+  wait_iterations > 0 or warmup_iterations > 0 (line 230), which triggers creation
+
+  of a profiler schedule and the per-step step() calls (self._uses_schedule).
+
+  Because profiling is an opt-in diagnostic feature, this parameter has no effect
+
+  on normal inference throughput/latency/memory. Its only runtime relevance is
+
+  during a profiling run: "it lets you skip the first N iterations (e.g. to avoid"
+
+  capturing one-time warmup/compilation/allocation overhead) before the warmup
+
+  phase begins, improving the quality of the captured trace rather than the
+
+  steady-state performance of the model. No vllm-ascend override or usage of this
+
+  parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:230
+  context: Conditional that creates a profiler schedule only if warmup_iterations > 0 or wait_iterations > 0
+- file: vllm/profiler/wrapper.py:233
+  context: Passed as wait= to torch.profiler.schedule
+- file: vllm/profiler/wrapper.py:241
+  context: Logged in the profiler schedule configuration info message
+related_parameters:
+- name: profiler.warmup_iterations
+  relation: Both must be 0 for no schedule to be created; either being > 0 enables the profiler schedule
+- name: profiler.active_iterations
+  relation: Together with wait and warmup forms the torch.profiler.schedule phases
+- name: profiler.torch_profiler_trace_dir
+  relation: Trace output directory used by the trace handler when profiling is active
+constraints:
+- Must be a non-negative integer; it is passed directly as the wait argument to torch.profiler.schedule.
+- Only takes effect when profiling is enabled and either wait_iterations or warmup_iterations is greater than 0; otherwise
+  no profiler schedule is created.
+tuning_advice:
+  summary: Use wait_iterations to skip initial warmup/compilation iterations before profiling so the captured trace reflects
+    steady-state behavior; it has no impact on normal inference.
+  suggested_values:
+  - scenario: Profiling a model where the first iterations include graph capture, memory allocation, or CANN compilation warmup
+    value: 5
+    reason: Skipping a few initial iterations avoids capturing one-time warmup overhead in the trace, yielding a cleaner steady-state
+      profile.
+  - scenario: Profiling steady-state decode/inference without special warmup concerns
+    value: 0
+    reason: Default of 0 means no wait phase; combined with warmup_iterations it still produces a valid schedule.
+  caveats:
+  - Only relevant when profiling is enabled; changing it does not affect production throughput or latency.
+  - If both wait_iterations and warmup_iterations are 0, no profiler schedule is created and the profiler runs without phase
+    gating.
+  quick_guide: Set wait_iterations to skip a few warmup iterations when profiling; leave at 0 for normal runs since it has
+    no effect on inference performance.
+analysis_date: '2026-10-27'

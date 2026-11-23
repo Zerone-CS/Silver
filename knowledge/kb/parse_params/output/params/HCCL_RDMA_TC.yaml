@@ -1,0 +1,72 @@
+name: HCCL_RDMA_TC
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/developer_guide/performance_and_debug/optimization_and_tuning.md:146
+value_type: int
+default: <computed>
+valid_choices: 0-255 (DSCP traffic class value; exact range defined by CANN/HCCL, not validated in vllm-ascend source)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_RDMA_TC is not defined or read anywhere in vllm or vllm-ascend source code — it is
+
+  consumed directly by the CANN/HCCL runtime (libhccl) when establishing RDMA connections
+
+  between NPUs across nodes. It sets the DSCP traffic class (TC) field on RDMA NIC packets,
+
+  which network switches use for QoS classification and prioritization. On Ascend clusters
+
+  using RoCE/RDMA interconnect (typically multi-node deployments, often combined with
+
+  HCCL_INTRA_ROCE_ENABLE), an incorrect or unprioritized TC value can cause RDMA traffic to
+
+  be treated as best-effort by the fabric, leading to packet drops, congestion, and elevated
+
+  all-reduce/all-gather latency during tensor-parallel or data-parallel collective
+
+  communication. Because vLLM inference is dominated by collective communication in
+
+  multi-node setups, misconfigured QoS on the RDMA path directly degrades inter-node
+
+  throughput and tail latency. It has no effect on single-node (SDMA/HCCS) communication.
+
+  '
+usage_locations:
+- file: docs/source/developer_guide/performance_and_debug/optimization_and_tuning.md:146
+  context: Documented as an env var to configure the traffic class of the RDMA NIC for performance tuning
+related_parameters:
+- name: HCCL_INTRA_ROCE_ENABLE
+  relation: Enables RDMA link between 8P groups; HCCL_RDMA_TC configures the QoS traffic class on that RDMA path
+- name: HCCL_RDMA_SL
+  relation: Companion RDMA NIC setting (service level); TC and SL together determine QoS treatment on the fabric
+- name: HCCL_BUFFSIZE
+  relation: Another HCCL communication tuning env var affecting inter-NPU data sharing performance
+constraints:
+- HCCL_RDMA_TC must be set to a valid DSCP traffic class value accepted by the RDMA NIC and the network fabric; invalid values
+  may be rejected by HCCL at initialization or silently ignored.
+- The traffic class value must match the QoS configuration on the switches/routers in the cluster, otherwise prioritization
+  will not take effect.
+- This variable only affects RDMA-based inter-node communication; it has no effect on single-node HCCS/SDMA links.
+tuning_advice:
+  summary: For multi-node Ascend clusters using RoCE/RDMA, set HCCL_RDMA_TC to the DSCP traffic class that your fabric prioritizes
+    for RDMA traffic to reduce collective-communication latency.
+  suggested_values:
+  - scenario: Multi-node cluster with RoCE fabric configured to prioritize a specific DSCP class for RDMA
+    value: <fabric-assigned DSCP TC value>
+    reason: Matching the switch QoS policy ensures RDMA collective traffic gets prioritized, lowering all-reduce latency and
+      improving inter-node throughput.
+  - scenario: Single-node deployment (HCCS/SDMA only)
+    value: unset
+    reason: No RDMA path exists, so the variable has no effect; leaving it unset avoids confusion.
+  caveats:
+  - Coordinate the TC value with network administrators — it must match the switch DSCP/QoS configuration.
+  - Tune together with HCCL_RDMA_SL and HCCL_INTRA_ROCE_ENABLE for consistent RDMA QoS.
+  - Not validated by vllm-ascend; verify via HCCL logs that the value is accepted at init.
+  quick_guide: Set HCCL_RDMA_TC to your fabric's prioritized DSCP class only for multi-node RoCE deployments; leave unset
+    for single-node.
+analysis_date: '2026-10-27'

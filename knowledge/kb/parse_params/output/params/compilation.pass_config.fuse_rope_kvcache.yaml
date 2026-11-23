@@ -1,0 +1,104 @@
+name: compilation.pass_config.fuse_rope_kvcache
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/compilation.py:977
+- vllm/config/compilation.py:1177
+- vllm/config/vllm.py:2491
+- vllm/compilation/passes/pass_manager.py:213
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vLLM-upstream Inductor compilation pass flag (PassConfig.fuse_rope_kvcache).
+
+  When enabled, pass_manager.py:213-216 adds SplitCoalescingPass, ScatterSplitReplacementPass,
+
+  and RopeKVCacheFusionPass to the post-grad Inductor pass pipeline, fusing the RoPE
+
+  (rotary embedding) op with the KV-cache write into a single kernel. This reduces kernel
+
+  launch overhead and memory traffic between the two ops, improving decode latency/throughput
+
+  for models using RoPE attention.
+
+  It only takes effect under CompilationMode.VLLM_COMPILE (torch.compile / Inductor path).
+
+  compilation.py:977-982 forces "+rotary_embedding" into custom_ops so the rope op stays
+
+  visible to the fusion matcher.
+
+  compilation.py:1177-1186 shows a hard gating: if splitting_ops is None and
+
+  use_inductor_graph_partition is False, the flag is silently disabled with a warning.
+
+  vllm.py:2491-2503 uses rope_kvcache_fusion_max_token_num to add a compile-range endpoint,
+
+  so fusion only applies to token ranges below the threshold (test shows fusion applicable
+
+  for Range(1,256) but not for larger ranges).
+
+  On Ascend NPU: "this is an Inductor/torch.compile graph-fusion pass. vllm-ascend does not"
+
+  define or override this parameter (no definition found in vllm-ascend). Ascend''s default
+
+  execution path relies on ACL graph / torch.compile with Ascend-specific backends, and the
+
+  RopeKVCacheFusionPass is a generic Inductor pattern-match pass that is not Ascend-tuned.
+
+  Its benefit on Ascend is therefore uncertain and likely minimal; the primary Ascend
+
+  performance levers are elsewhere (ACL graph capture, HCCL, fused MoE/attention kernels).
+
+  '
+usage_locations:
+- file: vllm/config/compilation.py:977
+  context: Appends '+rotary_embedding' to custom_ops when fuse_rope_kvcache is set, keeping rope op visible for fusion.
+- file: vllm/config/compilation.py:1177
+  context: Disables fuse_rope_kvcache with a warning if splitting_ops is None and use_inductor_graph_partition is False.
+- file: vllm/config/vllm.py:2491
+  context: Adds a compile-range endpoint at rope_kvcache_fusion_max_token_num to bound the fused token range.
+- file: vllm/compilation/passes/pass_manager.py:213
+  context: Registers SplitCoalescingPass, ScatterSplitReplacementPass, RopeKVCacheFusionPass when enabled.
+related_parameters:
+- name: compilation.pass_config.rope_kvcache_fusion_max_token_num
+  relation: Bounds the token range over which RoPE+KV cache fusion is applied; fusion only for num_tokens <= this threshold.
+- name: compilation.pass_config.fuse_qk_norm_rope_kvcache
+  relation: Sibling pass that additionally fuses QK-Norm; mutually overlapping, both require '+rotary_embedding'.
+- name: compilation.pass_config.enable_qk_norm_rope_fusion
+  relation: Related rope fusion pass; also forces '+rotary_embedding' into custom_ops.
+- name: compilation_config.splitting_ops
+  relation: Must be an empty list [] (or use_inductor_graph_partition=True) for fusion to remain enabled.
+- name: compilation_config.use_inductor_graph_partition
+  relation: If True, bypasses the splitting_ops gating that disables fuse_rope_kvcache.
+- name: compilation_config.mode
+  relation: Only effective under VLLM_COMPILE (torch.compile/Inductor) mode.
+constraints:
+- fuse_rope_kvcache is silently disabled if splitting_ops is None and use_inductor_graph_partition is False.
+- The parameter only has effect when compilation mode is VLLM_COMPILE (torch.compile/Inductor path is active).
+- Fusion is only applied to token ranges up to rope_kvcache_fusion_max_token_num; larger ranges remain unfused.
+tuning_advice:
+  summary: Upstream Inductor RoPE+KV-cache fusion pass; on Ascend it is not overridden and offers limited benefit — leave
+    disabled unless benchmarking shows gains.
+  suggested_values:
+  - scenario: Ascend NPU default deployment (ACL graph / Ascend torch.compile backend)
+    value: false
+    reason: vllm-ascend does not define or tune this pass; the generic Inductor RopeKVCacheFusionPass is not Ascend-optimized
+      and its benefit is unproven, so keep the default off.
+  - scenario: GPU-style Inductor path with splitting_ops=[] and small decode token ranges
+    value: true
+    reason: When splitting_ops is empty and rope_kvcache_fusion_max_token_num bounds the range, the fusion reduces kernel
+      launches and memory traffic for decode.
+  caveats:
+  - Enabling without setting splitting_ops=[] or use_inductor_graph_partition=True causes the flag to be silently disabled
+    with a warning (compilation.py:1177).
+  - Fusion only applies below rope_kvcache_fusion_max_token_num; large prefill ranges stay unfused, so gains are decode-focused.
+  - This is an upstream Inductor pass with no Ascend-specific implementation; verify actual speedup on NPU before enabling.
+  quick_guide: Leave false on Ascend unless you have benchmarked a gain with splitting_ops=[] and a bounded fusion token range.
+analysis_date: '2026-10-27'

@@ -1,0 +1,83 @@
+name: VLLM_ASCEND_BALANCE_SCHEDULING
+type: env
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/patch/__init__.py:46
+- docs/source/user_guide/configuration/additional_config.md:19
+- docs/source/user_guide/configuration/additional_config.md:162
+value_type: bool
+default: false
+valid_choices: '"1" → true, "0" → false'
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This environment variable is a legacy switch that enables the Ascend "balance scheduling"
+
+  patch (vllm_ascend/patch/platform/patch_balance_schedule.py). When enabled, it patches
+
+  vllm.v1.core.sched.scheduler.Scheduler and swaps in a DPEngineCoreProc variant (the swap is
+
+  performed by patch_engine_core.py). The rationale documented in patch/__init__.py is that
+
+  vLLM v1 scheduling enables chunked prefill by default, processing prefill and decode requests
+
+  simultaneously in a single scheduling session, which can hurt overall system throughput and
+
+  performance in some scenarios. Balance scheduling changes the scheduling policy so prefill and
+
+  decode are handled in a more balanced manner, which can improve throughput/latency balance
+
+  under mixed workloads. Because it alters the core scheduling loop, it directly affects
+
+  throughput and latency characteristics. Note: the docs state the environment variable is no
+
+  longer supported and the equivalent config key is scheduler_config.enable_balance_scheduling
+
+  in --additional-config; the env var is deprecated.
+
+  '
+usage_locations:
+- file: vllm_ascend/patch/__init__.py:46
+  context: 'Documents that balance scheduling is enabled via --additional-config ''{"enable_balance_scheduling": true}'' or
+    the deprecated env var VLLM_ASCEND_BALANCE_SCHEDULING=1'
+- file: docs/source/user_guide/configuration/additional_config.md:19
+  context: Quick reference mapping VLLM_ASCEND_BALANCE_SCHEDULING to scheduler_config.enable_balance_scheduling with "1"→true,
+    "0"→false conversion
+- file: docs/source/user_guide/configuration/additional_config.md:162
+  context: States enable_balance_scheduling defaults to False and the legacy VLLM_ASCEND_BALANCE_SCHEDULING env var is no
+    longer supported
+related_parameters:
+- name: scheduler_config.enable_balance_scheduling
+  relation: Replacement config key in --additional-config; takes precedence and is the supported way to enable balance scheduling
+- name: enable_chunked_prefill
+  relation: Balance scheduling exists to counteract the default chunked-prefill behavior that mixes prefill and decode in
+    one scheduling session
+- name: recompute_scheduler_enable
+  relation: Sibling scheduler_config option (PD-disaggregated D nodes only); both live under scheduler_config
+constraints:
+- The VLLM_ASCEND_BALANCE_SCHEDULING env var is deprecated and no longer supported; use scheduler_config.enable_balance_scheduling via --additional-config instead.
+- scheduler_config.enable_balance_scheduling takes precedence when both the legacy env var and the config key are set.
+tuning_advice:
+  summary: Use the supported scheduler_config.enable_balance_scheduling config key instead of this deprecated env var; enable
+    it when mixed prefill/decode workloads suffer throughput loss from default chunked prefill.
+  suggested_values:
+  - scenario: Mixed prefill+decode workload where default chunked-prefill scheduling hurts throughput
+    value: 'scheduler_config.enable_balance_scheduling: true (via --additional-config)'
+    reason: Balance scheduling separates/balances prefill and decode handling, improving overall system throughput in scenarios
+      where simultaneous processing is suboptimal.
+  - scenario: Pure decode or latency-sensitive single-request workloads
+    value: false
+    reason: Default is False; balance scheduling changes the scheduling loop and may not benefit workloads without prefill
+      contention.
+  caveats:
+  - 'The VLLM_ASCEND_BALANCE_SCHEDULING env var is deprecated and per docs no longer supported; migrate to --additional-config
+    ''{"scheduler_config": {"enable_balance_scheduling": true}}''.'
+  - If both the legacy top-level key and scheduler_config provide the same field, the scheduler_config value takes precedence.
+  - This patch is a temporary workaround pending upstream vLLM PR 29721; behavior may change when vLLM merges the change.
+  quick_guide: Prefer scheduler_config.enable_balance_scheduling in --additional-config; enable only when chunked-prefill
+    scheduling degrades mixed-workload throughput.
+analysis_date: '2026-10-27'

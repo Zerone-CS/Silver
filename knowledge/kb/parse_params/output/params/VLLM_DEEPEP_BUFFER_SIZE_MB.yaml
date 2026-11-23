@@ -1,0 +1,70 @@
+name: VLLM_DEEPEP_BUFFER_SIZE_MB
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1935
+- vllm/envs.py:280
+- vllm/distributed/device_communicators/all2all.py:222
+- vllm/distributed/device_communicators/all2all.py:307
+value_type: int
+default: 1024
+valid_choices: positive integer (MB); no explicit upper bound enforced in code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: "This env var only feeds the DeepEP (NVIDIA DeepEP) all-to-all communication\nbackend in vLLM upstream. In\
+  \ vllm/distributed/device_communicators/all2all.py\nit is read in two places:\n- \"DeepEPHTAll2AllManager._make_all2all_kwargs\
+  \ (line 222): sets num_nvl_bytes\"\n  = VLLM_DEEPEP_BUFFER_SIZE_MB * 1024 * 1024, and for internode (when\n  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE\
+  \ is false) also sets\n  num_rdma_bytes to the same value.\n- \"DeepEPLLAll2AllManager._make_all2all_kwargs (line 307):\
+  \ sets num_nvl_bytes\"\n  for the low-latency DeepEP buffer; num_rdma_bytes is instead computed via\n  deep_ep.Buffer.get_low_latency_rdma_size_hint.\n\
+  The value is passed to the DeepEP Buffer constructor as the size of the\nNVL (intra-node NVLink) and RDMA (inter-node) communication\
+  \ buffers. Larger\nbuffers reserve more device/host memory per rank but reduce the chance of\nbuffer overflow / reallocation\
+  \ during large dispatch-combine batches; smaller\nbuffers save memory but can cause failures or fallback when token counts\
+  \ are\nlarge. This is a memory-vs-robustness tradeoff, not a hot-path compute knob,\nhence low performance impact.\nOn Ascend\
+  \ NPU: \"DeepEP is a CUDA/NVLink/RDMA-specific library. vllm-ascend\"\ndoes not use DeepEP; Ascend MoE all-to-all goes through\
+  \ HCCL-based\ncommunication (e.g. Ascend-native dispatch/combine). No usage of\nVLLM_DEEPEP_BUFFER_SIZE_MB was found in\
+  \ vllm-ascend source, so this\nparameter has no runtime effect on Ascend NPU. It is effectively a no-op\nunless a DeepEP-based\
+  \ all2all backend is somehow selected, which is not the\ncase on Ascend.\n"
+usage_locations:
+- file: vllm/envs.py:1935
+  context: Environment variable definition, parsed as int with default 1024 MB.
+- file: vllm/envs.py:280
+  context: 'Type stub declaration VLLM_DEEPEP_BUFFER_SIZE_MB: int = 1024.'
+- file: vllm/distributed/device_communicators/all2all.py:222
+  context: DeepEPHTAll2AllManager sets num_nvl_bytes (and num_rdma_bytes for internode) from this value.
+- file: vllm/distributed/device_communicators/all2all.py:307
+  context: DeepEPLLAll2AllManager sets num_nvl_bytes from this value for low-latency DeepEP buffer.
+related_parameters:
+- name: VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE
+  relation: When false and internode is true, this buffer size is also used for num_rdma_bytes; when true, RDMA buffer is
+    0.
+- name: VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL
+  relation: Affects low-latency DeepEP buffer configuration alongside this size.
+- name: VLLM_ALL2ALL_BACKEND
+  relation: DeepEP backend must be selected for this parameter to be read at all.
+constraints:
+- The value must be a positive integer number of megabytes; it is multiplied by 1024*1024 to form byte counts for DeepEP buffers.
+- This parameter only takes effect when a DeepEP-based all2all backend is selected; it is ignored otherwise.
+- On Ascend NPU, DeepEP is not used, so this parameter has no effect.
+tuning_advice:
+  summary: No tuning needed on Ascend NPU — DeepEP is not used; on CUDA systems raise it only if large MoE dispatch batches
+    overflow the default 1024 MB buffer.
+  suggested_values:
+  - scenario: Ascend NPU deployment (vllm-ascend v1 or v2 worker)
+    value: 1024
+    reason: DeepEP is not used on Ascend; leave at default (or unset) since the value has no runtime effect.
+  - scenario: CUDA GPU with DeepEP backend and large MoE all-to-all batches
+    value: 2048
+    reason: Larger NVL/RDMA buffers reduce overflow risk for big dispatch-combine batches at the cost of extra memory.
+  - scenario: CUDA GPU with tight memory budget and small batches
+    value: 512
+    reason: Smaller buffers free memory for KV cache when token counts per batch are modest.
+  caveats:
+  - Do not expect any effect on Ascend NPU; Ascend MoE communication uses HCCL, not DeepEP.
+  - Only relevant when VLLM_ALL2ALL_BACKEND selects a DeepEP backend on CUDA hardware.
+  quick_guide: Ignore on Ascend NPU; on CUDA DeepEP setups tune between 512 and 2048 MB based on batch size vs memory budget.
+analysis_date: '2026-10-27'

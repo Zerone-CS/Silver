@@ -1,0 +1,112 @@
+name: --logprobs-mode
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:259
+- vllm/engine/arg_utils.py:918
+- vllm/engine/arg_utils.py:563
+- vllm/engine/arg_utils.py:1847
+- vllm/config/vllm.py:1129
+- vllm/v1/sample/ops/topk_topp_sampler.py:103
+- vllm/v1/sample/rejection_sampler.py:77
+- vllm/v1/sample/rejection_sampler.py:158
+- vllm_ascend/sample/sampler.py:72
+- vllm_ascend/sample/sampler.py:105
+- vllm_ascend/sample/rejection_sampler.py:202
+- vllm_ascend/sample/rejection_sampler.py:246
+- vllm_ascend/_310p/sample/sampler.py:160
+value_type: str
+default: raw_logprobs
+valid_choices:
+- raw_logprobs
+- processed_logprobs
+- raw_logits
+- processed_logits
+cli_example: --logprobs-mode processed_logprobs
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This parameter selects what the sampler returns alongside sampled tokens. On Ascend the\nbehavior is implemented\
+  \ in vllm_ascend/sample/sampler.py (AscendTopKTopPSampler.forward_native)\nand vllm_ascend/_310p/sample/sampler.py (AscendTopKTopPSampler310.forward_native),\
+  \ plus the\nrejection sampler in vllm_ascend/sample/rejection_sampler.py.\n\nMechanism: \"in AscendTopKTopPSampler.forward_native\
+  \ (sampler.py:103-111), after applying\"\ntop-k/top-p the code checks self.logprobs_mode:\n  - \"\\\"processed_logits\\\"\
+  : logits_to_return = logits (no extra compute, just a reference)\"\n  - \"\\\"processed_logprobs\\\": logits_to_return =\
+  \ logits.log_softmax(dim=-1, dtype=torch.float32)\"\n    — this adds a full-vocabulary log_softmax over the [num_tokens,\
+  \ vocab_size] logits tensor\n    on the NPU, an extra kernel launch and an extra float32 tensor allocation per sampling\
+  \ step.\n  - \"\\\"raw_logprobs\\\" / \\\"raw_logits\\\": logits_to_return stays None here (raw values are captured\"\n\
+  \    upstream before processors), so no extra work in this path.\nThe same pattern exists in the 310P variant (sampler.py:160-163).\n\
+  \nIn speculative decoding, vllm_ascend/sample/rejection_sampler.py:202 forces the bonus-token\nsampler to return logits\
+  \ (\"processed_logits\" if is_processed_logprobs_mode else \"raw_logits\"),\nand line 246 selects target_logits vs raw_target_logits\
+  \ for logprobs computation. When the mode\nis a raw_* mode, the rejection sampler must clone raw_target_logits (line 213-217)\
+  \ before\napply_logits_processors mutates it in place, adding an extra [num_tokens, vocab_size] float32\ncopy per step.\
+  \ When processed_* is used, the clone is skipped but the log_softmax cost is added.\n\nNet effect: \"processed_logprobs\
+  \ adds a per-step full-vocab log_softmax on NPU (latency + memory\"\nbandwidth); raw_* modes in spec-decode add a full-vocab\
+  \ clone. raw_logprobs (default) is the\ncheapest path because the sampler returns None and no extra tensor is materialized.\
+  \ The impact\nis only realized when logprobs are actually requested (max_num_logprobs is not None); otherwise\nthe returned\
+  \ tensor is discarded. It does not affect model forward compute or KV cache.\n"
+usage_locations:
+- file: vllm_ascend/sample/sampler.py:72
+  context: AscendSampler.__init__ passes logprobs_mode to super() and to AscendTopKTopPSampler; TODO comment notes logprobs_mode
+    support is incomplete in vllm-ascend.
+- file: vllm_ascend/sample/sampler.py:105
+  context: AscendTopKTopPSampler.forward_native branches on logprobs_mode to decide whether to return processed logits or
+    a log_softmax over the full vocab.
+- file: vllm_ascend/_310p/sample/sampler.py:160
+  context: 310P sampler variant applies the same processed_logits/processed_logprobs branching.
+- file: vllm_ascend/sample/rejection_sampler.py:202
+  context: Spec-decode bonus sampler logprobs_mode_override chosen based on is_processed_logprobs_mode.
+- file: vllm_ascend/sample/rejection_sampler.py:246
+  context: Selects target_logits (processed) vs raw_target_logits (raw) for logprobs tensor computation; raw path requires
+    a clone.
+- file: vllm/v1/sample/ops/topk_topp_sampler.py:103
+  context: Upstream TopKTopPSampler stores logprobs_mode; on CUDA it disables FlashInfer when processed modes are used (not
+    applicable on Ascend).
+- file: vllm/v1/sample/rejection_sampler.py:77
+  context: Upstream rejection sampler derives is_processed_logprobs_mode and is_logits_logprobs_mode from sampler.logprobs_mode.
+- file: vllm/config/vllm.py:1129
+  context: 'Validation: sampling distribution replay requires logprobs_mode=''processed_logprobs''.'
+related_parameters:
+- name: --max-logprobs
+  relation: Logprobs are only materialized when max_num_logprobs is set; if no logprobs are requested the mode has no runtime
+    cost.
+- name: --return-sampling-mask
+  relation: Sampling distribution replay requires logprobs_mode='processed_logprobs', otherwise a ValueError is raised.
+- name: --speculative-config
+  relation: Speculative decoding rejection sampler branches on logprobs_mode (processed vs raw) and may clone logits for raw
+    modes.
+- name: --logits-processors
+  relation: Raw modes preserve logits before logits processors; processed modes reflect post-processor values.
+constraints:
+- logprobs_mode must be one of raw_logprobs, processed_logprobs, raw_logits, processed_logits.
+- When sampling distribution replay is enabled (--return-sampling-mask), logprobs_mode must be 'processed_logprobs' or a ValueError
+  is raised.
+- For prompt_logprobs, processed_* and raw_* modes yield identical results because prompt tokens do not go through sampling
+  processors.
+tuning_advice:
+  summary: Keep the default raw_logprobs unless you specifically need post-processor logprobs; processed_logprobs adds a per-step
+    full-vocab log_softmax on NPU.
+  suggested_values:
+  - scenario: Standard serving without logprobs or with raw logprobs requested
+    value: raw_logprobs
+    reason: Default and cheapest path; AscendTopKTopPSampler returns None so no extra log_softmax or clone is performed.
+  - scenario: Need logprobs reflecting temperature/top-k/top-p (e.g. RL or sampling-distribution replay)
+    value: processed_logprobs
+    reason: Required for sampling distribution replay (--return-sampling-mask) and returns normalized post-processor logprobs;
+      accept the extra full-vocab log_softmax cost.
+  - scenario: Need raw logits for custom downstream processing
+    value: raw_logits
+    reason: Returns pre-processor logits; in spec-decode this triggers a full-vocab clone of target logits, so use only when
+      raw logits are truly needed.
+  caveats:
+  - Only request logprobs (set max_logprobs) when needed; otherwise the mode's extra tensor work is wasted.
+  - On Ascend NPU, processed_logprobs performs log_softmax in float32 over the full vocabulary, which is bandwidth-heavy for
+    large vocab models.
+  - In speculative decoding, raw_* modes add a full-vocab float32 clone in the rejection sampler; processed_* avoids the clone
+    but adds log_softmax.
+  - vllm-ascend has a TODO indicating logprobs_mode support is incomplete; verify output correctness for non-default modes.
+  quick_guide: Leave --logprobs-mode at raw_logprobs unless you need processed logprobs; then use processed_logprobs and only
+    request logprobs when necessary.
+analysis_date: '2026-10-27'

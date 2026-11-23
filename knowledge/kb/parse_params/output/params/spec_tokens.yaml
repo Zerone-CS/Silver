@@ -1,0 +1,114 @@
+name: --spec-tokens
+type: cli
+category: speculation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1704
+- vllm/engine/arg_utils.py:668
+- vllm/engine/arg_utils.py:1936
+- vllm/config/speculative.py:1965
+- vllm_ascend/patch/platform/patch_balance_schedule.py:352
+- vllm_ascend/patch/platform/patch_balance_schedule.py:794
+- vllm_ascend/worker/model_runner_v1.py:494
+- vllm_ascend/worker/model_runner_v1.py:1032
+- vllm_ascend/worker/dcp_utils.py:367
+- vllm_ascend/attention/indexer.py:612
+- vllm_ascend/_310p/model_runner_310p.py:136
+value_type: int
+default: null
+valid_choices: positive integer; typically 1-5 for MTP/eagle; must be >= 1 when set
+cli_example: --spec-tokens 3
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--spec-tokens sets SpeculativeConfig.num_speculative_tokens, which is the number of\ndraft tokens proposed\
+  \ per decode step. It is a first-order knob for speculative\ndecoding (MTP/eagle/ngram) on Ascend and directly changes the\
+  \ decode query length.\n\nUpstream wiring: \"arg_utils.py:1704 registers the flag; create_speculative_config\"\n(arg_utils.py:1936)\
+  \ merges it into speculative_config[\"num_speculative_tokens\"] and\nraises if it collides with --speculative-config['num_speculative_tokens'].\n\
+  \nAscend runtime effects:\n- \"Scheduler (vllm_ascend/patch/platform/patch_balance_schedule.py:352): when a request\"\n\
+  \  has spec_token_ids, the number of scheduled spec tokens is bounded by\n  num_new_tokens + num_computed_tokens - num_tokens\
+  \ - num_output_placeholders, so a\n  larger --spec-tokens increases per-step token budget consumption and can reduce the\n\
+  \  number of concurrently scheduled requests (throughput tradeoff).\n- \"patch_balance_schedule.py:794: num_spec_tokens_to_schedule\
+  \ = self.num_spec_tokens\"\n  (or dynamic_sd_lookup when dynamic speculative decoding is enabled) is passed into\n  SchedulerOutput,\
+  \ so it directly sizes the decode batch.\n- \"model_runner_v1.py:494: when use_async_scheduling and num_spec_tokens are\
+  \ set, an\"\n  extra pinned CPU buffer valid_sampled_token_count_cpu of size max_num_reqs is\n  allocated (memory + D2H\
+  \ sync cost).\n- \"model_runner_v1.py:1032: num_spec_tokens is passed to mamba postprocess for\"\n  mamba_cache_mode ==\
+  \ \"all\", affecting state bookkeeping per step.\n- \"dcp_utils.py:367/469: num_spec_tokens drives DCP async spec-decode\
+  \ rebuild and\"\n  generate_dcp_mtp_input, i.e. the amount of MTP input reconstruction work per step.\n- \"attention/indexer.py:612:\
+  \ for DSA context-parallel, dsa_cp_seq_capacity is sized as\"\n  max_num_reqs * (spec_tokens + 1) + 1, so larger --spec-tokens\
+  \ increases indexer\n  metadata memory.\n- \"_310p/model_runner_310p.py:136/224: on 310P the default uniform_decode_query_len\
+  \ is\"\n  1 + num_spec_tokens; the ngram path overrides it to 1 for graph capture, and\n  _pad_query_start_loc_for_fia must\
+  \ stay consistent with the dispatcher.\n\nNet effect: \"higher --spec-tokens raises potential tokens accepted per step (lower\"\
+  \ninter-token latency when acceptance rate is high) but increases per-step compute,\nKV/state buffer sizes, and reduces\
+  \ effective batch capacity. On Ascend the benefit\nis bounded by draft-model acceptance rate and by the fixed decode query\
+  \ length used\nfor ACL graph capture (1 + num_spec_tokens).\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1704
+  context: CLI flag registration mapping --spec-tokens to num_speculative_tokens
+- file: vllm/engine/arg_utils.py:1936
+  context: Merged into speculative_config; mutual-exclusion check with --speculative-config
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:352
+  context: Bounds scheduled spec tokens per request against token budget
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:794
+  context: num_spec_tokens_to_schedule passed into SchedulerOutput (or dynamic lookup)
+- file: vllm_ascend/worker/model_runner_v1.py:494
+  context: Allocates pinned valid_sampled_token_count_cpu when async scheduling + spec tokens
+- file: vllm_ascend/worker/model_runner_v1.py:1032
+  context: Passed to mamba postprocess for mamba_cache_mode == all
+- file: vllm_ascend/worker/dcp_utils.py:367
+  context: Drives DCP async spec-decode rebuild and MTP input generation
+- file: vllm_ascend/attention/indexer.py:612
+  context: Sizes DSA context-parallel sequence capacity as max_num_reqs*(spec_tokens+1)+1
+- file: vllm_ascend/_310p/model_runner_310p.py:136
+  context: 310P uniform_decode_query_len defaults to 1 + num_spec_tokens
+related_parameters:
+- name: --spec-method
+  relation: Selects the speculative decoding method (mtp/eagle/ngram); --spec-tokens only takes effect when a spec method
+    is configured
+- name: --spec-model
+  relation: Draft model whose config may supply a default num_speculative_tokens
+- name: --speculative-config
+  relation: Mutually exclusive on the num_speculative_tokens key; setting both raises ValueError
+- name: --max-num-batched-tokens
+  relation: Decode deployments often size this around max_num_seqs * (1 + num_spec_tokens)
+- name: --max-num-seqs
+  relation: Combined with spec tokens determines decode batch token budget and buffer sizes
+- name: --async-scheduling
+  relation: When enabled with spec tokens, allocates extra pinned CPU buffer in model_runner_v1
+constraints:
+- --spec-tokens and --speculative-config['num_speculative_tokens'] are mutually exclusive; setting both raises ValueError.
+- If neither --spec-tokens nor the draft model config provides num_speculative_tokens, the value is required for speculative
+  decoding to be configured.
+- On 310P ngram path, the decode graph is captured with uniform_decode_query_len=1 regardless of num_spec_tokens, so the runner's
+  default 1 + num_spec_tokens must be temporarily overridden to stay consistent with the dispatcher.
+- For Bailing linear attention, speculative decoding requires query length <= 1 + num_spec_tokens.
+tuning_advice:
+  summary: Tune --spec-tokens to the draft model's acceptance rate; start at 1-3 for MTP/eagle on Ascend and increase only
+    if acceptance stays high, while sizing max_num_batched_tokens around max_num_seqs*(1+num_spec_tokens).
+  suggested_values:
+  - scenario: MTP/eagle on 910B with high acceptance rate (>0.7)
+    value: 3
+    reason: Higher spec depth amortizes per-step overhead and lowers inter-token latency when most draft tokens are accepted.
+  - scenario: Conservative default / low acceptance rate
+    value: 1
+    reason: Minimizes wasted compute and buffer growth; keeps decode graph query length small (1+1=2).
+  - scenario: 310P ngram path
+    value: 1
+    reason: 310P ngram captures decode graph with uniform_decode_query_len=1; larger spec tokens add overhead without graph
+      benefit.
+  - scenario: Decode-heavy deployment with async scheduling
+    value: 2
+    reason: Balances acceptance gains against the extra pinned buffer and D2H sync cost introduced when async scheduling +
+      spec tokens are both enabled.
+  caveats:
+  - Always benchmark acceptance rate before raising --spec-tokens; beyond the acceptance knee, throughput degrades due to
+    wasted verification compute.
+  - Remember to scale --max-num-batched-tokens with max_num_seqs*(1+num_spec_tokens) for decode nodes, otherwise spec tokens
+    get truncated by the scheduler budget.
+  - Changing --spec-tokens invalidates ACL graph capture shapes; expect longer warmup and higher memory for larger values.
+  - Do not set both --spec-tokens and --speculative-config['num_speculative_tokens'].
+  quick_guide: Set --spec-tokens to 1-3 based on measured acceptance rate; keep max_num_batched_tokens >= max_num_seqs*(1+num_spec_tokens).
+analysis_date: '2026-10-27'

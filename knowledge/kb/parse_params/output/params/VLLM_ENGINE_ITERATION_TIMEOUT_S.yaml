@@ -1,0 +1,88 @@
+name: VLLM_ENGINE_ITERATION_TIMEOUT_S
+type: env
+category: scheduling
+scope: vllm
+source_file:
+- vllm/envs.py:793
+- vllm/envs.py:26
+- vllm/envs.py:2303
+value_type: int
+default: 60
+valid_choices: positive integer (seconds); no explicit upper bound
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_ENGINE_ITERATION_TIMEOUT_S is read in vllm/envs.py as an int (default 60s) and
+
+  represents the per-iteration timeout the engine core uses when waiting on a step of
+
+  the model execution loop. It is a watchdog/deadlock-detection threshold, not a knob
+
+  that changes the compute path. On Ascend NPU it does not alter kernel selection,
+
+  memory allocation, or HCCL communication behavior. Its only runtime effect is
+
+  indirect: "if a single engine iteration (e.g. a large prefill, first-use CANN"
+
+  compilation/JIT, or a slow HCCL collective) exceeds this timeout, the engine can
+
+  raise a timeout error or deadlock, which stalls or aborts serving and thus hurts
+
+  effective latency/throughput. The upstream tests (test_video.py, test_vision.py,
+
+  test_realtime_validation.py) raise it to 300-600s specifically because first-use
+
+  JIT compilation can exceed the 60s default and cause a silent deadlock. On Ascend,
+
+  CANN graph compilation and ACL/HCCL warmup can similarly be slow on first iteration,
+
+  so the same reasoning applies. No vllm-ascend override of this env var was found in
+
+  the provided context; it is consumed by upstream engine-core logic.
+
+  '
+usage_locations:
+- file: vllm/envs.py:793
+  context: Defines the env var accessor, parsing int with default 60.
+- file: vllm/envs.py:26
+  context: 'Type stub declaration VLLM_ENGINE_ITERATION_TIMEOUT_S: int = 60.'
+- file: vllm/envs.py:2303
+  context: Listed among env vars excluded from compiled-artifact cache key factors.
+- file: tests/entrypoints/multimodal/openai/chat_completion/test_video.py:48
+  context: ROCm tests raise to 300s to tolerate slow video processing / network delays.
+- file: tests/entrypoints/speech_to_text/realtime/test_realtime_validation.py:20
+  context: Raised to 600s because first-use JIT compilation can exceed 60s and deadlock.
+related_parameters:
+- name: VLLM_ENGINE_READY_TIMEOUT_S
+  relation: Companion timeout for engine-core startup readiness (default 600s); distinct phase from per-iteration timeout.
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Related execution timeout for model execution; both govern how long the engine waits before declaring a hang.
+- name: VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS
+  relation: Timeout for worker shutdown; part of the same family of engine lifecycle timeouts.
+constraints:
+- The value must be a positive integer number of seconds; it is parsed with int() so non-integer strings raise an error.
+- If a single engine iteration exceeds this value, the engine may raise a timeout error or deadlock rather than continue.
+tuning_advice:
+  summary: Keep the default for steady-state serving; raise it for cold-start, large-prefill, or slow-HCCL scenarios to avoid
+    spurious timeouts on Ascend.
+  suggested_values:
+  - scenario: Standard steady-state serving with warm caches
+    value: 60
+    reason: Default is adequate once CANN graphs and HCCL are warmed up; keeps hang detection responsive.
+  - scenario: Cold start / first-iteration CANN compilation or large model warmup on Ascend
+    value: 300
+    reason: First-use JIT/compilation and HCCL warmup can exceed 60s; upstream tests raise to 300s for analogous slow-first-use
+      cases.
+  - scenario: Very large models, long-context prefill, or slow multi-node HCCL collectives
+    value: 600
+    reason: Upstream realtime test uses 600s to avoid silent deadlock when a single iteration is very slow.
+  caveats:
+  - This is a watchdog threshold, not a throughput knob; do not expect speedup from raising it.
+  - Overly large values slow detection of real hangs and delay failover.
+  - Applies to both v1 and v2 worker paths since it is consumed by upstream engine-core iteration logic, not Ascend-specific
+    dispatch.
+  quick_guide: Leave at 60s normally; bump to 300-600s if you see iteration timeouts during cold start or heavy prefill on
+    Ascend.
+analysis_date: '2026-10-27'

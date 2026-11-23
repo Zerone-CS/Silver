@@ -1,0 +1,97 @@
+name: compilation.encoder_compilation_time
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/monitor.py:50
+- vllm/v1/executor/abstract.py:137
+- vllm/v1/engine/core.py:360
+- vllm/v1/worker/gpu_worker.py:952
+- vllm/v1/worker/cpu_worker.py:285
+- vllm/benchmarks/startup.py:161
+value_type: float
+default: 0.0
+valid_choices: any non-negative float (seconds); accumulated at runtime, not user-set
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This field is a runtime-accumulated measurement, not a tuning knob. It is written
+
+  in vllm/compilation/monitor.py:50 where, inside the compilation monitor context
+
+  manager, if is_encoder is True the elapsed torch.compile time is added to
+
+  compilation_config.encoder_compilation_time (otherwise to compilation_time).
+
+  It is then read back in vllm/v1/executor/abstract.py:137 where the executor
+
+  aggregates CompilationTimes from all workers via collective_rpc and takes the max
+
+  encoder time across workers (workers compile in parallel). Finally it is consumed
+
+  purely for logging in vllm/v1/engine/core.py:360-370 (the "init engine ... took X s
+
+  (compilation: ... — language_model: ..., encoder: ...)" message) and reported by
+
+  vllm/benchmarks/startup.py:161. On Ascend NPU, multimodal encoder compilation goes
+
+  through the same torch.compile / CANN graph compilation path, so the value reflects
+
+  real encoder compile latency, but the parameter itself does not change any runtime
+
+  behavior — it only records and reports how long encoder compilation took. It has no
+
+  effect on steady-state throughput, memory, or per-token latency.
+
+  '
+usage_locations:
+- file: vllm/compilation/monitor.py:50
+  context: Accumulates encoder compile time into encoder_compilation_time when is_encoder is True
+- file: vllm/v1/executor/abstract.py:137
+  context: Aggregates max encoder compile time across workers after compile_or_warm_up_model
+- file: vllm/v1/engine/core.py:360
+  context: Reads encoder_compilation_time to format the engine init log message
+- file: vllm/v1/worker/gpu_worker.py:952
+  context: Returns CompilationTimes(encoder=...) from compile_or_warm_up_model
+- file: vllm/v1/worker/cpu_worker.py:285
+  context: Returns CompilationTimes(encoder=...) from compile_or_warm_up_model
+- file: vllm/benchmarks/startup.py:161
+  context: Reports encoder_compilation_time in startup benchmark results
+related_parameters:
+- name: compilation.compilation_time
+  relation: Sibling field; language-model compile time is accumulated into compilation_time, encoder time into encoder_compilation_time
+- name: compilation.mode
+  relation: Time is only accumulated when mode == CompilationMode.VLLM_COMPILE
+- name: compilation.level
+  relation: Determines whether encoder compilation (torch.compile) occurs at all, thus whether this field is populated
+constraints:
+- This field is populated only when compilation mode is VLLM_COMPILE; in other modes it stays at its default of 0.
+- The value is a runtime measurement accumulated by the compilation monitor and aggregated across workers; it is not intended
+  to be set by users.
+tuning_advice:
+  summary: 'This is a read-only diagnostic metric, not a tunable parameter; do not attempt to
+
+    set it. Use it only to observe multimodal encoder compilation cost during startup.
+
+    '
+  suggested_values:
+  - scenario: Diagnosing slow startup on Ascend NPU with multimodal models
+    value: observe only (default 0.0)
+    reason: 'The field is written by the compilation monitor and read for logging; it cannot
+
+      be tuned. Inspect the logged encoder time to decide whether to reduce encoder
+
+      compilation cost via compilation level or caching instead.
+
+      '
+  caveats:
+  - Setting this field manually has no effect on runtime performance; it is overwritten by the compilation monitor during
+    startup.
+  - On Ascend NPU, encoder compilation time reflects CANN/torch.compile graph compilation latency; to reduce it, tune compilation
+    level or enable compilation caching rather than this field.
+  - With TP>1 the reported value is the max across workers since they compile in parallel, so it does not represent summed
+    compile cost.
+  quick_guide: Read-only startup metric; ignore for tuning, use only to observe encoder compile latency.
+analysis_date: '2026-10-27'

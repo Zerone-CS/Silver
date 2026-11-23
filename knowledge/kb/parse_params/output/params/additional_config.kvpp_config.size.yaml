@@ -1,0 +1,126 @@
+name: additional_config.kvpp_config.size
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:63
+- vllm_ascend/ascend_config.py:79
+- vllm_ascend/ascend_config.py:1865
+- vllm_ascend/platform.py:1651
+- vllm_ascend/worker/model_runner_v1.py:4962
+- vllm_ascend/worker/worker.py:1127
+- vllm_ascend/distributed/parallel_state.py:108
+value_type: int
+default: 1
+valid_choices: 'Derived value: tensor_parallel_size * prefill_context_parallel_size when additional_config.enable_kvpp is
+  true; otherwise 1 (KVPP disabled).'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'kvpp_config.size is the KV layer parallelism (KVPP) degree on Ascend. It is NOT a
+
+  user-settable field: "KVPPConfig.from_vllm_config (vllm_ascend/ascend_config.py:69-79)"
+
+  computes it as tensor_parallel_size * prefill_context_parallel_size when
+
+  additional_config.enable_kvpp is true, and returns the default 1 otherwise. The
+
+  "kvpp_config" key is explicitly stripped from additional_config before pydantic
+
+  validation (_NON_USER_INPUT_KEYS, ascend_config.py:1865), so a user-supplied
+
+  kvpp_config.size is ignored.
+
+  When size > 1, KVPP changes the KV cache layout: model_runner_v1._allocate_kv_cache_tensors
+
+  (line 4962) bypasses the normal per-layer allocation and calls allocate_kvpp_cache,
+
+  which shards KV layers across the KVPP group instead of replicating the full MLA
+
+  cache on every TP/PCP rank. This reduces per-rank KV cache memory footprint and
+
+  allows larger num_blocks / longer context or bigger batch, directly improving
+
+  throughput and memory headroom. A dedicated HCCL process group "kvpp" is created
+
+  in parallel_state.init_ascend_model_parallel (line 108-121) spanning
+
+  pcp_size * tp_size ranks within a DP replica and PP stage, adding communication
+
+  for KV gather/scatter. worker.get_kv_cache_spec (worker.py:1127) registers KVPP
+
+  draft layers and re-budgets cache specs, and the Mooncake PD connector
+
+  (base_worker.py:217, pull_scheduler.py:518) publishes per-layer ownership metadata
+
+  so only the owning rank transfers each layer, reducing cross-node KV transfer
+
+  volume in PD disaggregation.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:79
+  context: Derives size = tensor_parallel_size * prefill_context_parallel_size when enable_kvpp is set.
+- file: vllm_ascend/platform.py:1651
+  context: Triggers KVPPConfig.validate when size > 1 (mutex checks against DCP, connectors, cudagraph mode, MLA, spec decode).
+- file: vllm_ascend/worker/model_runner_v1.py:4962
+  context: Switches KV cache allocation to allocate_kvpp_cache (layer-sharded layout) when size > 1.
+- file: vllm_ascend/worker/worker.py:1127
+  context: Registers KVPP draft layers and re-budgets KV cache specs for the KVPP layout.
+- file: vllm_ascend/distributed/parallel_state.py:108
+  context: Creates the HCCL 'kvpp' model-parallel group of size pcp_size * tp_size.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:217
+  context: Maps KV layers to owning ranks for Mooncake PD transfer metadata.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_scheduler.py:518
+  context: Passes KVPP-enabled flag to the Mooncake scheduler sending thread.
+related_parameters:
+- name: additional_config.enable_kvpp
+  relation: Master switch; kvpp_config.size is derived from it (size > 1 only when enabled).
+- name: --tensor-parallel-size
+  relation: Multiplied with prefill_context_parallel_size to compute size.
+- name: --prefill-context-parallel-size
+  relation: Multiplied with tensor_parallel_size to compute size; requires v2 model runner.
+- name: --decode-context-parallel-size
+  relation: Mutually exclusive with KVPP (DCP must be 1).
+- name: --kv-transfer-config
+  relation: PD disaggregation requires MooncakeConnectorV2 or AscendStoreConnector; KVPP must be disabled on decode-only nodes.
+- name: compilation_config.cudagraph_mode
+  relation: Must be PIECEWISE (or enforce_eager) when KVPP is enabled.
+- name: --speculative-config
+  relation: Only method='mtp' or 'dspark' supported; fixed speculative token count required.
+constraints:
+- KVPP and DCP cannot be enabled at the same time; --decode-context-parallel-size must be 1.
+- KVPP PD disaggregation requires the MooncakeConnectorV2 connector (or AscendStoreConnector without PD).
+- KVPP must be disabled on the decode-only node (kv_role='kv_consumer').
+- When not using enforce_eager, cudagraph_mode must be PIECEWISE for KVPP.
+- KVPP supports only non-hybrid MLA models (use_mla must be true and the model must not be hybrid).
+- KVPP supports speculative decoding only with method='mtp' or method='dspark'.
+- KVPP requires a fixed number of speculative tokens (num_speculative_tokens_per_batch_size must be unset).
+- KVPP does not support DSpark adaptive verification or dynamic speculative lengths.
+- The derived kvpp size must equal prefill_context_parallel_size * tensor_parallel_size (asserted when creating the kvpp group).
+- Prefill context parallelism (PCP > 1) requires the v2 model runner.
+- kvpp_config is a derived field; a user-supplied kvpp_config in additional_config is stripped and ignored.
+tuning_advice:
+  summary: Enable KVPP (additional_config.enable_kvpp=true) on large-TP/PCP non-hybrid MLA deployments to shard KV cache and
+    cut per-rank memory; size is auto-derived and should not be set manually.
+  suggested_values:
+  - scenario: Large TP (e.g. 8-16) DeepSeek-style MLA model, long context, memory-bound KV cache
+    value: enable_kvpp=true (size auto = TP × PCP)
+    reason: Layer-sharded KV cache via allocate_kvpp_cache reduces per-rank KV footprint, allowing more blocks and higher
+      throughput.
+  - scenario: PD disaggregation with MooncakeConnectorV2 on prefill nodes
+    value: enable_kvpp=true on prefill, disabled on decode
+    reason: KVPP publishes per-layer ownership so only owning ranks transfer each layer, reducing cross-node KV transfer volume.
+  - scenario: Small TP (1-2) or non-MLA / hybrid models
+    value: enable_kvpp=false (size=1)
+    reason: KVPP requires non-hybrid MLA and adds communication overhead that outweighs benefit at small parallelism.
+  caveats:
+  - Do not attempt to set additional_config.kvpp_config.size directly; it is stripped and recomputed from TP × PCP.
+  - Ensure --decode-context-parallel-size 1 and cudagraph_mode PIECEWISE (or enforce_eager) before enabling KVPP.
+  - Speculative decoding with KVPP is limited to mtp/dspark with a fixed token count.
+  quick_guide: Set additional_config.enable_kvpp=true for large-TP MLA workloads; size is derived automatically as TP × PCP.
+analysis_date: '2026-10-27'

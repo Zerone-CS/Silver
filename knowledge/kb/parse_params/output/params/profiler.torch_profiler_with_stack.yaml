@@ -1,0 +1,83 @@
+name: profiler.torch_profiler_with_stack
+type: nested
+category: observability
+scope: both
+source_file:
+- vllm/config/profiler.py:83
+- vllm/profiler/wrapper.py:251
+- vllm_ascend/profiler/torch_npu_profiler.py:71
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: --profiler-config.torch_profiler_with_stack=false
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag controls whether Python stack tracing is collected during profiling.
+
+  In upstream vLLM (vllm/profiler/wrapper.py:251) it is passed directly to
+
+  torch.profiler.profile(with_stack=...). On Ascend, vllm-ascend does NOT pass it
+
+  to with_stack; instead it maps it to torch_npu.profiler.profile(with_modules=...)
+
+  at vllm_ascend/profiler/torch_npu_profiler.py:71, while with_stack is hard-coded
+
+  to False (line 67). The code comment explicitly notes that torch_npu.profiler.with_modules
+
+  is equivalent to torch.profiler.with_stack and that "The with_stack option in
+
+  torch_npu.profiler introduces significant time overhead." So on Ascend, enabling
+
+  this flag (default True) causes the NPU profiler to walk and record Python module
+
+  stacks for every captured op, which inflates trace collection time and trace size,
+
+  and can distort the measured performance data (as the vllm-ascend docs warn:
+
+  "python stack ... can significantly inflate the collected performance data").
+
+  This only affects runs where profiling is active (profiler enabled), not normal
+
+  inference throughput. It is a profiling-overhead parameter, hence medium impact
+
+  on latency/memory of the profiling session rather than steady-state serving.
+
+  '
+usage_locations:
+- file: vllm/config/profiler.py:83
+  context: 'Field definition torch_profiler_with_stack: bool = True with docstring describing stack tracing toggle.'
+- file: vllm/profiler/wrapper.py:251
+  context: Upstream passes value to torch.profiler.profile(with_stack=...).
+- file: vllm_ascend/profiler/torch_npu_profiler.py:71
+  context: Ascend maps value to torch_npu.profiler.profile(with_modules=...); with_stack forced False.
+related_parameters:
+- name: profiler.torch_profiler_with_memory
+  relation: Sibling torch profiler option passed as profile_memory; both add collection overhead.
+- name: profiler.torch_profiler_record_shapes
+  relation: Another trace-detail toggle that increases trace size/overhead.
+- name: profiler.torch_profiler_with_flops
+  relation: Upstream-only FLOPS counting toggle; adds overhead when enabled.
+- name: profiler.profiler
+  relation: Parent switch; stack tracing only matters when profiling is enabled.
+constraints:
+- On Ascend the value is applied via torch_npu.profiler.with_modules, not with_stack; with_stack is always False in vllm-ascend.
+- Stack tracing only takes effect when the profiler is enabled; it has no effect on non-profiled runs.
+tuning_advice:
+  summary: Disable stack tracing for performance profiling on Ascend; keep enabled only for debugging call stacks.
+  suggested_values:
+  - scenario: Measuring real inference performance / latency on Ascend NPU
+    value: false
+    reason: Avoids the significant with_modules overhead and prevents inflated performance data, as recommended by vllm-ascend
+      docs.
+  - scenario: Debugging where ops originate in Python code
+    value: true
+    reason: Stack/module tracing helps attribute ops to Python call sites; acceptable when accuracy of timing is not the goal.
+  caveats:
+  - On Ascend this maps to with_modules, not with_stack; the overhead is documented as significant.
+  - Leaving the default True during benchmarking will skew throughput/latency numbers.
+  quick_guide: Set --profiler-config.torch_profiler_with_stack=false for accurate Ascend performance profiling; enable only
+    for debugging.
+analysis_date: '2026-10-27'

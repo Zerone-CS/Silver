@@ -1,0 +1,94 @@
+name: additional_config.scheduler_config.enable_balance_scheduling
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1633
+- vllm_ascend/ascend_config.py:1673
+- vllm_ascend/patch/platform/patch_balance_schedule.py:91
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is an Ascend-only scheduling switch defined in vllm_ascend/ascend_config.py
+
+  (SchedulerConfig.enable_balance_scheduling, default False). It is resolved by
+
+  SchedulerConfig.from_additional_config (line 1673) with precedence: nested
+
+  scheduler_config > legacy top-level additional_config key > default. The legacy
+
+  VLLM_ASCEND_BALANCE_SCHEDULING environment fallback has been removed (see comment
+
+  at line 1671-1672), so the env var no longer takes effect.
+
+  When enabled, vllm_ascend/patch/platform/patch_balance_schedule.py installs a
+
+  monkey-patch that replaces the upstream scheduler with a balance-aware scheduler.
+
+  _balance_scheduling_enabled() (line 91) reads the flag from AscendConfig (with an
+
+  additional_config fallback during the startup window) and gates the patch. Balance
+
+  scheduling redistributes requests/tokens across the batch to keep NPU compute
+
+  utilization even, which directly affects throughput and per-request latency under
+
+  uneven load. Because it swaps the scheduler class, it interacts with other
+
+  scheduler features (profiling_chunk_config, DyntraLB) and is mutually exclusive
+
+  with them.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1633
+  context: Field definition of enable_balance_scheduling in SchedulerConfig (default False).
+- file: vllm_ascend/ascend_config.py:1673
+  context: Resolved from additional_config with nested-over-legacy precedence; env fallback removed.
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:91
+  context: Reads the flag to decide whether to install the balance-scheduling monkey-patch.
+- file: vllm_ascend/ascend_config.py:738
+  context: 'Validation: raises ValueError if profiling_chunk_config.enabled and enable_balance_scheduling are both true.'
+related_parameters:
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: Mutually exclusive — enabling both raises ValueError at startup.
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: DyntraLB cannot be combined with enable_balance_scheduling; startup rejects the combination.
+- name: additional_config.scheduler_config.recompute_scheduler_enable
+  relation: Sibling scheduler feature; recompute scheduler is only valid on PD-disaggregated decode nodes.
+- name: VLLM_ASCEND_BALANCE_SCHEDULING
+  relation: Legacy env var, no longer supported; use the nested config key instead.
+constraints:
+- enable_balance_scheduling cannot be enabled together with profiling_chunk_config.enabled; startup raises ValueError.
+- enable_balance_scheduling cannot be combined with DyntraLB (dyntra_lb_config.enabled); the service rejects this combination
+  at startup.
+- The legacy VLLM_ASCEND_BALANCE_SCHEDULING environment variable is no longer supported; the flag must be set via additional_config.scheduler_config.enable_balance_scheduling.
+- additional_config.scheduler_config must be a dict; otherwise a ValueError is raised.
+- If both the nested scheduler_config key and the legacy top-level key are set, the nested value takes precedence and the
+  top-level value is ignored with a deprecation warning.
+tuning_advice:
+  summary: Enable balance scheduling on Ascend when request load is uneven across the batch to improve NPU utilization, but
+    never combine it with profiling_chunk_config or DyntraLB.
+  suggested_values:
+  - scenario: Uneven/variable-length request load where NPU compute utilization is low
+    value: true
+    reason: Balance scheduling redistributes work to keep NPU compute even, improving throughput and tail latency.
+  - scenario: Default / uniform workload or when using profiling_chunk_config or DyntraLB
+    value: false
+    reason: Default off; enabling it conflicts with profiling_chunk_config and DyntraLB and adds scheduler overhead without
+      benefit on uniform load.
+  caveats:
+  - Enabling this together with profiling_chunk_config.enabled raises ValueError at startup (ascend_config.py:738).
+  - DyntraLB (dyntra_lb_config.enabled) cannot be combined with balance scheduling; startup rejects it.
+  - The legacy VLLM_ASCEND_BALANCE_SCHEDULING env var no longer works — set the nested config key instead.
+  - Balance scheduling swaps the scheduler via a monkey-patch, so verify compatibility with other scheduler features before
+    enabling in production.
+  quick_guide: Set additional_config.scheduler_config.enable_balance_scheduling=true only for uneven load and when not using
+    profiling_chunk_config or DyntraLB.
+analysis_date: '2026-10-27'

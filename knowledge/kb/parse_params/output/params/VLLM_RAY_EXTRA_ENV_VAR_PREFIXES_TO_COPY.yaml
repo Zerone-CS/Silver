@@ -1,0 +1,97 @@
+name: VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:1474
+- vllm/envs.py:184
+- vllm/ray/ray_env.py:33
+- vllm/ray/ray_env.py:67
+value_type: str
+default: ''
+valid_choices: Comma-separated list of env var name prefixes (e.g. 'MYLIB_,OTHER_'); whitespace around tokens is stripped
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This env var only affects which environment variables are propagated from the
+
+  driver process to Ray worker actors when using the Ray backend (data-parallel
+
+  or multi-node Ray deployment). In vllm/ray/ray_env.py:get_env_vars_to_copy(),
+
+  the value is parsed via _parse_csv and unioned with DEFAULT_ENV_VAR_PREFIXES
+
+  (VLLM_, FLASH_ATTENTION_, LMCACHE_, NCCL_, UCX_, HF_, HUGGING_FACE_) to build
+
+  the set of env var names copied to Ray workers. It does not itself change any
+
+  kernel, scheduling, or memory behavior. Its performance relevance is indirect:
+
+  if a user relies on a custom prefix (e.g. an Ascend-specific env var family not
+
+  already covered by VLLM_ or HCCL_/ASCEND_ prefixes) to configure worker-side
+
+  behavior, failing to propagate it means workers run with default settings,
+
+  which can silently degrade throughput or cause misconfiguration. Note that
+
+  HCCL_/ASCEND_ prefixes are NOT in the built-in defaults, so on Ascend multi-node
+
+  Ray deployments this variable (or VLLM_RAY_EXTRA_ENV_VARS_TO_COPY) is the
+
+  mechanism to carry such vars to workers. No vllm-ascend override of this
+
+  parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1474
+  context: Definition of the env var accessor returning the raw comma-separated string (default empty).
+- file: vllm/envs.py:184
+  context: 'Type annotation in the environment_variables class: str = "".'
+- file: vllm/ray/ray_env.py:67
+  context: get_env_vars_to_copy() unions DEFAULT_ENV_VAR_PREFIXES with _parse_csv(VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY)
+    to select env vars copied to Ray actors.
+- file: vllm/ray/ray_env.py:33
+  context: Comment documenting that user prefixes are additive to built-in defaults.
+related_parameters:
+- name: VLLM_RAY_EXTRA_ENV_VARS_TO_COPY
+  relation: Companion variable for copying individual env var names (not prefixes); both are additive to built-in defaults.
+- name: VLLM_RAY_PER_WORKER_GPUS
+  relation: Another Ray-backend env var controlling worker resource allocation; relevant in the same Ray deployment path.
+- name: VLLM_RAY_DP_PACK_STRATEGY
+  relation: Ray data-parallel placement strategy; same Ray backend context.
+constraints:
+- The value must be a comma-separated list of prefixes; whitespace around tokens is stripped but empty tokens are ignored.
+- Prefix matching is strict startswith, so a prefix must include the trailing underscore (e.g. 'MYLIB_' not 'MYLIB') to avoid
+  unintended matches.
+- User-supplied prefixes are additive and never replace the built-in defaults (VLLM_, FLASH_ATTENTION_, LMCACHE_, NCCL_, UCX_,
+  HF_, HUGGING_FACE_).
+- Env vars listed in RAY_NON_CARRY_OVER_ENV_VARS are excluded even if they match a supplied prefix.
+- This variable only has an effect when the Ray backend is used; it is ignored for non-Ray backends.
+tuning_advice:
+  summary: Use this only to propagate custom env var families (e.g. Ascend/HCCL-related prefixes not covered by VLLM_) to
+    Ray workers in multi-node Ray deployments; it has no direct runtime performance effect.
+  suggested_values:
+  - scenario: Multi-node Ray deployment on Ascend where HCCL_/ASCEND_ env vars must reach workers
+    value: HCCL_,ASCEND_
+    reason: HCCL_ and ASCEND_ prefixes are not in the built-in defaults, so without this they are not copied to Ray workers,
+      potentially leaving workers with default HCCL/CANN settings and degraded communication performance.
+  - scenario: Custom library env vars needed by worker-side code
+    value: MYLIB_,OTHER_
+    reason: Documented example; propagates user library configuration to Ray actors.
+  - scenario: Single-node or non-Ray backend
+    value: unset
+    reason: No effect when Ray is not used; leave empty.
+  caveats:
+  - This parameter does not directly change throughput/latency; it only controls env var propagation to Ray workers.
+  - HCCL_/ASCEND_ prefixes are not built-in defaults, so on Ascend multi-node Ray setups you must add them here (or use VLLM_RAY_EXTRA_ENV_VARS_TO_COPY)
+    to ensure worker-side communication settings match the driver.
+  - Prefix matching is strict startswith; a missing trailing underscore can cause unintended matches or misses.
+  - No vllm-ascend-specific override of this parameter was found; behavior follows upstream vLLM.
+  quick_guide: Set to a comma-separated list of extra env var prefixes (e.g. 'HCCL_,ASCEND_') only when using Ray and needing
+    to propagate non-VLLM_ env vars to workers.
+analysis_date: '2026-10-27'

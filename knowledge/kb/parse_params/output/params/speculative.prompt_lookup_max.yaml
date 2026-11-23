@@ -1,0 +1,93 @@
+name: speculative.prompt_lookup_max
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/v1/spec_decode/ngram_proposer.py:16
+- vllm/v1/spec_decode/ngram_proposer_gpu.py:38
+value_type: int
+default: null
+valid_choices: positive integer; must be >= prompt_lookup_min; typically 2-5
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'prompt_lookup_max sets the maximum n-gram window length (self.max_n) used by the
+
+  NgramProposer (vllm/v1/spec_decode/ngram_proposer.py:21) and the GPU NgramGPUKernel
+
+  (vllm/v1/spec_decode/ngram_proposer_gpu.py:41). The proposer searches the token
+
+  history for a suffix n-gram match of length between prompt_lookup_min and
+
+  prompt_lookup_max, then drafts up to num_speculative_tokens following tokens.
+
+  A larger max_n means the proposer tries longer n-gram lengths, which increases
+
+  the per-step CPU/GPU search cost (more candidate lengths to scan) but can yield
+
+  longer, higher-confidence matches that raise the speculative-token acceptance
+
+  rate. Higher acceptance reduces the number of target-model forward passes per
+
+  emitted token, improving latency and throughput. On Ascend NPU, the ngram
+
+  proposer runs on the host/CPU (numba batch propose) or as a separate GPU-style
+
+  kernel; the drafted tokens are then verified by the NPU target model. Thus the
+
+  parameter indirectly affects NPU utilization: "better drafts mean fewer wasted"
+
+  NPU verification passes. No vllm-ascend override of this parameter was found in
+
+  the provided context; the v1 upstream NgramProposer path is the relevant one.
+
+  '
+usage_locations:
+- file: vllm/v1/spec_decode/ngram_proposer.py:16
+  context: Asserts prompt_lookup_max is not None and stores it as self.max_n for the CPU numba ngram proposer.
+- file: vllm/v1/spec_decode/ngram_proposer.py:21
+  context: self.max_n drives the maximum n-gram length searched during batch propose.
+- file: vllm/v1/spec_decode/ngram_proposer_gpu.py:38
+  context: Asserts prompt_lookup_max is not None in the GPU ngram kernel.
+- file: vllm/v1/spec_decode/ngram_proposer_gpu.py:41
+  context: self.max_n used as max_ngram_len in parallel n-gram search kernel.
+related_parameters:
+- name: speculative.prompt_lookup_min
+  relation: Lower bound of the n-gram window; must be <= prompt_lookup_max. Both required for ngram method.
+- name: speculative.num_speculative_tokens
+  relation: Number of tokens drafted after a match (k); combined with max_n determines draft length.
+- name: speculative.method
+  relation: Must be set to 'ngram' for this parameter to take effect.
+constraints:
+- prompt_lookup_max must be set (non-None) when using the ngram speculative method, otherwise an assertion fails in NgramProposer/NgramGPUKernel.
+- prompt_lookup_max must be greater than or equal to prompt_lookup_min.
+- This parameter only has effect when speculative decoding method is set to ngram.
+tuning_advice:
+  summary: 'Tune prompt_lookup_max together with prompt_lookup_min and num_speculative_tokens
+
+    to balance n-gram search cost against draft acceptance rate; on Ascend the payoff
+
+    is fewer NPU verification passes per accepted token.
+
+    '
+  suggested_values:
+  - scenario: General text/code generation with repetitive patterns (ngram method)
+    value: 5
+    reason: A max window of ~5 captures longer repeated phrases, improving acceptance without excessive search cost.
+  - scenario: Highly repetitive workloads (RAG, summarization, code completion)
+    value: 4
+    reason: Moderate window balances search overhead and match quality for structured repetitive text.
+  - scenario: Low-repetition / open-ended chat
+    value: 2
+    reason: Short windows avoid wasted search when long matches are unlikely; keeps proposer overhead low.
+  caveats:
+  - Larger prompt_lookup_max increases per-step n-gram search cost (more candidate lengths), which can offset gains if acceptance
+    does not improve.
+  - Must be paired with a valid prompt_lookup_min <= prompt_lookup_max; mismatched values cause assertion failures.
+  - No vllm-ascend-specific override was found; behavior follows the v1 upstream ngram proposer path.
+  - Draft quality directly affects NPU verification efficiency — poor drafts waste NPU forward passes.
+  quick_guide: Set prompt_lookup_max to 4-5 for repetitive text, 2 for open-ended chat, always >= prompt_lookup_min.
+analysis_date: '2026-10-27'

@@ -1,0 +1,70 @@
+name: VLLM_ASCEND_MLA_PARALLEL
+type: env
+category: memory
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2056
+value_type: int
+default: 0
+valid_choices: 0 or 1 (boolean-like integer flag)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+impact_detail: 'VLLM_ASCEND_MLA_PARALLEL is an Ascend-specific environment variable referenced in the
+
+  vllm-ascend release notes as a workaround for out-of-memory (OOM) errors when running
+
+  w4a8 quantized models in eager mode. No definition or usage site was found in the
+
+  provided source context for either vllm or vllm-ascend, so the exact code path could
+
+  not be confirmed from source. Based on the documentation, setting it to 1 alters how
+
+  the MLA (Multi-head Latent Attention) computation is parallelized on Ascend NPU,
+
+  which changes the memory footprint of the attention path. The primary documented
+
+  effect is memory (avoiding OOM); it may also affect latency/throughput indirectly
+
+  because the parallelization strategy of MLA changes, but this is not documented.
+
+  Because the flag is not present in the analyzed source snapshot, treat the mechanism
+
+  as inferred from documentation rather than verified code.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2056
+  context: 'Documented workaround: set VLLM_ASCEND_MLA_PARALLEL=1 with w4a8 quantization in eager mode to avoid OOM.'
+related_parameters:
+- name: --quantization
+  relation: The flag is documented specifically for w4a8 quantization; it is a workaround for OOM in that configuration.
+- name: --enforce-eager
+  relation: The OOM issue is documented for eager mode execution; the flag is intended for use in that mode.
+constraints:
+- The flag is documented only as a workaround for w4a8 quantization running in eager mode; behavior outside that configuration
+  is undocumented.
+- Only meaningful values are 0 (disabled) and 1 (enabled); it is a boolean-like integer toggle.
+tuning_advice:
+  summary: 'Set VLLM_ASCEND_MLA_PARALLEL=1 only when running w4a8 quantized models in eager mode
+
+    and encountering OOM errors; otherwise leave it unset.
+
+    '
+  suggested_values:
+  - scenario: w4a8 quantized model in eager mode hitting OOM errors
+    value: 1
+    reason: Documented workaround in vllm-ascend release notes to avoid OOM by changing MLA parallelization.
+  - scenario: Default / non-w4a8 or non-eager deployments
+    value: 0
+    reason: No documented benefit outside the w4a8 + eager OOM case; leave disabled to avoid unintended behavior changes.
+  caveats:
+  - This is a workaround flag, not a general tuning knob; enabling it changes MLA parallelization and may affect performance
+    in ways not documented.
+  - The parameter was not found in the analyzed source snapshot, so its exact runtime effect could not be verified from code
+    — rely on the release-note guidance.
+  - Applies to vllm-ascend only; it has no effect on upstream vLLM GPU deployments.
+  quick_guide: Set VLLM_ASCEND_MLA_PARALLEL=1 only for w4a8 + eager mode OOM issues.
+analysis_date: '2026-10-27'

@@ -1,0 +1,100 @@
+name: compilation.inductor_compile_config
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/compilation.py:939
+- vllm/compilation/backends.py:868
+- vllm/compilation/backends.py:965
+- vllm/compilation/wrapper.py:96
+- vllm/v1/worker/cpu_model_runner.py:232
+value_type: dict
+default: {}
+valid_choices: Arbitrary dict of torch._inductor.config keys to values; common keys include enable_auto_functionalized_v2,
+  size_asserts, alignment_asserts, scalar_asserts, max_autotune, dce, epilogue_fusion, use_static_cuda_launcher
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter is a passthrough dict of torch._inductor.config overrides. In vLLM it is
+
+  consumed in vllm/compilation/backends.py:868 (deepcopy into self.inductor_config) and
+
+  vllm/compilation/wrapper.py:96 (passed as `options` to torch.compile when backend ==
+
+  "inductor"). It only has an effect when the compilation backend is inductor
+
+  (CompilationMode.VLLM_COMPILE with backend "inductor"). On Ascend NPU, vllm-ascend does
+
+  not use the inductor backend for its core graph compilation path — Ascend uses its own
+
+  graph mode / ACLGraph and torch-npu compilation flow, so inductor-specific keys such as
+
+  max_autotune, epilogue_fusion, dce, size_asserts, use_static_cuda_launcher have no
+
+  runtime effect on NPU execution. The __post_init__ logic in vllm/config/compilation.py
+
+  (lines 928-949) sets enable_auto_functionalized_v2=False and toggles size/alignment/
+
+  scalar asserts based on VLLM_LOGGING_LEVEL, but these only matter for inductor-compiled
+
+  graphs. On Ascend, the practical impact is limited to compile-time behavior (assert
+
+  overhead during tracing) rather than steady-state NPU kernel execution. No vllm-ascend
+
+  override of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/config/compilation.py:939
+  context: __post_init__ injects enable_auto_functionalized_v2=False and assert toggles into the dict
+- file: vllm/compilation/backends.py:868
+  context: Deepcopied into self.inductor_config for the piecewise backend
+- file: vllm/compilation/backends.py:965
+  context: Post-grad pass manager inserted under pass_key; asserts value is InductorPass
+- file: vllm/compilation/wrapper.py:96
+  context: Passed as torch.compile options when backend == 'inductor'
+- file: vllm/v1/worker/cpu_model_runner.py:232
+  context: 'CPU-only: reads max_autotune to toggle inductor freezing'
+related_parameters:
+- name: compilation.backend
+  relation: Only applied when backend is 'inductor'; ignored for eager/other backends
+- name: compilation.mode
+  relation: Requires CompilationMode.VLLM_COMPILE for inductor path to be active
+- name: compilation.inductor_passes
+  relation: Callable passes are wrapped and injected into this dict under their key
+- name: VLLM_LOGGING_LEVEL
+  relation: Controls default of size_asserts/alignment_asserts/scalar_asserts on torch < 2.12
+constraints:
+- Values under the platform pass_key must be InductorPass instances; otherwise an assertion fails in backends.py.
+- PostGradPassManager cannot be stored directly in this dict; a ValueError is raised if present.
+- The '_cache_config_ignore_prefix' key is managed internally and must not be set by the user (asserted in backends.py).
+- Only takes effect when compilation backend is 'inductor'; has no effect on Ascend NPU graph compilation paths.
+tuning_advice:
+  summary: Leave at default on Ascend NPU; only tune when explicitly using the inductor backend, and prefer disabling asserts
+    for production latency.
+  suggested_values:
+  - scenario: Default Ascend NPU deployment (ACLGraph / torch-npu graph mode)
+    value: {}
+    reason: Inductor config keys have no effect on the Ascend execution path; leaving empty avoids confusion and unnecessary
+      compile-time work.
+  - scenario: Debugging compilation issues on Ascend with inductor backend
+    value:
+      size_asserts: true
+      alignment_asserts: true
+      scalar_asserts: true
+    reason: Enables runtime assertions to catch shape/stride bugs during graph tracing, at the cost of per-forward overhead.
+  - scenario: Production latency-sensitive inductor path
+    value:
+      size_asserts: false
+      alignment_asserts: false
+      scalar_asserts: false
+    reason: Disables per-forward assertion overhead (~2ms on large models per code comment).
+  caveats:
+  - Do not set '_cache_config_ignore_prefix' manually; it is asserted to be absent.
+  - Do not place a PostGradPassManager directly in this dict; use compilation.inductor_passes instead.
+  - On Ascend, verify the backend is actually 'inductor' before expecting any effect; otherwise this parameter is a no-op.
+  quick_guide: Keep default on Ascend; only adjust assert keys when using the inductor backend and latency matters.
+analysis_date: '2026-10-27'

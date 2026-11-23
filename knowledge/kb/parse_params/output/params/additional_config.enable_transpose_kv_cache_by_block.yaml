@@ -1,0 +1,77 @@
+name: additional_config.enable_transpose_kv_cache_by_block
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:617
+- vllm_ascend/ascend_config.py:446
+value_type: bool
+default: true
+valid_choices: 'true or false (lax bool coercion: "1"/"0" also accepted)'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch (defined in AscendConfig, not in upstream vLLM) that
+
+  controls whether the fused transpose KV-cache operator is applied per block. It is read
+
+  from the `additional_config` dict passed via `--additional-config` and stored as the
+
+  `enable_transpose_kv_cache_by_block` field of AscendConfig (vllm_ascend/ascend_config.py:617,
+
+  default True). The legacy environment variable `VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK`
+
+  is no longer supported (per docs) — the config key is the only way to set it.
+
+  When enabled, KV cache writes/transposes are fused at block granularity, which reduces
+
+  the number of separate transpose/copy kernel launches and memory traffic during KV cache
+
+  updates (prefill cache writes and decode cache appends). This lowers per-step latency and
+
+  improves throughput for attention-heavy workloads. Disabling it falls back to the
+
+  non-fused transpose path, which is functionally equivalent but incurs extra kernel
+
+  launches and intermediate memory movement. The effect is on the KV-cache write path,
+
+  so it scales with the number of layers, KV heads, and block size.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:617
+  context: 'Field definition `enable_transpose_kv_cache_by_block: bool = True` in AscendConfig; parsed from additional_config.'
+- file: vllm_ascend/ascend_config.py:446
+  context: Documented in the AscendConfig docstring example dict showing all supported additional_config keys and defaults.
+related_parameters:
+- name: enable_kv_nz
+  relation: Both affect KV cache layout/format on NPU; enable_kv_nz switches KV cache to NZ layout (MLA models), while this
+    switch controls block-wise transpose fusion of KV cache writes.
+- name: weight_nz_mode
+  relation: Related NZ-layout configuration for weights; together with KV cache layout options they determine the memory format
+    used by fused operators.
+constraints:
+- The value must be a boolean (or a lax-coercible string such as "1"/"0"); AscendConfig uses extra="forbid" and typed fields,
+  so unknown keys or invalid types fail fast.
+- The legacy environment variable VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK is no longer supported; the setting must
+  be provided via additional_config.
+tuning_advice:
+  summary: Keep enabled (default) to use the fused block-wise KV cache transpose; only disable for debugging or if a specific
+    backend/model shows issues with the fused path.
+  suggested_values:
+  - scenario: Default production deployment on Ascend NPU
+    value: true
+    reason: Fused block-wise transpose reduces kernel launches and memory traffic on the KV cache write path, improving latency
+      and throughput.
+  - scenario: Debugging KV cache correctness or working around a fused-op issue
+    value: false
+    reason: Falls back to the non-fused transpose path, which is functionally equivalent but slower; useful to isolate fused-operator
+      problems.
+  caveats:
+  - Set via --additional-config JSON, not via the deprecated VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK env var.
+  - Benchmark with your specific model and attention backend; the gain is workload-dependent.
+  quick_guide: Leave at default true; disable only for debugging the fused KV cache transpose path.
+analysis_date: '2026-10-27'

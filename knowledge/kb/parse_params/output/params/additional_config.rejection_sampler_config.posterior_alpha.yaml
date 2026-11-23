@@ -1,0 +1,96 @@
+name: additional_config.rejection_sampler_config.posterior_alpha
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:351
+- vllm_ascend/ascend_config.py:360
+- vllm_ascend/sample/rejection_sampler.py:449
+value_type: float
+default: 0.4
+valid_choices: float >= 0 (no upper bound enforced)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'posterior_alpha is an Ascend-only tuning knob (defined in vllm_ascend/ascend_config.py
+
+  RejectionSamplerConfig, no upstream vLLM equivalent) that scales how strongly the entropy
+
+  of the target distribution lowers the acceptance threshold during speculative-decoding
+
+  rejection sampling. It is read in vllm_ascend/sample/rejection_sampler.py:449 via
+
+  get_ascend_config().rejection_sampler_config.posterior_alpha and used together with
+
+  posterior_threshold to compute the effective acceptance threshold
+
+  min(exp(-entropy * posterior_alpha), posterior_threshold) for entropy-verify mode.
+
+  Mechanism: "a larger alpha makes high-entropy (uncertain) tokens much easier to accept,"
+
+  raising the speculative acceptance rate. A higher acceptance rate means more draft tokens
+
+  are committed per verification step, which increases tokens-per-step throughput and reduces
+
+  the number of wasted draft/verify cycles (lower effective latency per accepted token).
+
+  The parameter only takes effect when enable_entropy_verify is True (and interacts with
+
+  enable_block_verify); with entropy verify disabled it has no runtime effect. It does not
+
+  change memory footprint or kernel launch structure — it only shifts the accept/reject
+
+  decision boundary, so its impact is on throughput/latency via acceptance rate rather than
+
+  on raw compute.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:351
+  context: Field definition of posterior_alpha (default 0.4) in RejectionSamplerConfig pydantic dataclass.
+- file: vllm_ascend/ascend_config.py:360
+  context: model_validator raises ValueError if posterior_alpha < 0.
+- file: vllm_ascend/sample/rejection_sampler.py:449
+  context: Reads posterior_alpha from ascend config to build the entropy-adjusted acceptance threshold used in rejection sampling.
+related_parameters:
+- name: additional_config.rejection_sampler_config.enable_entropy_verify
+  relation: posterior_alpha only affects behavior when entropy verify is enabled; otherwise it is inert.
+- name: additional_config.rejection_sampler_config.posterior_threshold
+  relation: Upper bound of the effective threshold; effective threshold = min(exp(-entropy * posterior_alpha), posterior_threshold).
+- name: additional_config.rejection_sampler_config.enable_block_verify
+  relation: Alternative verification mode; block verify uses joint (cumprod) verification and is incompatible with synthetic_mode,
+    but can coexist with entropy verify.
+constraints:
+- posterior_alpha must be >= 0; a negative value raises a ValueError at config validation.
+- posterior_alpha has no effect unless enable_entropy_verify is set to True.
+tuning_advice:
+  summary: 'Increase posterior_alpha to raise speculative acceptance rate (higher throughput, lower
+
+    latency) at the cost of output precision; keep it near the default 0.4 for balanced
+
+    quality, and set it to 0 to disable the entropy adjustment entirely.
+
+    '
+  suggested_values:
+  - scenario: Quality-sensitive workloads (chat, reasoning) where output fidelity matters most
+    value: 0.0
+    reason: With alpha=0 entropy has no effect and the threshold equals posterior_threshold, preserving sampling precision.
+  - scenario: Balanced default deployment
+    value: 0.4
+    reason: Documented default; moderate entropy sensitivity giving a reasonable acceptance-rate/precision trade-off.
+  - scenario: Throughput/latency-critical serving with tolerant quality requirements
+    value: 0.8
+    reason: Higher alpha makes high-entropy tokens much easier to accept, boosting acceptance rate and tokens-per-step throughput,
+      at the cost of reduced precision.
+  caveats:
+  - Only effective when enable_entropy_verify is True; otherwise the value is ignored at runtime.
+  - Larger alpha improves throughput but degrades output quality — tune against your specific model weights and dataset.
+  - Interacts with posterior_threshold which caps the effective threshold; raising alpha beyond what the threshold allows
+    yields diminishing returns.
+  - This is an Ascend-only parameter with no upstream vLLM equivalent; do not expect it to affect GPU deployments.
+  quick_guide: Set posterior_alpha in (0, 1] with enable_entropy_verify=True to trade precision for higher speculative acceptance
+    rate; use 0 to disable.
+analysis_date: '2026-10-27'

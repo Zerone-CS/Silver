@@ -1,0 +1,89 @@
+name: --pt-load-map-location
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/load.py:109
+- vllm/engine/arg_utils.py:757
+- vllm/engine/arg_utils.py:998
+- vllm/engine/arg_utils.py:1922
+- vllm/model_executor/model_loader/weight_utils.py:1197
+- vllm/model_executor/model_loader/default_loader.py:304
+value_type: str
+default: cpu
+valid_choices: 'Any torch.load map_location value: a device string (e.g. ''cpu'', ''cuda'', ''npu'') or a JSON dict mapping
+  source device to target device (e.g. {"": "cuda"} or {"cuda:1": "cuda:0"})'
+cli_example: --pt-load-map-location cpu
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This parameter is passed straight through to torch.load(map_location=...) in
+
+  pt_weights_iterator (vllm/model_executor/model_loader/weight_utils.py:1207) and in the
+
+  multithreaded variant used by default_loader.py:304. It only affects the .bin/.pt (PyTorch
+
+  pickle) checkpoint loading path — the safetensors path (safetensors_weights_iterator) does
+
+  not use it at all. On Ascend, model weights are ultimately placed on the NPU by the model
+
+  loader regardless of this map_location, so the default "cpu" means each shard is first
+
+  materialized in host memory and then copied to the NPU. Setting it to the NPU device (e.g.
+
+  "npu" or {"": "npu"}) would make torch.load place tensors directly on device, which can
+
+  reduce peak host RAM usage during load but does not change steady-state inference
+
+  throughput or latency. There is no vllm-ascend override of this parameter found in the
+
+  provided context; it is a pure upstream vLLM LoadConfig field. Because it only influences
+
+  the one-time weight-loading phase (startup), its runtime performance impact is low.
+
+  '
+usage_locations:
+- file: vllm/config/load.py:109
+  context: LoadConfig field definition with default 'cpu' and docstring describing map_location semantics
+- file: vllm/engine/arg_utils.py:998
+  context: CLI argument registration --pt-load-map-location in the LoadConfig argument group
+- file: vllm/engine/arg_utils.py:1922
+  context: Passed into LoadConfig construction from EngineArgs
+- file: vllm/model_executor/model_loader/weight_utils.py:1207
+  context: Used as map_location in torch.load for pt/bin checkpoint shards
+- file: vllm/model_executor/model_loader/default_loader.py:304
+  context: Passed to multi_thread_pt_weights_iterator when enable_multithread_load is set
+related_parameters:
+- name: --load-format
+  relation: Only relevant when load_format resolves to the pytorch/pt (.bin) loader; ignored for safetensors loading
+- name: --model-loader-extra-config
+  relation: enable_multithread_load / num_threads in this config select the multithreaded pt iterator that also consumes pt_load_map_location
+- name: --use-tqdm-on-load
+  relation: Sibling LoadConfig field controlling load progress display, not device placement
+constraints:
+- 'When passed from the command line as a dict, the strings inside the JSON must be double quoted so it parses correctly (e.g.
+  ''{"": "npu"}'').'
+- 'The value must be a valid torch.load map_location: either a device string or a dict mapping source device to target device.'
+- This parameter only affects the PyTorch .bin/.pt checkpoint loading path; it has no effect when loading safetensors weights.
+tuning_advice:
+  summary: Leave at the default 'cpu' unless host RAM is constrained during loading of .bin/.pt checkpoints, in which case
+    map directly to the NPU device.
+  suggested_values:
+  - scenario: Standard Ascend deployment loading safetensors checkpoints
+    value: cpu
+    reason: Safetensors loading ignores this parameter entirely; the default is safe and has no runtime cost.
+  - scenario: Loading large .bin/.pt checkpoints with limited host RAM
+    value: npu
+    reason: Placing tensors directly on the NPU via map_location avoids materializing full shards in host memory, reducing
+      peak host RAM during startup.
+  - scenario: Multi-device checkpoint remapping (e.g. checkpoint saved on a different device index)
+    value: '{"cuda:1": "cuda:0"}'
+    reason: Dict form remaps source device to target device as supported by torch.load map_location.
+  caveats:
+  - Only affects the .bin/.pt loading path; no effect on safetensors.
+  - Impact is limited to the one-time model load phase, not steady-state inference.
+  - When using dict form on the CLI, ensure inner strings are double quoted for JSON parsing.
+  quick_guide: Keep default 'cpu' for safetensors; use 'npu' only to cut host RAM when loading .bin/.pt checkpoints.
+analysis_date: '2026-10-27'

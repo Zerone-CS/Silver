@@ -1,0 +1,67 @@
+name: VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1766
+- vllm/envs.py:243
+- vllm/v1/engine/core_client.py:477
+- vllm/v1/executor/multiproc_executor.py:477
+- vllm/model_executor/model_loader/tensorizer.py:753
+value_type: int
+default: 5
+valid_choices: any non-negative integer (seconds)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "This env var only controls the grace period during engine/worker process shutdown,\nnot steady-state inference.\
+  \ It is read in three places:\n- \"vllm/v1/engine/core_client.py:477 — passed as `timeout` to\"\n  `engine_manager.shutdown()`\
+  \ when BackgroundResources cleans up.\n- \"vllm/v1/executor/multiproc_executor.py:477 — used as the grace period in\"\n\
+  \  `_ensure_worker_termination()`: workers are given this many seconds to exit\n  gracefully before SIGTERM is sent, then\
+  \ a fixed 4s wait before SIGKILL.\n- \"vllm/model_executor/model_loader/tensorizer.py:753 — added to a cleanup grace\"\n\
+  \  constant when shutting down the engine core after tensorization.\nOn Ascend NPU, worker processes hold HCCL communicators\
+  \ and CANN device contexts;\ngraceful teardown (destroying HCCL comm groups, releasing device memory) can take\nlonger than\
+  \ on GPU, especially with large TP/EP world sizes. If the timeout is too\nshort, workers are SIGTERM/SIGKILLed mid-teardown,\
+  \ which can leave NPU device memory\nor HCCL resources in a bad state and slow down subsequent process restarts. This\n\
+  affects shutdown/restart latency and resource cleanliness, not token throughput.\nNo vllm-ascend override of this env var\
+  \ was found in the provided context.\n"
+usage_locations:
+- file: vllm/v1/engine/core_client.py:477
+  context: BackgroundResources.__call__ passes timeout to engine_manager.shutdown()
+- file: vllm/v1/executor/multiproc_executor.py:477
+  context: MultiprocExecutor._ensure_worker_termination waits this long before SIGTERM
+- file: vllm/model_executor/model_loader/tensorizer.py:753
+  context: engine_core.shutdown timeout = env value + cleanup grace constant
+related_parameters:
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Sibling timeout env var for execute_model RPC calls; both govern multiprocessing executor behavior
+- name: VLLM_ENGINE_ITERATION_TIMEOUT_S
+  relation: Related engine liveness timeout; governs engine iteration rather than shutdown
+constraints:
+- The value must be a non-negative integer number of seconds; it is parsed with int().
+- After the grace period expires, workers are sent SIGTERM and then SIGKILL after a fixed 4-second wait, so a too-small value
+  forces hard termination.
+tuning_advice:
+  summary: Leave at default for most cases; increase on Ascend when large TP/EP deployments show unclean shutdowns or slow
+    restarts due to HCCL/CANN teardown.
+  suggested_values:
+  - scenario: Default single-node or small TP deployments
+    value: 5
+    reason: Default grace period is sufficient for typical worker teardown.
+  - scenario: Large TP/EP multi-NPU deployments where HCCL communicator teardown is slow
+    value: 30
+    reason: Gives Ascend workers more time to destroy HCCL comm groups and release device memory gracefully before SIGTERM/SIGKILL,
+      avoiding leaked NPU resources and slow restarts.
+  - scenario: Fast iteration / CI where quick teardown is preferred
+    value: 2
+    reason: Reduces shutdown wait when workers are known to exit quickly, at the risk of hard-killing slow teardown.
+  caveats:
+  - This parameter does not affect steady-state throughput or latency; it only impacts shutdown/restart time and resource
+    cleanliness.
+  - On Ascend, killing workers mid-teardown can leave HCCL communicators or NPU device memory in an inconsistent state, potentially
+    requiring device reset.
+  - No vllm-ascend-specific override was found; behavior follows upstream vLLM.
+  quick_guide: Keep default 5s; raise to ~30s for large multi-NPU Ascend deployments with slow HCCL teardown.
+analysis_date: '2026-10-27'

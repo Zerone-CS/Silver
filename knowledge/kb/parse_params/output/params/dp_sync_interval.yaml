@@ -1,0 +1,102 @@
+name: --dp-sync-interval
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/config/parallel.py:145
+- vllm/engine/arg_utils.py:522
+- vllm/engine/arg_utils.py:1222
+- vllm/v1/engine/core.py:2016
+- vllm/v1/engine/core.py:2267
+value_type: int
+default: 16
+valid_choices: integer >= 1
+cli_example: --dp-sync-interval 16
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Controls the cadence of the DP (data-parallel) finish-sync all-reduce in the
+
+  vLLM v1 DP engine core. In vllm/v1/engine/core.py:2016 the value is read from
+
+  parallel_config.dp_sync_interval into DPEngineCoreProc.dp_sync_interval. In
+
+  _has_global_unfinished_reqs (core.py:2267) the step_counter is incremented each
+
+  forward pass and the cross-rank all-reduce (ParallelConfig.sync_dp_state) is
+
+  only executed when step_counter == 1 or step_counter % dp_sync_interval == 0.
+
+  Between syncs the method returns True immediately, so the engine keeps stepping
+
+  without any collective communication. This is a pure communication-frequency
+
+  knob: "a larger interval means fewer DP all-reduces (less HCCL collective"
+
+  overhead per step on Ascend, better steady-state throughput), while a smaller
+
+  interval means the DP ranks observe each other''s "has unfinished requests"
+
+  state more promptly, reducing the idle/pause tail when ranks finish at
+
+  different times (lower latency to reach a global pause / wave transition).
+
+  The step-1 sync is always performed regardless of the interval, so idle-pause
+
+  consensus still converges after one dummy batch. On Ascend this all-reduce
+
+  runs over HCCL; the cost per collective is higher than on NVLink-class
+
+  interconnects, so the interval has a proportionally larger effect on
+
+  throughput. vllm-ascend does not override this parameter; it is consumed by
+
+  the upstream v1 DP engine core path.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:145
+  context: Field definition with default 16 and ge=1 constraint; docstring states it must match across DP ranks.
+- file: vllm/engine/arg_utils.py:522
+  context: EngineArgs field dp_sync_interval mapped from ParallelConfig.dp_sync_interval.
+- file: vllm/engine/arg_utils.py:1222
+  context: CLI argument --dp-sync-interval registered in the parallel argument group.
+- file: vllm/v1/engine/core.py:2016
+  context: DPEngineCoreProc reads dp_sync_interval from parallel_config at init.
+- file: vllm/v1/engine/core.py:2267
+  context: Gates the DP finish-sync all-reduce to every N steps (plus step 1).
+related_parameters:
+- name: --data-parallel-size
+  relation: DP sync only runs when data parallelism is enabled (DPEngineCoreProc is used for MoE DP deployments).
+- name: --enable-dbo
+  relation: DBO / DP wave scheduling interacts with the pause/wave transitions that the DP sync detects.
+- name: --disable-nccl-for-dp-synchronization
+  relation: Selects the communication backend used for the DP finish-sync all-reduce whose cadence this parameter controls.
+- name: --prefill-schedule-interval
+  relation: Read alongside dp_sync_interval in DPEngineCoreProc; both govern DP scheduling cadence.
+constraints:
+- The value must be an integer greater than or equal to 1 (Field(default=16, ge=1)).
+- The value must be identical across all DP ranks; mismatched intervals cause inconsistent sync points and can hang or desynchronize
+  the DP group.
+tuning_advice:
+  summary: Tune the DP finish-sync cadence to balance HCCL collective overhead against DP pause/wave-transition latency; keep
+    it identical across all DP ranks.
+  suggested_values:
+  - scenario: Steady-state high-throughput MoE serving with balanced DP ranks
+    value: 32
+    reason: Fewer DP all-reduces over HCCL reduces per-step communication overhead while ranks rarely diverge, improving throughput.
+  - scenario: Async RL / workloads where ranks finish at very different times
+    value: 16
+    reason: Default value; narrower mid-wave pause tail so idle ranks are detected sooner, reducing latency to reach a global
+      pause.
+  - scenario: Latency-sensitive deployments with small DP groups
+    value: 8
+    reason: More frequent syncs detect idle ranks faster at modest collective cost when the DP group is small.
+  caveats:
+  - Must be set to the same value on every DP rank or the DP group can desynchronize.
+  - On Ascend, HCCL all-reduce cost is significant; avoid setting this to 1 unless pause latency is critical.
+  - No effect for non-DP or non-MoE deployments.
+  quick_guide: Increase toward 32 for throughput, decrease toward 8-16 for lower DP pause latency; keep uniform across ranks.
+analysis_date: '2026-10-27'

@@ -1,0 +1,74 @@
+name: VLLM_ASCEND_ROPE_UB_SIZE_KB
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:89
+- vllm_ascend/ops/triton/triton_utils.py:95
+value_type: int
+default: 0
+valid_choices: 0 (auto-detect) or any positive integer (KB); negative values are treated as no-override since only values
+  > 0 take effect
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var overrides the Unified Buffer (UB) size used by vllm-ascend''s Triton
+
+  kernels for tile sizing. In vllm_ascend/ops/triton/triton_utils.py:init_device_properties_triton(),
+
+  the UB size is normally auto-detected from device properties (keys in _UB_SIZE_PROPERTY_KEYS),
+
+  rejecting sentinel values below _MIN_UB_SIZE_BYTES and falling back to DEFAULT_UB_SIZE_BYTES
+
+  (192 KB) when detection fails. When VLLM_ASCEND_ROPE_UB_SIZE_KB > 0, the detected/fallback
+
+  value is overwritten with env_override * 1024 bytes. The resulting _UB_SIZE_BYTES feeds
+
+  Triton kernel tile/block-size computation: a larger UB allows bigger tiles, fewer loop
+
+  iterations, and better vector-core utilization (higher throughput, lower latency per kernel);
+
+  a smaller UB forces smaller tiles and more iterations. Because it changes kernel launch
+
+  geometry, it directly affects the runtime of Triton-based ops (e.g. RoPE and other fused
+
+  kernels) on Ascend NPU. It does not affect memory allocation of model weights or KV cache.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py:89
+  context: Defines the env var accessor, parsed as int with default 0 (auto-detect).
+- file: vllm_ascend/ops/triton/triton_utils.py:95
+  context: Reads the override and, if > 0, replaces _UB_SIZE_BYTES with env_override * 1024 for Triton tile sizing.
+related_parameters:
+- name: SOC_VERSION
+  relation: Used to identify chip; UB auto-detection depends on correct device properties which relate to the actual SoC.
+- name: VERBOSE
+  relation: Enabling verbose logs can help debug Triton kernel compilation / UB overflow issues when tuning this value.
+constraints:
+- Only positive values take effect; 0 (default) means auto-detect and any value <= 0 is ignored.
+- The value is interpreted in KB and multiplied by 1024 to yield bytes; it must not exceed the physical UB size of the target
+  Ascend device or kernels may fail to compile or overflow.
+- Auto-detection rejects device-property values below the minimum UB size threshold and falls back to 192 KB, so the override
+  is only needed when auto-detection is unavailable or wrong.
+tuning_advice:
+  summary: Leave at 0 to use auto-detected UB size; only override for debugging UB overflow or on hardware where auto-detection
+    fails, and never exceed the device's physical UB.
+  suggested_values:
+  - scenario: Production deployment on Ascend 910B/A3 with working auto-detection
+    value: 0
+    reason: Auto-detection yields the correct UB size and the 192 KB fallback is safe; no override needed.
+  - scenario: Auto-detection returns invalid/sentinel values or unsupported hardware
+    value: 192
+    reason: Matches the documented safe fallback (192 KB) for 910B/A3, giving reasonable tile sizes.
+  - scenario: Debugging Triton UB overflow / kernel compilation failures
+    value: 128
+    reason: A smaller UB reduces tile size and register/UB pressure, helping isolate overflow issues.
+  caveats:
+  - Values above the physical UB size will break kernel compilation; verify against the target chip's UB capacity.
+  - The override affects all Triton kernels reading _UB_SIZE_BYTES, not just RoPE.
+  quick_guide: Keep VLLM_ASCEND_ROPE_UB_SIZE_KB=0 unless auto-detection fails or you are debugging UB overflow.
+analysis_date: '2026-10-27'

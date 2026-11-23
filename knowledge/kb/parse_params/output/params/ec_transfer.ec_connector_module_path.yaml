@@ -1,0 +1,81 @@
+name: ec_transfer.ec_connector_module_path
+type: nested
+category: other
+scope: vllm
+source_file:
+- vllm/distributed/ec_transfer/ec_connector/factory.py:69
+value_type: str
+default: null
+valid_choices: Any importable Python module path (dotted notation); must expose an attribute named exactly as ec_connector
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is only read in ECConnectorFactory.get_connector_class
+
+  (vllm/distributed/ec_transfer/ec_connector/factory.py:69-73). It is used as a
+
+  fallback path: "when ec_connector is not found in the connector registry, the"
+
+  factory calls importlib.import_module(ec_connector_module_path) and then
+
+  getattr(connector_module, ec_connector) to obtain the connector class. This is
+
+  a one-time dynamic import performed during connector construction (startup),
+
+  not on the per-token or per-request hot path. Therefore it does not affect
+
+  steady-state throughput or memory; its only runtime cost is a single module
+
+  import at initialization, which can add a small startup latency if the module
+
+  is heavy. No definition or override of this parameter exists in vllm-ascend,
+
+  and EC transfer is an upstream V1 feature; on Ascend the EC connector path is
+
+  not exercised by vllm-ascend''s own dispatchers, so the practical impact on
+
+  Ascend NPU runtime is negligible.
+
+  '
+usage_locations:
+- file: vllm/distributed/ec_transfer/ec_connector/factory.py:69
+  context: Reads ec_connector_module_path as fallback when ec_connector is not in the registry
+- file: vllm/distributed/ec_transfer/ec_connector/factory.py:72
+  context: importlib.import_module(connector_module_path) dynamically imports the module
+- file: vllm/distributed/ec_transfer/ec_connector/factory.py:73
+  context: getattr(connector_module, connector_name) resolves the connector class from the module
+related_parameters:
+- name: ec_transfer.ec_connector
+  relation: The connector name; must match an attribute name in the module specified by ec_connector_module_path
+- name: ec_transfer.ec_role
+  relation: Role (scheduler/worker) passed to the resolved connector class constructor
+- name: kv_transfer_config.kv_connector_module_path
+  relation: Analogous dynamic-module-path mechanism for KV transfer connectors
+constraints:
+- Only used when ec_connector is not found in the built-in connector registry; if ec_connector is registered, this path is
+  ignored.
+- If ec_connector is not registered and ec_connector_module_path is None, a ValueError 'Unsupported connector type' is raised.
+- The imported module must expose an attribute whose name exactly equals the value of ec_connector, otherwise getattr raises
+  AttributeError.
+- The module path must be importable by the Python interpreter running the scheduler/worker process.
+- Only supported in V1 (EC transfer is a V1 feature); not applicable to v2 worker paths.
+tuning_advice:
+  summary: Only relevant when using a custom, unregistered EC connector; prefer registering the connector so this fallback
+    import is unnecessary.
+  suggested_values:
+  - scenario: Using a built-in/registered EC connector
+    value: unset
+    reason: Leave unset; the registry lookup succeeds and this fallback path is never taken.
+  - scenario: Using a custom EC connector not in the registry
+    value: my_package.my_ec_connector_module
+    reason: Provide the dotted module path that exposes the connector class named by ec_connector; keep the module lightweight
+      to minimize startup import cost.
+  caveats:
+  - This is a startup-only dynamic import; it does not affect per-token throughput or NPU memory.
+  - vllm-ascend does not define or override this parameter; EC transfer is an upstream V1 feature and is not part of Ascend's
+    own dispatch paths.
+  - A heavy module import here adds to initialization latency, so avoid importing large dependencies at module top level.
+  quick_guide: Set only for custom unregistered EC connectors; otherwise leave null.
+analysis_date: '2026-10-27'

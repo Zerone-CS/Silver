@@ -1,0 +1,109 @@
+name: speculative.parallel_drafting
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/vllm.py:1165
+- vllm/config/vllm.py:2856
+- vllm/v1/spec_decode/llm_base_proposer.py:113
+- vllm/v1/spec_decode/llm_base_proposer.py:632
+- vllm/v1/attention/backend.py:637
+- vllm/v1/attention/backends/mla/index_group.py:506
+- vllm/v1/attention/ops/dcp.py:1011
+- vllm/v1/hisparse/runtime.py:56
+- vllm_ascend/attention/utils.py:623
+- vllm_ascend/spec_decode/llm_base_proposer.py:1637
+- vllm_ascend/spec_decode/step3p5.py:553
+- vllm_ascend/models/llama_eagle3_vwn.py:202
+- vllm_ascend/patch/worker/patch_eagle3_init.py:83
+value_type: bool
+default: false
+valid_choices: true | false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "parallel_drafting switches the speculative drafter from sequential autoregressive\ntoken generation to a single\
+  \ parallel forward pass that emits all\nnum_speculative_tokens draft tokens at once.\n\nUpstream vLLM (v1-upstream):\n-\
+  \ \"vllm/v1/spec_decode/llm_base_proposer.py:113 sets self.parallel_drafting and\"\n  derives extra_slots_per_request =\
+  \ num_speculative_tokens (vs 1 when disabled),\n  which changes the number of extra input slots per request and thus the\
+  \ drafter\n  batch layout.\n- \"llm_base_proposer.py:632 and step3p5.py:340 short-circuit the multi-step draft\"\n  loop:\
+  \ \"when parallel_drafting is true, the proposer samples all draft tokens in\"\n  one shot and returns immediately, eliminating\
+  \ the per-step forward passes of\n  the sequential loop. This is the primary latency/throughput win.\n- \"Attention backends\
+  \ size their buffers assuming up to\"\n  1 + (2 if parallel_drafting else 1) * num_speculative_tokens queries per\n  sequence\
+  \ (backend.py:637 reorder_batch_threshold, index_group.py:506 sparse MLA\n  rows, dcp.py:1011 DCP workspace, hisparse/runtime.py:56\
+  \ max decode query len).\n  Enabling it therefore increases per-request query length and the memory\n  footprint of attention\
+  \ workspaces / cudagraph capture sizes.\n\nvllm-ascend overrides / Ascend-specific behavior:\n- \"vllm_ascend/spec_decode/llm_base_proposer.py:1637\
+  \ and step3p5.py:553 mirror the\"\n  upstream early-exit: \"on Ascend the v1 proposer also returns all draft tokens in\"\
+  \n  one pass when parallel_drafting is set, skipping the sequential draft loop.\n- \"vllm_ascend/attention/utils.py:623\
+  \ (_select_seq_lens) uses parallel_drafting to\"\n  decide whether to keep the NPU-resident seq_lens tensor instead of the\
+  \ CPU\n  mirror. For PARD/DFlash (and DSpark on non-GLM models) it keeps the NPU\n  seq_lens, avoiding an NPU->CPU sync\
+  \ at seq_lens.tolist() during metadata build.\n  This is an Ascend-specific latency optimization tied to parallel drafting.\n\
+  - \"vllm_ascend/models/llama_eagle3_vwn.py:202 and\"\n  vllm_ascend/patch/worker/patch_eagle3_init.py:83 read parallel_drafting\
+  \ to\n  register an extra mask_hidden buffer of size\n  (3 if use_aux_hidden_state else 1) * hidden_size, adding a small\
+  \ persistent\n  memory cost to the EAGLE3 draft model when enabled.\n- \"Upstream vllm/config/vllm.py:2856 explicitly marks\
+  \ parallel drafting for EAGLE\"\n  speculative decoding as unsupported in the V2 path (only dflash/dspark allowed),\n  so\
+  \ on the v2 worker path this flag is effectively rejected for EAGLE.\n"
+usage_locations:
+- file: vllm/v1/spec_decode/llm_base_proposer.py:632
+  context: 'Early exit: when parallel_drafting, sample all draft tokens in one pass and skip the sequential draft loop.'
+- file: vllm/v1/spec_decode/llm_base_proposer.py:113
+  context: Sets extra_slots_per_request = num_speculative_tokens when parallel drafting, changing drafter batch layout.
+- file: vllm/v1/attention/backend.py:637
+  context: reorder_batch_threshold sized to 1 + 2*num_speculative_tokens when parallel drafting.
+- file: vllm/v1/attention/ops/dcp.py:1011
+  context: DCP workspace max tokens scaled by 2x speculative tokens when parallel drafting.
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:1637
+  context: Ascend v1 proposer early-exit returning all draft tokens in one pass when parallel_drafting.
+- file: vllm_ascend/spec_decode/step3p5.py:553
+  context: Ascend step3p5 proposer early-exit for parallel drafting.
+- file: vllm_ascend/attention/utils.py:623
+  context: Keeps NPU seq_lens instead of CPU mirror for PARD/DFlash, avoiding NPU->CPU sync.
+- file: vllm_ascend/models/llama_eagle3_vwn.py:202
+  context: Registers mask_hidden buffer for EAGLE3 draft model when parallel drafting.
+- file: vllm_ascend/patch/worker/patch_eagle3_init.py:83
+  context: Patched EAGLE3 init registers mask_hidden buffer when parallel drafting.
+- file: vllm/config/vllm.py:2856
+  context: V2 path rejects parallel drafting for EAGLE (only dflash/dspark allowed).
+related_parameters:
+- name: speculative_config.method
+  relation: Only compatible with EAGLE / draft_model / dflash / dspark methods; V2 rejects it for EAGLE.
+- name: speculative_config.num_speculative_tokens
+  relation: Determines how many tokens are emitted in the single parallel pass and scales attention buffer sizing (2x factor).
+- name: speculative_config.draft_model_config
+  relation: The draft model must be trained to support parallel drafting.
+- name: watermark_config
+  relation: Parallel drafting is not supported with watermarking (raises ValueError unless method is dspark).
+- name: compilation_config.cudagraph_capture_size
+  relation: Parallel drafting increases max decode query length, affecting cudagraph capture sizing.
+constraints:
+- The speculative model must be trained to support parallel drafting; otherwise draft quality degrades or the model fails
+  to produce valid tokens.
+- Only compatible with EAGLE and draft model (and dflash/dspark) speculative methods.
+- On the vLLM V2 path, parallel drafting is rejected for EAGLE speculative decoding; only dflash and dspark are allowed.
+- Parallel speculative drafting is not supported together with watermarking unless the speculative method is dspark.
+tuning_advice:
+  summary: Enable parallel drafting only with a draft model trained for it (EAGLE/draft_model/dflash/dspark) to cut draft
+    latency, accepting higher attention workspace memory.
+  suggested_values:
+  - scenario: EAGLE3 or draft_model drafter trained for parallel drafting on v1 Ascend worker
+    value: true
+    reason: Collapses the sequential draft loop into one forward pass, reducing draft latency and improving throughput; Ascend
+      also avoids an NPU->CPU sync in metadata build.
+  - scenario: Standard autoregressive EAGLE drafter not trained for parallel drafting
+    value: false
+    reason: Parallel drafting requires a model trained for it; enabling it on an incompatible drafter degrades acceptance
+      rate.
+  - scenario: v2 Ascend worker with EAGLE method
+    value: false
+    reason: V2 path rejects parallel drafting for EAGLE; only dflash/dspark support it there.
+  caveats:
+  - 'Watch NPU memory: attention workspaces and cudagraph capture sizes scale with 2*num_speculative_tokens when enabled.'
+  - Verify the drafter was trained for parallel drafting before enabling; otherwise acceptance rate drops.
+  - Do not combine with watermarking unless using dspark.
+  quick_guide: Set true only for a parallel-drafting-trained EAGLE/draft_model/dflash/dspark drafter; keep false for standard
+    EAGLE and on v2 EAGLE paths.
+analysis_date: '2026-10-27'

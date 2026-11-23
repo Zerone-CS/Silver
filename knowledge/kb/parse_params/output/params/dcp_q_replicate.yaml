@@ -1,0 +1,90 @@
+name: --dcp-q-replicate
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:376
+- vllm/config/parallel.py:575
+- vllm/engine/arg_utils.py:493
+- vllm/engine/arg_utils.py:1107
+- vllm/model_executor/layers/attention/mla_attention.py:437
+- vllm/model_executor/layers/mla.py:116
+- vllm/model_executor/models/deepseek_v2.py:1067
+- vllm_ascend/tests/ut/ops/test_mla_weight_processing.py:32
+value_type: bool
+default: null
+valid_choices: true / false (None means unset; model may fill via set_dcp_defaults)
+cli_example: --dcp-q-replicate
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This flag controls whether the MLA query projection is replicated across each DCP\n(decode context parallel)\
+  \ group so that decode can skip the per-step query all-gather.\n\nUpstream flow (vllm):\n- \"In deepseek_v2.py:1063-1076,\
+  \ `qrep_requested` is resolved from the env var\"\n  VLLM_DCP_Q_REPLICATE if explicitly set, otherwise from\n  `vllm_config.parallel_config.dcp_q_replicate`.\
+  \ `qrep_enabled` is only true when\n  qrep_requested AND decode_context_parallel_size > 1 AND\n  prefill_context_parallel_size\
+  \ <= 1. When enabled, the q projection layer class\n  becomes `DCPGroupColumnParallelLinear` instead of `ColumnParallelLinear`.\n\
+  - \"In mla.py:113-116, `self.dcp_q_replicate` is derived from the q_proj layer's\"\n  `qrep_active` attribute, and passed\
+  \ into MLAAttention (mla_attention.py:437,460).\n- \"MLAAttention stores `self.dcp_q_replicate` and `self.W_UK_T_dcp_qrep`\
+  \ (mla_attention.py:460-461),\"\n  which is the replicated weight used to materialize the full group-local head set\n  locally\
+  \ at load time.\n\nPerformance mechanism: \"With DCP the KV cache is sharded across the group, so the\"\nstandard MLA decode\
+  \ path must all-gather the query every decode step. Replicating\nthe (small) query projection at load time lets each rank\
+  \ compute the full group-local\nhead set locally and skip that collective. This removes a per-step collective\n(latency\
+  \ win, especially at small batch / low decode step time) at the cost of\nredundant projection compute on every rank in the\
+  \ group and extra weight memory\nfor the replicated projection.\n\nAscend relevance: \"vllm-ascend's AscendMLAAttention\
+  \ (vllm_ascend/ops/mla.py) wraps the\"\nupstream MLAAttention and the test at tests/ut/ops/test_mla_weight_processing.py:32\n\
+  sets `inner.dcp_q_replicate = False`, confirming the Ascend MLA path reads this\nattribute. On Ascend, skipping the query\
+  \ all-gather removes an HCCL collective per\ndecode step, which is typically more expensive than on GPU due to HCCL launch\n\
+  overhead, so the latency benefit can be more pronounced. However, the redundant\nprojection compute runs on the NPU and\
+  \ the replicated weight consumes NPU HBM.\nThe flag only takes effect when DCP > 1 and PCP <= 1; otherwise it is a no-op.\n"
+usage_locations:
+- file: vllm/config/parallel.py:376
+  context: ParallelConfig field definition with docstring describing the replicate-and-skip-all-gather behavior
+- file: vllm/config/parallel.py:575
+  context: set_dcp_defaults fills dcp_q_replicate when unset (default q_replicate=False)
+- file: vllm/engine/arg_utils.py:1107
+  context: CLI argument registration --dcp-q-replicate in ParallelConfig group
+- file: vllm/model_executor/models/deepseek_v2.py:1067
+  context: Resolves qrep_requested from env var or config, gates qrep_enabled on DCP>1 and PCP<=1, selects DCPGroupColumnParallelLinear
+- file: vllm/model_executor/layers/mla.py:116
+  context: Derives dcp_q_replicate from q_proj layer qrep_active and passes to MLAAttention
+- file: vllm/model_executor/layers/attention/mla_attention.py:460
+  context: Stores dcp_q_replicate and W_UK_T_dcp_qrep for decode path
+- file: vllm_ascend/tests/ut/ops/test_mla_weight_processing.py:32
+  context: Ascend MLA weight-processing test sets inner.dcp_q_replicate = False, confirming Ascend path reads the attribute
+related_parameters:
+- name: --decode-context-parallel-size (-dcp)
+  relation: Must be > 1 for q-replicate to take effect; DCP shards KV cache and triggers the query all-gather this flag removes
+- name: --prefill-context-parallel-size (-pcp)
+  relation: Must be <= 1; qrep_enabled is false when PCP is enabled
+- name: --dcp-comm-backend
+  relation: Related DCP communication setting; q-replicate removes the query all-gather collective from the DCP decode path
+- name: VLLM_DCP_Q_REPLICATE
+  relation: Env var that predates the config field and overrides it if explicitly set
+constraints:
+- The flag only takes effect when --decode-context-parallel-size is greater than 1.
+- The flag has no effect when --prefill-context-parallel-size is greater than 1 (PCP enabled).
+- If the VLLM_DCP_Q_REPLICATE environment variable is explicitly set, it overrides the --dcp-q-replicate CLI value.
+- Only applies to MLA models (e.g. DeepSeek-V2/V3 style) that have a query projection to replicate.
+tuning_advice:
+  summary: Enable --dcp-q-replicate for MLA models with DCP > 1 and PCP disabled to skip the per-step query all-gather, especially
+    when decode latency is collective-bound.
+  suggested_values:
+  - scenario: MLA model (DeepSeek-V2/V3) with DCP > 1, PCP disabled, latency-sensitive decode
+    value: true
+    reason: Removes the per-step query all-gather collective, reducing decode latency; on Ascend the HCCL collective overhead
+      makes this more valuable.
+  - scenario: MLA model with DCP > 1 but large batch / compute-bound decode where redundant projection cost dominates
+    value: false
+    reason: Redundant query projection compute on every rank may outweigh the collective savings; benchmark both.
+  - scenario: Non-DCP deployment or PCP enabled
+    value: false
+    reason: The flag is a no-op when DCP <= 1 or PCP > 1, so leave it unset/false.
+  caveats:
+  - Benchmark decode latency with and without the flag; the benefit depends on collective vs compute balance.
+  - Account for the extra NPU HBM used by the replicated query projection weights.
+  - Ensure VLLM_DCP_Q_REPLICATE is not set, as it overrides the CLI flag.
+  quick_guide: Set --dcp-q-replicate true for MLA models with DCP>1 and PCP off to skip the decode query all-gather; benchmark
+    to confirm the collective savings beat the redundant projection cost.
+analysis_date: '2026-10-27'

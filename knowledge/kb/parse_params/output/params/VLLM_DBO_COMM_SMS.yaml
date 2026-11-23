@@ -1,0 +1,94 @@
+name: VLLM_DBO_COMM_SMS
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1964
+- vllm/envs.py:286
+- vllm/v1/worker/ubatch_utils.py:88
+value_type: int
+default: '20'
+valid_choices: non-negative integer; 0 disables SM reservation for communication kernels; upper bound is min(value, all2all_manager.max_sms_used())
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_DBO_COMM_SMS controls how many SMs/CUs are reserved for communication
+
+  kernels when DBO (dual-batch overlap / microbatch overlap) is active. It is
+
+  read in vllm/v1/worker/ubatch_utils.py:create_sm_control_context, which builds
+
+  an SMControlContextManager that partitions the device''s SMs between compute
+
+  kernels (e.g. DeepGEMM) and communication kernels (DeepEP high-throughput
+
+  all2all). The value is clamped to all2all_manager.max_sms_used() and, if > 0,
+
+  is passed to all2all_manager.set_num_sms() and deep_gemm_set_num_sms().
+
+  On Ascend NPU this parameter has essentially no effect: "the entire mechanism"
+
+  is gated on CUDA/ROCm-specific primitives — DeepEP all2all backend
+
+  (all2all_backend == "deepep_high_throughput"), DeepGEMM (has_deep_gemm()), and
+
+  the SM/CU partitioning concept of NVIDIA/AMD GPUs. Ascend uses HCCL for
+
+  communication and CANN/AscendC kernels for compute, neither of which exposes
+
+  an SM-count partitioning API. vllm-ascend does not read VLLM_DBO_COMM_SMS
+
+  anywhere in the provided context, and there is no Ascend override. Therefore
+
+  on Ascend the parameter is effectively inert; any impact is limited to the
+
+  upstream GPU path and does not translate to NPU runtime behavior.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1964
+  context: Defines the env var with platform-dependent default (64 on ROCm, 20 on CUDA).
+- file: vllm/envs.py:286
+  context: Type annotation / default declaration in the envs module (int = 20).
+- file: vllm/v1/worker/ubatch_utils.py:88
+  context: Reads comm_sms and uses it to build SMControlContextManager for DBO SM partitioning; clamped by max_sms_used and
+    applied via set_num_sms.
+related_parameters:
+- name: enable_dbo
+  relation: DBO must be enabled for the SM control context (and thus this parameter) to be constructed.
+- name: all2all_backend
+  relation: Only the deepep_high_throughput backend supports SM control; other backends ignore this value.
+- name: enable_expert_parallel
+  relation: SM control is only wired up when expert parallelism is enabled (EP group / all2all manager present).
+- name: VLLM_DEEPEP_BUFFER_SIZE_MB
+  relation: Related DeepEP tuning knob; both are DeepEP/GPU-specific and not applicable on Ascend.
+constraints:
+- The value must be a non-negative integer; setting it to 0 disables communication SM reservation.
+- The effective value is clamped to the all2all manager's max_sms_used(), so values above that limit have no additional effect.
+- SM control only takes effect when expert parallelism is enabled and the all2all backend is deepep_high_throughput; otherwise
+  the value is ignored.
+tuning_advice:
+  summary: Only relevant on NVIDIA/AMD GPU DBO+DeepEP deployments; on Ascend NPU leave it at default as it has no effect.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: 20
+    reason: The parameter is not consumed by vllm-ascend; the SM-partitioning path is GPU-only, so the default is harmless
+      and changing it yields no benefit.
+  - scenario: CUDA GPU with DBO + DeepEP high-throughput, compute-bound
+    value: 20
+    reason: Default CUDA value balances communication reservation against compute SMs.
+  - scenario: CUDA GPU with DBO + DeepEP high-throughput, communication-bound
+    value: 32
+    reason: Increasing reserved SMs can reduce all2all latency when communication is the bottleneck, at some compute throughput
+      cost.
+  - scenario: Debugging / MIG slices with few SMs
+    value: 0
+    reason: Disables SM reservation so all SMs remain available to compute, matching the upstream test workaround.
+  caveats:
+  - Do not tune this on Ascend expecting performance gains — it does not affect HCCL communication or NPU compute partitioning.
+  - On ROCm the value is overridden to 0 for deepep_high_throughput + DBO regardless of what you set.
+  quick_guide: GPU-only DBO knob; on Ascend NPU leave at default (no effect).
+analysis_date: '2026-10-27'

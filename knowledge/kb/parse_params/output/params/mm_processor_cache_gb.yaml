@@ -1,0 +1,94 @@
+name: --mm-processor-cache-gb
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/multimodal.py:142
+- vllm/engine/arg_utils.py:1382
+- vllm/engine/arg_utils.py:596
+- vllm/engine/arg_utils.py:1863
+- vllm/multimodal/cache.py:409
+- vllm/multimodal/cache.py:466
+- vllm/multimodal/registry.py:293
+- vllm/renderers/base.py:831
+- tests/e2e/pull_request/one_card/lora/test_qwenvl_lora.py:38
+value_type: float
+default: 4
+valid_choices: float >= 0 (Field(default=4, ge=0)); 0 disables the cache
+cli_example: --mm-processor-cache-gb 4
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This parameter sizes the multi-modal processor LRU cache that stores already-processed\nmulti-modal inputs\
+  \ (tensor data + metadata + prompt_updates) so repeated images/videos\nare not re-run through the HF processor / image transform\
+  \ pipeline.\n\nUpstream mechanism (vllm/multimodal/cache.py):\n- \"MultiModalProcessorOnlyCache (line 409) and the IPC-enabled\
+  \ P0 cache (line 466) both\"\n  build an LRU cache sized by mm_config.mm_processor_cache_gb via\n  MultiModalCache.get_lru_cache(...).\
+  \ The cache stores MultiModalProcessorCacheItem\n  (full tensor data) or MultiModalProcessorCacheItemMetadata (metadata\
+  \ only when IPC is on).\n- \"vllm/multimodal/registry.py:293 `_get_cache_type` returns None (cache disabled) when\"\n  mm_processor_cache_gb\
+  \ <= 0, otherwise selects \"processor_only\" / \"lru\" / \"shm\" based on\n  IPC support (api_process_count == 1 and (data_parallel_size\
+  \ == 1 or external LB)).\n- \"vllm/renderers/base.py:831: when mm_processor_cache_gb == 0 AND prefix caching is off,\"\n\
+  \  content hashing of MM inputs is skipped entirely — a CPU-side latency saving.\n\nPerformance effect on Ascend NPU:\n\
+  - \"The cache is a host (CPU) memory structure; it does NOT consume NPU HBM directly. Its\"\n  benefit is avoiding repeated\
+  \ CPU-side preprocessing (image decode/resize/normalize,\n  tokenization of MM placeholders) which is a real latency cost\
+  \ for image/video workloads\n  on Ascend where the CPU is often the preprocessing bottleneck.\n- Memory cost is host RAM:\
+  \ \"total = mm_processor_cache_gb * (api_server_count +\"\n  data_parallel_size). On Ascend multi-DP deployments this multiplies\
+  \ quickly.\n- \"vllm-ascend does not override this parameter; it is passed through unchanged. The\"\n  vllm-ascend docs\
+  \ (epd_disaggregation.md, PaddleOCR-VL.md, Dots3-Note.md) reference it\n  directly, confirming it is honored on Ascend.\
+  \ The Ascend docs recommend setting it to 0\n  for image workloads in some model recipes (Dots3-Note.md) to save host memory\
+  \ / avoid\n  caching overhead, and note it must be non-zero for cross-process (EPD) caching.\n"
+usage_locations:
+- file: vllm/config/multimodal.py:142
+  context: Field definition with default=4, ge=0; docstring describes per-process duplication and total memory formula.
+- file: vllm/multimodal/cache.py:409
+  context: MultiModalProcessorOnlyCache builds LRU cache sized by mm_processor_cache_gb (P0, IPC disabled).
+- file: vllm/multimodal/cache.py:466
+  context: IPC-enabled P0 cache builds metadata-only LRU cache sized by mm_processor_cache_gb.
+- file: vllm/multimodal/registry.py:293
+  context: Cache disabled (returns None) when mm_processor_cache_gb <= 0; otherwise selects cache type.
+- file: vllm/renderers/base.py:831
+  context: Skips MM content hashing when cache is 0 and prefix caching is disabled.
+- file: tests/e2e/pull_request/one_card/lora/test_qwenvl_lora.py:38
+  context: vllm-ascend e2e test sets mm_processor_cache_gb=4 for Qwen-VL LoRA.
+related_parameters:
+- name: --mm-processor-cache-type
+  relation: Selects lru vs shm cache backend; only meaningful when mm_processor_cache_gb > 0.
+- name: --enable-prefix-caching
+  relation: When both cache_gb==0 and prefix caching is off, MM content hashing is skipped (renderers/base.py:831).
+- name: --data-parallel-size
+  relation: Total host memory = mm_processor_cache_gb * (api_server_count + data_parallel_size).
+- name: --api-server-count
+  relation: Multiplies total cache memory across API processes.
+- name: --mm-shm-cache-max-object-size-mb
+  relation: Per-object size limit for shm cache; a single item larger than the budget is served uncached.
+constraints:
+- The value must be >= 0; negative values are rejected by the Field(ge=0) validator.
+- Setting the value to 0 disables the multi-modal processor cache completely.
+- A single processed item larger than the cache budget is served uncached with a warning rather than failing.
+- Cross-process (EPD disaggregation) caching requires a non-zero --mm-processor-cache-gb; setting it to 0 disables cross-process
+  caching.
+tuning_advice:
+  summary: Keep the default 4 GiB for repeated-image workloads to avoid CPU re-preprocessing; set 0 for one-shot image workloads
+    or memory-constrained multi-DP Ascend deployments.
+  suggested_values:
+  - scenario: Repeated images/videos across requests (chat with recurring media), single DP
+    value: 4
+    reason: Default caches processed MM items, avoiding repeated CPU-side preprocessing latency on Ascend.
+  - scenario: One-shot image inference, host-memory constrained, or image recipe per Dots3-Note.md
+    value: 0
+    reason: Disables the cache to save host RAM; also skips MM content hashing when prefix caching is off (renderers/base.py:831).
+  - scenario: EPD disaggregation / cross-process caching
+    value: 4
+    reason: Cross-process caching requires a non-zero value per epd_disaggregation.md; 0 disables it.
+  - scenario: Large data-parallel deployment (many DP ranks)
+    value: 1
+    reason: Total host memory scales with (api_server_count + data_parallel_size); reduce per-process budget to bound RAM.
+  caveats:
+  - Total host memory = mm_processor_cache_gb * (api_server_count + data_parallel_size); account for this on multi-DP Ascend
+    nodes.
+  - Cache is host RAM, not NPU HBM — it does not reduce KV cache space but does consume system memory.
+  - Setting 0 disables cross-process caching needed for EPD disaggregation.
+  quick_guide: Use 4 for repeated media; use 0 for one-shot image workloads or tight host memory; never 0 for EPD cross-process
+    caching.
+analysis_date: '2026-10-27'

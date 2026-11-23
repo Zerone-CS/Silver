@@ -1,0 +1,109 @@
+name: --code-revision
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:207
+- vllm/engine/arg_utils.py:569
+- vllm/engine/arg_utils.py:895
+- vllm/engine/arg_utils.py:1834
+- vllm/config/model.py:632
+- vllm/config/speculative.py:426
+- vllm/config/speculative.py:1284
+- vllm/model_executor/models/registry.py:1244
+- vllm/renderers/hf.py:223
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:37
+value_type: str
+default: null
+valid_choices: Any Hugging Face Hub branch name, tag name, or commit id; null means use the default version
+cli_example: --code-revision <commit-id-or-tag>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--code-revision only selects which revision of the model''s *code* (custom modeling
+
+  files loaded via trust_remote_code / auto_map) is fetched from the Hugging Face Hub.
+
+  It is threaded from EngineArgs (vllm/engine/arg_utils.py:569, 895) into ModelConfig
+
+  (vllm/config/model.py:207) and consumed at config load time in
+
+  vllm/config/model.py:632 (get_config) and at model-class resolution in
+
+  vllm/model_executor/models/registry.py:1244 (try_get_class_from_dynamic_module).
+
+  It also feeds the draft model config for speculative decoding
+
+  (vllm/config/speculative.py:1284) and the HF processor chat-template cache key
+
+  (vllm/renderers/hf.py:223).
+
+  On Ascend, vllm-ascend does not override or reinterpret this parameter; it is only
+
+  read for identity/hashing in the KV-store prefix cache
+
+  (vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:37),
+
+  where it is included in the model identity dict used to key cached prefixes.
+
+  Performance effect is therefore indirect and one-time: "it changes which Python"
+
+  modeling code is downloaded/imported at startup (affecting cold-start latency and
+
+  possibly whether the model code is compatible with Ascend kernels), but it has no
+
+  effect on steady-state token throughput or NPU memory usage. The only runtime
+
+  consequence is that a different code_revision changes the prefix-cache identity
+
+  key, which can invalidate previously cached prefixes across restarts.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:895
+  context: CLI argument registration for --code-revision in the ModelConfig argument group
+- file: vllm/engine/arg_utils.py:1834
+  context: Passed into ModelConfig construction from EngineArgs
+- file: vllm/config/model.py:632
+  context: Passed to get_config() when loading the HF config (with trust_remote_code)
+- file: vllm/model_executor/models/registry.py:1244
+  context: Passed to try_get_class_from_dynamic_module for auto_map model class resolution
+- file: vllm/config/speculative.py:1284
+  context: Propagated to the draft ModelConfig for speculative decoding
+- file: vllm/renderers/hf.py:223
+  context: Part of the cache key for HF processor chat templates
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:37
+  context: Included in model identity dict used to key Ascend KV-store prefix cache
+related_parameters:
+- name: --revision
+  relation: Selects the model weights/config revision; --code-revision selects the code revision independently
+- name: --tokenizer-revision
+  relation: Analogous revision selector for the tokenizer
+- name: --trust-remote-code
+  relation: Required for custom modeling code from the Hub to actually be loaded; --code-revision has no effect on code loading
+    unless remote code is trusted
+- name: --speculative-config
+  relation: The draft model's code_revision is set from this field when building the draft ModelConfig
+constraints:
+- Only meaningful when the model uses custom code from the Hub (auto_map / trust_remote_code); for models with built-in architectures
+  it has no effect on model class resolution.
+- Must be a valid Hugging Face Hub branch name, tag name, or commit id; an invalid revision causes the config/model code download
+  to fail at startup.
+tuning_advice:
+  summary: Pin --code-revision to a specific tested commit id when using trust_remote_code models; otherwise leave it unset.
+  suggested_values:
+  - scenario: Production deployment of a model requiring custom Hub code (trust_remote_code)
+    value: <specific commit id>
+    reason: Pinning a commit id guarantees reproducible code loading and avoids unexpected incompatibilities with Ascend kernels
+      or prefix-cache invalidation from a moving branch.
+  - scenario: Models with built-in vLLM architectures (no auto_map)
+    value: unset
+    reason: The parameter has no effect on model class resolution for built-in architectures; leaving it unset avoids unnecessary
+      Hub requests.
+  caveats:
+  - Do not use a floating branch name in production; a branch update silently changes loaded code and invalidates Ascend prefix-cache
+    identity.
+  - Ensure the pinned code revision is validated against the target Ascend CANN/vllm-ascend version before rollout.
+  quick_guide: Leave unset unless loading custom Hub code; then pin a tested commit id.
+analysis_date: '2026-10-27'

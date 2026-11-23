@@ -1,0 +1,92 @@
+name: --data-parallel-address
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1151
+- vllm/engine/arg_utils.py:500
+- vllm/engine/arg_utils.py:2312
+value_type: str
+default: null
+valid_choices: Any valid IP address or hostname of the data parallel head node
+cli_example: --data-parallel-address <head_node_ip>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter specifies the IP address of the data parallel (DP) cluster head node,
+
+  used to establish the torch distributed group and ZMQ sockets for cross-node DP
+
+  communication. In vllm/engine/arg_utils.py:2312, if --data-parallel-address is None,
+
+  the address is auto-derived: "for the \"ray\" backend it uses get_ip(); for the \"mp\""
+
+  backend it falls back to master_addr or ParallelConfig.data_parallel_master_ip.
+
+  The address itself does not change compute kernels or memory layout; it only affects
+
+  how DP ranks discover and connect to each other. On Ascend NPU, DP communication
+
+  ultimately flows through HCCL (for collective ops) and the DP RPC/ZMQ layer for
+
+  coordination. A correct, low-latency address (e.g. matching the node''s local_ip on
+
+  the head node) ensures fast connection establishment and avoids retries/timeouts
+
+  during startup and DP synchronization. An incorrect address causes connection
+
+  failures or long timeouts, indirectly hurting startup latency and potentially
+
+  throughput if DP synchronization stalls. vllm-ascend does not override this
+
+  parameter; it is consumed by the upstream ParallelConfig and DP engine setup.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1151
+  context: CLI argument definition for --data-parallel-address / -dpa
+- file: vllm/engine/arg_utils.py:500
+  context: EngineArgs field data_parallel_address defaulting to None
+- file: vllm/engine/arg_utils.py:2312
+  context: 'Resolution logic: falls back to master_addr or data_parallel_master_ip when unset'
+related_parameters:
+- name: --data-parallel-size
+  relation: Must be > 1 for multi-node DP; determines number of DP ranks connecting to this address
+- name: --data-parallel-rpc-port
+  relation: Port used together with this address for DP RPC communication; must be identical across nodes
+- name: --data-parallel-start-rank
+  relation: Rank offset for each node's DP ranks; used alongside the head-node address for rank assignment
+- name: --data-parallel-size-local
+  relation: Number of local DP ranks on this node; combined with address for multi-node launch
+- name: --data-parallel-backend
+  relation: Determines how the address is derived when unset (ray uses get_ip, mp uses master_addr)
+- name: --headless
+  relation: Non-master nodes set --headless and point --data-parallel-address at the master node
+constraints:
+- The --data-parallel-address value must be consistent with the local_ip configured on the head node (Node 0).
+- All nodes in a multi-node data parallel deployment must use the same --data-parallel-address and --data-parallel-rpc-port.
+- Only non-master nodes should set --headless; the master node (Node 0) must not set it.
+tuning_advice:
+  summary: Set --data-parallel-address to the head node's reachable IP (matching its local_ip) for multi-node DP deployments;
+    leave unset only for single-node or when auto-derivation is reliable.
+  suggested_values:
+  - scenario: Multi-node data parallel deployment (e.g. DeepSeek-R1/V3.1 across 2 nodes)
+    value: <head_node_ip>
+    reason: Docs require the address to match the head node's local_ip; explicit setting avoids wrong-interface auto-derivation
+      and connection timeouts.
+  - scenario: Single-node data parallel (dp4 tp4 recommended)
+    value: 127.0.0.1
+    reason: Local loopback is sufficient when all DP ranks are on one node, as shown in the multi_instance_data_parallel example.
+  - scenario: Ray-based DP backend
+    value: <head_node_ip>
+    reason: Explicitly setting the address overrides the get_ip() auto-derivation, ensuring all nodes target the correct head
+      node.
+  caveats:
+  - Must be paired with a consistent --data-parallel-rpc-port across all nodes.
+  - Non-master nodes must also set --headless; the master node must not.
+  - Verify the address is reachable over the interface used by HCCL/RPC traffic on Ascend NPUs.
+  quick_guide: Point --data-parallel-address at the head node's IP (matching its local_ip) on every node in a multi-node DP
+    cluster.
+analysis_date: '2026-10-27'

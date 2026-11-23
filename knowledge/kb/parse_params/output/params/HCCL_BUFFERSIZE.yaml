@@ -1,0 +1,91 @@
+name: HCCL_BUFFERSIZE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/netloader.md:96
+value_type: int
+default: ~200 MB (per HCCL default, referenced in vllm-ascend docs)
+valid_choices: positive integer (bytes); HCCL runtime-defined range
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: 'HCCL_BUFFERSIZE is a CANN/HCCL runtime environment variable (not defined in vllm or
+
+  vllm-ascend source code) that controls the size of the on-chip communication buffer
+
+  allocated per HCCL connection. It is consumed by the underlying HCCL library during
+
+  collective communication setup (all-reduce, all-gather, reduce-scatter, all-to-all)
+
+  used by tensor parallelism, data parallelism, expert parallelism, and pipeline
+
+  parallelism on Ascend NPU.
+
+  The vllm-ascend netloader documentation explicitly notes that establishing HCCL
+
+  connections requires extra on-chip memory governed by HCCL_BUFFERSIZE, with a
+
+  default of roughly 200 MB per connection. This memory is reserved from the NPU HBM
+
+  budget and therefore competes with KV cache allocation (which is sized from
+
+  --gpu-memory-utilization). A larger buffer can reduce the number of buffer
+
+  refill/round-trip operations for large messages (potentially lowering communication
+
+  latency for big all-reduce/all-gather payloads), while a smaller buffer frees HBM
+
+  for KV cache but may increase communication overhead for large messages.
+
+  Because the parameter is not read by vllm or vllm-ascend Python code, its effect is
+
+  entirely mediated by the HCCL runtime; vllm-ascend does not override or patch it.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/netloader.md:96
+  context: Documents that Netloader requires extra on-chip memory for HCCL connections governed by HCCL_BUFFERSIZE (~200 MB
+    default), and users should reserve capacity via --gpu-memory-utilization.
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: HCCL_BUFFERSIZE memory is drawn from the same HBM budget; larger buffers reduce KV cache space available under
+    a fixed gpu-memory-utilization.
+- name: VLLM_SLEEP_WHEN_IDLE
+  relation: Recommended alongside Netloader to mitigate unstable/slow HCCL connections/transmissions.
+- name: --tensor-parallel-size
+  relation: More TP ranks means more HCCL connections, multiplying total HCCL_BUFFERSIZE memory consumption.
+- name: --data-parallel-size
+  relation: DP/EP communication also uses HCCL buffers; scaling DP increases aggregate buffer memory.
+constraints:
+- HCCL_BUFFERSIZE is a CANN/HCCL runtime variable, not a vLLM or vllm-ascend parameter; it must be set in the process environment
+  before HCCL initialization to take effect.
+- The buffer memory is allocated from NPU HBM, so total HCCL_BUFFERSIZE across all connections must fit within the memory
+  budget left after model weights and before KV cache allocation.
+tuning_advice:
+  summary: Tune HCCL_BUFFERSIZE to balance collective communication latency against HBM available for KV cache, especially
+    when using Netloader or large TP/DP/EP topologies.
+  suggested_values:
+  - scenario: Default deployments without Netloader, moderate TP size
+    value: leave unset (HCCL default ~200 MB)
+    reason: The default provides adequate buffering for typical collectives while preserving HBM for KV cache.
+  - scenario: Netloader enabled with many ranks
+    value: leave default and increase --gpu-memory-utilization headroom
+    reason: Docs note Netloader needs extra on-chip memory for HCCL connections; reserving capacity via gpu-memory-utilization
+      avoids OOM during connection setup.
+  - scenario: Large-message collectives (large hidden size, big batch all-gather/all-reduce) with spare HBM
+    value: increase above default (e.g. 2x-4x default)
+    reason: Larger buffers can reduce communication round-trips and latency for large payloads, at the cost of KV cache space.
+  - scenario: HBM-constrained deployment needing maximum KV cache
+    value: reduce below default
+    reason: Frees HBM for KV cache to enable larger batches, accepting higher communication overhead for large messages.
+  caveats:
+  - Aggregate memory scales with number of HCCL connections (TP x DP x EP ranks); account for this when sizing.
+  - Reducing the buffer too far can increase collective latency and hurt throughput for large messages.
+  - Set the variable in the environment before launching vLLM so HCCL picks it up at initialization.
+  quick_guide: Keep HCCL_BUFFERSIZE at default unless HBM-constrained (lower it) or communication-bound with spare HBM (raise
+    it), and always reserve headroom via --gpu-memory-utilization when using Netloader.
+analysis_date: '2026-10-27'

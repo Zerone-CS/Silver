@@ -1,0 +1,84 @@
+name: additional_config.eplb_config.stair_config.cross_node_transfer_limit
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:205
+- vllm_ascend/ascend_config.py:223
+- vllm_ascend/ascend_config.py:252
+- vllm_ascend/patch/platform/patch_eplb.py:160
+value_type: int
+default: -1
+valid_choices: integer >= -1; -1 removes the limit, 0 disables cross-node transfers, positive values cap outgoing/incoming
+  cross-node expert transfers per node per layer plan
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This field controls the STAIR (MRv2) EPLB placement policy''s cross-node expert
+
+  migration budget. It is consumed by the Ascend EPLB planner (vllm_ascend/ascend_config.py
+
+  StairConfig) and read by the communicator resolver in
+
+  vllm_ascend/patch/platform/patch_eplb.py (resolve_ascend_eplb_communicator), which
+
+  clamps unset limits to 1 when the communicator auto-falls back to torch_gloo.
+
+  The value bounds how many experts may be moved across node boundaries per node per
+
+  layer plan during rebalancing. Cross-node transfers on Ascend are expensive: they
+
+  traverse HCCL/HIXL inter-node links (or CPU-staged Gloo when HIXL is unavailable),
+
+  so a large budget can trigger heavy inter-node traffic and rebalancing stalls,
+
+  while a too-small budget (or 0) constrains the planner to intra-node moves only,
+
+  potentially leaving rank load imbalance uncorrected and reducing steady-state
+
+  throughput. The parameter therefore indirectly affects throughput (via load balance
+
+  quality) and latency (via rebalance-time communication cost), not raw compute.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:223
+  context: StairConfig field definition with default -1 (unlimited cross-node transfers)
+- file: vllm_ascend/ascend_config.py:252
+  context: model_validator rejects values < -1
+- file: vllm_ascend/patch/platform/patch_eplb.py:160
+  context: resolve_ascend_eplb_communicator clamps unset cross_node_transfer_limit to 1 on Gloo fallback
+related_parameters:
+- name: additional_config.eplb_config.stair_config.rank_transfer_limit
+  relation: Sibling per-rank transfer budget; both are clamped to 1 together on Gloo fallback
+- name: additional_config.eplb_config.communicator
+  relation: When communicator auto-selects torch_gloo, unset cross_node_transfer_limit is clamped to 1; explicit hixl/torch_gloo
+    keeps configured value
+- name: additional_config.eplb_config.policy
+  relation: Only relevant when policy selects the MRv2 STAIR policy
+constraints:
+- cross_node_transfer_limit must be at least -1; values below -1 raise a validation error.
+- The value must be an integer, not a boolean (STAIR numeric fields reject booleans).
+- A value of 0 disables cross-node transfers entirely; -1 removes the limit.
+tuning_advice:
+  summary: Leave at -1 with HIXL for full cross-node balancing; rely on the automatic Gloo clamp (1) or set 0/1 explicitly
+    when inter-node bandwidth is scarce.
+  suggested_values:
+  - scenario: HIXL communicator available with ample inter-node bandwidth
+    value: -1
+    reason: Removes the limit so STAIR can fully rebalance across nodes, maximizing load balance and throughput.
+  - scenario: Communicator auto-falls back to torch_gloo (CPU staging)
+    value: 1
+    reason: Ascend clamps unset limits to 1 automatically; setting 1 explicitly matches this safe default and avoids excessive
+      CPU-staged transfers.
+  - scenario: Inter-node bandwidth constrained or cross-node migration should be avoided
+    value: 0
+    reason: Disables cross-node transfers, confining rebalancing to intra-node moves and avoiding costly inter-node traffic.
+  caveats:
+  - Only applies when the MRv2 STAIR policy is selected via eplb_config.policy.
+  - Explicitly configured values are never clamped, so a large value with Gloo fallback can cause heavy CPU-staged transfers.
+  quick_guide: Use -1 with HIXL; use 0 or 1 when inter-node bandwidth is limited or Gloo staging is in effect.
+analysis_date: '2026-10-27'

@@ -1,0 +1,123 @@
+name: speculative.draft_sample_method
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/v1/worker/gpu/spec_decode/speculator.py:174
+- vllm/v1/worker/gpu/spec_decode/speculator.py:384
+- vllm/v1/spec_decode/llm_base_proposer.py:263
+- vllm/v1/worker/gpu_model_runner.py:6339
+- vllm/v1/worker/gpu/spec_decode/extract_hidden_states.py:23
+- vllm/config/vllm.py:1154
+- vllm_ascend/worker/v2/spec_decode/lmhead_tp_utils.py:43
+- vllm_ascend/spec_decode/dflash2_proposer.py:59
+value_type: str
+default: greedy
+valid_choices:
+- greedy
+- probabilistic
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: "This parameter selects how the draft model produces speculative tokens and\ntherefore changes the memory footprint\
+  \ and the sampling kernel path of the\nspeculator on Ascend.\n\nUpstream (vllm) behavior:\n- \"In vllm/v1/worker/gpu/spec_decode/speculator.py:174,\
+  \ when\"\n  draft_sample_method == \"probabilistic\", the speculator allocates a full\n  draft_logits buffer of shape (max_num_reqs,\
+  \ num_speculative_steps,\n  vocab_size) with dtype = model_config.head_dtype. This is a large\n  persistent allocation proportional\
+  \ to vocab_size and is only created in\n  the probabilistic path; greedy mode keeps draft_logits = None and avoids\n  this\
+  \ memory entirely.\n- \"In vllm/v1/spec_decode/llm_base_proposer.py:263, the flag\"\n  _enable_probabilistic_draft_probs\
+  \ is only true when\n  rejection_sample_method == \"standard\" AND draft_sample_method ==\n  \"probabilistic\". This gates\
+  \ whether draft probabilities are computed and\n  passed to the rejection sampler, adding a softmax/probability tensor of\n\
+  \  shape (num_tokens, vocab_size) per step (see gpu_model_runner.py:6339\n  warmup path which allocates draft_probs of that\
+  \ shape).\n- \"Greedy mode treats draft probabilities as one-hot, so the rejection\"\n  sampler can skip the full-vocabulary\
+  \ probability tensor, reducing both\n  memory traffic and kernel work per decode step.\n\nAscend (vllm-ascend) overrides\
+  \ and restrictions:\n- v2 worker: \"vllm_ascend/worker/v2/spec_decode/lmhead_tp_utils.py:43 raises\"\n  NotImplementedError\
+  \ when lmhead TP is enabled and draft_sample_method ==\n  \"probabilistic\", because the gumbel sampling path writes into\
+  \ fixed-size\n  draft buffers that cannot hold the group-aligned padding rows required by\n  lmhead TP. So under lmhead\
+  \ TP on v2, only greedy is usable.\n- v1 worker: \"vllm_ascend/spec_decode/dflash2_proposer.py:59 raises\"\n  ValueError\
+  \ for DFlash2 with probabilistic draft sampling on the v1 model\n  runner; DFlash2 always drafts greedily on v1 (selector\
+  \ instead of argmax).\n- \"The v2 ExtractHiddenStatesSpeculator (mirroring upstream\"\n  extract_hidden_states.py:23) requires\
+  \ draft_sample_method == \"greedy\".\n- \"Upstream vllm/config/vllm.py:1154 requires probabilistic when watermarking\"\n\
+  \  is enabled, which conflicts with the Ascend restrictions above.\n\nNet effect on Ascend: \"greedy is the default and\
+  \ the only broadly supported\"\nmode; probabilistic adds a large vocab-sized draft_logits buffer and extra\nprobability\
+  \ computation, increasing memory usage and per-step latency, and\nis rejected in several Ascend configurations (lmhead TP\
+  \ on v2, DFlash2 on\nv1, extract_hidden_states).\n"
+usage_locations:
+- file: vllm/v1/worker/gpu/spec_decode/speculator.py:174
+  context: Allocates full (max_num_reqs, num_speculative_steps, vocab_size) draft_logits buffer only in probabilistic mode.
+- file: vllm/v1/worker/gpu/spec_decode/speculator.py:384
+  context: Rejects use_local_argmax_reduction combined with probabilistic draft sampling.
+- file: vllm/v1/spec_decode/llm_base_proposer.py:263
+  context: Sets _enable_probabilistic_draft_probs only when rejection_sample_method is standard and draft_sample_method is
+    probabilistic.
+- file: vllm/v1/worker/gpu_model_runner.py:6339
+  context: Warmup allocates draft_probs of shape (num_tokens, vocab_size) only in the probabilistic + standard rejection path.
+- file: vllm/v1/worker/gpu/spec_decode/extract_hidden_states.py:23
+  context: ExtractHiddenStatesSpeculator requires greedy draft sampling.
+- file: vllm/config/vllm.py:1154
+  context: Watermarking requires draft_sample_method == 'probabilistic'.
+- file: vllm_ascend/worker/v2/spec_decode/lmhead_tp_utils.py:43
+  context: v2 lmhead TP rejects probabilistic draft sampling at construction.
+- file: vllm_ascend/spec_decode/dflash2_proposer.py:59
+  context: v1 DFlash2 proposer rejects probabilistic draft sampling.
+related_parameters:
+- name: speculative.rejection_sample_method
+  relation: Probabilistic draft probabilities are only computed when rejection_sample_method is 'standard'; otherwise the
+    probabilistic path is inert.
+- name: speculative.use_local_argmax_reduction
+  relation: Mutually exclusive with probabilistic draft sampling (raises ValueError).
+- name: speculative.enable_adaptive_verification
+  relation: Rejected together with probabilistic under v2 lmhead TP; adaptive verification buffers are sized by draft logit
+    rows.
+- name: speculative.method
+  relation: DFlash2 on v1 and extract_hidden_states require greedy; watermarking requires probabilistic.
+- name: watermark_config
+  relation: Watermarking requires draft_sample_method='probabilistic' and rejection_sample_method='standard'.
+constraints:
+- On the v2 model runner with lmhead TP enabled, draft_sample_method='probabilistic' raises NotImplementedError at speculator
+  construction.
+- On the v1 model runner, DFlash2 draft models reject draft_sample_method='probabilistic' with a ValueError; use greedy instead.
+- The extract_hidden_states speculative method only supports draft_sample_method='greedy'.
+- use_local_argmax_reduction cannot be combined with draft_sample_method='probabilistic'.
+- When watermarking is enabled, draft_sample_method must be 'probabilistic' and rejection_sample_method must be 'standard'.
+tuning_advice:
+  summary: 'Keep the default ''greedy'' on Ascend unless you specifically need
+
+    probabilistic draft sampling for watermarking or exact rejection-sampling
+
+    semantics; greedy avoids a vocab-sized draft_logits buffer and is the only
+
+    mode supported by lmhead TP (v2), DFlash2 (v1), and extract_hidden_states.
+
+    '
+  suggested_values:
+  - scenario: Default Ascend deployment (v1 or v2 model runner, any spec method)
+    value: greedy
+    reason: Default and broadly supported; avoids the (max_num_reqs, num_speculative_steps, vocab_size) draft_logits allocation
+      and extra probability computation, lowering memory and per-step latency.
+  - scenario: v2 model runner with lmhead TP enabled
+    value: greedy
+    reason: Probabilistic is rejected at construction because the gumbel path cannot hold group-aligned padding rows; greedy
+      is the only valid choice.
+  - scenario: v1 model runner with DFlash2 draft model
+    value: greedy
+    reason: DFlash2 on v1 always drafts greedily and raises ValueError for probabilistic.
+  - scenario: Watermarking enabled (upstream requirement)
+    value: probabilistic
+    reason: Upstream vllm requires probabilistic draft sampling with standard rejection when watermarking is active; ensure
+      the Ascend config (no lmhead TP, no DFlash2 on v1) permits it.
+  caveats:
+  - Probabilistic mode allocates a persistent draft_logits buffer sized by vocab_size × num_speculative_steps × max_num_reqs,
+    which can be significant for large-vocabulary models on memory-constrained NPUs.
+  - Probabilistic mode adds a full-vocabulary probability tensor and softmax work per decode step, increasing latency and
+    memory bandwidth pressure.
+  - Several Ascend configurations (v2 lmhead TP, v1 DFlash2, extract_hidden_states) reject probabilistic at construction,
+    so switching modes may fail at engine startup rather than at first sampling.
+  - Watermarking's requirement for probabilistic conflicts with the Ascend restrictions above; verify compatibility before
+    enabling both.
+  quick_guide: Use 'greedy' (default) on Ascend; only switch to 'probabilistic' for watermarking and confirm lmhead TP / DFlash2
+    / extract_hidden_states are not in use.
+analysis_date: '2026-10-27'

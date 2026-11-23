@@ -1,0 +1,127 @@
+name: --kv-transfer-config
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1713
+- vllm/engine/arg_utils.py:714
+- vllm/config/vllm.py:419
+- vllm/config/kv_transfer.py:17
+- vllm_ascend/ascend_config.py:85
+- vllm_ascend/ascend_config.py:872
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:40
+- vllm_ascend/patch/platform/patch_kv_cache_utils.py:606
+- vllm_ascend/patch/platform/patch_mamba_block_aligned_split.py:95
+- vllm_ascend/patch/platform/patch_mamba_config.py:47
+- vllm_ascend/patch/platform/patch_pp_mtp.py:38
+value_type: dict
+default: null
+valid_choices: JSON object with fields such as kv_connector, kv_role, kv_port, kv_buffer_device, kv_parallel_size, kv_connector_extra_config;
+  kv_connector values on Ascend include MooncakeConnectorV1, MooncakeConnectorV2, AscendStoreConnector, MultiConnector
+cli_example: --kv-transfer-config '{"kv_connector":"MooncakeConnectorV1","kv_role":"kv_producer","kv_port":"20001"}'
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter enables distributed KV cache transfer (PD disaggregation / KV pooling) and is\nthe master switch\
+  \ that changes the entire runtime data path on Ascend. When set, vLLM builds\na KV connector and the engine becomes a \"\
+  kv transfer instance\" (is_kv_transfer_instance),\nwhich upstream uses to alter attention backend selection (vllm/v1/attention/selector.py:137)\n\
+  and to enable block hashing even without prefix caching (vllm/v1/core/kv_cache_utils.py:754).\nOn Ascend, vllm-ascend reads\
+  \ kv_transfer_config in many hot paths:\n- \"ascend_config.py:872 derives pd_tp_ratio / pd_head_ratio / num_head_replica\
+  \ from the\"\n  \"prefill\"/\"decode\" tp_size entries in kv_connector_extra_config for non-MLA models, which\n  directly\
+  \ controls how KV heads are replicated across the P/D boundary and thus the\n  communication volume and memory footprint\
+  \ of the transfer.\n- \"patch_kv_cache_coordinator.py:40 (_skips_eagle_block_drop) and\"\n  patch_mamba_block_aligned_split.py:95\
+  \ change prefix-cache hit behavior based on kv_role:\n  a pure PD prefill producer suppresses the EAGLE last-block drop,\
+  \ which otherwise pins\n  P-side prefix hits to 0 on hybrid mamba-align models. This directly affects prefix-cache\n  hit\
+  \ rate and therefore prefill latency/throughput.\n- \"patch_kv_cache_utils.py:606 attaches kv_transfer_config onto KVCacheConfig\
+  \ so the\"\n  coordinator can read the PD role; this affects block allocation and cache-hit alignment.\n- \"patch_mamba_config.py:47\
+  \ and patch_pp_mtp.py:38 branch on kv_connector / kv_role to\"\n  decide mamba cache mode and PP+MTP behavior.\nThe connector\
+  \ choice (MooncakeConnectorV1/V2 vs AscendStoreConnector) determines the\ntransport (RDMA/HCCL vs host memory pool) and\
+  \ thus the transfer latency and HBM/host memory\ntradeoff. kv_buffer_device=\"npu\" keeps the KV buffer in device memory\
+  \ (faster transfer,\nmore HBM used); host pooling (AscendStoreConnector with host_pool_gib) trades HBM for\nhost memory.\
+  \ Overall this parameter has high impact on latency, throughput and memory.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1713
+  context: CLI argument registration for --kv-transfer-config (JSON parsed into KVTransferConfig)
+- file: vllm/config/vllm.py:419
+  context: VllmConfig.kv_transfer_config field definition
+- file: vllm/config/kv_transfer.py:17
+  context: hisparse_host_pool_gib reads kv_connector / kv_connector_extra_config to size host pool
+- file: vllm/v1/attention/selector.py:137
+  context: 'Upstream: kv_transfer_config.is_kv_transfer_instance influences attention backend selection'
+- file: vllm/v1/core/kv_cache_utils.py:754
+  context: 'Upstream: connector enabled forces block hashing even without prefix caching'
+- file: vllm_ascend/ascend_config.py:85
+  context: 'KVPP validation: requires MooncakeConnectorV2 or AscendStoreConnector, kv_role checks'
+- file: vllm_ascend/ascend_config.py:872
+  context: Derives pd_tp_ratio / pd_head_ratio / num_head_replica from prefill/decode tp_size in extra config
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:40
+  context: Suppresses EAGLE last-block drop for pure PD prefill producer based on kv_role
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:606
+  context: Attaches kv_transfer_config onto KVCacheConfig for coordinator role reads
+- file: vllm_ascend/patch/platform/patch_mamba_block_aligned_split.py:95
+  context: Branches on kv_role to bypass mamba block-aligned split for consumers with computed prefix
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:47
+  context: Detects AscendStoreConnector / MultiConnector to decide mamba_cache_mode align
+- file: vllm_ascend/patch/platform/patch_pp_mtp.py:38
+  context: Detects PD prefill node from kv_role for PP+MTP handling
+related_parameters:
+- name: --additional-config (enable_kvpp)
+  relation: KVPP requires kv_transfer_config with MooncakeConnectorV2 or AscendStoreConnector; KVPP must be disabled on decode-only
+    node
+- name: --tensor-parallel-size
+  relation: prefill/decode tp_size in kv_connector_extra_config must satisfy prefill_tp_size % decode_tp_size == 0 for non-MLA
+    PD
+- name: --speculative-config
+  relation: KVPP only supports speculative method mtp or dspark; EAGLE block-drop suppression interacts with spec decoding
+- name: --enforce-eager / compilation_config.cudagraph_mode
+  relation: KVPP supports eager or PIECEWISE cudagraph only
+- name: --enable-prefix-caching
+  relation: Connector enabled forces block hashing even when prefix caching is off
+- name: HCCL_BUFFSIZE
+  relation: PD prefill node recommended to set HCCL_BUFFSIZE=256 alongside kv-transfer-config
+constraints:
+- For non-MLA PD disaggregation, the prefill tp_size must be divisible by the decode tp_size (prefill_tp_size % decode_tp_size
+  == 0), otherwise startup asserts.
+- When KVPP is enabled, kv_connector must be MooncakeConnectorV2 (or AscendStoreConnector), otherwise a ValueError is raised.
+- When KVPP is enabled, kv_role must not be kv_consumer on the decode-only node (KVPP must be disabled there).
+- KVPP and decode context parallel (DCP) cannot be enabled at the same time.
+- KVPP supports only eager execution or PIECEWISE cudagraph mode.
+- KVPP currently supports only non-hybrid MLA models.
+- KVPP supports speculative decoding only with method='mtp' or method='dspark'.
+- Only one HiSparseConnector may be configured, and it requires a positive host_pool_gib in kv_connector_extra_config.
+- recompute_scheduler_enable is only valid on PD-disaggregated D nodes (kv_role is kv_consumer); enabling it on P nodes or
+  PD-mixed mode fails at startup.
+tuning_advice:
+  summary: 'Use --kv-transfer-config to enable PD disaggregation or KV pooling; choose the connector
+
+    matching your transport (MooncakeConnectorV1/V2 for RDMA/HCCL PD, AscendStoreConnector for
+
+    host-memory pooling), set kv_role correctly per node, and align prefill/decode tp_size.
+
+    '
+  suggested_values:
+  - scenario: PD disaggregation prefill node (MooncakeConnectorV1, optimized config)
+    value: '{"kv_connector":"MooncakeConnectorV1","kv_buffer_device":"npu","kv_role":"kv_producer","kv_parallel_size":"1","kv_port":"20001"}'
+    reason: Documented optimized PD prefill config; kv_buffer_device=npu keeps transfer buffer in HBM for low latency.
+  - scenario: PD disaggregation decode node
+    value: '{"kv_connector":"MooncakeConnectorV1","kv_role":"kv_consumer","kv_port":"20002"}'
+    reason: Decode node consumes KV; kv_role must be kv_consumer so recompute scheduler and consumer-side prefix behavior
+      apply.
+  - scenario: KVPP prefill node (MooncakeConnectorV2)
+    value: '{"kv_connector":"MooncakeConnectorV2","kv_role":"kv_producer","kv_port":37000}'
+    reason: KVPP requires MooncakeConnectorV2 (or AscendStoreConnector); enable_kvpp in additional-config on P node only.
+  - scenario: KV pooling with AscendStoreConnector
+    value: '{"kv_connector":"AscendStoreConnector","kv_role":"kv_producer","kv_connector_extra_config":{"lookup_rpc_port":"0","backend":"memcache","use_layerwise":false,"load_async":true}}'
+    reason: Host-memory KV pooling; keep use_layerwise=false and load_async=true as required by KVPP.
+  caveats:
+  - Ensure prefill tp_size is divisible by decode tp_size for non-MLA PD, otherwise startup asserts.
+  - Do not enable KVPP on the decode-only node; KVPP and DCP are mutually exclusive.
+  - On hybrid mamba-align models, a pure prefill producer suppresses the EAGLE block drop to preserve prefix hits; verify
+    kv_role is set correctly to avoid zero P-side prefix hits.
+  - Set HCCL_BUFFSIZE=256 and add --enforce-eager on the PD prefill node for the documented optimized configuration.
+  quick_guide: Set kv_connector + kv_role per node; use MooncakeConnectorV1/V2 for PD, AscendStoreConnector for pooling; align
+    prefill/decode tp_size.
+analysis_date: '2026-10-27'

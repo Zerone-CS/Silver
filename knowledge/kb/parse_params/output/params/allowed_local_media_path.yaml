@@ -1,0 +1,104 @@
+name: --allowed-local-media-path
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:197
+- vllm/engine/arg_utils.py:448
+- vllm/engine/arg_utils.py:889
+- vllm/engine/arg_utils.py:1829
+- vllm/entrypoints/chat_utils.py:634
+- vllm/entrypoints/chat_utils.py:1049
+- vllm/entrypoints/llm.py:189
+- vllm/config/speculative.py:1279
+value_type: str
+default: ''
+valid_choices: Any filesystem directory path string; empty string disables local media access
+cli_example: --allowed-local-media-path <directory>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is a security/access-control gate, not a compute or memory knob. It is
+
+  defined in vllm/config/model.py:197 as a plain string field on ModelConfig and threaded
+
+  through EngineArgs (arg_utils.py:448, 889, 1829) into ModelConfig, then read at request
+
+  parsing time in vllm/entrypoints/chat_utils.py:634 (MultiModalItemTracker.allowed_local_media_path)
+
+  and passed to the media connector at chat_utils.py:1049 when a request actually contains
+
+  media. It is explicitly listed in ModelConfig.compute_hash''s ignored_factors set
+
+  (model.py:438), meaning it does NOT affect the computation graph, CUDA/HCCL graph capture,
+
+  or any kernel selection — so it has zero effect on NPU compute throughput or KV-cache memory.
+
+  Its only runtime effect is on the input-processing path: "when set, the media connector is"
+
+  permitted to read local image/video files from the whitelisted directory instead of
+
+  rejecting them, which adds file I/O (disk read + decode) to the prefill/input pipeline.
+
+  On Ascend this I/O and decode happens on the host CPU before the multimodal encoder runs on
+
+  the NPU, so it can add latency to multimodal requests (TTFT) but does not change NPU kernel
+
+  performance. vllm-ascend does not override or redefine this parameter; it is inherited
+
+  unchanged from upstream vLLM. The vllm-ascend docs (DeepSeek-V4-Flash-Vision.md:436,
+
+  Dots3-Note.md:391) only describe it as a directory whitelist for mounting local media into
+
+  the container, confirming it is a functional/security setting rather than a tuning knob.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:197
+  context: ModelConfig field definition with security warning docstring; default empty string
+- file: vllm/config/model.py:438
+  context: Listed in compute_hash ignored_factors — does not affect computation graph
+- file: vllm/engine/arg_utils.py:889
+  context: CLI argument registration --allowed-local-media-path
+- file: vllm/engine/arg_utils.py:1829
+  context: Passed from EngineArgs into ModelConfig construction
+- file: vllm/entrypoints/chat_utils.py:634
+  context: Exposed via MultiModalItemTracker.allowed_local_media_path property
+- file: vllm/entrypoints/chat_utils.py:1049
+  context: Passed to MEDIA_CONNECTOR_REGISTRY.load when a request contains media
+- file: vllm/config/speculative.py:1279
+  context: Propagated to draft model config for speculative decoding
+- file: examples/offline_DSD_k_tuner/generate_config.py:304
+  context: vllm-ascend example passes it to LLM() for offline multimodal benchmarking
+related_parameters:
+- name: --allowed-media-domains
+  relation: Companion access-control parameter restricting remote media URLs to given domains
+- name: --limit-mm-per-prompt
+  relation: Controls how many media items per prompt are processed; combined with local media path determines multimodal input
+    volume
+- name: --mm-processor-cache-gb
+  relation: Caches processed multimodal inputs; affects cost of repeated local media decoding
+constraints:
+- Enabling --allowed-local-media-path lets API requests read arbitrary files under the specified directory, which is a security
+  risk and should only be enabled in trusted environments.
+- The value must be a directory path on the server file system; requests referencing local media outside this path are rejected
+  by the media connector.
+tuning_advice:
+  summary: Set only when serving local multimodal files in a trusted environment; it is a security gate, not a performance
+    knob.
+  suggested_values:
+  - scenario: Text-only serving (no local media)
+    value: unset
+    reason: Leave unset to keep the default empty string; avoids the security risk and any local file I/O.
+  - scenario: Multimodal serving with local image/video files in a trusted environment
+    value: /data/media
+    reason: Point to the mounted media directory so the media connector can read local files; mount the same directory into
+      the Ascend container as described in the vllm-ascend docs.
+  caveats:
+  - Only enable in trusted environments — it grants API requests read access to the specified directory.
+  - Local media decode happens on host CPU before the NPU encoder, so it adds TTFT latency for multimodal requests; pair with
+    --mm-processor-cache-gb to amortize repeated decoding.
+  - Ensure the directory is mounted into the Ascend container; otherwise requests will fail to read the files.
+  quick_guide: Leave empty unless you need local media; if so, set it to a mounted, trusted directory.
+analysis_date: '2026-10-27'

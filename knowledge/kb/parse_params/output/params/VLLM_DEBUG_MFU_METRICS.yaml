@@ -1,0 +1,55 @@
+name: VLLM_DEBUG_MFU_METRICS
+type: env
+category: observability
+scope: vllm
+source_file:
+- vllm/envs.py:2049
+- vllm/envs.py:302
+- vllm/v1/metrics/perf.py:1607
+- vllm/v1/metrics/perf.py:1705
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "This env var only gates extra debug instrumentation for the --enable-mfu-metrics\nfeature in vLLM upstream\
+  \ (vllm/v1/metrics/perf.py). When set to 1:\n- \"In PerfMetricsLogging.__init__ (perf.py:1705), a PerfMetricsDebugLogging\"\
+  \n  instance is created, enabling additional per-step bookkeeping.\n- \"In the perf-stats computation path (perf.py:1607),\
+  \ a DebugPerfStats object is\"\n  built each step, capturing time.monotonic() deltas, request counts, an\n  asdict(ctx)\
+  \ copy, and per-component FLOP/read/write byte breakdowns.\nThese are pure CPU-side Python operations executed on the scheduler/metrics\n\
+  thread, not on the NPU. They do not alter kernel dispatch, memory allocation,\nor HCCL communication. The only runtime cost\
+  \ is a small amount of extra Python\nwork and object allocation per metrics step, which is negligible relative to\nmodel\
+  \ execution. No vllm-ascend override or usage of this variable was found\nin the provided context, so on Ascend it behaves\
+  \ identically to upstream (and\nis only meaningful when --enable-mfu-metrics is active).\n"
+usage_locations:
+- file: vllm/envs.py:2049
+  context: Environment variable definition, default 0, parsed as bool(int(...))
+- file: vllm/v1/metrics/perf.py:1607
+  context: Conditionally attaches DebugPerfStats (timing, request counts, FLOP/byte breakdowns) to PerfStats
+- file: vllm/v1/metrics/perf.py:1705
+  context: Conditionally instantiates PerfMetricsDebugLogging in PerfMetricsLogging.__init__
+related_parameters:
+- name: --enable-mfu-metrics
+  relation: This debug flag only has effect when MFU metrics collection is enabled
+- name: VLLM_LOG_MODEL_INSPECTION
+  relation: Sibling debug/logging env var, both are observability-only toggles
+constraints:
+- The value must be parseable as an integer (0 or 1); non-integer strings will raise a ValueError at startup.
+- This flag only produces debug output when --enable-mfu-metrics is enabled; otherwise it has no effect.
+tuning_advice:
+  summary: Leave disabled in production; enable only temporarily when debugging MFU/throughput accounting with --enable-mfu-metrics.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU
+    value: 0
+    reason: Avoids unnecessary per-step Python bookkeeping; no benefit to throughput or latency.
+  - scenario: Debugging MFU metrics or validating FLOP/byte accounting
+    value: 1
+    reason: Emits detailed per-component FLOP/read/write breakdowns and timing to diagnose MFU discrepancies.
+  caveats:
+  - Only meaningful together with --enable-mfu-metrics.
+  - Overhead is small but non-zero; disable after debugging.
+  quick_guide: Set VLLM_DEBUG_MFU_METRICS=1 only when debugging MFU metrics; otherwise leave at 0.
+analysis_date: '2026-10-27'

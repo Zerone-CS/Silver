@@ -1,0 +1,111 @@
+name: --kda-prefill-backend
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1783
+- vllm/engine/arg_utils.py:790
+- vllm/engine/arg_utils.py:2631
+- vllm_ascend/ascend_config.py:1804
+- vllm_ascend/ascend_config.py:1856
+- vllm/model_executor/layers/mamba/gdn/kimi_gdn_linear_attn.py:280
+- vllm/models/kimi_k3/nvidia/kda.py:455
+- vllm/models/glm5next/nvidia/kda.py:127
+value_type: str
+default: null
+valid_choices:
+- auto
+- triton
+- flashkda
+- flashinfer
+- fused
+cli_example: --kda-prefill-backend triton
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag selects the chunked-prefill kernel implementation for KDA (Kimi Delta
+
+  Attention / GDN-family linear attention) layers. Upstream vLLM (arg_utils.py:2631)
+
+  validates the value and injects it into additional_config["kda_prefill_backend"],
+
+  where model layers read it (kimi_gdn_linear_attn.py:280, kimi_k3/nvidia/kda.py:721,
+
+  glm5next/nvidia/kda.py:322). On CUDA, "flashkda"/"flashinfer" select fused kernels
+
+  that are ~2-4x faster than the Triton chunk path for bf16, head_dim=128 with a
+
+  bounded gate (see _resolve_kda_prefill_backend docstring); "fused" is ROCm-only.
+
+  On Ascend, vllm-ascend (ascend_config.py:1804) intercepts the injected key: only
+
+  "auto" and "triton" are considered compatible, and any other value triggers a
+
+  warning_once and is then stripped from additional_config (ascend_config.py:1856,
+
+  _NON_USER_INPUT_KEYS) so pydantic extra="forbid" does not reject it. The generic
+
+  KDA/GDN layers on Ascend therefore always run the FLA Triton chunk kernels via
+
+  triton-ascend; the flag has no effect on which kernel executes. Consequently the
+
+  parameter does not change Ascend runtime performance — the Triton path is used
+
+  regardless. It only matters for avoiding a spurious warning and for portability of
+
+  the same launch command across CUDA/ROCm/Ascend.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1783
+  context: argparse definition with choices auto/triton/flashkda/flashinfer/fused, default None
+- file: vllm/engine/arg_utils.py:2631
+  context: Validates flashkda is CUDA-only and fused is ROCm-only, then injects into additional_config['kda_prefill_backend']
+- file: vllm_ascend/ascend_config.py:1804
+  context: Ascend strips the key; warns only when value is not in ('auto','triton')
+- file: vllm_ascend/ascend_config.py:1856
+  context: kda_prefill_backend listed in _NON_USER_INPUT_KEYS so it never reaches AscendConfig pydantic validation
+- file: vllm/model_executor/layers/mamba/gdn/kimi_gdn_linear_attn.py:280
+  context: Shared Kimi GDN layer asserts backend resolves to 'triton' (auto maps to triton)
+- file: vllm/models/kimi_k3/nvidia/kda.py:455
+  context: resolve_kda_prefill_backend picks flashinfer/flashkda/triton based on CUDA capability, dtype, head_dim, gate bound
+- file: vllm/models/glm5next/nvidia/kda.py:127
+  context: _resolve_kda_prefill_backend selects FlashKDA vs Triton chunk_kda_with_fused_gate
+related_parameters:
+- name: --kda-decode-backend
+  relation: Companion selector for the KDA decode kernel; also injected into additional_config
+- name: --gdn-prefill-backend
+  relation: Analogous selector for GDN prefill; handled identically by vllm-ascend (stripped, only triton/auto supported)
+- name: --additional-config
+  relation: The flag value is written into additional_config['kda_prefill_backend'] before AscendConfig processing
+constraints:
+- The value must be one of auto, triton, flashkda, flashinfer, fused; argparse rejects anything else.
+- flashkda is only available on CUDA and raises ValueError on any other platform (including Ascend) at engine-config creation.
+- fused is only available on ROCm and raises ValueError on any other platform.
+- On Ascend, only auto and triton are supported; any other value is ignored with a warning and the Triton FLA path is used.
+- The shared Kimi GDN layer asserts the resolved backend is triton, so auto always collapses to triton there.
+tuning_advice:
+  summary: On Ascend, leave this at auto/triton (or unset); the flag is stripped and the Triton FLA path is always used, so
+    it cannot be used to tune NPU performance.
+  suggested_values:
+  - scenario: Any KDA/GDN model on Ascend NPU (v1 or v2 worker)
+    value: auto
+    reason: Ascend only supports auto/triton; auto resolves to the Triton FLA chunk kernel via triton-ascend and avoids the
+      unsupported-value warning.
+  - scenario: Explicitly pinning the Ascend-supported kernel
+    value: triton
+    reason: Matches the only kernel available on Ascend (FLA Triton via triton-ascend); equivalent to auto but explicit.
+  - scenario: Portable launch script shared across CUDA/ROCm/Ascend
+    value: auto
+    reason: auto lets each platform pick its supported backend; on CUDA it may select flashkda/flashinfer, on Ascend it stays
+      Triton.
+  caveats:
+  - Do not set flashkda/flashinfer/fused on Ascend expecting a speedup — the value is ignored and only a warning is logged.
+  - flashkda raises ValueError on non-CUDA platforms at config creation, so it cannot even be passed on Ascend without failing
+    early.
+  - KDA prefill kernel choice does not affect decode performance; use --kda-decode-backend for decode-side tuning (also stripped
+    on Ascend).
+  quick_guide: On Ascend use auto or triton (or omit); other values are ignored and the Triton FLA path always runs.
+analysis_date: '2026-10-27'

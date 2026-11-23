@@ -1,0 +1,123 @@
+name: --tensor-parallel-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:124
+- vllm/engine/arg_utils.py:1095
+- vllm/engine/arg_utils.py:489
+- vllm/config/model.py:1425
+- vllm/config/model.py:1448
+- vllm_ascend/ascend_config.py:79
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:32
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:149
+value_type: int
+default: 1
+valid_choices: integer >= 1; must divide the model's total number of attention heads; must satisfy world_size == tp * pp *
+  pcp
+cli_example: --tensor-parallel-size 8
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--tensor-parallel-size (TP) is the primary sharding axis for model weights on Ascend NPU.\nIn vLLM upstream,\
+  \ ParallelConfig.tensor_parallel_size (vllm/config/parallel.py:124) is\nvalidated in ModelConfig.verify_with_parallel_config\
+  \ (vllm/config/model.py:1425): the model's\ntotal_num_attention_heads must be divisible by TP, otherwise a ValueError is\
+  \ raised. TP also\nparticipates in the world-size computation for multi-node DP launches\n(vllm/engine/arg_utils.py:2185)\
+  \ and in CUDAGraph size adjustment for spec decode\n(vllm/config/compilation.py:1517).\n\nOn Ascend, vllm-ascend consumes\
+  \ tensor_parallel_size in several Ascend-specific paths:\n- \"AscendMultiprocExecutor._get_parallel_sizes (vllm_ascend/patch/platform/patch_multiproc_executor.py:149)\"\
+  \n  reads tp_size and asserts world_size == tp * pp * pcp (line 33). This determines the number\n  of worker processes spawned\
+  \ and the HCCL collective group size. Larger TP means more NPU\n  ranks participating in every all-reduce/all-gather, so\
+  \ per-token communication volume grows\n  with TP while per-rank weight memory shrinks roughly linearly.\n- \"_is_driver_worker\
+  \ (line 158) uses rank % tensor_parallel_size == 0 to elect the driver,\"\n  so TP defines the rank topology for output\
+  \ gathering.\n- \"KVPPConfig.from_vllm_config (vllm_ascend/ascend_config.py:79) computes the KV layer-parallel\"\n  group\
+  \ size as tensor_parallel_size * prefill_context_parallel_size when enable_kvpp is set,\n  so TP directly changes the KVPP\
+  \ sharding domain.\n- \"Fine-grained TP (finegrained_tp_config in additional_config) is sharded along the DP axis,\"\n \
+  \ not the standard TP axis; per docs, o_proj fine-grained TP requires tensor_parallel_size == 1\n  and embedding/lmhead/mlp\
+  \ fine-grained TP is only effective when tensor_parallel_size == 1.\n  Thus raising TP disables the fine-grained TP feature\
+  \ path entirely.\n\nNet effect: \"TP trades per-rank HBM footprint (weights + KV cache) against HCCL communication\"\ncost\
+  \ per forward pass. On Ascend, HCCL all-reduce bandwidth and latency dominate at high TP,\nso throughput typically peaks\
+  \ at the smallest TP that fits the model in HBM, and latency\n(single-request) degrades as TP grows due to collective synchronization\
+  \ overhead.\n"
+usage_locations:
+- file: vllm/config/parallel.py:124
+  context: 'Field definition tensor_parallel_size: int = Field(default=1, ge=1)'
+- file: vllm/engine/arg_utils.py:1095
+  context: CLI registration --tensor-parallel-size / -tp in ParallelConfig argument group
+- file: vllm/config/model.py:1425
+  context: 'Validation: total_num_attention_heads must be divisible by tensor_parallel_size'
+- file: vllm/config/model.py:1448
+  context: 'DCP constraint: for GQA/MQA, tensor_parallel_size must exceed total KV heads when DCP > 1'
+- file: vllm/engine/arg_utils.py:2185
+  context: 'Multi-node world size computation: world_size_within_dp = pp * tp * pcp'
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:149
+  context: AscendMultiprocExecutor reads tp_size to assert world_size == tp * pp * pcp
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:158
+  context: 'Driver worker election: rank % tensor_parallel_size == 0'
+- file: vllm_ascend/ascend_config.py:79
+  context: KVPP group size = tensor_parallel_size * prefill_context_parallel_size
+related_parameters:
+- name: --pipeline-parallel-size
+  relation: 'Multiplicative in world_size: world_size == tp * pp * pcp; both must be set consistently'
+- name: --prefill-context-parallel-size
+  relation: Multiplicative in world_size and in KVPP group size; PCP adds extra ranks on top of TP
+- name: --decode-context-parallel-size
+  relation: For GQA/MQA models, DCP > 1 requires tensor_parallel_size > total_num_kv_heads and DCP <= tp // total_num_kv_heads
+- name: --data-parallel-size
+  relation: DP multiplies world size; MoE layers are sharded by tp * pcp * dp
+- name: --enable-expert-parallel
+  relation: EP replaces TP for MoE layers; when enabled, expert weights are sharded by EP instead of TP
+- name: finegrained_tp_config (additional_config)
+  relation: Fine-grained TP (o_proj/embedding/lmhead/mlp) is only effective when tensor_parallel_size == 1; o_proj requires
+    tp == 1
+- name: additional_config.enable_kvpp
+  relation: KVPP group size is derived as tensor_parallel_size * prefill_context_parallel_size
+constraints:
+- tensor_parallel_size must be >= 1.
+- The model's total number of attention heads must be divisible by --tensor-parallel-size, otherwise a ValueError is raised.
+- world_size must equal tensor_parallel_size × pipeline_parallel_size × prefill_context_parallel_size (asserted in AscendMultiprocExecutor).
+- When --nnodes > 1, --nnodes must evenly divide data_parallel_size × pipeline_parallel_size × tensor_parallel_size × prefill_context_parallel_size.
+- For GQA/MQA models with --decode-context-parallel-size > 1, --tensor-parallel-size must be greater than the model's total
+  number of KV heads.
+- For GQA/MQA models, --decode-context-parallel-size must not exceed tensor_parallel_size // total_num_kv_heads.
+- Fine-grained TP for o_proj requires tensor_parallel_size == 1 (enforced at config load).
+- Fine-grained TP for embedding/LM head/mlp is only effective when tensor_parallel_size == 1; with TP > 1 the fine-grained
+  configuration does not take effect.
+- KVPP (additional_config.enable_kvpp) cannot be combined with --decode-context-parallel-size > 1.
+tuning_advice:
+  summary: Choose the smallest TP that fits the model weights and KV cache in per-NPU HBM, since larger TP increases HCCL
+    collective cost on Ascend.
+  suggested_values:
+  - scenario: Small dense model (e.g. 7B-14B) that fits on a single Ascend NPU
+    value: 1
+    reason: TP=1 avoids all HCCL all-reduce/all-gather overhead and keeps latency minimal; also keeps fine-grained TP available.
+  - scenario: Mid-size dense model (e.g. 32B-70B) requiring weight sharding across NPUs
+    value: 4
+    reason: 'TP=4 is a common sweet spot on 8-NPU nodes: weights fit in HBM while HCCL collective size stays moderate; must
+      divide the model''s attention head count.'
+  - scenario: Large MoE model (e.g. DeepSeek-class) with expert parallelism
+    value: 8
+    reason: Use TP=8 (full node) for dense layers while enabling --enable-expert-parallel so MoE experts are sharded by EP
+      rather than TP, reducing per-token all-reduce volume.
+  - scenario: Deployment using fine-grained TP (finegrained_tp_config)
+    value: 1
+    reason: Fine-grained TP shards along the DP axis and is only effective when tensor_parallel_size == 1; o_proj fine-grained
+      TP requires tp == 1.
+  - scenario: GQA/MQA model with decode context parallelism enabled
+    value: 8
+    reason: DCP > 1 requires tensor_parallel_size > total_num_kv_heads and DCP <= tp // total_num_kv_heads; pick TP large
+      enough to satisfy this.
+  caveats:
+  - On Ascend, HCCL all-reduce/all-gather latency grows with TP; single-request latency typically worsens as TP increases
+    even though throughput may improve.
+  - TP must divide the model's total attention head count; models with few heads (e.g. some GQA models) cannot use large TP.
+  - Raising TP above 1 disables fine-grained TP for embedding/LM head/mlp and is incompatible with o_proj fine-grained TP.
+  - KVPP group size scales with TP × PCP, so increasing TP enlarges the KV layer-parallel domain when enable_kvpp is set.
+  - TP interacts with PCP and DP in world_size; changing TP without adjusting PP/PCP/DP can break the world_size assertion
+    in AscendMultiprocExecutor.
+  - For MoE models, prefer --enable-expert-parallel over very large TP to avoid excessive dense-layer collective cost.
+  quick_guide: Use the smallest --tensor-parallel-size that fits the model in HBM; keep TP=1 for small models and fine-grained
+    TP, and pair large TP with EP for MoE.
+analysis_date: '2026-10-27'

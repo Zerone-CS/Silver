@@ -1,0 +1,176 @@
+name: --kv-cache-dtype
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:111
+- vllm/engine/arg_utils.py:1275
+- vllm/engine/arg_utils.py:459
+- vllm/v1/attention/backend.py:63
+- vllm_ascend/patch/platform/patch_kv_cache_dtype.py:48
+- vllm_ascend/ascend_config.py:918
+- vllm_ascend/ascend_config.py:920
+- vllm_ascend/patch/platform/patch_mamba_config.py:35
+- vllm_ascend/patch/platform/patch_mamba_config.py:80
+- vllm_ascend/patch/platform/patch_kv_cache_utils.py:292
+value_type: str
+default: auto
+valid_choices: 'upstream: auto, float16, bfloat16, fp8, fp8_e4m3, fp8_e5m2, fp8_inc, fp8_ds_mla, nvfp4_4over6 (plus model-specific);
+  vllm-ascend widens the Literal to additionally accept int8, mxfp8, turboquant_k8v4, turboquant_4bit_nc, turboquant_k3v4_nc,
+  turboquant_3bit_nc, int4_per_token_head, int8_per_token_head'
+cli_example: --kv-cache-dtype fp8
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: '--kv-cache-dtype selects the storage dtype of the paged KV cache, which directly
+
+  determines how many KV blocks fit in NPU HBM and how much memory bandwidth each
+
+  attention step consumes. On Ascend this parameter is not merely a storage hint:
+
+  vllm-ascend derives several execution paths from it.
+
+  (1) Memory capacity: switching from bfloat16 to fp8/int8 halves the per-token KV
+
+  footprint, roughly doubling the number of KV blocks (and thus max concurrency /
+
+  batch size) for a fixed --gpu-memory-utilization. This is the dominant lever for
+
+  decode throughput on memory-bandwidth-bound Ascend NPUs.
+
+  (2) Ascend sparse-attention dispatch: vllm_ascend/ascend_config.py:918-922 reads
+
+  cache_config.cache_dtype and sets enable_sparse_sfa_c8 when cache_dtype is in
+
+  ["fp8","int8"] and the model uses SFA sparse attention (or a kpool indexer), and
+
+  enable_sparse_sfa_turboquant when cache_dtype == "turboquant_4bit_nc". These flags
+
+  gate the C8 packed-KV-cache kernels and the reshape optimization
+
+  (_c8_reshape_optim_enabled, ascend_config.py:933), i.e. a different, faster
+
+  attention kernel path is selected purely by this flag.
+
+  (3) Hybrid/Mamba page-size alignment: patch_mamba_config.py:80-83 resolves
+
+  cache_dtype to a torch dtype to compute the attention token page size so it can be
+
+  aligned with the Mamba state page size; a different dtype changes the page size and
+
+  therefore the block layout and padding overhead.
+
+  (4) KV cache group construction: patch_kv_cache_utils.py:292 checks
+
+  cache_dtype_str == TURBOQUANT_CACHE_DTYPE to route to the TurboQuant group-spec
+
+  builder, changing how layer tuples are grouped and padded.
+
+  (5) vllm-ascend widens the accepted Literal (patch_kv_cache_dtype.py:48-67) to add
+
+  int8 (DeepSeek V4 Ascend MLA KV cache), mxfp8 (C8-MXFP on the QFA path) and the
+
+  turboquant/int4/int8_per_token_head variants, and widens the argparse choices in
+
+  platform.py::pre_register_and_update. Without this patch, --kv-cache-dtype int8
+
+  fails pydantic literal validation before reaching the kernel.
+
+  (6) Upstream attention backends declare supported_kv_cache_dtypes
+
+  (vllm/v1/attention/backend.py:63); a dtype not supported by the selected backend
+
+  causes backend selection to reject it, so the effective kernel may change.
+
+  Net effect: "fp8/int8 KV cache typically raises throughput and lowers per-token"
+
+  latency via larger batches and reduced HBM traffic, at some accuracy cost; the
+
+  Ascend C8 sparse paths additionally unlock dedicated kernels.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:111
+  context: CacheConfig.cache_dtype field definition and docstring (default 'auto').
+- file: vllm/engine/arg_utils.py:1275
+  context: Registers --kv-cache-dtype CLI flag from CacheConfig.cache_dtype.
+- file: vllm/engine/arg_utils.py:459
+  context: EngineArgs.kv_cache_dtype typed as CacheDType, forwarded into CacheConfig.
+- file: vllm/v1/attention/backend.py:63
+  context: AttentionBackend.supported_kv_cache_dtypes gates which backends accept the dtype.
+- file: vllm_ascend/patch/platform/patch_kv_cache_dtype.py:48
+  context: Widens upstream CacheDType Literal to accept int8, mxfp8, turboquant_* and int*_per_token_head.
+- file: vllm_ascend/ascend_config.py:918
+  context: Derives enable_sparse_sfa_turboquant from cache_dtype == 'turboquant_4bit_nc'.
+- file: vllm_ascend/ascend_config.py:920
+  context: Derives enable_sparse_sfa_c8 from cache_dtype in ['fp8','int8'] for SFA/kpool models.
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:35
+  context: Mirrors enable_sparse_sfa_c8 gating at ModelConfig.__post_init__ time.
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:80
+  context: Resolves cache_dtype to torch dtype to compute attention page size for hybrid alignment.
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:292
+  context: Routes to TurboQuant KV cache group-spec builder when cache_dtype_str matches.
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: Together they determine the number of KV blocks; a smaller KV dtype multiplies the blocks available at the same
+    memory fraction.
+- name: --kv-cache-memory-bytes
+  relation: Alternative explicit KV memory budget; the dtype determines how many tokens that budget holds.
+- name: --attention-config.indexer_kv_dtype
+  relation: Separate dtype for the sparse-attention indexer cache; enable_sparse_li_c8/c4 are derived from it, and it is mutually
+    exclusive between fp8/int8 and mxfp4.
+- name: --kv-cache-dtype-skip-layers
+  relation: Excludes specific layers from KV quantization; skipped layers keep higher precision and pad to the quantized page
+    size.
+- name: --block-size
+  relation: KV dtype changes per-token byte size and thus the page size; hybrid models align attention and Mamba page sizes
+    based on it.
+- name: --quantization
+  relation: Weight/activation quantization is independent of KV cache dtype; C8 KV cache is controlled only by --kv-cache-dtype.
+- name: --speculative-config.kv_cache_dtype
+  relation: Draft model inherits the target's --kv-cache-dtype when unset.
+constraints:
+- Upstream CacheDType Literal rejects int8/mxfp8/turboquant values unless the vllm-ascend patch_kv_cache_dtype platform patch
+  is active (it is loaded via adapt_patch in pre_register_and_update).
+- The chosen dtype must be listed in the selected attention backend's supported_kv_cache_dtypes, otherwise backend selection
+  will not accept it.
+- enable_sparse_li_c8 and enable_sparse_li_c4 are mutually exclusive and raise ValueError if both are derived true.
+- enable_kv_nz requires an MLA model and a PD-disaggregated KV consumer (decode) node, otherwise RuntimeError/NotImplementedError
+  is raised.
+- For DeepSeekV3.2-like models that default to fp8 KV cache, bfloat16 is only a valid override for those models; it is an
+  invalid option for models that do not default to fp8.
+- The SFA C8 packed KV cache path (enable_sparse_sfa_c8) is only activated when the model uses SFA sparse attention or a kpool
+  indexer.
+tuning_advice:
+  summary: Use fp8 (or int8 on DeepSeek V4 MLA) KV cache to roughly double KV capacity and cut HBM traffic on Ascend, falling
+    back to bfloat16 only when accuracy requires it.
+  suggested_values:
+  - scenario: DeepSeek-V4-Flash/Pro on 950PR/950DT with C8 sparse attention
+    value: fp8
+    reason: Default C8 scheme on these products; enables enable_sparse_sfa_c8 and the C8 reshape optimization, giving the
+      fastest attention path with acceptable accuracy.
+  - scenario: DeepSeek V4 MLA on Ascend where int8 KV cache is supported
+    value: int8
+    reason: Ascend-specific int8 MLA KV cache (enabled by patch_kv_cache_dtype) also triggers enable_sparse_sfa_c8 and halves
+      KV footprint versus bf16.
+  - scenario: GLM5.2 / DSA sparse-attention prefill nodes
+    value: int8
+    reason: Docs pair --kv-cache-dtype int8 with --attention_config.indexer_kv_dtype int8 for SFA/LI sparse attention and
+      C8 reshape optimization on prefill nodes.
+  - scenario: Accuracy-sensitive workloads or models without fp8 KV support
+    value: bfloat16
+    reason: Keeps full-precision KV cache; use when fp8/int8 causes accuracy regression, at the cost of ~2x KV memory.
+  - scenario: Default / unknown model
+    value: auto
+    reason: Uses the model dtype; safe baseline before benchmarking quantized KV cache.
+  caveats:
+  - Always benchmark accuracy after switching to fp8/int8; the C8 path is chosen implicitly and cannot be toggled separately.
+  - int8 and turboquant dtypes require the vllm-ascend platform patch; they are not valid on stock vLLM.
+  - 'Combine with --gpu-memory-utilization tuning: after halving KV bytes, raise utilization or batch size to realize the
+    throughput gain.'
+  quick_guide: Set --kv-cache-dtype fp8 (or int8 for DeepSeek V4 MLA) to double KV capacity and unlock Ascend C8 kernels;
+    use bfloat16 only if accuracy regresses.
+analysis_date: '2026-10-27'

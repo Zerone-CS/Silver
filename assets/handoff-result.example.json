@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "task_id": null,
+  "role": null,
+  "input_ref": {
+    "path": null,
+    "sha256": null
+  },
+  "status": null,
+  "artifacts": [],
+  "observations": [],
+  "claims": [],
+  "uncertainties": [],
+  "next_actions": [],
+  "decision_recommendation": null,
+  "budget_used": {
+    "time_seconds": null,
+    "runs": null,
+    "api_calls": null,
+    "cost": null,
+    "measurement_basis": null
+  },
+  "side_effects": {
+    "changes": [],
+    "recovery_actions": [],
+    "final_service_identity_ref": null
+  },
+  "notes": "completed只表示本次子任务完成；没有评价依据时不填写优化采纳结论。"
+}

@@ -1,0 +1,115 @@
+name: additional_config.ascend_compilation_config.enable_static_kernel
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:125
+- vllm_ascend/ascend_config.py:147
+- vllm_ascend/platform.py:1308
+- vllm_ascend/platform.py:1332
+- vllm_ascend/compilation/compiler_interface.py:88
+- vllm_ascend/compilation/compiler_interface.py:122
+- vllm_ascend/worker/worker.py:197
+- vllm_ascend/ops/fused_moe/routed_experts.py:434
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'enable_static_kernel turns on npugraph_ex''s static-shape kernel compilation path.
+
+  In vllm_ascend/compilation/compiler_interface.py:122-134, when enabled it sets
+
+  options["static_kernel_compile"]=True and computes
+
+  options["_vllm_aclnn_static_kernel_sym_range"] from the decode cudagraph batch sizes
+
+  (_compute_decode_cudagraph_batch_sizes), so the compiler emits kernels specialized to
+
+  the fixed decode batch shapes. This removes dynamic-shape overhead inside the captured
+
+  ACL graph and can lower per-step decode latency / raise decode throughput. It also
+
+  triggers super_kernel_optimize when enable_super_kernel is set (compiler_interface.py:130-134).
+
+  Enabling it also forces LOCAL_WORLD_SIZE to be computed and exported
+
+  (compiler_interface.py:88-108) so npugraph_ex can build per-node Gloo groups for
+
+  coordinating static-kernel compilation and .run package installation, and it installs
+
+  SIGTERM/SIGINT handlers in the worker to uninstall the static kernel package on shutdown
+
+  (worker.py:197-212). The flag is also read in AscendRoutedExperts
+
+  (routed_experts.py:434) to select the static-kernel-aware MoE execution path.
+
+  Because static kernels are shape-specialized, the benefit only materializes when the
+
+  decode batch shapes are stable and match the captured cudagraph sizes; otherwise the
+
+  one-time compilation cost is paid without payoff. The platform layer force-disables it
+
+  whenever cudagraph_mode is NONE or piecewise (platform.py:1308, 1332), so it only has
+
+  effect with full cudagraphs.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:125
+  context: Field definition of enable_static_kernel (default False) in AscendCompilationConfig.
+- file: vllm_ascend/ascend_config.py:147
+  context: 'after-validator: hardware downgrade disables it if NPUGRAPH_EX unsupported; asserts npugraph_ex must be enabled
+    when static kernel is on.'
+- file: vllm_ascend/platform.py:1308
+  context: Force-disabled when cudagraph_mode is NONE.
+- file: vllm_ascend/platform.py:1332
+  context: Force-disabled when cudagraph_mode requires piecewise compilation.
+- file: vllm_ascend/compilation/compiler_interface.py:88
+  context: Computes and exports LOCAL_WORLD_SIZE for static kernel node topology.
+- file: vllm_ascend/compilation/compiler_interface.py:122
+  context: Sets static_kernel_compile and sym_range options; enables super_kernel_optimize if super kernel on.
+- file: vllm_ascend/worker/worker.py:197
+  context: Installs signal handlers to uninstall static kernel package on shutdown.
+- file: vllm_ascend/ops/fused_moe/routed_experts.py:434
+  context: Reads flag to select static-kernel-aware MoE execution path.
+related_parameters:
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: 'Hard dependency: static kernel requires npugraph_ex to be enabled (asserted).'
+- name: additional_config.ascend_compilation_config.enable_super_kernel
+  relation: Super kernel requires static kernel; when enable_super_kernel is omitted it inherits enable_static_kernel's value.
+- name: compilation_config.cudagraph_mode
+  relation: Static kernel is force-disabled when cudagraph_mode is NONE or piecewise; only effective with full cudagraphs.
+- name: compilation_config.cudagraph_capture_sizes
+  relation: Decode cudagraph batch sizes define the sym_range used to specialize static kernels.
+constraints:
+- enable_static_kernel requires enable_npugraph_ex to be enabled; otherwise an assertion fails.
+- enable_static_kernel is automatically disabled if the current hardware profile does not support NPUGRAPH_EX.
+- enable_static_kernel is force-disabled when cudagraph_mode is NONE or requires piecewise compilation.
+- If enable_super_kernel is not explicitly set, it inherits the value of enable_static_kernel.
+tuning_advice:
+  summary: Enable only for latency-sensitive decode workloads with stable batch shapes and full cudagraphs, where the one-time
+    compile cost is amortized.
+  suggested_values:
+  - scenario: Stable-shape, latency-sensitive decode serving with FULL_DECODE_ONLY cudagraphs
+    value: true
+    reason: Static-shape kernels specialized to the decode cudagraph batch sizes reduce per-step decode overhead and can lower
+      latency.
+  - scenario: Variable batch sizes or piecewise/NONE cudagraph modes
+    value: false
+    reason: Static kernels are shape-specialized; with changing shapes or non-full cudagraphs the flag is disabled or yields
+      no benefit while paying compile cost.
+  - scenario: Default / general-purpose deployment
+    value: false
+    reason: Default is false; enable only after confirming stable shapes and that npugraph_ex is supported on the hardware.
+  caveats:
+  - Must keep enable_npugraph_ex true; otherwise the config validator asserts.
+  - Pair with compilation_config cudagraph_mode FULL_DECODE_ONLY (or full cudagraphs) so the flag is not force-disabled.
+  - Expect extra startup compile time and a shutdown cleanup step for the static kernel package.
+  quick_guide: Set enable_static_kernel true only with npugraph_ex and full decode cudagraphs on stable batch shapes; otherwise
+    leave false.
+analysis_date: '2026-10-27'

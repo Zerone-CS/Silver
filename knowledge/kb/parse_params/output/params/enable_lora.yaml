@@ -1,0 +1,99 @@
+name: --enable-lora
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1480
+- vllm/engine/arg_utils.py:629
+- vllm/engine/arg_utils.py:2474
+- vllm/config/compilation.py:673
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: --enable-lora
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: "--enable-lora is a master switch. In vllm/engine/arg_utils.py:2474, when enable_lora is True a\nLoRAConfig\
+  \ object is constructed and attached to the engine config; when False, lora_config is\nNone and the entire LoRA code path\
+  \ (LoRA manager, adapter slot allocation, LoRA-wrapped linear\nlayers, LoRA-aware CUDA/NPU graph capture) is skipped. Enabling\
+  \ it therefore has direct runtime\ncost on Ascend NPU:\n1. Memory: each active LoRA slot (--max-loras) preallocates adapter\
+  \ tensors sized by\n   --max-lora-rank, consuming NPU HBM that would otherwise go to KV cache, reducing the number\n   of\
+  \ cacheable blocks and thus throughput under memory pressure.\n2. Latency/throughput: LoRA-wrapped linear layers add extra\
+  \ matmul + scaling ops per token\n   (punica/bgmv-style kernels on Ascend), so per-token compute is higher than the base\
+  \ model.\n3. Graph capture: vllm/config/compilation.py:667-673 shows cudagraph_specialize_lora creates\n   separate graphs\
+  \ for LoRA-active vs LoRA-inactive batches; when enable_lora is False this\n   option has no effect. On Ascend, ACL graph\
+  \ capture with LoRA requires additional capture\n   sizes and startup time (see test_lora_310p.py using cudagraph_mode FULL_DECODE_ONLY\
+  \ with\n   capture sizes [1,2,4]).\n4. Speculative decoding interaction: arg_utils.py:2478-2490 raises if max_num_batched_tokens\
+  \ is\n   too small relative to max_num_seqs * (num_speculative_tokens + 1) when LoRA + spec decode\n   are combined, forcing\
+  \ larger batches and more memory.\nWhen enable_lora is False, none of these costs apply and the engine runs the plain dense\
+  \ path.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1480
+  context: CLI flag definition (BooleanOptionalAction) in LoRAConfig argument group
+- file: vllm/engine/arg_utils.py:629
+  context: 'EngineArgs field enable_lora: bool = False'
+- file: vllm/engine/arg_utils.py:2474
+  context: Gates construction of LoRAConfig; None when disabled
+- file: vllm/config/compilation.py:673
+  context: cudagraph_specialize_lora has no effect when enable_lora is False
+- file: vllm/v1/utils.py:743
+  context: Reported as feature flag enable_lora in usage telemetry
+- file: tests/e2e/pull_request/one_card/lora/test_lora_with_spec_decode.py:74
+  context: Ascend e2e test combining enable_lora with speculative decoding
+- file: tests/e2e/pull_request/one_card/_310p/test_lora_310p.py:81
+  context: Ascend 310P e2e test with enable_lora + ACL graph FULL_DECODE_ONLY
+related_parameters:
+- name: --max-loras
+  relation: Number of adapter slots preallocated in NPU memory; only meaningful when --enable-lora is set
+- name: --max-lora-rank
+  relation: Upper bound on adapter rank; determines per-slot tensor size and thus memory cost
+- name: --max-cpu-loras
+  relation: Size of CPU-side LoRA cache; only used when --enable-lora is set
+- name: --fully-sharded-loras
+  relation: Shards LoRA computation across TP ranks; only relevant with --enable-lora
+- name: --lora-modules
+  relation: Adapters loaded at startup; requires --enable-lora to take effect
+- name: compilation_config.cudagraph_specialize_lora
+  relation: Creates separate graphs for LoRA-active/inactive batches; no effect when --enable-lora is False
+- name: --speculative-config
+  relation: Combining with LoRA requires larger max_num_batched_tokens or raises ValueError
+constraints:
+- When --enable-lora is combined with speculative decoding, max_num_batched_tokens must be at least max_num_seqs * (num_speculative_tokens
+  + 1), otherwise engine startup raises ValueError.
+- Saving sharded state is not supported with --enable-lora=True (raises ValueError in save_sharded_state_offline example).
+- Adapters registered via --lora-modules are only loaded when --enable-lora is set.
+- compilation_config.cudagraph_specialize_lora has no effect when --enable-lora is False.
+tuning_advice:
+  summary: Enable --enable-lora only when serving adapters; keep --max-loras and --max-lora-rank as small as possible to preserve
+    NPU HBM for KV cache.
+  suggested_values:
+  - scenario: Serving a single adapter per batch on Ascend NPU
+    value: true
+    reason: Set --enable-lora with --max-loras 1 and the smallest --max-lora-rank that fits the adapter (e.g. 8 or 16) to
+      minimize preallocated adapter memory and leave HBM for KV cache.
+  - scenario: Multi-adapter serving with TP
+    value: true
+    reason: Use --max-loras equal to the number of concurrently active adapters and consider --fully-sharded-loras to distribute
+      LoRA compute across tensor-parallel ranks on Ascend.
+  - scenario: Base-model-only deployment (no adapters)
+    value: false
+    reason: Leaving --enable-lora off skips LoRA slot allocation, LoRA-wrapped kernels, and LoRA graph specialization, maximizing
+      KV cache and throughput.
+  caveats:
+  - Each active LoRA slot (--max-loras) preallocates NPU HBM sized by --max-lora-rank, directly reducing KV cache capacity
+    and throughput under memory pressure.
+  - LoRA-wrapped linear layers add per-token matmul/scaling ops on Ascend, increasing decode latency versus the plain dense
+    path.
+  - On Ascend, LoRA with ACL graph capture (e.g. cudagraph_mode FULL_DECODE_ONLY) requires explicit cudagraph_capture_sizes
+    and increases startup time; cudagraph_specialize_lora adds separate graphs for LoRA-active vs inactive batches.
+  - Combining LoRA with speculative decoding forces a larger max_num_batched_tokens, increasing memory footprint.
+  - Dynamic adapter loading/unloading after startup additionally requires VLLM_ALLOW_RUNTIME_LORA_UPDATING=True.
+  quick_guide: Enable --enable-lora only when serving adapters, and keep --max-loras/--max-lora-rank minimal to protect KV
+    cache on Ascend NPU.
+analysis_date: '2026-10-27'

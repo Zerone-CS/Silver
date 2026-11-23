@@ -1,0 +1,87 @@
+name: profiler.proton_profiler_dir
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/config/profiler.py:195
+- vllm/config/profiler.py:215
+- vllm/profiler/wrapper.py:392
+value_type: str
+default: ''
+valid_choices: Any local filesystem directory path (absolute or relative; ~ is expanded). URI schemes such as s3://, gs://,
+  hdfs:// are rejected.
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'proton_profiler_dir only selects where Triton Proton profiling artifacts are written.
+
+  In vllm/profiler/wrapper.py:392-393 the value is stored as self._output_dir and joined
+
+  with a rank-qualified name (proton_{worker_name}) to form the output path; it does not
+
+  alter kernel execution, scheduling, or memory allocation. The only runtime cost is the
+
+  I/O of writing profile files during an active Proton session, which is inherent to
+
+  profiling itself rather than to this path setting. In vllm/config/profiler.py:219-224
+
+  the path is normalized to an absolute path (os.path.abspath + expanduser) at config
+
+  validation time, a one-time negligible cost. No vllm-ascend override of this parameter
+
+  was found; Proton profiling is gated to NVIDIA CUDA platforms upstream (tests reject
+
+  proton on non-CUDA platforms), so on Ascend NPU this parameter is effectively inert
+
+  unless a Triton Proton backend is available.
+
+  '
+usage_locations:
+- file: vllm/config/profiler.py:195
+  context: 'Validation: collects non-default proton options and rejects them if profiler != ''proton''.'
+- file: vllm/config/profiler.py:215
+  context: 'Validation: requires proton_profiler_dir when profiler == ''proton'', rejects URI paths, normalizes to absolute
+    path.'
+- file: vllm/profiler/wrapper.py:392
+  context: ProtonProfilerWrapper stores output dir and builds per-worker output path proton_{worker_name}.
+- file: vllm/benchmarks/latency.py:153
+  context: Benchmark prints where Proton results will be saved.
+related_parameters:
+- name: profiler
+  relation: Must be set to 'proton' for this option to be accepted; otherwise a ValueError is raised.
+- name: proton_context
+  relation: Sibling Proton option; also only valid when profiler == 'proton'.
+- name: proton_data
+  relation: Sibling Proton option controlling data collection mode.
+- name: proton_output_format
+  relation: Sibling Proton option; some formats require specific proton_data values.
+- name: proton_graph_attribution
+  relation: Sibling Proton option; requires proton_data='tree'.
+constraints:
+- proton_profiler_dir must be set (non-empty) when profiler is 'proton', otherwise a ValueError is raised.
+- proton_profiler_dir must be a local directory; URI schemes such as s3://, gs://, or hdfs:// are rejected with a ValueError.
+- Setting proton_profiler_dir while profiler is not 'proton' raises a ValueError stating the option is only applicable when
+  profiler is 'proton'.
+- Proton profiling (and thus this option) is only supported on NVIDIA CUDA platforms upstream; on non-CUDA platforms such
+  as Ascend NPU it is rejected.
+tuning_advice:
+  summary: Only relevant when using the Proton profiler; point it at a fast local filesystem with enough space for per-rank
+    profile dumps, and leave it empty otherwise.
+  suggested_values:
+  - scenario: Proton profiling enabled on a supported platform
+    value: /tmp/proton_profiles
+    reason: A local, writable directory is required; each worker writes a separate rank-qualified file, so a fast local disk
+      avoids I/O stalls during profiling.
+  - scenario: Not using Proton (default, including typical Ascend NPU runs)
+    value: unset
+    reason: Leaving it empty avoids the ValueError that is raised if any Proton option is set while profiler is not 'proton'.
+  caveats:
+  - Proton profiling is gated to NVIDIA CUDA platforms upstream; on Ascend NPU this parameter has no runtime effect and setting
+    it may trigger validation errors.
+  - Each worker writes its own rank-qualified profile file under this directory, so disk usage scales with the number of workers.
+  - URI/remote paths are not supported; only local filesystem paths are accepted.
+  - Profiling itself adds overhead; the directory choice only affects I/O cost, not model execution.
+  quick_guide: Set only when profiler=proton on a supported platform; use a fast local directory, otherwise leave empty.
+analysis_date: '2026-10-27'

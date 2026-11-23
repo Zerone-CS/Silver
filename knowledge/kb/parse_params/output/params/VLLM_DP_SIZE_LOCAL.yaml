@@ -1,0 +1,84 @@
+name: VLLM_DP_SIZE_LOCAL
+type: env
+category: parallelism
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/large_scale_ep.md:123
+- docs/source/user_guide/feature_guide/large_scale_ep.md:187
+value_type: int
+default: <computed>
+valid_choices: positive integer; number of DP ranks local to this node (must be consistent with VLLM_DP_SIZE / number of nodes)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'VLLM_DP_SIZE_LOCAL is not defined in vllm or vllm-ascend source code; it is only referenced
+
+  in the vllm-ascend large-scale EP deployment documentation (large_scale_ep.md), where it is
+
+  exported in the launch script alongside VLLM_DP_SIZE, VLLM_DP_MASTER_IP, VLLM_DP_MASTER_PORT,
+
+  VLLM_DP_RANK_LOCAL and VLLM_DP_RANK. It is consumed by the external distributed DP load
+
+  balancer path (enabled via VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED=1) to tell each node how many
+
+  local data-parallel ranks it hosts. This value determines how the external DP server maps
+
+  global DP ranks to per-node local ranks and how requests are distributed across the DP group.
+
+  An incorrect value causes misrouting of requests across nodes, leading to load imbalance
+
+  (some NPUs idle, others saturated) which directly degrades aggregate throughput and tail
+
+  latency in large-scale expert-parallel deployments. It does not itself allocate memory or
+
+  change kernel behavior, so its impact is indirect (medium) rather than direct.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/large_scale_ep.md:123
+  context: Exported in the multi-node launch script for the large-scale EP / distributed DP example (first node config)
+- file: docs/source/user_guide/feature_guide/large_scale_ep.md:187
+  context: Exported in the multi-node launch script for the large-scale EP / distributed DP example (second node config)
+related_parameters:
+- name: VLLM_DP_SIZE
+  relation: Total number of DP ranks across all nodes; VLLM_DP_SIZE_LOCAL must be consistent with VLLM_DP_SIZE divided by
+    the number of nodes
+- name: VLLM_DP_RANK
+  relation: Global DP rank of this process; combined with VLLM_DP_SIZE_LOCAL to derive the local rank
+- name: VLLM_DP_RANK_LOCAL
+  relation: Local DP rank within the node; must be in range [0, VLLM_DP_SIZE_LOCAL)
+- name: VLLM_DP_MASTER_IP
+  relation: Address of the distributed DP master server that coordinates ranks
+- name: VLLM_DP_MASTER_PORT
+  relation: Port of the distributed DP master server
+- name: VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED
+  relation: Enables the external distributed DP load balancer that consumes these DP env vars
+constraints:
+- VLLM_DP_SIZE_LOCAL must equal the number of DP ranks actually launched on the local node, and VLLM_DP_SIZE_LOCAL multiplied
+  by the number of nodes must equal VLLM_DP_SIZE.
+- VLLM_DP_RANK_LOCAL must be in the range [0, VLLM_DP_SIZE_LOCAL).
+- This variable is only meaningful when using the external distributed DP load balancer (VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED=1)
+  with the multi-node launch script; it has no effect in single-node deployments.
+tuning_advice:
+  summary: Set VLLM_DP_SIZE_LOCAL to the exact number of DP ranks launched per node so the external DP load balancer distributes
+    requests evenly across all NPUs.
+  suggested_values:
+  - scenario: Multi-node large-scale EP deployment with N nodes each hosting K DP ranks (vllm-ascend external DP LB)
+    value: K (ranks per node)
+    reason: The external DP server uses this to map global ranks to local ranks; matching the actual per-node rank count avoids
+      request misrouting and load imbalance.
+  - scenario: Single-node deployment
+    value: VLLM_DP_SIZE (equal to total DP ranks)
+    reason: With one node, all DP ranks are local, so VLLM_DP_SIZE_LOCAL should equal VLLM_DP_SIZE.
+  caveats:
+  - This env var is only documented for the vllm-ascend external distributed DP load balancer path (VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED=1);
+    it is not read by upstream vLLM.
+  - A mismatch between VLLM_DP_SIZE_LOCAL and the actual number of local ranks causes uneven request distribution, degrading
+    throughput and tail latency even though no error may be raised.
+  - Keep VLLM_DP_SIZE_LOCAL, VLLM_DP_SIZE, VLLM_DP_RANK and VLLM_DP_RANK_LOCAL mutually consistent across all nodes; a single
+    misconfigured node can skew the whole DP group.
+  quick_guide: Set VLLM_DP_SIZE_LOCAL to the number of DP ranks on this node; ensure VLLM_DP_SIZE_LOCAL × node_count == VLLM_DP_SIZE.
+analysis_date: '2026-10-27'

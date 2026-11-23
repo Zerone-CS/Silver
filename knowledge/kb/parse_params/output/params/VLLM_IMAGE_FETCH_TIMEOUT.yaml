@@ -1,0 +1,82 @@
+name: VLLM_IMAGE_FETCH_TIMEOUT
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:947
+- vllm/envs.py:71
+- vllm/assets/base.py:37
+- vllm/multimodal/media/connector.py:518
+- vllm/multimodal/media/connector.py:545
+value_type: int
+default: 5
+valid_choices: positive integer (seconds); no explicit upper bound enforced
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "VLLM_IMAGE_FETCH_TIMEOUT is a plain integer env var (default 5 seconds) read via\nenvs.VLLM_IMAGE_FETCH_TIMEOUT.\
+  \ It is consumed only on the multimodal media-loading path:\n- \"vllm/multimodal/media/connector.py:518 (sync fetch_image)\
+  \ and :545 (async fetch_image_async)\"\n  pass it as fetch_timeout to load_from_url / load_from_url_async when downloading\
+  \ images\n  from HTTP(S) URLs.\n- \"vllm/assets/base.py:37 uses it as the timeout for downloading vllm public assets from\
+  \ S3.\"\nIt does NOT touch the NPU compute path, KV cache, scheduling, or HCCL communication. Its only\nperformance relevance\
+  \ is indirect: \"when a remote image URL is slow or unreachable, the request\"\nblocks up to this timeout (plus retries\
+  \ governed by VLLM_MEDIA_FETCH_MAX_RETRIES, where each\nretry quadruples the timeout per the envs.py comment). A too-large\
+  \ value can stall the\nmultimodal preprocessing pipeline and inflate end-to-end request latency; a too-small value\ncauses\
+  \ premature fetch failures. There is no vllm-ascend override of this parameter — it is\nnot referenced in vllm-ascend source,\
+  \ so upstream behavior applies unchanged on Ascend NPU.\nIt is also listed in compile_factors ignored_factors (vllm/envs.py:2308),\
+  \ so changing it does\nnot invalidate torch.compile caches.\n"
+usage_locations:
+- file: vllm/envs.py:947
+  context: 'Definition: int(os.getenv("VLLM_IMAGE_FETCH_TIMEOUT", "5"))'
+- file: vllm/envs.py:71
+  context: 'Type stub declaration VLLM_IMAGE_FETCH_TIMEOUT: int = 5'
+- file: vllm/multimodal/media/connector.py:518
+  context: Sync image fetch passes fetch_timeout=envs.VLLM_IMAGE_FETCH_TIMEOUT to load_from_url
+- file: vllm/multimodal/media/connector.py:545
+  context: Async image fetch passes fetch_timeout=envs.VLLM_IMAGE_FETCH_TIMEOUT to load_from_url_async
+- file: vllm/assets/base.py:37
+  context: S3 public asset download uses timeout=envs.VLLM_IMAGE_FETCH_TIMEOUT
+- file: vllm/envs.py:2308
+  context: Listed in compile_factors ignored_factors (does not affect compile cache key)
+related_parameters:
+- name: VLLM_VIDEO_FETCH_TIMEOUT
+  relation: Sibling timeout for video fetching (default 30s); same media-loading mechanism
+- name: VLLM_AUDIO_FETCH_TIMEOUT
+  relation: Sibling timeout for audio fetching (default 10s)
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retry count for media fetches; each retry quadruples the timeout, so effective worst-case wait is timeout * (1
+    + 4 + 16 + ...)
+- name: VLLM_MEDIA_CACHE
+  relation: When media caching is enabled, repeated URLs avoid re-fetching and thus avoid the timeout wait
+- name: VLLM_MEDIA_CONNECTOR
+  relation: Selects the media connector (default http); timeout applies to the http connector's URL loading
+constraints:
+- The value must be a positive integer number of seconds; a non-integer string will raise a ValueError when the env var is
+  parsed.
+- This timeout only applies to images fetched from remote URLs; base64 data URLs are decoded locally and are not subject to
+  it.
+tuning_advice:
+  summary: Leave at the 5s default for typical deployments; raise it only when serving multimodal models with slow remote
+    image hosts, and lower it if stalled image fetches are inflating request latency.
+  suggested_values:
+  - scenario: Standard multimodal serving with fast/reliable image CDN or local object storage
+    value: 5
+    reason: Default is adequate; keeps worst-case blocking on a bad URL short.
+  - scenario: Slow or high-latency remote image sources (cross-region object storage, congested networks)
+    value: 15
+    reason: Reduces spurious fetch failures/timeouts on slow links while still bounding the wait.
+  - scenario: Latency-sensitive online serving where a hung image URL must not stall the batch
+    value: 2
+    reason: Fails fast on unreachable images, limiting head-of-line blocking of multimodal preprocessing.
+  caveats:
+  - Effective worst-case wait is compounded by VLLM_MEDIA_FETCH_MAX_RETRIES (default 3), since each retry quadruples the timeout
+    per the envs.py comment — a large timeout can multiply into very long stalls.
+  - This parameter has no effect on the NPU compute path; it only affects multimodal URL fetching and public-asset downloads,
+    so it will not change tokens/sec on Ascend hardware.
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM on Ascend NPU.
+  - Changing this value does not invalidate torch.compile caches (it is in compile_factors ignored_factors).
+  quick_guide: Keep 5s unless remote image hosts are slow; raise to ~15s for slow networks, lower to ~2s for latency-critical
+    serving.
+analysis_date: '2026-10-27'

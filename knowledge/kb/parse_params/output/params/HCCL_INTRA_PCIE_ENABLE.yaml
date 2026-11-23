@@ -1,0 +1,92 @@
+name: HCCL_INTRA_PCIE_ENABLE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/DeepSeek-R1.md:248
+- docs/source/tutorials/models/DeepSeek-R1.md:294
+- docs/source/tutorials/models/DeepSeek-V3.1.md:346
+value_type: int
+default: '0'
+valid_choices: 0 or 1 (boolean-like integer flag)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_INTRA_PCIE_ENABLE is a CANN/HCCL runtime environment variable (not defined in vllm or
+
+  vllm-ascend source code) that controls how HCCL selects the transport for intra-node
+
+  (intra-server) collective communication. When set to 1, HCCL is instructed to use PCIe
+
+  (host-side PCIe bus / HCCS-over-PCIe path) for intra-node all-reduce/all-gather/reduce-scatter
+
+  instead of RoCE. This directly affects the communication backend used by tensor-parallel (TP)
+
+  and expert-parallel (EP) collectives that vllm-ascend issues through torch.distributed/HCCL
+
+  during model forward passes. On Ascend multi-NPU servers, intra-node traffic is normally carried
+
+  over HCCS (high-speed interconnect) or RoCE NICs; forcing the PCIe path changes the effective
+
+  bandwidth and latency of every TP/EP collective, which is on the critical path of each decode
+
+  step. In the vllm-ascend DeepSeek-R1/V3.1 deployment tutorials it is paired with
+
+  HCCL_INTRA_ROCE_ENABLE=0 to explicitly disable RoCE for intra-node communication and route it
+
+  over PCIe, which is the recommended configuration for those multi-node PD-disaggregated /
+
+  large-EP deployments. Because collectives dominate decode latency in large TP/EP setups, this
+
+  flag has a high impact on end-to-end latency and throughput.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/DeepSeek-R1.md:248
+  context: Single-node multi-NPU DeepSeek-R1 deployment exports HCCL_INTRA_PCIE_ENABLE=1 together with HCCL_INTRA_ROCE_ENABLE=0
+- file: docs/source/tutorials/models/DeepSeek-R1.md:294
+  context: Multi-node DeepSeek-R1 deployment (node1) exports HCCL_INTRA_PCIE_ENABLE=1 with HCCL_INTRA_ROCE_ENABLE=0
+- file: docs/source/tutorials/models/DeepSeek-V3.1.md:346
+  context: DeepSeek-V3.1 W8A8 MTP deployment exports HCCL_INTRA_PCIE_ENABLE=1 with HCCL_INTRA_ROCE_ENABLE=0
+related_parameters:
+- name: HCCL_INTRA_ROCE_ENABLE
+  relation: Companion flag; set to 0 to disable RoCE for intra-node comms when PCIe is enabled. The two are configured together
+    in the docs.
+- name: HCCL_SOCKET_IFNAME
+  relation: Selects the NIC used for HCCL host-side socket setup; must match the intended network interface.
+- name: HCCL_IF_IP
+  relation: Binds HCCL to a specific local IP; used alongside the intra-node transport selection.
+- name: HCCL_BUFFSIZE
+  relation: HCCL communication buffer size; affects collective throughput and memory.
+- name: --tensor-parallel-size
+  relation: TP collectives are the primary traffic affected by intra-node transport selection.
+- name: --enable-expert-parallel
+  relation: EP all-to-all/all-reduce traffic is also affected by intra-node transport choice.
+constraints:
+- This is a CANN/HCCL runtime env var, not a vLLM or vllm-ascend parameter; it must be exported in the shell environment before
+  launching vllm serve to take effect.
+- It must be set consistently across all ranks/nodes participating in the same HCCL communicator; mismatched settings across
+  nodes can cause communication setup failures or hangs.
+- It only governs intra-node (intra-server) communication; inter-node traffic is controlled separately (e.g. HCCL_INTRA_ROCE_ENABLE
+  and inter-node NIC settings).
+tuning_advice:
+  summary: On Ascend multi-NPU servers where intra-node traffic should avoid RoCE, export HCCL_INTRA_PCIE_ENABLE=1 together
+    with HCCL_INTRA_ROCE_ENABLE=0 before launching vllm serve.
+  suggested_values:
+  - scenario: Multi-node DeepSeek-R1/V3.1 large TP/EP deployment following vllm-ascend tutorials (RoCE disabled for intra-node)
+    value: 1
+    reason: Docs pair HCCL_INTRA_PCIE_ENABLE=1 with HCCL_INTRA_ROCE_ENABLE=0 to route intra-node collectives over PCIe, matching
+      the recommended DeepSeek deployment topology.
+  - scenario: Single-node deployment where HCCS is available and preferred for intra-node comms
+    value: 0
+    reason: Leaving it at default lets HCCL use the fastest available intra-node transport (HCCS) rather than forcing PCIe.
+  caveats:
+  - Always set HCCL_INTRA_ROCE_ENABLE=0 when enabling PCIe intra-node, as shown in the docs.
+  - Ensure the value is identical on every rank and node in the communicator.
+  - Benchmark decode latency with and without the flag; PCIe may underperform HCCS on some hardware.
+  quick_guide: Export HCCL_INTRA_PCIE_ENABLE=1 and HCCL_INTRA_ROCE_ENABLE=0 for RoCE-disabled multi-node DeepSeek deployments;
+    otherwise leave default.
+analysis_date: '2026-10-27'

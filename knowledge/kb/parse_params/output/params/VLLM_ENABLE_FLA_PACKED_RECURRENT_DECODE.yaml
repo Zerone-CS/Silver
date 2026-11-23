@@ -1,0 +1,85 @@
+name: VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1199
+- vllm/envs.py:129
+- vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:510
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via int(); any non-zero integer is truthy)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read once at GDN (Gated DeltaNet / Qwen3-Next-style linear attention)
+
+  layer construction time in vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:510,
+
+  stored as self.enable_packed_recurrent_decode, and controls whether the FLA (Flash Linear
+
+  Attention) packed recurrent decode kernel path is used during the decode phase of GDN
+
+  linear-attention models. When enabled (default), the recurrent state update for decode
+
+  steps is executed via a packed/fused kernel that processes the recurrent decode in a
+
+  single launch, reducing per-step kernel launch overhead and intermediate memory traffic
+
+  versus an unpacked per-step recurrent update. This only affects models that contain GDN
+
+  linear-attention layers (e.g. Qwen3-Next family); for standard transformer models the
+
+  flag is never consulted and has no effect. The flag is defined purely in upstream vLLM
+
+  (vllm/envs.py:1199, default "1" -> True) and no vllm-ascend override or reference to
+
+  this env var was found in the provided context, so on Ascend NPU the FLA packed recurrent
+
+  decode path is not wired into an Ascend-native kernel by vllm-ascend; the effect on
+
+  Ascend is therefore limited to whatever upstream GDN code path executes on the NPU
+
+  backend (typically a fallback/triton-style path), making the runtime impact low.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1199
+  context: Environment variable definition; parses int(os.getenv(..., '1')) into bool, default enabled.
+- file: vllm/envs.py:129
+  context: 'Type stub declaration VLLM_ENABLE_FLA_PACKED_RECURRENT_DECODE: bool = True.'
+- file: vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py:510
+  context: Read at GDN layer init to set self.enable_packed_recurrent_decode, selecting the packed recurrent decode kernel
+    path.
+related_parameters:
+- name: VLLM_GDN_DECODE_KERNEL
+  relation: Sibling GDN decode control; selects cuda/triton decode kernel and interacts with the decode path this flag toggles.
+- name: VLLM_USE_TRITON_AWQ
+  relation: Unrelated but co-located env flag; both are upstream-only kernel-selection switches.
+constraints:
+- The value is parsed with int(), so it must be an integer string such as 0 or 1; non-integer strings will raise a ValueError
+  at env access time.
+- Only affects models with GDN linear-attention layers; it has no effect on standard transformer models.
+tuning_advice:
+  summary: Leave at the default (enabled) for GDN linear-attention models; disable only to work around a kernel issue on the
+    target backend.
+  suggested_values:
+  - scenario: Default deployment of a GDN linear-attention model (e.g. Qwen3-Next) on Ascend NPU
+    value: 1
+    reason: Keeps the packed recurrent decode path enabled, which reduces per-step kernel launch overhead in decode; it is
+      the upstream default and safe to leave on.
+  - scenario: Debugging or working around a packed recurrent decode kernel failure/hang on Ascend
+    value: 0
+    reason: Falls back to the unpacked recurrent decode path, isolating whether the packed kernel is the source of incorrect
+      output or a hang.
+  caveats:
+  - No vllm-ascend override was found for this env var in the provided context; the packed recurrent decode path is an upstream
+    FLA kernel and may not be optimized for Ascend NPU, so the throughput benefit seen on GPU may not materialize.
+  - The flag is read only at GDN layer construction, so changing it requires restarting the server; it cannot be toggled at
+    runtime.
+  - For non-GDN models this flag is inert and toggling it changes nothing.
+  quick_guide: Keep default 1 for GDN models; set 0 only to debug packed recurrent decode issues on Ascend.
+analysis_date: '2026-10-27'

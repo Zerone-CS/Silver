@@ -1,0 +1,156 @@
+name: additional_config.sparse_kv_offload_config.enabled
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:539
+- vllm_ascend/ascend_config.py:1693
+- vllm_ascend/ascend_config.py:1730
+- vllm_ascend/ascend_config.py:1014
+- vllm_ascend/worker/worker.py:518
+- vllm_ascend/worker/worker.py:1153
+- vllm_ascend/worker/model_runner_v1.py:685
+- vllm_ascend/worker/v2/attn_utils.py:264
+- vllm_ascend/worker/v2/model_runner.py:347
+- vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:124
+- vllm_ascend/attention/sfa_kv_offload.py:5
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This is a vllm-ascend-only switch (defined in vllm_ascend/ascend_config.py as
+
+  SparseKVOffloadConfig.enabled, default False) that enables a Sparse KV cache offload
+
+  data plane for sparse-attention (SFA) models. When enabled, the decode path keeps no
+
+  NPU-resident main K/V paged cache (only the indexer K cache stays on device); the
+
+  current token''s K/V is produced compute-only and committed D2H directly, and top-k
+
+  misses are loaded H2D into a small resident topk buffer before a single resident SFA
+
+  attention runs (see vllm_ascend/attention/sfa_kv_offload.py docstring). This trades
+
+  NPU HBM for host DRAM: "worker.py:518 (_apply_kv_offload_decode_memory_constraints)"
+
+  calls plan_sparse_kv_offload_memory to compute a block budget bounded by
+
+  dram_size_per_dp_GB, NPU limit and workload limit, so the effective KV cache capacity
+
+  is no longer limited by device memory — enabling much longer sequences / larger batch
+
+  sizes on the D node. The cost is per-step H2D/D2H DMA traffic and host-memory
+
+  bandwidth pressure, which can raise decode latency and reduce throughput if the
+
+  offload path is slower than pure device-resident attention. When
+
+  keep_device_kv_cache=True the device cache is still allocated and the memory benefit
+
+  is lost (debug-only). In v2, attn_utils.py:264 sets store_on_host on the
+
+  AscendMLAAttentionSpec when enabled, and model_runner.py:347 passes
+
+  sparse_offload_enabled into apply_dspark_resident_kv_specs; the v2 speculator
+
+  (speculator.py:124) builds a SparseKVOffloadMetadata sized by num_speculative_steps.
+
+  In v1, model_runner_v1.py:685 caches the flag and allocates per-request offload
+
+  buffers (_offload_req_ids_tensor, _offload_token_to_req) and, with fused_copy_sfa,
+
+  pool-slot buffers; metadata is updated every step in
+
+  _prepare_attn_metadata (model_runner_v1.py:3488).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1730
+  context: '_validate_preconditions: when enabled, requires sparse-attention model (index_topk), no compress_ratios, no CP/PP,
+    and PD-disaggregate D node unless keep_device_kv_cache'
+- file: vllm_ascend/ascend_config.py:1014
+  context: '_validate_sparse_packed_kv_offload_compatibility: rejects packed SFA main caches (C8/TQ4) when enabled'
+- file: vllm_ascend/worker/worker.py:518
+  context: '_apply_kv_offload_decode_memory_constraints: computes KV block budget from dram_size_per_dp_GB and NPU limit'
+- file: vllm_ascend/worker/worker.py:1153
+  context: reserves kv_cache_spec for sparse kv offload memory profiling
+- file: vllm_ascend/worker/model_runner_v1.py:685
+  context: v1 model runner caches flag, allocates offload metadata buffers
+- file: vllm_ascend/worker/model_runner_v1.py:3488
+  context: v1 per-step update_sparse_kv_offload_metadata and fused_copy_sfa request-state preparation
+- file: vllm_ascend/worker/v2/attn_utils.py:264
+  context: v2 sets store_on_host on AscendMLAAttentionSpec when enabled
+- file: vllm_ascend/worker/v2/model_runner.py:347
+  context: v2 passes sparse_offload_enabled into apply_dspark_resident_kv_specs
+- file: vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:124
+  context: v2 speculator builds SparseKVOffloadMetadata sized by num_speculative_steps
+- file: vllm_ascend/attention/sfa_kv_offload.py:5
+  context: selects standalone SFA offload backend via AscendSFABackend.get_impl_cls/get_builder_cls
+related_parameters:
+- name: additional_config.sparse_kv_offload_config.topk_buffer_size
+  relation: must be >= model index_topk; sizes the resident onload buffer
+- name: additional_config.sparse_kv_offload_config.dram_size_per_dp_GB
+  relation: caps host DRAM budget per DP rank used by the memory planner
+- name: additional_config.sparse_kv_offload_config.keep_device_kv_cache
+  relation: when true, device KV cache is still allocated (debug only), negating memory savings
+- name: additional_config.sparse_kv_offload_config.use_fused_overlap
+  relation: optional fused_overlap decode path; mutually exclusive with fused_op_type=fused_copy_sfa
+- name: additional_config.sparse_kv_offload_config.fused_op_type
+  relation: selects fused_copy_sfa path; must be none or fused_copy_sfa
+- name: kv_transfer_config
+  relation: must be a PD-disaggregate KV consumer (D node) unless keep_device_kv_cache is set
+- name: additional_config.enable_sparse_sfa_c8
+  relation: packed SFA main caches (C8/TQ4) are incompatible with sparse KV offload
+constraints:
+- Sparse KV offload only supports sparse-attention models that expose index_topk in the HF text config.
+- Sparse KV offload does not support models with compress_ratios (compression).
+- Sparse KV offload does not support context parallel (prefill_context_parallel_size × decode_context_parallel_size must be
+  1).
+- Sparse KV offload does not support pipeline parallel (pipeline_parallel_size must be 1).
+- Unless keep_device_kv_cache is enabled, sparse KV offload requires a PD-disaggregate KV consumer (D node) configuration.
+- Sparse KV offload does not support packed SFA main caches (C8 or TQ4); sparse LI C8 is allowed.
+- topk_buffer_size must be greater than or equal to the model's index_topk.
+- Sparse KV offload with DSpark speculative decoding requires the V2 model runner for remote prompt-context initialization.
+- additional_config.sparse_kv_offload_config must be a dict; unknown keys are rejected (extra=forbid).
+tuning_advice:
+  summary: 'Enable only on PD-disaggregate D nodes serving sparse-attention (SFA) models when
+
+    NPU HBM is the bottleneck for KV cache; it moves main K/V to host DRAM to allow
+
+    longer sequences / larger batches at the cost of H2D/D2H DMA traffic.
+
+    '
+  suggested_values:
+  - scenario: PD-disaggregate D node, sparse-attention model, KV cache capacity limited by NPU HBM
+    value: true
+    reason: Offloads main K/V to host DRAM, letting the memory planner (worker.py:518) size the KV block budget from dram_size_per_dp_GB
+      instead of device memory, enabling longer context or larger batch.
+  - scenario: Default / non-PD deployment, dense models, or when device KV cache fits comfortably
+    value: false
+    reason: Preconditions reject non-sparse models and non-D-node setups (unless keep_device_kv_cache), and the offload path
+      adds DMA overhead with no benefit when HBM is not the bottleneck.
+  - scenario: Debugging the offload path in PD colocate scenario
+    value: true
+    reason: Set enabled=true together with keep_device_kv_cache=true to exercise the path while still allocating device KV
+      cache; note this forfeits the memory savings.
+  caveats:
+  - Enabling this disables the NPU-resident main K/V paged cache in decode; every step incurs H2D onload of top-k misses and
+    D2H commits, which can raise decode latency and lower throughput versus fully device-resident attention.
+  - keep_device_kv_cache=true keeps the device KV cache allocated, so sequence length / batch size cannot be improved — use
+    only for debugging in PD colocate.
+  - Host DRAM bandwidth and dram_size_per_dp_GB become the new capacity/latency bottleneck; size dram_size_per_dp_GB to match
+    available host memory per DP rank.
+  - Incompatible with packed SFA main caches (C8/TQ4); sparse LI C8 is fine because the indexer cache stays device-resident.
+  - DSpark speculative decoding with this feature requires the V2 model runner (v2 speculator builds SparseKVOffloadMetadata
+    per speculative step).
+  - topk_buffer_size must be at least the model's index_topk or validation raises an error.
+  quick_guide: Enable on PD-disaggregate D nodes with sparse-attention models to trade NPU HBM for host DRAM KV capacity;
+    keep false otherwise.
+analysis_date: '2026-10-27'

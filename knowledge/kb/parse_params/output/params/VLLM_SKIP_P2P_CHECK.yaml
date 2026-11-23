@@ -1,0 +1,71 @@
+name: VLLM_SKIP_P2P_CHECK
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1185
+- vllm/envs.py:126
+- vllm/distributed/device_communicators/custom_all_reduce.py:91
+value_type: bool
+default: true
+valid_choices: 0 or 1 (string compared to '1'; any other value evaluates to false)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_SKIP_P2P_CHECK controls whether vLLM trusts the driver''s P2P (peer-to-peer)
+
+  capability report instead of actively probing GPU-to-GPU P2P access. In
+
+  vllm/distributed/device_communicators/custom_all_reduce.py:91, _can_p2p() checks
+
+  envs.VLLM_SKIP_P2P_CHECK; when true (default "1"), it returns the result of
+
+  torch.cuda.can_device_access_peer() directly, skipping the more expensive
+
+  gpu_p2p_access_check() probe. This only affects the one-time initialization path
+
+  that decides whether the CUDA custom all-reduce kernel can be used. It does not
+
+  affect steady-state token throughput or memory. On Ascend NPU, custom all-reduce
+
+  is a CUDA-specific path (torch.cuda.can_device_access_peer, gpu_p2p_access_check);
+
+  vllm-ascend uses HCCL for collective communication instead, so this parameter has
+
+  no meaningful runtime effect on Ascend. Its only conceivable impact is a marginal
+
+  startup-time difference during communicator initialization, hence "low".
+
+  '
+usage_locations:
+- file: vllm/envs.py:1185
+  context: Environment variable definition; default '1' means skip the P2P probe and trust the driver report.
+- file: vllm/distributed/device_communicators/custom_all_reduce.py:91
+  context: _can_p2p() branches on VLLM_SKIP_P2P_CHECK to either trust can_device_access_peer() or run gpu_p2p_access_check().
+related_parameters:
+- name: VLLM_DISABLE_PYNCCL
+  relation: Both influence which collective-communication backend path is selected during initialization.
+- name: tensor_parallel_size
+  relation: P2P checks only matter when world_size > 1 (multi-device custom all-reduce).
+constraints:
+- The value is compared literally to the string '1'; setting it to 'true' or 'True' evaluates to false (probe enabled).
+- Only relevant to the CUDA custom all-reduce path; on Ascend NPU with HCCL this check is not exercised.
+tuning_advice:
+  summary: Leave at default on Ascend; it only affects CUDA custom all-reduce init and is irrelevant to HCCL-based Ascend
+    communication.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker, HCCL communication)
+    value: '1'
+    reason: Custom all-reduce P2P probing is a CUDA path not used on Ascend; keeping the default avoids unnecessary startup
+      probing with no runtime benefit.
+  - scenario: Debugging suspected P2P/driver issues on CUDA GPUs (not Ascend)
+    value: '0'
+    reason: Forces gpu_p2p_access_check to verify actual P2P capability, useful when the driver misreports P2P status and
+      causes hangs.
+  caveats:
+  - No measurable throughput or memory impact on Ascend NPU; do not tune this for performance.
+  - Value must be exactly '1' to skip the check; other strings are treated as false.
+  quick_guide: Keep default (1) on Ascend; only set to 0 to debug CUDA P2P driver issues.
+analysis_date: '2026-10-27'

@@ -1,0 +1,103 @@
+name: additional_config.draft_window_size
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:586
+- vllm_ascend/ascend_config.py:437
+- vllm_ascend/spec_decode/llm_base_proposer.py:415
+value_type: int
+default: null
+valid_choices: any positive integer (block-aligned internally); null/absent disables the window
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: 'draft_window_size caps only the draft model''s attention to the most recent N tokens
+
+  (sliding-window draft attention). It is read from the validated AscendConfig singleton
+
+  in vllm_ascend/spec_decode/llm_base_proposer.py:417 (self.draft_window_size =
+
+  get_ascend_config().draft_window_size) and, when non-None, a SlidingWindowAdapter is
+
+  constructed (see test asserting SlidingWindowAdapter(4096, 16, 8, 4, "cpu")). The
+
+  mechanism: "draft models are often trained on short contexts (4-8k); when the running"
+
+  context grows far beyond that, the draft''s attention goes out-of-distribution and the
+
+  acceptance rate collapses, turning speculation into pure overhead. Capping the draft''s
+
+  KV attention to a short in-distribution window restores acceptance length (docs cite
+
+  GLM-5.2 DSpark draft recovering from ~1.0 to ~4.7-5.5 at 32k, up to +381% end-to-end
+
+  throughput). The target model still attends to the full context, so output quality is
+
+  unchanged. This is a pure speculation-efficiency lever: it does not change target
+
+  compute or memory, but it directly changes the number of accepted tokens per verify
+
+  step, hence decode throughput and latency. It only takes effect when speculative
+
+  decoding is enabled with a compatible method (eagle3, dflash, dspark).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:586
+  context: 'Field definition draft_window_size: int | None = None in AscendConfig (pydantic dataclass, extra=forbid).'
+- file: vllm_ascend/ascend_config.py:437
+  context: 'Documented in the AscendConfig example dict as "draft_window_size": null.'
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:415
+  context: Read from get_ascend_config().draft_window_size; if not None, compatibility checks run and SlidingWindowAdapter
+    is created for the draft attention.
+- file: tests/e2e/pull_request/one_card/spec_decode/test_dspark.py:142
+  context: 'E2E usage: additional_config={"draft_window_size": 512} with dspark speculative method.'
+- file: tests/e2e/pull_request/two_card/spec_decode/test_spec_decode_heavy.py:202
+  context: E2E usage with long prompt exceeding draft_window_size to exercise sliding window.
+related_parameters:
+- name: speculative_config.method
+  relation: Only effective for eagle3, dflash, dspark; ignored (force-disabled) for mtp.
+- name: speculative_config.num_speculative_tokens
+  relation: Determines verify depth; acceptance gains from the window translate into more accepted tokens per step.
+- name: speculative_config.model
+  relation: The draft model's native sliding_window (if any) sets a lower bound for a useful draft_window_size.
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: Feature works on MRV1 (default); not yet supported under V2 model runner.
+constraints:
+- draft_window_size is only honored when speculative decoding is enabled with method eagle3, dflash, or dspark.
+- For method mtp the window is force-disabled (ignored with a warning) because MTP reuses the target model's own layers.
+- For a dspark draft paired with a DeepSeek-V4 target, a warning is logged and windowing degrades acceptance because the draft
+  is already long-context stable.
+- The feature is not supported under VLLM_USE_V2_MODEL_RUNNER=1; it works on the default MRV1 model runner.
+- Unknown keys in additional_config are rejected (extra=forbid), so the key must be spelled exactly draft_window_size.
+tuning_advice:
+  summary: Enable a draft KV sliding window (512-4096) for eagle3/dflash/dspark drafts that lose acceptance at long context;
+    leave off for mtp or already long-context-stable drafts.
+  suggested_values:
+  - scenario: Draft trained on short contexts (4-8k) whose acceptance collapses at long context (e.g. 32k)
+    value: 1024
+    reason: Docs report a 512-1024 window restored a GLM-5.2 DSpark draft from ~1.0 to ~4.7-5.5 acceptance at 32k, with up
+      to +381% end-to-end throughput.
+  - scenario: Moderate long-context degradation, want a safer larger window
+    value: 2048
+    reason: 'Design doc example uses {"draft_window_size": 2048}; a larger window preserves more draft context while still
+      bounding OOD attention.'
+  - scenario: Draft natively trained with sliding-window attention (config carries sliding_window)
+    value: 4096
+    reason: Keep draft_window_size at or above the draft's native training window (e.g. 2048-native SWA) to avoid acceptance
+      loss; 4096 is a safe upper typical value.
+  - scenario: Draft already stable at long context, or method is mtp
+    value: unset
+    reason: Omit the key to disable; windowing a stable draft only removes useful information, and mtp force-disables it anyway.
+  caveats:
+  - Do not set draft_window_size below the draft's native training sliding_window; it reduces acceptance.
+  - Not supported under VLLM_USE_V2_MODEL_RUNNER=1; use the default MRV1 runner.
+  - 'Verify effect via the server log ''SpecDecoding metrics: Mean acceptance length'' before and after enabling.'
+  - Ignored with a warning for mtp and for dspark+DeepSeek-V4 targets.
+  quick_guide: 'Set additional_config={"draft_window_size": 1024} for eagle3/dflash/dspark drafts that lose acceptance at
+    long context; omit for mtp.'
+analysis_date: '2026-10-27'

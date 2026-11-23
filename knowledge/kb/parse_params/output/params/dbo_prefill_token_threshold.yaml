@@ -1,0 +1,103 @@
+name: --dbo-prefill-token-threshold
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/config/parallel.py:232
+- vllm/engine/arg_utils.py:523
+- vllm/engine/arg_utils.py:1226
+- vllm/v1/worker/ubatch_utils.py:149
+value_type: int
+default: 512
+valid_choices: integer >= 0 (Field(default=512, ge=0)); must be >= num_ubatches when DBO is enabled
+cli_example: --dbo-prefill-token-threshold 512
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only takes effect when dual batch overlap (DBO) is enabled via
+
+  --enable-dbo (ParallelConfig.enable_dbo). In vllm/v1/worker/ubatch_utils.py:141-149,
+
+  check_ubatch_thresholds() returns False immediately if config.use_ubatching is False,
+
+  so without DBO the value is inert. When DBO is active, for any batch that is not a
+
+  uniform decode (i.e. contains one or more prefills), the scheduler compares the total
+
+  number of tokens in the batch against dbo_prefill_token_threshold: "if num_tokens >="
+
+  threshold, the batch is split into microbatches (ubatching) so that compute and
+
+  communication (all-to-all / MoE dispatch-combine) can overlap; otherwise the batch is
+
+  processed as a single batch with no overlap. Thus the threshold controls the crossover
+
+  point between "single-batch, no overlap" and "microbatched, overlapped" execution for
+
+  prefill-containing steps. Setting it too high disables overlap for most prefill steps
+
+  (losing the compute/communication overlap benefit and leaving the NPU communication
+
+  engines idle during prefill); setting it too low forces microbatching on small prefill
+
+  batches where the split overhead (extra kernel launches, per-ubatch synchronization,
+
+  reduced per-ubatch arithmetic intensity) outweighs the overlap gain. On Ascend NPU the
+
+  overlap benefit is tied to HCCL all-to-all / dispatch-combine traffic for MoE models,
+
+  so the effect is most pronounced for MoE deployments with expert parallelism. The
+
+  parameter does not affect memory footprint directly, only scheduling granularity.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:232
+  context: Field definition with default 512 and ge=0 validation; docstring describes microbatching threshold for prefill-containing
+    batches.
+- file: vllm/config/parallel.py:1094
+  context: 'Validation in ParallelConfig: when use_ubatching, min(decode_threshold, prefill_threshold) must be >= num_ubatches,
+    else ValueError.'
+- file: vllm/v1/worker/ubatch_utils.py:149
+  context: check_ubatch_thresholds() compares num_tokens >= dbo_prefill_token_threshold for non-uniform-decode batches to
+    decide microbatching.
+- file: vllm/engine/arg_utils.py:1226
+  context: CLI argument registration under the parallel argument group.
+related_parameters:
+- name: --enable-dbo
+  relation: Master switch; the threshold has no effect unless DBO is enabled (use_ubatching).
+- name: --dbo-decode-token-threshold
+  relation: Sibling threshold for decode-only batches; both must be >= num_ubatches when DBO is on.
+- name: --ubatch-size
+  relation: Determines num_ubatches; the threshold must be at least this many microbatches.
+- name: --all2all-backend
+  relation: DBO overlap targets all-to-all/dispatch-combine communication; backend choice affects the overlap benefit.
+constraints:
+- The value must be a non-negative integer (Field ge=0).
+- When DBO is enabled, both --dbo-prefill-token-threshold and --dbo-decode-token-threshold must be at least the number of
+  microbatches (num_ubatches), otherwise ParallelConfig raises a ValueError.
+- The parameter has no effect unless --enable-dbo is set, because check_ubatch_thresholds returns False when ubatching is
+  disabled.
+tuning_advice:
+  summary: Tune the prefill microbatch threshold to the smallest prefill batch size at which DBO overlap actually pays off
+    on your Ascend MoE workload.
+  suggested_values:
+  - scenario: MoE model with expert parallelism and heavy all-to-all traffic, DBO enabled
+    value: 256
+    reason: Lowering below the 512 default enables overlap for medium prefill batches, capturing HCCL dispatch-combine overlap
+      earlier.
+  - scenario: Dense (non-MoE) model where overlap benefit is small
+    value: 1024
+    reason: Raising the threshold avoids microbatch split overhead on prefill steps where overlap gains are marginal.
+  - scenario: Default starting point before benchmarking
+    value: 512
+    reason: Upstream default; use as baseline then sweep around it with your real prefill token distribution.
+  caveats:
+  - Must be >= num_ubatches (--ubatch-size) when DBO is enabled or startup fails with ValueError.
+  - Benchmark with representative prefill batch sizes; the optimal value depends on model, EP degree, and HCCL bandwidth.
+  - Remember to also tune --dbo-decode-token-threshold; both govern when microbatching kicks in.
+  quick_guide: If DBO is on and prefill steps are not overlapping, lower this toward 256; if microbatch overhead dominates,
+    raise it toward 1024.
+analysis_date: '2026-10-27'

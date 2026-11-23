@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "build_id": "example-build",
+  "status": "planned",
+  "gap_ids": [],
+  "scope": "待填写：需要回答的参数问题及为什么现有知识不足",
+  "builder": {
+    "path": null,
+    "entrypoint": null,
+    "suite_release_id": null,
+    "suite_manifest_sha256": null,
+    "files_manifest": null
+  },
+  "sources": {
+    "vllm": {
+      "path": null,
+      "git_commit": null,
+      "dirty_patch_sha256": null,
+      "files_manifest": null,
+      "dirty": null,
+      "python_markdown_sha256": null,
+      "python_markdown_files": null
+    },
+    "vllm-ascend": {
+      "path": null,
+      "git_commit": null,
+      "dirty_patch_sha256": null,
+      "files_manifest": null,
+      "dirty": null,
+      "python_markdown_sha256": null,
+      "python_markdown_files": null
+    },
+    "deployment_match": "unknown"
+  },
+  "runtime": {
+    "python": null,
+    "python_version": null,
+    "environment_path": null,
+    "requirements_lock_sha256": null,
+    "wheel_manifest": null,
+    "dependencies": null,
+    "model": null,
+    "endpoint_identity": null,
+    "api_configuration_source": null,
+    "prompt_rule_hashes": null
+  },
+  "budget": {
+    "wall_seconds": null,
+    "api_calls": null,
+    "cost": null,
+    "enforcement": null,
+    "used": null
+  },
+  "stages": [],
+  "inputs": {
+    "parameters_path": null,
+    "parameters_sha256": null,
+    "selected_names": null,
+    "explicit_source_roots": null
+  },
+  "coverage": {
+    "input_unique_names": null,
+    "stage1_skipped": null,
+    "cards": null,
+    "stage2_not_performance": null,
+    "errors": null,
+    "pending": null,
+    "aliases_and_collisions": [],
+    "accounting_evidence": null
+  },
+  "validation": {
+    "structure_report": null,
+    "source_review": null,
+    "coverage_review": null,
+    "status": "not_evaluated"
+  },
+  "publication": {
+    "snapshot_path": null,
+    "snapshot_id": null,
+    "replaces": null,
+    "review_status": "not_evaluated",
+    "review_record": null,
+    "publication_record": null,
+    "publication_target": null,
+    "operation_status": "not_executed"
+  },
+  "unresolved": [],
+  "notes": "模板不代表已验证事实。使用 knowledge/scripts/kb.py 与套件隔离环境；源码、API环境和新输出目录来自本次任务。build、review、publish 分别记录，构建完成不触发发布，campaign 快照选择由协调者维护。历史快照及其来源标签保持不变，不读取全局settings或记录凭据。"
+}

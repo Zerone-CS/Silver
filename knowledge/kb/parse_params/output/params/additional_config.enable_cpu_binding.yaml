@@ -1,0 +1,92 @@
+name: additional_config.enable_cpu_binding
+type: nested
+category: hardware
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:568
+- vllm_ascend/ascend_config.py:425
+- vllm_ascend/platform.py:893
+value_type: bool
+default: true
+valid_choices: true or false (JSON booleans; string 'false' is lax-coerced to False, integer 2 is rejected)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'enable_cpu_binding is a vllm-ascend-only switch (defined in AscendConfig, vllm_ascend/ascend_config.py:568,
+
+  default True) that enables Ascend-native CPU core binding for worker processes on ARM-based Ascend
+
+  servers. When enabled, vllm-ascend performs topo-affinity CPU core allocation (bind_cpus) that pins
+
+  worker/thread CPU cores to the NPU''s NUMA topology, reducing cross-NUMA memory access and CPU
+
+  scheduling jitter for the host-side orchestration threads that feed the NPU (tokenization, sampling,
+
+  HCCL/ACL host threads, KV offload ping threads). This indirectly improves decode latency stability
+
+  and sustained throughput by keeping host-side work local to the NPU''s NUMA node.
+
+  It also interacts with upstream --numa-bind: "in vllm_ascend/platform.py:889-900, if the user passes"
+
+  --numa-bind (which relies on GPU-to-NUMA topology detection unavailable on Ascend), vllm-ascend
+
+  resets numa_bind to False and injects additional_config["enable_cpu_binding"]=True as the Ascend-native
+
+  replacement. --numa-bind-nodes and --numa-bind-cpus are ignored entirely (platform.py:902-912).
+
+  The effect is host-side/indirect: it does not change NPU kernel execution or memory footprint, so
+
+  impact is medium rather than high. On non-ARM/x86 hosts the binding is not applicable.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:568
+  context: 'Field definition: enable_cpu_binding: bool = True in AscendConfig (pydantic dataclass, extra=forbid).'
+- file: vllm_ascend/ascend_config.py:425
+  context: Documented in the AscendConfig docstring example JSON passed via --additional-config.
+- file: vllm_ascend/platform.py:893
+  context: NPUPlatform.check_and_update_config converts upstream --numa-bind into additional_config['enable_cpu_binding']=True
+    and disables numa_bind.
+- file: tests/ut/test_ascend_config.py:1513
+  context: Unit test verifying string 'false' is lax-coerced to False (bool('false') pitfall fixed).
+- file: tests/ut/test_ascend_config.py:1558
+  context: Unit test verifying integer 2 is rejected with ValueError.
+related_parameters:
+- name: --numa-bind
+  relation: Upstream numa_bind is reset to False on Ascend and transparently replaced by enable_cpu_binding=True.
+- name: --numa-bind-nodes
+  relation: Ignored on Ascend; Ascend-native CPU binding performs topo-affinity allocation internally.
+- name: --numa-bind-cpus
+  relation: Ignored on Ascend; Ascend-native CPU binding performs topo-affinity allocation internally.
+- name: additional_config.refresh
+  relation: refresh forces reconstruction of the cached AscendConfig singleton, re-reading enable_cpu_binding.
+constraints:
+- enable_cpu_binding must be a JSON boolean (true/false); an integer such as 2 is rejected with a ValueError.
+- Unknown keys in additional_config are rejected (extra='forbid'), so a typo in enable_cpu_binding fails fast.
+- The string 'false' is lax-coerced to False by pydantic; do not rely on Python truthiness of non-empty strings.
+tuning_advice:
+  summary: Leave enable_cpu_binding at its default True on ARM Ascend servers; disable only when it conflicts with other host-side
+    pinning (e.g. KV offload heartbeat threads).
+  suggested_values:
+  - scenario: Default ARM-based Ascend server deployment
+    value: true
+    reason: Default is True since v0.18.0rc1; topo-affinity CPU binding reduces cross-NUMA access and host scheduling jitter,
+      stabilizing decode latency.
+  - scenario: KV cache offload (Mooncake) with SEGMENT_NOT_FOUND / heartbeat failures
+    value: false
+    reason: bind_cpus() migratepages/IRQ binding can starve unpinned Ping threads; disabling CPU binding avoids missed heartbeats
+      under default client_ttl.
+  - scenario: User migrating from GPU --numa-bind
+    value: true
+    reason: --numa-bind is auto-converted to enable_cpu_binding=true on Ascend; keep it enabled to retain equivalent host-side
+      affinity.
+  caveats:
+  - Do not pass integer values; use JSON true/false. 'false' string works via lax coercion but is discouraged.
+  - On x86 or non-Ascend hosts this switch has no practical effect.
+  - If you disable it, expect slightly higher host-side jitter and potentially less stable tail latency under high concurrency.
+  quick_guide: Keep enable_cpu_binding=true (default) on ARM Ascend; set false only to resolve host-thread pinning conflicts
+    like KV-offload heartbeat loss.
+analysis_date: '2026-10-27'

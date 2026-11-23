@@ -1,0 +1,96 @@
+name: --model
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:877
+- vllm/engine/arg_utils.py:841
+value_type: str
+default: null
+valid_choices: Any Hugging Face model ID (e.g. Qwen/Qwen3-8B), a local filesystem path, or a cloud storage URI (s3://, gs://,
+  az://)
+cli_example: --model <hf-model-id-or-path>
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: "--model selects the model architecture and weights that vLLM/vllm-ascend will load and\nexecute. It is not\
+  \ a tuning knob per se, but it determines the entire runtime performance\nenvelope on Ascend NPU:\n- \"Architecture determines\
+  \ which Ascend kernels and fusion passes apply. vllm-ascend\"\n  registers model-specific loaders and model classes via\
+  \ the `vllm.general_plugins`\n  entry points (`ascend_model_loader = vllm_ascend:register_model_loader`,\n  `ascend_model\
+  \ = vllm_ascend:register_model`) in setup.py:510-512, so the chosen model\n  decides whether Ascend-native paths (MLA/NZ\
+  \ layout, MoE MC2, MLAPO, fused MC2) are\n  available at all.\n- \"Model size (parameter count, dtype, quantization scheme)\
+  \ directly sets weight memory\"\n  footprint and thus how much HBM remains for KV cache, which in turn bounds\n  max_num_seqs\
+  \ / max_model_len and therefore throughput.\n- MoE vs dense architecture changes the applicable optimizations: \"additional_config\"\
+  \n  options such as `enable_fused_mc2`, `mc2_comm_alg`, `multistream_overlap_shared_expert`,\n  `enable_shared_expert_dp`,\
+  \ and `enable_kv_nz` (MLA models only) only take effect for\n  matching architectures.\n- \"In vllm/engine/arg_utils.py:841-854,\
+  \ when HF_HUB_OFFLINE is set, --model is resolved\"\n  from a repo ID to a local path via get_model_path(); this affects\
+  \ startup latency\n  (weight download vs local load) but not steady-state throughput.\n- \"The model also determines the\
+  \ tokenizer/chat template and default max_model_len\"\n  derived from config.json, which feeds scheduling and memory profiling.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:877
+  context: Registers the --model CLI argument from ModelConfig field metadata.
+- file: vllm/engine/arg_utils.py:841
+  context: Under HF_HUB_OFFLINE, --model repo ID is rewritten to a local model path before ModelConfig construction.
+- file: setup.py:510
+  context: vllm-ascend registers ascend_model_loader / ascend_model general plugins that dispatch model-specific loading and
+    model classes based on the selected model.
+related_parameters:
+- name: --tokenizer
+  relation: Defaults to --model when unset; can be overridden to use a different tokenizer.
+- name: --quantization
+  relation: Selects the quantization scheme applied to the loaded model weights; interacts with weight_nz_mode and fused MC2
+    availability.
+- name: --max-model-len
+  relation: Defaults are derived from the model's config; model architecture bounds the maximum supported context length.
+- name: --dtype
+  relation: Weight dtype affects memory footprint and which Ascend kernels are selected for the model.
+- name: --served-model-name
+  relation: When unset, --model is used as the model_name tag in metrics output.
+- name: --trust-remote-code
+  relation: Required for models whose architecture code is not in transformers/vLLM built-ins.
+constraints:
+- --model must be a valid Hugging Face model ID, a local directory containing config.json and weights, or a supported cloud
+  storage URI; otherwise model loading fails.
+- The model architecture must be supported by vllm-ascend; unsupported architectures will fail at model registration/loading
+  time.
+- When HF_HUB_OFFLINE is enabled, --model must resolve to a locally cached or local-path model, since remote downloads are
+  disabled.
+- Ascend-specific optimizations such as enable_kv_nz only take effect on models using MLA (e.g. DeepSeek); they are silently
+  inert on other architectures.
+- MoE-specific options (enable_fused_mc2, mc2_comm_alg, multistream_overlap_shared_expert) only take effect on MoE models
+  with shared experts.
+tuning_advice:
+  summary: Choose a model whose architecture is explicitly supported and optimized by vllm-ascend, and pair it with the matching
+    Ascend-specific additional_config options to unlock NPU-native kernels.
+  suggested_values:
+  - scenario: Dense LLM serving on Ascend NPU (general chat/completion)
+    value: Qwen/Qwen3-8B
+    reason: Dense models with well-supported architectures map cleanly onto Ascend kernels; the docs use Qwen/Qwen3-8B as
+      the canonical example for additional_config usage.
+  - scenario: MoE model serving where MC2 / fused MoE paths are desired
+    value: <supported MoE model, e.g. DeepSeek/Qwen-MoE family>
+    reason: MoE architectures unlock enable_fused_mc2, mc2_comm_alg, and multistream_overlap_shared_expert, which are the
+      primary Ascend throughput levers for MoE.
+  - scenario: MLA-based model (e.g. DeepSeek) where KV cache layout matters
+    value: <MLA model with enable_kv_nz=true>
+    reason: enable_kv_nz only takes effect on MLA models and improves KV cache access efficiency on Ascend.
+  - scenario: Offline / air-gapped deployment
+    value: /local/path/to/model
+    reason: With HF_HUB_OFFLINE set, --model is resolved to a local path; pointing directly at a local directory avoids resolution
+      overhead and network dependency.
+  caveats:
+  - vllm-ascend registers model-specific loaders and model classes via general plugins; a model that works on GPU vLLM may
+    still lack an Ascend-optimized path, falling back to slower generic kernels.
+  - Model size and dtype determine weight memory, which reduces KV cache capacity and therefore max_num_seqs / max_model_len
+    — a larger model can significantly lower achievable throughput on the same NPU.
+  - Many additional_config options (enable_kv_nz, enable_fused_mc2, multistream_overlap_shared_expert, enable_shared_expert_dp)
+    are architecture-gated and silently do nothing if the selected model does not match.
+  - The model also sets the default max_model_len from its config; verify it fits within NPU HBM before relying on defaults.
+  - When served_model_name is not set, --model is used as the metrics model_name tag, so changing --model changes observability
+    labels.
+  quick_guide: Pick a vllm-ascend-supported architecture first, then layer on the matching additional_config optimizations
+    (NZ for MLA, fused MC2 for MoE) — the model choice gates which Ascend speedups are even available.
+analysis_date: '2026-10-27'

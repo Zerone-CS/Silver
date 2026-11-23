@@ -1,0 +1,86 @@
+name: --ray-workers-use-nsight
+type: cli
+category: observability
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1245
+- vllm/config/parallel.py:245
+- vllm/v1/executor/ray_executor.py:131
+- vllm/v1/executor/ray_executor_v2.py:265
+- vllm_ascend/platform.py:874
+value_type: bool
+default: false
+valid_choices: true or false (store_true flag)
+cli_example: --ray-workers-use-nsight
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag only enables NVIDIA Nsight Systems profiling on Ray worker processes.
+
+  In upstream vLLM, when set, the Ray executor injects a runtime_env "nsight"
+
+  block (targets "cuda,cudnn,cublas", output pattern ''worker_process_%p'',
+
+  cuda-graph-trace "node") into the Ray remote kwargs — see
+
+  vllm/v1/executor/ray_executor.py:131 (_configure_ray_workers_use_nsight) and
+
+  vllm/v1/executor/ray_executor_v2.py:265 (_build_runtime_env). This causes Ray
+
+  to launch each worker under the nsight profiler, which adds profiling overhead
+
+  (slower execution, extra trace files) but does not change model computation.
+
+  On Ascend NPU, vllm-ascend explicitly neutralizes this parameter in
+
+  vllm_ascend/platform.py:874-881: if ray_workers_use_nsight is True it logs a
+
+  warning ("Parameter requires NVIDIA-specific tools") and resets it to False.
+
+  Therefore on Ascend the flag has NO runtime effect — no nsight runtime_env is
+
+  injected, no profiling overhead is incurred, and no CUDA/CUDNN/CUBLAS tracing
+
+  (which are NVIDIA-only) is attempted. The parameter is effectively a no-op on
+
+  Ascend NPU.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1245
+  context: CLI argument registration for --ray-workers-use-nsight in the ParallelConfig argument group.
+- file: vllm/config/parallel.py:245
+  context: ParallelConfig field definition, default False; excluded from DP hash set at line 849.
+- file: vllm/v1/executor/ray_executor.py:131
+  context: Upstream v1 Ray executor injects nsight runtime_env when flag is set.
+- file: vllm/v1/executor/ray_executor_v2.py:265
+  context: Upstream v2 Ray executor builds runtime_env with nsight block when flag is set.
+- file: vllm_ascend/platform.py:874
+  context: vllm-ascend platform check resets ray_workers_use_nsight to False with a warning.
+related_parameters:
+- name: --distributed-executor-backend
+  relation: The flag only has any effect when the Ray executor is used (backend 'ray'); with 'mp' it is inert.
+- name: --ray-runtime-env
+  relation: Both feed into the Ray runtime_env; nsight block is merged into the same runtime_env dict.
+constraints:
+- 'The flag has no effect on Ascend NPU: vllm-ascend forcibly resets ray_workers_use_nsight to False during platform config
+  validation.'
+- The flag only takes effect when the Ray distributed executor backend is used; with the mp backend it is ignored.
+tuning_advice:
+  summary: Do not use this flag on Ascend NPU — it is reset to False and has no effect; use Ascend-native profiling tools
+    instead.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any version)
+    value: false
+    reason: vllm-ascend resets the flag to False in platform.py; setting it True only emits a warning and provides no profiling.
+  - scenario: GPU (upstream vLLM) debugging with Ray backend
+    value: true
+    reason: Enables Nsight Systems profiling of Ray workers for performance debugging; not for production due to overhead.
+  caveats:
+  - There is no Ascend equivalent of Nsight profiling exposed via this flag; use CANN/Ascend profiling tools (e.g. msprof)
+    for NPU profiling.
+  - Setting this flag on Ascend is harmless but useless — it is silently disabled.
+  quick_guide: Leave unset on Ascend; it is a no-op there.
+analysis_date: '2026-10-27'

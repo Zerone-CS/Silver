@@ -1,0 +1,81 @@
+name: additional_config.ascend_warmup_config.enable_early_kernel_warmup
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:273
+- vllm_ascend/model_executor/warmup/early_kernel_warmup.py:9
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+impact_detail: 'This flag controls whether vllm-ascend starts a background thread at the
+
+  beginning of NPUModelRunner.load_model that JIT-compiles the Triton warmup
+
+  kernels (rejection sampler, penalty, RMS norm) while safetensors weights are
+
+  still being loaded. The thread is joined at the end of load_model, before
+
+  memory profiling and KV cache allocation, so it never affects the KV cache
+
+  budget. The mechanism is pure startup-latency overlap: the Triton compile
+
+  (host-side JIT work) is hidden behind the weight I/O critical path, so the
+
+  subsequent regular kernel_warmup hits the Triton cache instead of paying the
+
+  compile cost serially. It does not change steady-state throughput or memory
+
+  usage. The _enabled() helper reads
+
+  get_ascend_config().ascend_warmup_config.enable_early_kernel_warmup and
+
+  returns False on RuntimeError (config not yet initialized). The join has a
+
+  600s timeout (_JOIN_TIMEOUT_S). Imports needed by the thread are performed on
+
+  the main thread first to avoid concurrent sys.modules mutation.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:273
+  context: Field definition in AscendWarmupConfig dataclass, default False.
+- file: vllm_ascend/model_executor/warmup/early_kernel_warmup.py:29
+  context: _enabled() reads the flag from get_ascend_config() to decide whether to spawn the warmup thread.
+- file: vllm_ascend/model_executor/warmup/early_kernel_warmup.py:9
+  context: Module docstring describing the overlap of Triton kernel compile with weight loading.
+related_parameters:
+- name: additional_config.ascend_warmup_config.enable_early_nz_warmup
+  relation: Sibling warmup flag in the same AscendWarmupConfig; both run on background threads during weight loading and are
+    joined before memory profiling.
+- name: additional_config
+  relation: Parent config dict; ascend_warmup_config is nested under additional_config.
+constraints:
+- The warmup thread is joined at the end of load_model before memory profiling, so it must complete (or hit the 600s join
+  timeout) before KV cache allocation proceeds.
+- The flag only takes effect when the Ascend config is initialized; if get_ascend_config() raises RuntimeError the warmup
+  is silently skipped.
+tuning_advice:
+  summary: Enable on cold-start deployments to hide Triton warmup kernel compilation behind weight loading and reduce time-to-first-token
+    startup latency.
+  suggested_values:
+  - scenario: Cold start / fresh Triton cache, startup latency matters (serverless, autoscaling)
+    value: true
+    reason: Overlaps rejection sampler / penalty / RMS norm Triton JIT compile with safetensors load, so the regular kernel_warmup
+      hits the Triton cache and startup is faster.
+  - scenario: Warm Triton cache or startup latency not a concern
+    value: false
+    reason: Default; no benefit when kernels are already cached, and avoids spawning an extra thread.
+  caveats:
+  - Applies to the vllm-ascend worker path (NPUModelRunner.load_model); it is an Ascend-only config with no upstream vLLM
+    equivalent.
+  - The join before memory profiling means a slow compile can delay startup up to the 600s timeout if weight loading finishes
+    first.
+  quick_guide: 'Set enable_early_kernel_warmup: true under ascend_warmup_config to overlap Triton warmup compile with weight
+    loading on cold starts.'
+analysis_date: '2026-10-27'

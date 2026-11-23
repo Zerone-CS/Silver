@@ -1,0 +1,84 @@
+name: VLLM_MODEL_REDIRECT_PATH
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1490
+- vllm/envs.py:33
+- vllm/envs.py:2280
+- vllm/transformers_utils/utils.py:93
+value_type: str
+default: null
+valid_choices: Path to a JSON file mapping repo_id to local folder, or a space-separated values table file
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_MODEL_REDIRECT_PATH is read in vllm/transformers_utils/utils.py:maybe_model_redirect(),
+
+  which is called during model/config/tokenizer resolution. If the env var is unset or the
+
+  path does not exist, the function returns the model name unchanged (early return at line 95-99),
+
+  so there is zero runtime cost in the common case. When set, it parses a JSON dict or a
+
+  space-separated table file once per resolution call and does a dict lookup to map a HF repo_id
+
+  to a local folder path. This only affects model loading / weight resolution (startup latency),
+
+  not the steady-state inference loop. On Ascend NPU there is no vllm-ascend override of this
+
+  variable — it is a pure upstream vLLM utility used by the model loader, so its effect is
+
+  identical to GPU. The only performance-relevant benefit is avoiding a network download of
+
+  weights from HuggingFace Hub by pointing to a pre-staged local directory, which reduces
+
+  cold-start latency. It is also listed in the cache-key exclusion set (envs.py:2280), meaning
+
+  changing it does not invalidate compiled artifacts / caches.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1490
+  context: Environment variable definition; returns os.environ.get('VLLM_MODEL_REDIRECT_PATH', None)
+- file: vllm/envs.py:33
+  context: 'Type annotation VLLM_MODEL_REDIRECT_PATH: str | None = None'
+- file: vllm/envs.py:2280
+  context: Listed in the set of env vars excluded from compile cache key factors
+- file: vllm/transformers_utils/utils.py:93
+  context: maybe_model_redirect() reads the var and maps model name to local folder
+related_parameters:
+- name: VLLM_USE_MODELSCOPE
+  relation: Alternative model-source redirection mechanism (ModelScope instead of HF Hub); both affect where weights are loaded
+    from
+- name: VLLM_CACHE_ROOT
+  relation: Both are location-only paths excluded from compile cache key factors
+constraints:
+- If the path specified by VLLM_MODEL_REDIRECT_PATH does not exist, the variable is silently ignored and the original model
+  name is used.
+- The file must be either a valid JSON dict mapping repo_id to local folder, or a space-separated values table file; otherwise
+  the redirect lookup yields no mapping.
+- The redirect only applies when the model name exactly matches a key in the mapping file.
+tuning_advice:
+  summary: Use VLLM_MODEL_REDIRECT_PATH to point HF repo_ids at pre-staged local weight directories to cut cold-start download
+    latency; it has no effect on steady-state inference.
+  suggested_values:
+  - scenario: Air-gapped / offline Ascend deployment with weights pre-staged on local disk
+    value: /path/to/model_redirect.json
+    reason: Maps repo_id to local folder so the loader skips HuggingFace Hub downloads, reducing startup latency and avoiding
+      network dependency.
+  - scenario: Simple single-model deployment
+    value: /path/to/model_redirect.txt
+    reason: A space-separated table file (repo_id  /local/path) is sufficient and easier to maintain than JSON for one or
+      few models.
+  caveats:
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM on GPU.
+  - If the redirect path does not exist, the variable is silently ignored — verify the file exists before relying on it.
+  - Only affects model loading/startup, not per-token inference throughput or NPU memory usage.
+  - Changing this variable does not invalidate compile caches (it is in the cache-key exclusion list), so it is safe to toggle
+    between runs.
+  quick_guide: Set VLLM_MODEL_REDIRECT_PATH to a JSON/table file mapping repo_ids to local weight dirs to avoid download latency
+    at startup.
+analysis_date: '2026-10-27'

@@ -1,0 +1,80 @@
+name: VLLM_EC_SIDE_CHANNEL_PORT
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1675
+- vllm/envs.py:231
+- vllm/distributed/ec_transfer/ec_connector/cpu/scheduler/__init__.py:166
+value_type: int
+default: 5601
+valid_choices: Any valid TCP port number (0-65535); 0 lets the OS pick an ephemeral port
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only configures the TCP port for the EC (encoder cache) connector''s
+
+  ZMQ side channel used by the CPU EC scheduler. In
+
+  vllm/distributed/ec_transfer/ec_connector/cpu/scheduler/__init__.py:166 it is read
+
+  into self._peer_port only when the instance is an EC producer, and then passed to
+
+  ProducerSession via ZmqServerTransport (ROUTER bind). The port is advertised to
+
+  peers through ec_transfer_params.peer_port on the producer''s response so consumers
+
+  can DEALER-dial it. It does not affect data-plane transfer bandwidth, NPU compute,
+
+  or memory; it only determines which local TCP port the control socket binds to.
+
+  Choosing a port that collides with another service causes bind failure (startup
+
+  error), not a throughput change. There is no vllm-ascend override of this variable
+
+  in the provided context; it is an upstream-only, EC-connector-specific knob.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1675
+  context: Defines VLLM_EC_SIDE_CHANNEL_PORT env var, parsed as int, default 5601
+- file: vllm/envs.py:231
+  context: 'Type annotation VLLM_EC_SIDE_CHANNEL_PORT: int = 5601'
+- file: vllm/distributed/ec_transfer/ec_connector/cpu/scheduler/__init__.py:166
+  context: Producer scheduler reads it into self._peer_port for the ZMQ ROUTER bind / peer advertisement
+related_parameters:
+- name: VLLM_EC_SIDE_CHANNEL_HOST
+  relation: Companion host address for the same EC ZMQ side channel; both must be reachable by peers
+- name: VLLM_NIXL_SIDE_CHANNEL_PORT
+  relation: Analogous side-channel port for the NIXL connector (default 5600); must not collide with this port
+- name: VLLM_P2P_SIDE_CHANNEL_PORT
+  relation: Analogous side-channel port for P2P KV-offload (default 5710); must not collide
+- name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+  relation: Another connector bootstrap port (default 8998); avoid collisions when co-locating connectors
+constraints:
+- The value must be a valid TCP port integer; a non-integer value raises a ValueError at env parsing time.
+- The port must be free on the producer host, otherwise the ZMQ ROUTER bind in ProducerSession.start() fails and scheduler
+  construction aborts.
+- It is only used when the EC connector is configured as a producer (ec_role includes producer); consumers learn the port
+  from ec_transfer_params.peer_port instead.
+tuning_advice:
+  summary: Set a free, non-colliding TCP port for the EC producer's ZMQ side channel; it has negligible performance effect
+    but wrong values break startup.
+  suggested_values:
+  - scenario: Single EC producer per host with default connector set
+    value: 5601
+    reason: Default value; avoids collision with NIXL (5600) and P2P (5710) defaults.
+  - scenario: Multiple EC producers co-located on one host
+    value: 5601, 5602, 5603, ...
+    reason: Each producer needs a distinct port to bind its ZMQ ROUTER socket without collision.
+  - scenario: Testing / ephemeral allocation
+    value: 0
+    reason: OS picks a free ephemeral port, eliminating collision risk (as done in unit tests).
+  caveats:
+  - Only relevant when using the EC (encoder cache) connector; irrelevant for standard LLM decode/serving on Ascend.
+  - Ensure the chosen port is reachable from consumer nodes and not blocked by firewall when crossing hosts.
+  quick_guide: Pick a free port distinct from NIXL/P2P defaults (e.g. 5601); performance impact is negligible, but collisions
+    break startup.
+analysis_date: '2026-10-27'

@@ -1,0 +1,80 @@
+name: speculative.synthetic_acceptance_length
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm_ascend/sample/rejection_sampler.py
+- vllm_ascend/ops/triton/reject_sample.py
+- vllm_ascend/worker/v2/spec_decode/rejection_sampler_utils.py
+value_type: float
+default: null
+valid_choices: float in [1, num_speculative_tokens + 1]
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This parameter does not change the amount of compute performed by the speculative\ndecoding pipeline; it only\
+  \ controls the *distribution* of acceptance outcomes used\nby the synthetic rejection-sampling path. On Ascend, synthetic\
+  \ mode is reimplemented\nper model-runner path because NPU Triton lacks tl_rand64/fp64:\n- \"MRV1 (vllm_ascend/sample/rejection_sampler.py\
+  \ + vllm_ascend/ops/triton/reject_sample.py):\"\n  uniform probabilities are generated externally by generate_uniform_probs\
+  \ in fp64 and\n  passed as an explicit pointer to the greedy kernels, which compare against rates[pos].\n- \"MRV2 (vllm_ascend/worker/v2/spec_decode/rejection_sampler_utils.py):\
+  \ the uniform draw\"\n  is generated inside _probabilistic_rejection_kernel with SYNTHETIC_MODE=True using a\n  1-element-block\
+  \ fp32 tl.rand clamped to [2^-31, 1).\nsynthetic_acceptance_length is resolved internally into an equivalent\nsynthetic_acceptance_rates\
+  \ schedule (a per-position vector of length\nnum_speculative_tokens). The resulting rates only affect the branch outcome\n\
+  (accept vs. reject) inside the rejection kernel — the kernel work per position is\nidentical regardless of the rate value.\
+  \ Therefore the parameter has no direct effect\non kernel cost, memory, or communication. Its only indirect performance\
+  \ relevance is\nthat a higher target acceptance length means more draft tokens are accepted on average,\nwhich changes the\
+  \ effective tokens-per-step and thus end-to-end throughput/latency\ncharacteristics of the speculative loop — but this is\
+  \ a property of the synthetic\nbenchmark workload, not a tuning knob for real serving performance.\n"
+usage_locations:
+- file: vllm_ascend/sample/rejection_sampler.py
+  context: MRV1 synthetic rejection sampler consumes resolved acceptance rates derived from synthetic_acceptance_length
+- file: vllm_ascend/ops/triton/reject_sample.py
+  context: MRV1 Triton greedy kernels compare externally supplied uniform probs against rates[pos]
+- file: vllm_ascend/worker/v2/spec_decode/rejection_sampler_utils.py
+  context: MRV2 _probabilistic_rejection_kernel with SYNTHETIC_MODE=True draws uniform internally and compares against resolved
+    rates
+related_parameters:
+- name: speculative.rejection_sample_method
+  relation: Must be set to 'synthetic' for this parameter to take effect
+- name: speculative.synthetic_acceptance_rates
+  relation: Mutually exclusive with synthetic_acceptance_length; exactly one must be provided when rejection_sample_method
+    == 'synthetic'
+- name: speculative.num_speculative_tokens
+  relation: Upper bound of the valid range is num_speculative_tokens + 1; resolved rates vector has length num_speculative_tokens
+constraints:
+- synthetic_acceptance_length must be within [1, num_speculative_tokens + 1].
+- synthetic_acceptance_length is only valid when rejection_sample_method is 'synthetic'.
+- synthetic_acceptance_length and synthetic_acceptance_rates are mutually exclusive; exactly one must be provided when rejection_sample_method
+  == 'synthetic'.
+tuning_advice:
+  summary: 'Use synthetic_acceptance_length only for benchmarking/validation of the speculative
+
+    verify path; pick a value that reproduces the acceptance regime you want to stress-test.
+
+    '
+  suggested_values:
+  - scenario: Benchmarking the verify path at a realistic acceptance rate (e.g. num_speculative_tokens=3, ~2 accepted tokens
+      per step)
+    value: 2.0
+    reason: A mean acceptance length of ~2 with 3 draft tokens approximates a moderately well-trained drafter and exercises
+      the common accept/reject mix.
+  - scenario: Stress-testing the high-acceptance regime of the speculative pipeline
+    value: <num_speculative_tokens + 1>
+    reason: The maximum valid value drives near-full acceptance, maximizing accepted tokens per step to stress the high-acceptance
+      path.
+  - scenario: Kernel validation / bit-exact comparison against the PyTorch reference
+    value: 1.0
+    reason: The minimum valid value yields a deterministic low-acceptance schedule, useful for isolating kernel correctness
+      under identical inputs.
+  caveats:
+  - Never use synthetic mode for production serving — output is not semantically correct.
+  - Provide exactly one of synthetic_acceptance_length or synthetic_acceptance_rates; supplying both or neither when rejection_sample_method
+    == 'synthetic' is invalid.
+  - On MRV2 the uniform draw is fp32 in-kernel; on MRV1 it is fp64 external — do not expect bit-identical results across the
+    two paths.
+  quick_guide: Set rejection_sample_method='synthetic' and pick synthetic_acceptance_length in [1, num_speculative_tokens+1]
+    to emulate a target acceptance regime for benchmarking only.
+analysis_date: '2026-10-27'

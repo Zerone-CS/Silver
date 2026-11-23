@@ -1,0 +1,109 @@
+name: --ec-manager-config
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1720
+- vllm/engine/arg_utils.py:718
+- vllm/engine/arg_utils.py:809
+- vllm/config/vllm.py:425
+- vllm/v1/core/sched/scheduler.py:250
+- vllm_ascend/ec_manager/score_ec_manager.py:112
+- vllm_ascend/utils.py:1020
+value_type: dict
+default: '{}'
+valid_choices: JSON object matching EncoderCacheManagerConfig fields (encoder_cache_manager_cls, manager_config)
+cli_example: '--ec-manager-config ''{"encoder_cache_manager_cls": "vllm_ascend.ec_manager.score_ec_manager.ScoreEncoderCacheManager",
+  "manager_config": {"cpu_cache_slots": 100000}}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'This parameter configures the encoder cache manager used by the vLLM V1 scheduler
+
+  for multimodal models. In upstream vLLM, `vllm_config.ec_manager_config.get_encoder_cache_manager_obj()`
+
+  (vllm/v1/core/sched/scheduler.py:250) selects the manager class; if None, the default
+
+  `EncoderCacheManager` (or `EncoderDecoderCacheManager`) is used with `cache_size=encoder_cache_size`
+
+  derived from `MultiModalBudget`. The manager caches vision/encoder embeddings keyed by mm_hash,
+
+  avoiding recomputation of expensive encoder passes for repeated multimodal inputs.
+
+
+  vllm-ascend provides an Ascend-specific implementation: `ScoreEncoderCacheManager`
+
+  (vllm_ascend/ec_manager/score_ec_manager.py). It reads `vllm_config.ec_manager_config.manager_config`
+
+  (line 112) to build a `ScoreEncoderCacheConfig`, which adds a two-tier cache: a CPU cache
+
+  (`cpu_cache_slots`, default 100000) plus the NPU cache sized by `cache_size`. Newly generated
+
+  embeddings land in CPU cache; frequently-accessed, high-score entries are promoted to NPU cache;
+
+  low-score entries are evicted from NPU using a clock-based aging mechanism. This directly affects
+
+  NPU memory usage (how many encoder embeddings stay resident on device), encoder recompute latency
+
+  (cache hits avoid re-running the vision encoder), and throughput for multimodal workloads with
+
+  repeated images. `vllm_ascend/utils.py:1020` uses `is_score_encoder_cache_manager` to branch
+
+  behavior based on whether this manager is selected. For text-only models the parameter has no effect.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1720
+  context: CLI argument registration for --ec-manager-config
+- file: vllm/engine/arg_utils.py:809
+  context: Dict-to-EncoderCacheManagerConfig conversion in EngineArgs.__post_init__
+- file: vllm/v1/core/sched/scheduler.py:250
+  context: Scheduler resolves manager class from ec_manager_config and creates manager with encoder_cache_size
+- file: vllm_ascend/ec_manager/score_ec_manager.py:112
+  context: ScoreEncoderCacheManager reads manager_config to build ScoreEncoderCacheConfig (cpu_cache_slots)
+- file: vllm_ascend/utils.py:1020
+  context: is_score_encoder_cache_manager checks whether the score-based manager is active
+related_parameters:
+- name: --ec-transfer-config
+  relation: Companion config for distributed EC (encoder cache) transfer; both relate to encoder cache lifecycle
+- name: --limit-mm-per-prompt
+  relation: Determines number of multimodal items per request, which drives encoder cache pressure
+- name: --mm-processor-kwargs
+  relation: Affects multimodal preprocessing that feeds the encoder cache
+- name: --max-num-batched-tokens
+  relation: Indirectly affects encoder compute budget and thus encoder_cache_size passed to the manager
+constraints:
+- The value must be a JSON object parseable into EncoderCacheManagerConfig; invalid JSON or unknown fields cause a validation
+  error at engine startup.
+- encoder_cache_manager_cls, if set, must resolve to a class implementing create_manager(cache_size, vllm_config); otherwise
+  manager creation fails.
+- The score-based manager only applies to multimodal models; for text-only models the encoder cache is not created and the
+  config has no effect.
+- manager_config fields (e.g. cpu_cache_slots) must match the fields of the selected manager's config dataclass (ScoreEncoderCacheConfig
+  for the Ascend score manager).
+tuning_advice:
+  summary: Use the Ascend ScoreEncoderCacheManager for multimodal workloads with repeated images to keep hot encoder embeddings
+    on NPU and offload cold ones to CPU; leave default for text-only or low-reuse workloads.
+  suggested_values:
+  - scenario: Multimodal serving with repeated images (e.g. VQA, document QA) on Ascend NPU
+    value: '{"encoder_cache_manager_cls": "vllm_ascend.ec_manager.score_ec_manager.ScoreEncoderCacheManager", "manager_config":
+      {"cpu_cache_slots": 100000}}'
+    reason: Enables two-tier NPU+CPU encoder cache with score-based promotion/eviction, reducing vision encoder recomputation
+      and NPU memory pressure.
+  - scenario: Host memory constrained environment
+    value: '{"encoder_cache_manager_cls": "vllm_ascend.ec_manager.score_ec_manager.ScoreEncoderCacheManager", "manager_config":
+      {"cpu_cache_slots": 20000}}'
+    reason: Lower cpu_cache_slots reduces host RAM footprint while retaining NPU-side hot-entry caching.
+  - scenario: Text-only model or no multimodal reuse
+    value: '{}'
+    reason: Default EncoderCacheManager is sufficient; score-based policy adds overhead without cache-hit benefit.
+  caveats:
+  - Applies to v1-ascend worker path; verify the score manager class path matches the installed vllm-ascend version.
+  - Monitor NPU HBM and host RAM together — the CPU tier trades host memory for reduced encoder recompute.
+  - The NPU cache size is governed by the multimodal encoder cache budget, not by cpu_cache_slots; tune both for best results.
+  quick_guide: For repeated-image multimodal serving on Ascend, set encoder_cache_manager_cls to the ScoreEncoderCacheManager
+    and size cpu_cache_slots to your host RAM budget.
+analysis_date: '2026-10-27'

@@ -1,0 +1,98 @@
+name: --trust-remote-code
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:167
+- vllm/engine/arg_utils.py:447
+- vllm/engine/arg_utils.py:883
+- vllm/engine/arg_utils.py:1828
+- vllm/config/model.py:630
+- vllm/config/speculative.py:1278
+- vllm/v1/spec_decode/draft_model.py:43
+value_type: bool
+default: false
+valid_choices: 'boolean flag: pass --trust-remote-code to enable, omit to disable'
+cli_example: --trust-remote-code
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "--trust-remote-code is a model-loading/security flag, not a runtime kernel or\nscheduling knob. In vLLM it\
+  \ is stored on ModelConfig (vllm/config/model.py:167)\nand forwarded to get_config() (vllm/config/model.py:630), which passes\
+  \ it to\nHuggingFace transformers' AutoConfig/AutoTokenizer/AutoModel loading. When\nenabled, transformers executes Python\
+  \ code shipped inside the model repository\n(custom configuration_*.py / modeling_*.py / tokenization_*.py) instead of the\n\
+  built-in implementations. The only performance-relevant effects are indirect\nand one-time at startup:\n(1) Startup latency\
+  \ — importing and executing remote Python modules adds a small\n    amount of Python import/execution time during engine\
+  \ initialization; this is\n    a one-off cost, not per-token.\n(2) Memory — remote custom modeling code may instantiate\
+  \ additional Python\n    objects or a different tokenizer implementation, marginally changing host\n    (CPU) memory footprint;\
+  \ NPU HBM usage is determined by weight loading and\n    KV-cache config, not by this flag.\n(3) Speculative decoding —\
+  \ the flag is propagated to the draft ModelConfig\n    (vllm/config/speculative.py:1278) and to tokenizer construction for\n\
+  \    heterogeneous-vocab spec decode (vllm/v1/spec_decode/draft_model.py:43), so\n    a draft model that ships custom code\
+  \ also requires it; failure to set it\n    causes a load-time error rather than a slowdown.\nvllm-ascend does not override\
+  \ or reinterpret this flag: \"it is consumed entirely\"\nby upstream vLLM's model/tokenizer loading path, and vllm-ascend\
+  \ only references\nit in examples (examples/offline_*.py, examples/offline_DSD_k_tuner/\ngenerate_config.py) and in documentation\
+  \ where certain models (e.g.\nCohere-Transcribe, FP8 checkpoints such as Qwen3.8-27B-FP8) require it to load\nat all. There\
+  \ is no Ascend-specific code path (HCCL, CANN graph capture,\ntorch_npu kernels) gated on this flag, so steady-state throughput\
+  \ and per-token\nlatency on Ascend NPU are unaffected.\n"
+usage_locations:
+- file: vllm/config/model.py:167
+  context: ModelConfig field definition with docstring; default False
+- file: vllm/engine/arg_utils.py:883
+  context: CLI argument registration --trust-remote-code from ModelConfig kwargs
+- file: vllm/engine/arg_utils.py:1828
+  context: EngineArgs.create_model_config forwards the flag into ModelConfig
+- file: vllm/config/model.py:630
+  context: Passed to get_config() which loads HF config with trust_remote_code
+- file: vllm/config/speculative.py:1278
+  context: Propagated to draft ModelConfig for speculative decoding
+- file: vllm/v1/spec_decode/draft_model.py:43
+  context: Used when building target/draft tokenizers for heterogeneous vocab spec decode
+- file: examples/offline_inference_npu_tp2.py:44
+  context: vllm-ascend example passing trust_remote_code=True to LLM()
+- file: examples/offline_DSD_k_tuner/generate_config.py:293
+  context: vllm-ascend example enabling trust_remote_code for spec-decode tuning
+related_parameters:
+- name: --model
+  relation: Determines which repository's remote code is trusted and executed
+- name: --tokenizer
+  relation: Remote tokenizer code is also executed when trust_remote_code is enabled
+- name: --revision / --code-revision
+  relation: Select which revision of the remote code is downloaded and executed
+- name: --config-format
+  relation: Affects how the HF config is loaded alongside trust_remote_code
+- name: --speculative-config
+  relation: Draft model inherits trust_remote_code from the target model config
+- name: --hf-token
+  relation: Needed for gated repos whose remote code must be downloaded
+constraints:
+- Models whose repository ships custom modeling/tokenizer code (e.g. Cohere-Transcribe) fail to load unless --trust-remote-code
+  is passed.
+- Enabling --trust-remote-code executes arbitrary Python from the model repository, so it must only be used with trusted model
+  sources.
+- For speculative decoding, the draft model inherits trust_remote_code from the target model config, so a draft model with
+  custom code requires the flag on the target as well.
+tuning_advice:
+  summary: Enable only when the model repository ships custom code; it is a correctness/security switch with negligible runtime
+    performance cost on Ascend NPU.
+  suggested_values:
+  - scenario: Model repository ships custom modeling/tokenizer code (e.g. Cohere-Transcribe, some FP8 checkpoints)
+    value: true
+    reason: Without it the model cannot be loaded at all; the docs explicitly state --trust-remote-code is required for such
+      models.
+  - scenario: Standard models fully supported by transformers/vLLM built-in implementations (Qwen, DeepSeek, Llama, etc.)
+    value: false
+    reason: Avoids executing arbitrary remote Python and keeps startup minimal; no performance benefit is gained by enabling
+      it.
+  - scenario: Speculative decoding with a draft model that ships custom code
+    value: true
+    reason: The draft ModelConfig inherits trust_remote_code from the target config, so the flag must be set for the draft
+      model to load.
+  caveats:
+  - Do not expect throughput or latency gains from this flag; it only affects model/tokenizer loading.
+  - Only enable for trusted model sources since it executes arbitrary Python from the repository.
+  - When running offline on Ascend, pre-download the model directory including custom code files before setting HF_HUB_OFFLINE.
+  quick_guide: Pass --trust-remote-code only if the model repo ships custom code; otherwise leave it off — it does not affect
+    NPU runtime performance.
+analysis_date: '2026-10-27'

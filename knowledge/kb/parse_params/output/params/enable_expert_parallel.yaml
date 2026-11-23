@@ -1,0 +1,147 @@
+name: --enable-expert-parallel
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:167
+- vllm/engine/arg_utils.py:1190
+- vllm/engine/arg_utils.py:506
+- vllm_ascend/ascend_config.py:749
+- vllm_ascend/patch/platform/patch_parallel_config.py:21
+- vllm_ascend/ascend_forward_context.py:94
+- vllm_ascend/ascend_forward_context.py:397
+- vllm_ascend/platform.py:1432
+- vllm_ascend/patch/platform/patch_speculative_config.py:249
+- vllm_ascend/_310p/worker/v2/model_runner.py:193
+value_type: bool
+default: false
+valid_choices: true / false (store_true flag)
+cli_example: --enable-expert-parallel
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'On Ascend this flag is the master switch that changes the MoE execution path, not just a
+
+  weight-placement choice. In vllm_ascend/ascend_forward_context.py:397
+
+  (_select_moe_comm_method), if enable_expert_parallel is False or the EP group world size is 1,
+
+  the MoE layer falls back to MoECommType.ALLGATHER (replicate experts, all-gather tokens). When
+
+  it is True, the code selects ALLTOALL (forced when LoRA is present, line 399-404) or a
+
+  hardware-policy-driven selector (_MOE_COMM_SELECTORS) that can pick MC2 / FusedMC2 / MegaMoe
+
+  dispatch-combine kernels. Those fused kernels (use_cann_megamoe at
+
+  ascend_forward_context.py:94 requires enable_expert_parallel and 1 < EP world size <= 64) are
+
+  the main source of Ascend MoE throughput: "they fuse expert dispatch/combine with the FFN"
+
+  matmuls and use HCCL all-to-all instead of all-gather, cutting per-token communication volume
+
+  and NPU memory (each rank holds only its expert shard). It also gates sequence parallelism:
+
+  patch_parallel_config.py:21 (_use_sequence_parallel_moe) requires enable_expert_parallel and
+
+  tp_size > 1 with a supported all2all backend, and platform.py:1432 raises if SP is enabled for
+
+  a MoE model without EP. Finally ascend_config.py:749 makes enable_shared_expert_dp effective
+
+  only when EP is on and tp_size > 1, which changes how shared experts are sharded.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:167
+  context: 'ParallelConfig field definition; docstring: use expert parallelism instead of tensor parallelism for MoE layers.'
+- file: vllm/engine/arg_utils.py:1190
+  context: CLI registration of --enable-expert-parallel / -ep from ParallelConfig kwargs.
+- file: vllm/config/model.py:1433
+  context: verify_with_parallel_config calls _verify_with_expert_parallelism when EP is enabled.
+- file: vllm/config/parallel.py:533
+  context: EPLB validation requires enable_expert_parallel to be True.
+- file: vllm/config/speculative.py:1757
+  context: create_draft_parallel_config propagates enable_expert_parallel to the draft model config.
+- file: vllm_ascend/ascend_forward_context.py:397
+  context: 'MoE comm method selection: EP off -> ALLGATHER; EP on -> ALLTOALL / MC2 / MegaMoe.'
+- file: vllm_ascend/ascend_forward_context.py:94
+  context: use_cann_megamoe requires enable_expert_parallel and 1 < EP world size <= 64.
+- file: vllm_ascend/patch/platform/patch_parallel_config.py:21
+  context: Ascend MoE sequence parallelism (_use_sequence_parallel_moe) requires EP and tp_size > 1.
+- file: vllm_ascend/platform.py:1432
+  context: Raises AssertionError if sequence parallelism is enabled for a MoE model without EP.
+- file: vllm_ascend/ascend_config.py:749
+  context: enable_shared_expert_dp is ANDed with enable_expert_parallel and tp_size > 1.
+- file: vllm_ascend/patch/platform/patch_speculative_config.py:249
+  context: Ascend skips the EP verification for non-MoE draft models (dense EAGLE drafts).
+- file: vllm_ascend/_310p/worker/v2/model_runner.py:193
+  context: 310P model runner v2 raises NotImplementedError when EP is enabled.
+related_parameters:
+- name: --all2all-backend
+  relation: Selects the all-to-all implementation used when EP is on; Ascend forces flashinfer_all2allv when FlashComm1 is
+    disabled (ascend_config.py:765).
+- name: --tensor-parallel-size
+  relation: EP group spans TP x PCP x DP ranks; Ascend SP MoE and shared-expert DP require tp_size > 1.
+- name: --data-parallel-size
+  relation: Wide-EP deployments combine DP with EP; upstream SP MoE requires DP > 1, Ascend does not.
+- name: --enable-eplb
+  relation: Requires enable_expert_parallel=True (vllm/config/parallel.py:533).
+- name: --eplb-config
+  relation: Only meaningful when EP and EPLB are enabled.
+- name: --enable-ep-weight-filter
+  relation: Only has effect when expert parallelism is active; skips non-local expert weights at load.
+- name: --additional-config enable_flashcomm1
+  relation: Ascend sequence parallelism (FlashComm1) requires EP for MoE models; without FlashComm1 the all2all backend is
+    forced to flashinfer_all2allv.
+- name: --enable-shared-expert-dp
+  relation: Ascend only honors it when EP is enabled and tp_size > 1.
+- name: --speculative-config
+  relation: EP is propagated to the draft config; Ascend disables EP for dense EAGLE drafts and skips the EP check for non-MoE
+    drafts.
+constraints:
+- Enabling --enable-eplb requires --enable-expert-parallel to be set, otherwise vLLM raises a ValueError.
+- Expert parallelism is not supported by the 310P model runner v2; enabling it raises NotImplementedError.
+- On Ascend, sequence parallelism (FlashComm1) for a MoE model requires --enable-expert-parallel=True, otherwise an AssertionError
+  is raised.
+- Ascend sequence parallelism additionally requires --tensor-parallel-size greater than 1.
+- The model must actually be a MoE model for EP to have any effect; for dense models the flag only triggers the expert-parallelism
+  verification path.
+- Ascend MegaMoe fused kernels are only used when the EP group world size is greater than 1 and at most 64.
+tuning_advice:
+  summary: Enable --enable-expert-parallel for any MoE model on Ascend to unlock all-to-all/MC2/MegaMoe fused MoE kernels
+    and sequence parallelism; keep it off for dense models.
+  suggested_values:
+  - scenario: MoE model (DeepSeek, Qwen3-MoE, Mixtral, Kimi) with tp_size > 1 on Atlas A2/A3
+    value: true
+    reason: Switches MoE comm from ALLGATHER to all-to-all/MC2/MegaMoe (ascend_forward_context.py:397) and enables Ascend
+      sequence parallelism (patch_parallel_config.py:21), giving large throughput and memory wins.
+  - scenario: Wide-EP deployment with data parallelism (e.g. DeepSeek-V4-Flash-Vision, dp=4 tp=4)
+    value: true
+    reason: Documented deployment uses --enable-expert-parallel to distribute MoE experts across DP x TP ranks; combined with
+      --enable-eplb for load balancing.
+  - scenario: MoE model with EPLB load balancing
+    value: true
+    reason: EPLB requires enable_expert_parallel=True (vllm/config/parallel.py:533); docs show --enable-expert-parallel together
+      with --enable-eplb and --eplb-config.
+  - scenario: Dense (non-MoE) model
+    value: false
+    reason: EP only affects MoE layers; enabling it on a dense model adds verification overhead and can trip the expert-parallelism
+      check.
+  - scenario: 310P hardware with model runner v2
+    value: false
+    reason: Expert parallelism is not supported by model runner v2 on 310P and raises NotImplementedError.
+  caveats:
+  - 'Pair EP with --additional-config ''{"enable_flashcomm1": true}'' to get Ascend sequence parallelism; otherwise all2all_backend
+    is forced to flashinfer_all2allv.'
+  - For small batch / low-concurrency decode, all-to-all EP can be slower than ALLGATHER due to HCCL communication overhead;
+    benchmark both for your workload.
+  - When using LoRA with EP, Ascend forces the ALLTOALL path and cannot use fused MC2/MegaMoe, so expect lower MoE throughput.
+  - Keep EP world size <= 64 to stay eligible for MegaMoe fused kernels.
+  - For speculative decoding, dense EAGLE drafts run with EP disabled automatically; do not expect EP benefits on the draft
+    model.
+  quick_guide: Set --enable-expert-parallel (alias -ep) for every MoE deployment on Ascend; leave it off for dense models
+    and 310P model runner v2.
+analysis_date: '2026-10-27'

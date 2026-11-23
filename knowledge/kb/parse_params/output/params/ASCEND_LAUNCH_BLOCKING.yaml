@@ -1,0 +1,81 @@
+name: ASCEND_LAUNCH_BLOCKING
+type: env
+category: hardware
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/features/dynamic_chunked_pipeline_parallel.md:110
+value_type: int
+default: '0'
+valid_choices: 0 or 1 (boolean-like integer; 1 enables synchronous/blocking kernel launch, 0 disables it)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ASCEND_LAUNCH_BLOCKING is a CANN/PyTorch-NPU runtime environment variable (not defined
+
+  in vllm or vllm-ascend source; it is consumed by the Ascend PyTorch adapter / CANN
+
+  runtime). When set to 1, NPU kernel launches become synchronous (blocking): each
+
+  operator launch waits for completion before returning, which serializes host-device
+
+  execution and prevents the host from queuing subsequent kernels ahead of device
+
+  execution. This destroys the asynchronous launch pipeline that normally overlaps host
+
+  dispatch with device compute, increasing per-step latency and reducing throughput.
+
+  When set to 0 (as recommended in the vllm-ascend dynamic chunked pipeline parallel
+
+  tutorial), kernel launches are asynchronous, allowing the host to enqueue work and
+
+  overlap communication/compute — essential for high-throughput serving and for
+
+  pipeline-parallel / expert-parallel deployments where HCCL collectives must overlap
+
+  with compute. The value 1 is primarily a debugging aid (synchronous launches make
+
+  error stack traces point at the offending kernel), not a production setting.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/features/dynamic_chunked_pipeline_parallel.md:110
+  context: Recommended production env export ASCEND_LAUNCH_BLOCKING=0 in the DeepSeek-V3.1 PD-disaggregated / chunked-pipeline-parallel
+    launch script
+related_parameters:
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Both are Ascend runtime env vars set together in the same launch script; AIV expansion mode relies on asynchronous
+    kernel launch to overlap
+- name: TASK_QUEUE_ENABLE
+  relation: Task queue (async dispatch) works best when launch blocking is disabled; enabling the task queue while ASCEND_LAUNCH_BLOCKING=1
+    negates much of its benefit
+- name: PYTORCH_NPU_ALLOC_CONF
+  relation: Memory allocator config set alongside in the same recommended env block
+constraints:
+- This variable is not read by vllm or vllm-ascend Python code; it is consumed by the Ascend PyTorch/CANN runtime, so vLLM
+  cannot validate or override it.
+- Setting ASCEND_LAUNCH_BLOCKING=1 forces synchronous kernel execution and will serialize host-device work, so it must not
+  be used in production throughput-oriented deployments.
+tuning_advice:
+  summary: Keep ASCEND_LAUNCH_BLOCKING=0 for all production serving; only set it to 1 temporarily when debugging NPU kernel
+    errors.
+  suggested_values:
+  - scenario: Production serving (single-node or multi-node, TP/PP/EP, PD-disaggregation)
+    value: '0'
+    reason: Asynchronous kernel launch lets the host enqueue work ahead of device execution, overlapping compute and HCCL
+      communication; this is the value used in the vllm-ascend chunked-pipeline-parallel tutorial launch script.
+  - scenario: Debugging a crash or numerical error to get a precise failing-kernel stack trace
+    value: '1'
+    reason: Synchronous launches make the error surface at the offending operator rather than later during stream synchronization,
+      at the cost of large latency/throughput regression.
+  caveats:
+  - Setting this to 1 can dramatically reduce throughput and increase latency because every kernel launch blocks; never leave
+    it enabled in benchmarks or production.
+  - Because it is a CANN/PyTorch-NPU runtime variable, vllm-ascend does not override it — the value you export is what the
+    runtime uses, so misconfiguration is silent.
+  - It is typically exported together with TASK_QUEUE_ENABLE=1 and HCCL_OP_EXPANSION_MODE=AIV; the async-dispatch benefits
+    of those settings assume launch blocking is off.
+  quick_guide: Export ASCEND_LAUNCH_BLOCKING=0 for production; use 1 only for short debugging sessions.
+analysis_date: '2026-10-27'

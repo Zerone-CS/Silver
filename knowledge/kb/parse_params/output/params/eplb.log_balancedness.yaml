@@ -1,0 +1,72 @@
+name: eplb.log_balancedness
+type: nested
+category: observability
+scope: both
+source_file:
+- vllm/v1/worker/gpu/eplb_utils.py:129
+- vllm/v1/worker/gpu_model_runner.py:3418
+- vllm/v1/engine/utils.py:1397
+- vllm_ascend/worker/v2/eplb.py:100
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This flag controls whether EPLB (Expert Parallelism Load Balancing) balancedness\nstatistics are logged each\
+  \ step. It is read in two places:\n- Upstream v1: \"vllm/v1/worker/gpu/eplb_utils.py:129 and\"\n  vllm/v1/worker/gpu_model_runner.py:3418\
+  \ pass\n  `log_stats=self.parallel_config.eplb_config.log_balancedness` into\n  `EPLBState.step()`. When true, the EPLB\
+  \ state computes and logs per-expert\n  load balancedness metrics every step.\n- Ascend v2: \"vllm_ascend/worker/v2/eplb.py:100\
+  \ uses the flag inside\"\n  `AscendEPLBController.prepare_forward` to decide whether the current step is\n  a \"sampling\"\
+  \ step via `state._should_record_current_step(log_stats=...)`.\n  This affects whether `should_record_tensor` is filled\
+  \ and whether local load\n  is collected (`_should_collect_local_load`), i.e. it gates the load-recording\n  path in the\
+  \ Ascend v2 controller.\n\nThe performance cost is indirect: \"computing balancedness requires aggregating\"\nper-expert\
+  \ token counts across the EPLB group (a collective/reduction), which\nthe docstring explicitly notes \"will cause communication\
+  \ overhead.\" On Ascend\nthis means extra HCCL/HIXL/Gloo collective traffic per step, adding latency and\nreducing throughput.\
+  \ It does not change model math or memory footprint\nmaterially. Because it is off by default and only relevant when EPLB\
+  \ is\nenabled, the overall impact is low but non-zero when turned on.\n"
+usage_locations:
+- file: vllm/v1/worker/gpu/eplb_utils.py:129
+  context: EPLBController.step passes log_stats=log_balancedness into EPLBState.step
+- file: vllm/v1/worker/gpu_model_runner.py:3418
+  context: GPUModelRunner.eplb_step passes log_stats=log_balancedness into eplb_state.step
+- file: vllm_ascend/worker/v2/eplb.py:100
+  context: AscendEPLBController.prepare_forward uses log_balancedness to decide sampling/recording step
+- file: vllm/v1/engine/utils.py:1397
+  context: DP config-hash validation requires log_balancedness to match across DP workers
+related_parameters:
+- name: enable_eplb
+  relation: log_balancedness only takes effect when EPLB is enabled
+- name: eplb_config.log_balancedness_interval
+  relation: Controls how often balancedness log entries are emitted when logging is on
+- name: eplb_config.window_size
+  relation: Load-recording window that balancedness metrics are computed over
+- name: eplb_config.step_interval
+  relation: Interval between expert rearrangements; balancedness logging is per-step
+constraints:
+- log_balancedness has no effect unless --enable-eplb is set.
+- All DP workers must use identical eplb_config.log_balancedness values, otherwise the DP config-hash check raises a RuntimeError
+  at startup.
+tuning_advice:
+  summary: Keep log_balancedness off in production; enable only temporarily to diagnose expert load imbalance, accepting extra
+    collective overhead.
+  suggested_values:
+  - scenario: Production serving with EPLB enabled
+    value: false
+    reason: Logging balancedness each step adds collective communication overhead and reduces throughput; default off is correct
+      for steady-state serving.
+  - scenario: Debugging expert load imbalance / validating EPLB policy
+    value: true
+    reason: Enables per-step balancedness metrics needed to verify the stair policy and redundant-expert placement; use with
+      a larger log_balancedness_interval to limit overhead.
+  caveats:
+  - Enabling this adds per-step collective communication (HCCL/HIXL/Gloo on Ascend) to aggregate expert loads, increasing
+    latency and lowering throughput.
+  - On Ascend v2 (MRv2), log_balancedness also gates the load-recording/sampling path in AscendEPLBController.prepare_forward,
+    so it interacts with load collection behavior, not just logging.
+  - Must be identical across all DP workers or the engine startup config-hash validation fails.
+  quick_guide: Leave false for production; set true only when diagnosing EPLB balance, ideally with a larger log_balancedness_interval.
+analysis_date: '2026-10-27'

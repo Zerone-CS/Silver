@@ -1,0 +1,124 @@
+name: --spec-method
+type: cli
+category: speculation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1701
+- vllm/engine/arg_utils.py:666
+- vllm/engine/arg_utils.py:1934
+- vllm_ascend/ascend_config.py:102
+value_type: str
+default: null
+valid_choices: Free-form string; on Ascend the values explicitly recognized in code include 'mtp' and 'dspark' (KVPP path).
+  Upstream also supports methods like 'ngram', 'eagle', 'eagle3', 'medusa', 'mlp_speculator', 'draft_model', etc., depending
+  on the vLLM version.
+cli_example: --spec-method mtp
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--spec-method selects the speculative decoding algorithm, which is the single
+
+  biggest lever on decode latency/throughput for LLM serving. In upstream vLLM
+
+  (vllm/engine/arg_utils.py:1701) the flag is registered from
+
+  SpeculativeConfig.method and merged into the speculative_config dict in
+
+  create_speculative_config (arg_utils.py:1934-1946); it is mutually exclusive
+
+  with the same key inside --speculative-config. The chosen method determines
+
+  which proposer/verifier pipeline is instantiated (draft model, ngram, MTP head,
+
+  medusa heads, etc.), how many extra tokens are drafted per step, and how much
+
+  extra KV cache / model weights are resident on the NPU.
+
+  On Ascend, vllm-ascend does not redefine the flag but constrains its value in
+
+  feature validators. In vllm_ascend/ascend_config.py:100-111 the KVPP
+
+  (KV layer parallelism) validator reads vllm_config.speculative_config.method
+
+  and raises unless it is ''mtp'' or ''dspark''; it further rejects DSpark adaptive
+
+  verification and dynamic speculative lengths when KVPP is enabled. So on
+
+  Ascend the method value gates whether KVPP (a memory/parallelism optimization)
+
+  can be combined with speculative decoding at all. The method also drives which
+
+  Ascend-native proposer path is taken (v1 worker supports ngram/mtp/medusa via
+
+  Ascend proposers; v2 worker is stricter, typically eagle/MTP only), which
+
+  changes both the number of NPU kernels launched per decode step and the
+
+  HCCL/collective traffic for multi-device draft models.
+
+  Net effect: "choosing a speculative method (and which one) directly changes"
+
+  decode-step latency, achievable tokens/sec, and NPU HBM footprint (draft
+
+  weights + extra KV blocks for speculative tokens).
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1701
+  context: Registers --spec-method CLI flag from SpeculativeConfig.method.
+- file: vllm/engine/arg_utils.py:1934
+  context: Merges --spec-method into speculative_config['method']; raises if also set via --speculative-config.
+- file: vllm_ascend/ascend_config.py:102
+  context: KVPP validator requires speculative_config.method to be 'mtp' or 'dspark'.
+- file: vllm_ascend/ascend_config.py:106
+  context: 'DSpark-specific checks: rejects adaptive verification and dynamic speculative lengths under KVPP.'
+related_parameters:
+- name: --spec-model
+  relation: Draft model path; required for model-based methods (eagle/eagle3/draft_model), not needed for ngram/mtp.
+- name: --spec-tokens
+  relation: Number of speculative tokens per step; interacts with method to set draft depth and KV overhead.
+- name: --speculative-config
+  relation: Mutually exclusive with --spec-method for the 'method' key; setting both raises ValueError.
+- name: additional_config.enable_kvpp
+  relation: When KVPP is enabled, --spec-method must be 'mtp' or 'dspark'.
+- name: additional_config.dynamic_spec_config
+  relation: Dynamic speculative length is rejected for DSpark under KVPP.
+constraints:
+- --spec-method and --speculative-config['method'] are mutually exclusive; setting both raises ValueError.
+- If --spec-model is not provided, --spec-method must be provided explicitly (method cannot be auto-detected without a model).
+- When KVPP (additional_config.enable_kvpp) is enabled, --spec-method must be 'mtp' or 'dspark'.
+- When KVPP is enabled with method 'dspark', DSpark adaptive verification must be disabled.
+- When KVPP is enabled with method 'dspark', dynamic speculative lengths (additional_config.dynamic_spec_config.method) must
+  not be set.
+- KVPP with speculative decoding requires a fixed number of speculative tokens (num_speculative_tokens_per_batch_size must
+  be unset).
+tuning_advice:
+  summary: Use --spec-method to enable speculative decoding for latency-sensitive decode; prefer 'mtp' on Ascend (works with
+    KVPP and Ascend-native proposers), and validate against the worker version.
+  suggested_values:
+  - scenario: DeepSeek-style MoE models with an MTP head, latency-sensitive decode on Ascend
+    value: mtp
+    reason: MTP is the Ascend-native path, is compatible with KVPP, and avoids loading a separate draft model, minimizing
+      extra HBM.
+  - scenario: KVPP enabled (additional_config.enable_kvpp=true) with speculative decoding
+    value: mtp
+    reason: KVPP validator only accepts 'mtp' or 'dspark'; 'mtp' is the simplest compatible choice.
+  - scenario: KVPP enabled and using DSpark
+    value: dspark
+    reason: Allowed by KVPP, but adaptive verification and dynamic speculative lengths must be disabled.
+  - scenario: No draft model available and prompt-heavy workloads with repeated n-grams
+    value: ngram
+    reason: Ngram needs no draft weights (saves HBM) and can help on repetitive prompts; supported on v1 Ascend worker.
+  - scenario: Throughput-oriented serving where decode latency is not the bottleneck
+    value: 'null'
+    reason: Leave unset to disable speculation; avoids extra KV/weight memory and keeps max_num_seqs high.
+  caveats:
+  - Confirm the chosen method is supported by your vllm-ascend worker version (v1 vs v2 differ).
+  - Speculation increases HBM usage; monitor NPU memory and max_num_seqs after enabling.
+  - Do not set both --spec-method and --speculative-config['method'].
+  - Under KVPP, only mtp/dspark are valid and dynamic/adaptive speculation must be off.
+  quick_guide: Set --spec-method mtp for Ascend decode acceleration; leave unset for pure throughput.
+analysis_date: '2026-10-27'

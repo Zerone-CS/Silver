@@ -1,0 +1,99 @@
+name: additional_config.eplb_config.stair_config.absolute_balance_threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:201
+- vllm_ascend/ascend_config.py:221
+- vllm_ascend/ascend_config.py:246
+value_type: float
+default: 0.9
+valid_choices: 0 < value <= 1 (finite float)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This field is part of StairConfig, the advanced tuning block for the MRv2 STAIR
+
+  EPLB (expert-parallel load balancing) policy in vllm-ascend. Per the docstring,
+
+  absolute_balance_threshold is the balance level at or below which a rebalance is
+
+  triggered: "\"Rebalance when current balance is at or below this value.\" Balance is"
+
+  defined as the reciprocal of the mean max-to-average rank-load ratio, so a value
+
+  near 1.0 means ranks are nearly perfectly balanced and a lower value tolerates
+
+  more imbalance before triggering a rebalance.
+
+
+  The parameter does not directly touch the compute kernels; it gates the EPLB
+
+  rebalancing decision. When the measured balance drops to or below this threshold,
+
+  the STAIR policy runs its replica/placement search and issues expert transfers
+
+  (bounded by rank_transfer_limit and cross_node_transfer_limit). On Ascend NPU
+
+  clusters this rebalancing moves experts across ranks/nodes, which incurs HCCL
+
+  communication and temporarily reduces effective throughput while the plan is
+
+  applied. A higher threshold triggers rebalancing more eagerly (better steady-state
+
+  balance, more frequent transfer overhead); a lower threshold rebalances less often
+
+  (fewer transfers, but potentially sustained rank imbalance that leaves some NPUs
+
+  idle while others are overloaded, hurting decode throughput and tail latency).
+
+  Because it works together with relative_balance_threshold (hysteresis), the
+
+  effective rebalance frequency is the combination of both gates.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:221
+  context: Field definition with default 0.90 inside StairConfig.
+- file: vllm_ascend/ascend_config.py:246
+  context: Validation loop over relative_balance_threshold and absolute_balance_threshold enforcing 0 < value <= 1.
+related_parameters:
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Companion hysteresis gate; rebalance also triggers when current balance / last committed balance <= this value.
+    Both gates are evaluated together.
+- name: additional_config.eplb_config.stair_config.load_window_bins
+  relation: Determines the load window over which balance is measured before comparison against this threshold.
+- name: additional_config.eplb_config.stair_config.load_risk_quantile
+  relation: Controls the risk-adjusted load estimate used when computing balance.
+- name: additional_config.eplb_config.stair_config.rank_transfer_limit
+  relation: Caps the number of expert transfers per rank when a rebalance is triggered by this threshold.
+- name: additional_config.eplb_config.stair_config.cross_node_transfer_limit
+  relation: Caps cross-node transfers when a rebalance is triggered; affects the cost of rebalancing.
+constraints:
+- absolute_balance_threshold must be a finite number strictly greater than 0 and less than or equal to 1.
+- The value must not be a boolean; STAIR numeric fields reject bool inputs.
+tuning_advice:
+  summary: Tune absolute_balance_threshold to control how eagerly the MRv2 STAIR EPLB policy rebalances experts; higher values
+    rebalance more aggressively at the cost of more HCCL transfer overhead.
+  suggested_values:
+  - scenario: Stable, well-behaved expert routing with low skew; minimize rebalance churn
+    value: 0.85
+    reason: A lower threshold tolerates more imbalance before triggering transfers, reducing HCCL rebalancing overhead and
+      jitter on Ascend NPU clusters.
+  - scenario: Default balanced deployment
+    value: 0.9
+    reason: The shipped default provides a reasonable balance between steady-state rank utilization and rebalance frequency.
+  - scenario: Highly skewed expert routing (hot experts) where rank imbalance hurts decode throughput
+    value: 0.95
+    reason: A higher threshold triggers rebalancing sooner, keeping rank loads closer to balanced and avoiding idle NPUs,
+      at the cost of more frequent expert transfers.
+  caveats:
+  - Rebalancing triggered by this threshold incurs HCCL expert transfers across ranks/nodes; on Ascend this can cause transient
+    throughput dips, so avoid setting it too close to 1.0 in latency-sensitive serving.
+  - This gate interacts with relative_balance_threshold; tuning one without the other can produce unexpected rebalance frequency.
+  - Only relevant when the MRv2 STAIR EPLB policy is active; it has no effect for other EPLB policies.
+  quick_guide: Raise toward 0.95 for better balance under skew, lower toward 0.85 to reduce rebalance/HCCL overhead.
+analysis_date: '2026-10-27'

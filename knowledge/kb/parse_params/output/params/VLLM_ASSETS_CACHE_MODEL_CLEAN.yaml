@@ -1,0 +1,73 @@
+name: VLLM_ASSETS_CACHE_MODEL_CLEAN
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:942
+- vllm/envs.py:70
+- vllm/envs.py:2327
+- vllm/transformers_utils/runai_utils.py:57
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This env var only affects the ObjectStorageModel lifecycle in
+
+  vllm/transformers_utils/runai_utils.py. When set to 1, the constructor
+
+  registers SIGINT/SIGTERM handlers that call _close() (shutil.rmtree of the
+
+  temporary model mirror directory under $VLLM_ASSETS_CACHE/model_streamer/<hash>)
+
+  on process termination. It does NOT change inference compute, scheduling,
+
+  KV-cache allocation, or HCCL communication. Its only runtime effect is
+
+  disk-space reclamation of the temporary model mirror directory on shutdown,
+
+  which is a memory/storage hygiene concern rather than a throughput/latency
+
+  factor. No vllm-ascend override or usage of this variable was found in the
+
+  provided context; it is a pure upstream vLLM parameter and behaves identically
+
+  on Ascend NPU as on GPU.
+
+  '
+usage_locations:
+- file: vllm/envs.py:942
+  context: Definition of the env var getter, default 0 (disabled).
+- file: vllm/envs.py:70
+  context: Type annotation in the envs module (bool = False).
+- file: vllm/envs.py:2327
+  context: Listed in the set of env vars propagated to worker processes.
+- file: vllm/transformers_utils/runai_utils.py:57
+  context: ObjectStorageModel.__init__ registers signal handlers to clean the temp model dir on SIGINT/SIGTERM when enabled.
+related_parameters:
+- name: VLLM_ASSETS_CACHE
+  relation: Defines the cache root; the cleaned directory is $VLLM_ASSETS_CACHE/model_streamer/<hash>.
+constraints:
+- The value must be parseable as an integer (0 or 1); non-integer strings will raise a ValueError during env parsing.
+- Cleanup only occurs on SIGINT/SIGTERM when the ObjectStorageModel path is used; it has no effect for models loaded from
+  local paths or the HuggingFace hub.
+tuning_advice:
+  summary: Leave disabled unless you need automatic cleanup of object-storage model mirrors to avoid disk bloat; it has no
+    NPU performance benefit.
+  suggested_values:
+  - scenario: Long-running serving with a persistent cache and limited disk
+    value: 0
+    reason: Keeping the mirror cached avoids re-downloading the model on restart, reducing startup latency; disk usage is
+      bounded by the model size.
+  - scenario: Ephemeral/CI jobs or disk-constrained environments where temp mirrors must be reclaimed
+    value: 1
+    reason: Enables SIGINT/SIGTERM cleanup of $VLLM_ASSETS_CACHE/model_streamer/<hash> to prevent disk leaks, at the cost
+      of re-pulling the model on next start.
+  caveats:
+  - Only relevant when loading models via object storage (runai/ObjectStorageModel); no effect for local or HF-hub models.
+  - Cleanup does not run on SIGKILL, so temp directories may still leak in crash scenarios.
+  quick_guide: Set to 1 only for ephemeral object-storage workloads needing disk cleanup; otherwise leave at default 0.
+analysis_date: '2026-10-27'

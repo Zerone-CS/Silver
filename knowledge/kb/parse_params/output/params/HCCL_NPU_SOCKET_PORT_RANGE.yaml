@@ -1,0 +1,86 @@
+name: HCCL_NPU_SOCKET_PORT_RANGE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/GLM5.3-Flash.md:870
+value_type: str
+default: <computed>
+valid_choices: A port range string in the form '<start>-<end>' (e.g. '60000-60100'); must be a valid, non-overlapping TCP
+  port window
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'HCCL_NPU_SOCKET_PORT_RANGE is a CANN/HCCL runtime environment variable (not defined
+
+  in vllm or vllm-ascend source; it is consumed by the Huawei HCCL library underneath
+
+  torch_npu). It constrains the range of NPU-side socket ports that HCCL uses when
+
+  establishing the communication fabric (bootstrap/handshake sockets for HCCL
+
+  communicators). It does not affect steady-state collective throughput (that is
+
+  governed by HCCL_IF_IP, HCCL_EXEC_TIMEOUT, HCCL_CONNECT_TIMEOUT, and the algorithm
+
+  selection), but it can affect startup latency and, if misconfigured, block engine
+
+  startup entirely. The vllm-ascend GLM5.3-Flash tutorial (line 870) documents that on
+
+  Decode nodes, HCCL_HOST_SOCKET_PORT_RANGE and HCCL_NPU_SOCKET_PORT_RANGE should
+
+  reserve a disjoint 100-port window per DP rank (starting at 60000 + rank * 100) so
+
+  that when several engines share one node, HCCL host-side sockets do not silently
+
+  share ports across ranks, which can block engine startup. Thus the parameter''s
+
+  performance relevance is indirect: "correct configuration avoids startup failures and"
+
+  port-collision retries; incorrect configuration causes hangs/failures rather than
+
+  throughput degradation.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:870
+  context: Documents reserving a disjoint 100-port window per DP rank (60000 + rank*100) for HCCL_HOST_SOCKET_PORT_RANGE and
+    HCCL_NPU_SOCKET_PORT_RANGE on Decode to prevent cross-rank port sharing that blocks engine startup.
+related_parameters:
+- name: HCCL_HOST_SOCKET_PORT_RANGE
+  relation: Companion variable; both must be set to disjoint per-rank windows to avoid host-side socket collisions.
+- name: HCCL_IF_IP
+  relation: Selects the network interface; socket port ranges must be valid on that interface and allowed by the host firewall.
+- name: HCCL_CONNECT_TIMEOUT
+  relation: Governs how long HCCL waits during connection setup; relevant when port collisions cause retries.
+- name: HCCL_EXEC_TIMEOUT
+  relation: Execution timeout for HCCL ops; startup delays from port issues can interact with this.
+constraints:
+- The port range must be a valid TCP port window (ports within 1-65535) and must not overlap with ranges assigned to other
+  ranks or other engines on the same node.
+- When multiple engines/DP ranks share a node, each rank must be given a disjoint port window (e.g. 60000 + rank*100) or HCCL
+  sockets may silently share ports and block engine startup.
+- The selected ports must be permitted by the host firewall and reachable on the interface chosen by HCCL_IF_IP.
+tuning_advice:
+  summary: Set a disjoint per-rank NPU socket port window (paired with HCCL_HOST_SOCKET_PORT_RANGE) when multiple engines/DP
+    ranks share a node, to avoid HCCL port collisions that block startup.
+  suggested_values:
+  - scenario: Multiple DP ranks / engines co-located on one node (Decode role, GLM5.3-Flash A2 deployment)
+    value: 60000 + rank*100 to 60000 + rank*100 + 99
+    reason: The vllm-ascend GLM5.3-Flash tutorial reserves a disjoint 100-port window per DP rank so HCCL host-side sockets
+      do not silently share ports across ranks, which can block engine startup.
+  - scenario: Single engine per node with no port contention
+    value: <unset>
+    reason: If no other HCCL process shares the node, leaving the variable unset lets HCCL use its default port allocation;
+      only set it when collisions are observed.
+  caveats:
+  - Pair this with HCCL_HOST_SOCKET_PORT_RANGE using the same disjoint-window scheme; setting only one of the two may still
+    leave collisions.
+  - Ensure the chosen ports are open in the host firewall and valid on the interface selected by HCCL_IF_IP.
+  - This variable affects startup/connection establishment, not steady-state collective throughput; do not expect throughput
+    gains from tuning it.
+  quick_guide: When several engines share a node, give each DP rank a disjoint 100-port window (60000 + rank*100) for both
+    HCCL_NPU_SOCKET_PORT_RANGE and HCCL_HOST_SOCKET_PORT_RANGE.
+analysis_date: '2026-10-27'

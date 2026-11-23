@@ -1,0 +1,137 @@
+name: --pipeline-parallel-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:122
+- vllm/engine/arg_utils.py:1057
+- vllm/engine/arg_utils.py:476
+- vllm/config/vllm.py:592
+- vllm/config/model.py:1436
+- vllm_ascend/ascend_config.py:730
+- vllm_ascend/ascend_config.py:1140
+- vllm_ascend/platform.py:430
+- vllm_ascend/platform.py:1618
+- vllm_ascend/patch/platform/patch_pp_mtp.py:320
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:150
+- vllm_ascend/worker/v2/pp_transport.py:91
+- vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:154
+value_type: int
+default: 1
+valid_choices: integer >= 1; must divide the model's number of transformer layers across stages; product pp × tp × pcp × dp
+  must fit available NPUs
+cli_example: --pipeline-parallel-size 2
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "Pipeline parallelism splits the model's transformer layers into consecutive stages, each\nexecuted by one\
+  \ TP group (vllm/config/parallel.py:122, doc pipeline_parallel.md:6). On Ascend\nthis has several concrete runtime effects:\n\
+  \n1. Memory: each PP stage holds only its own layer range, so per-NPU weight memory drops roughly\n   by a factor of pp_size.\
+  \ This is the primary reason to use PP on Ascend when a model does not\n   fit with TP alone (e.g. large MoE/dense models\
+  \ on 64GB NPUs).\n\n2. Throughput/latency: PP introduces pipeline bubbles. vllm/config/vllm.py:592 shows that\n   `max_concurrent_batches`\
+  \ returns `pp_size` (or `pp_size + 1` with async scheduling on the v2\n   runner) — PP requires pp_size concurrent micro-batches\
+  \ to fill the pipeline, which multiplies\n   the in-flight token budget (`max_in_flight_tokens = max_concurrent_batches\
+  \ *\n   max_num_batched_tokens`, vllm/config/vllm.py:602). This increases KV-cache pressure and\n   scheduling overhead,\
+  \ and adds inter-stage activation transfer latency over HCCL.\n\n3. Ascend-specific interactions:\n   - \"vllm_ascend/ascend_config.py:730:\
+  \ enabling `profiling_chunk_config` (Dynamic Chunked\"\n     Pipeline Parallel, CPP) requires pp > 1; CPP is the Ascend\
+  \ feature that mitigates PP bubbles\n     by dynamically sizing prefill chunks. Without CPP, PP on Ascend suffers larger\
+  \ bubbles.\n   - \"vllm_ascend/ascend_config.py:1140: the mega-MoE fused operator computes its EP group size as\"\n    \
+  \ `world_size_across_dp // pipeline_parallel_size`; a large pp_size shrinks the effective EP\n     group and can disable\
+  \ the mega-MoE fast path (requires ep_world_size >= 2 and num_experts\n     divisible by it).\n   - \"vllm_ascend/platform.py:430:\
+  \ `_validate_indexer_pp_config` validates per-stage layer ranges\"\n     for models with indexer_types/use_index_cache (DSA-style\
+  \ sparse attention) when pp > 1.\n   - \"vllm_ascend/platform.py:1618: Ascend Engram (DeepSeek V4.1) requires pp == 1.\"\
+  \n   - \"vllm_ascend/patch/platform/patch_pp_mtp.py:320: local speculative drafters (Eagle/MTP/DSpark)\"\n     are loaded\
+  \ on the last PP stage only and are validated as if pp=1; the v2 worker\n     (pp_transport.py:91, speculator.py:154) similarly\
+  \ forces draft pipeline_parallel_size=1.\n   - \"vllm_ascend/patch/platform/patch_multiproc_executor.py:150: pp_size participates\
+  \ in the\"\n     multiprocess executor's rank/world-size layout (tp, pp, pcp), affecting how workers are\n     spawned and\
+  \ how HCCL groups are formed.\nOverall PP trades per-NPU memory for pipeline bubbles and extra communication; on Ascend\
+  \ it is\nmost beneficial combined with CPP for prefill-heavy workloads or when TP alone cannot fit the model.\n"
+usage_locations:
+- file: vllm/config/parallel.py:122
+  context: 'Field definition: pipeline_parallel_size: int = Field(default=1, ge=1)'
+- file: vllm/engine/arg_utils.py:1057
+  context: CLI registration --pipeline-parallel-size / -pp in ParallelConfig argument group
+- file: vllm/config/vllm.py:592
+  context: max_concurrent_batches returns pp_size (or pp_size+1 with async scheduling on v2 runner) to fill the pipeline
+- file: vllm/config/model.py:1436
+  context: verify_with_parallel_config raises NotImplementedError if pp>1 and model does not implement SupportsPP
+- file: vllm_ascend/ascend_config.py:730
+  context: profiling_chunk_config (CPP) requires pipeline_parallel_size > 1, else ValueError
+- file: vllm_ascend/ascend_config.py:1140
+  context: mega-MoE EP group size = world_size_across_dp // pipeline_parallel_size; large pp can disable mega-MoE
+- file: vllm_ascend/platform.py:430
+  context: _validate_indexer_pp_config checks per-stage layer ranges for indexer/DSA models when pp>1
+- file: vllm_ascend/platform.py:1618
+  context: Ascend Engram requires pipeline_parallel_size == 1
+- file: vllm_ascend/patch/platform/patch_pp_mtp.py:320
+  context: Local speculative drafters validated with pp=1 since they load on the last PP stage
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:150
+  context: Multiproc executor reads pp_size for rank/world-size layout
+- file: vllm_ascend/worker/v2/pp_transport.py:91
+  context: v2 worker resolves Spec+PP support only when pp>1
+- file: vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:154
+  context: v2 draft config forces pipeline_parallel_size=1 for the draft model
+related_parameters:
+- name: --tensor-parallel-size
+  relation: Product pp × tp × pcp × dp determines total world size; must fit available NPUs
+- name: --data-parallel-size
+  relation: world_size = dp × pp × tp × pcp; nnodes must evenly divide this (arg_utils.py:2183)
+- name: --prefill-context-parallel-size
+  relation: PCP multiplies world size alongside PP; both factor into world_size_within_dp
+- name: --nnodes
+  relation: nnodes must evenly divide total world size (pp × tp × pcp × dp)
+- name: profiling_chunk_config.enabled
+  relation: Dynamic Chunked Pipeline Parallel (CPP) requires pp > 1; mutually exclusive with enable_balance_scheduling
+- name: --enable-return-routed-experts
+  relation: Incompatible with PP > 1 (vllm/config/vllm.py:1283)
+- name: --speculative-config
+  relation: Local drafters (Eagle/MTP/DSpark) load on last PP stage and are validated as pp=1
+- name: --enable-expert-parallel
+  relation: Mega-MoE EP group size is world_size_across_dp // pp_size; large pp shrinks EP group
+constraints:
+- pipeline_parallel_size must be >= 1.
+- The model must implement the SupportsPP interface to run with --pipeline-parallel-size > 1, otherwise a NotImplementedError
+  is raised.
+- The product of pipeline_parallel_size, tensor_parallel_size, prefill_context_parallel_size and data_parallel_size must fit
+  the available NPU count and be evenly divisible by --nnodes.
+- Enabling profiling_chunk_config (Dynamic Chunked Pipeline Parallel) requires --pipeline-parallel-size greater than 1.
+- profiling_chunk_config and enable_balance_scheduling cannot be enabled at the same time.
+- Ascend Engram (DeepSeek V4.1) requires --pipeline-parallel-size 1 (with TP=1/2/4/8 and DCP=1).
+- --enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).
+- mm_tensor_ipc='torch_shm' is not supported when pipeline_parallel_size > 1.
+- Local speculative drafters (Eagle/MTP/DSpark) are loaded on the last PP stage and are validated as if pipeline_parallel_size=1.
+tuning_advice:
+  summary: Use PP to fit models that TP alone cannot hold in NPU memory, and pair it with CPP for prefill-heavy workloads;
+    keep pp=1 for latency-sensitive decode or when mega-MoE/Engram are needed.
+  suggested_values:
+  - scenario: Model does not fit on available NPUs with TP alone (weight memory bound)
+    value: 2
+    reason: Each PP stage holds only its layer range, roughly halving per-NPU weight memory; start with pp=2 and increase
+      only if still OOM.
+  - scenario: Prefill-heavy / long-context serving on Ascend with Dynamic Chunked Pipeline Parallel
+    value: 2
+    reason: CPP requires pp>1 and mitigates PP bubbles by dynamically sizing prefill chunks; tune --max-num-batched-tokens
+      to 2-4x the fixed chunk size.
+  - scenario: Latency-sensitive decode or single-node deployment where model fits with TP
+    value: 1
+    reason: Avoids pipeline bubbles and inter-stage HCCL transfer latency; pure TP gives lower per-token latency.
+  - scenario: MoE model relying on the mega-MoE fused operator
+    value: 1
+    reason: Large pp shrinks the EP group (world_size_across_dp // pp_size) and can disable mega-MoE; keep pp=1 to preserve
+      the fast path.
+  - scenario: Ascend Engram (DeepSeek V4.1) deployment
+    value: 1
+    reason: Ascend Engram requires pipeline_parallel_size == 1.
+  caveats:
+  - Without CPP, PP bubbles can dominate and reduce throughput versus pure TP; enable profiling_chunk_config when using PP
+    for prefill.
+  - PP multiplies concurrent batches and in-flight tokens, increasing KV-cache pressure — verify gpu_memory_utilization and
+    max_num_batched_tokens.
+  - Speculative decoding drafters load on the last PP stage only; do not expect draft model to be partitioned across stages.
+  - For PD disaggregation, set PP only on the P node; the D node should run with pp=1.
+  quick_guide: Set --pipeline-parallel-size > 1 only when TP cannot fit the model or when using CPP for prefill; otherwise
+    keep it at 1.
+analysis_date: '2026-10-27'

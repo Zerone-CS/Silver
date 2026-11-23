@@ -1,0 +1,127 @@
+name: --limit-mm-per-prompt
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1370
+- vllm/engine/arg_utils.py:587
+- vllm/engine/arg_utils.py:1856
+- vllm/config/model.py:396
+- vllm/config/model.py:457
+- vllm/v1/core/encoder_cache_manager.py:315
+- vllm/benchmarks/datasets/datasets.py:927
+- examples/offline_DSD_k_tuner/generate_config.py:301
+- examples/offline_inference_audio_language.py:84
+- tests/e2e/pull_request/four_card/test_glm5_3_flash.py:139
+- tests/e2e/pull_request/four_card/test_kimi_k3.py:346
+- tests/e2e/pull_request/one_card/test_vlm.py:58
+value_type: dict
+default: '''{"image": 999, "video": 999, "audio": 999} (999 per modality)'''
+valid_choices: '''dict mapping modality name (image/video/audio) to a non-negative int, or to a nested dict of per-modality
+  options'''
+cli_example: '--limit-mm-per-prompt ''{"image": 1, "video": 0}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "This parameter is defined upstream in vllm (MultiModalConfig.limit_per_prompt, surfaced as\nEngineArgs.limit_mm_per_prompt\
+  \ and the --limit-mm-per-prompt CLI flag). vllm-ascend does not\nredefine it; it consumes it through the standard vLLM config\
+  \ path (examples and e2e tests in\nvllm-ascend pass it directly to LLM/VllmRunner). Its performance effect is indirect but\
+  \ real,\nand it is the primary lever for controlling multimodal memory on Ascend NPU:\n\n1. Encoder cache sizing (vllm/v1/core/encoder_cache_manager.py:315).\
+  \ The per-modality limits\n   feed into the encoder cache budget computation. When all non-text modalities are set to 0,\n\
+  \   the code logs \"All non-text modalities supported by the model have been explicitly disabled\n   via limit_mm_per_prompt.\
+  \ Encoder cache will not be initialized.\" and returns (0, 0) — i.e.\n   no encoder cache is allocated at all. This directly\
+  \ reduces NPU HBM consumption and removes\n   encoder-cache bookkeeping from the scheduler, which is the mechanism the vllm-ascend\
+  \ Dots3\n   docs rely on: \"setting a modality to 0 means \\\"that encoder is not loaded\\\" (Dots3-Note.md §5.5.2),\"\n\
+  \   saving the encoder weights (e.g. ~12.5 GB extra for the image form) and its activation memory.\n\n2. Chunked MM input\
+  \ interaction. encoder_cache_manager raises if disable_chunked_mm_input is\n   set and max_tokens_per_mm_item > max_num_batched_tokens.\
+  \ The per-item token count is derived\n   from the modality limits, so a large limit combined with a small --max-num-batched-tokens\
+  \ can\n   force larger prefill batches and higher peak activation memory (relevant to the Dots3 image\n   form where --max-num-batched-tokens\
+  \ is reduced to 1024 to avoid FusedMC2 peak OOM).\n\n3. Profiling / graph capture. The multimodal config participates in\
+  \ the model config hash\n   (vllm/config/model.py:457) and in whether the MM code path is enabled, which affects the\n \
+  \  language-model computation graph (comment at model.py:473-476). On Ascend this influences\n   which graphs are captured\
+  \ (FULL_DECODE_ONLY capture sizes) and the memory profiling that\n   determines available KV cache.\n\n4. Throughput/latency.\
+  \ A higher per-prompt limit allows more images/audio per request, which\n   increases encoder compute and prefill token\
+  \ count per request (higher TTFT, more NPU compute),\n   while a lower limit caps per-request work and can improve batching\
+  \ fairness. Setting a\n   modality to 0 avoids loading that encoder entirely, reducing startup time and memory.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1370
+  context: CLI flag registration from MultiModalConfig.limit_per_prompt
+- file: vllm/engine/arg_utils.py:1856
+  context: Passed into EngineConfig/ModelConfig construction
+- file: vllm/config/model.py:396
+  context: InitVar limit_mm_per_prompt on ModelConfig
+- file: vllm/config/model.py:457
+  context: Included in config hash factors (affects MM code path / graph)
+- file: vllm/v1/core/encoder_cache_manager.py:315
+  context: Determines encoder cache budget; zero limits disable encoder cache
+- file: vllm/benchmarks/datasets/datasets.py:927
+  context: Per-modality hard caps enforced in synthetic MM dataset sampling
+- file: examples/offline_DSD_k_tuner/generate_config.py:301
+  context: 'vllm-ascend example sets limit_mm_per_prompt={''image'': 5}'
+- file: examples/offline_inference_audio_language.py:84
+  context: 'vllm-ascend example sets limit_mm_per_prompt={''audio'': audio_count}'
+- file: tests/e2e/pull_request/four_card/test_glm5_3_flash.py:139
+  context: vllm-ascend e2e disables image/video encoders with {'image':0,'video':0}
+- file: tests/e2e/pull_request/four_card/test_kimi_k3.py:346
+  context: vllm-ascend e2e sets {'image':0} to skip vision tower
+- file: tests/e2e/pull_request/one_card/test_vlm.py:58
+  context: vllm-ascend e2e sets {'image':1} for single-image VLM test
+related_parameters:
+- name: --language-model-only
+  relation: Alternative way to skip loading multimodal encoders entirely; mutually exclusive intent with enabling a modality
+- name: --max-num-batched-tokens
+  relation: Interacts with disable_chunked_mm_input; per-item token count must not exceed this when chunked MM input is disabled
+- name: --disable-chunked-mm-input
+  relation: When set, raises if max_tokens_per_mm_item > max_num_batched_tokens
+- name: --mm-processor-cache-gb
+  relation: Companion multimodal memory knob; docs set it to 0 for the image form
+- name: --mm-encoder-tp-mode
+  relation: Encoder parallelism mode; docs use 'data' for image/audio forms
+- name: --skip-mm-profiling
+  relation: Skips multimodal memory profiling; used together with modality limits in image form
+- name: --max-num-seqs
+  relation: Docs tune max-num-seqs per form (4 text/audio, 16 image) alongside modality limits
+constraints:
+- Each modality value must be a non-negative integer (or a nested dict of per-modality options); setting a modality to 0 disables
+  that encoder.
+- If --disable-chunked-mm-input is set, the maximum tokens per multimodal item must not exceed --max-num-batched-tokens, otherwise
+  a ValueError is raised.
+- When all non-text modalities are set to 0, the encoder cache is not initialized at all.
+- The multimodal form (which modalities are enabled) cannot be switched dynamically within the same process; the service must
+  be restarted when switching forms.
+- In the benchmark RandomMultiModalDataset, every modality referenced in bucket_config must be present in limit_mm_per_prompt,
+  otherwise a ValueError is raised.
+tuning_advice:
+  summary: Set each modality limit to the actual maximum items per request, and set unused modalities to 0 to skip loading
+    their encoders and free NPU HBM.
+  suggested_values:
+  - scenario: Text-only deployment (no multimodal input)
+    value: '''{"image": 0, "video": 0, "audio": 0}'''
+    reason: Disables all encoders so the encoder cache is not initialized and encoder weights are not loaded, maximizing HBM
+      available for KV cache.
+  - scenario: Single-image VLM inference
+    value: '''{"image": 1}'''
+    reason: Matches the common single-image workload; caps per-request encoder work and prefill tokens, reducing TTFT and
+      peak memory.
+  - scenario: Multi-image vision tasks (e.g. MMMU, up to 7 images)
+    value: '''{"image": 7, "video": 0, "audio": 0}'''
+    reason: Dots3-Note docs recommend 7 for the image form; pair with --max-num-batched-tokens 1024 to chunk large-image prefill
+      and avoid FusedMC2 peak OOM.
+  - scenario: Audio tasks
+    value: '''{"image": 0, "video": 0, "audio": 1}'''
+    reason: Dots3-Note docs use audio=1 for the audio form, disabling image/video encoders to save memory.
+  - scenario: Smoke test / token-only path that still initializes a vision tower
+    value: '''{"image": 0, "video": 0}'''
+    reason: vllm-ascend e2e tests use this to skip vision processing while the wrapper still initializes the tower.
+  caveats:
+  - Do not set a modality to a large value unless the workload truly needs it; it increases encoder compute and prefill memory.
+  - When using --disable-chunked-mm-input, ensure the per-item token count stays below --max-num-batched-tokens or startup
+    will fail.
+  - The enabled modality set cannot be changed at runtime; restart the service to switch forms.
+  - On Ascend, combine with --mm-processor-cache-gb 0 and --skip-mm-profiling for the image form as recommended in the Dots3
+    docs to control peak memory.
+  quick_guide: Set unused modalities to 0 and cap used modalities at the real per-request maximum (e.g. image:1 or image:7).
+analysis_date: '2026-10-27'

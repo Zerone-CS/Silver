@@ -1,0 +1,86 @@
+name: pooler.enable_chunked_processing
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/entrypoints/pooling/base/protocol.py:181
+- vllm/entrypoints/pooling/embed/io_processor.py:70
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is a vLLM-upstream pooling/embedding parameter with no definition or override
+
+  found in vllm-ascend. It only affects the pooling (embedding) serving path, not the
+
+  generative decode path that dominates Ascend NPU workloads.
+
+
+  In vllm/entrypoints/pooling/base/protocol.py:181, when enable_chunked_processing is
+
+  True, max_total_tokens is set to pooler_config.max_embed_len instead of the model''s
+
+  max_model_len, and max_output_tokens stays 0. This changes the tokenization/validation
+
+  budget for embedding requests: "long inputs exceeding max_model_len are split into"
+
+  chunks, each processed separately, then aggregated via weighted averaging. The
+
+  performance effect is indirect — chunking allows inputs longer than max_model_len to
+
+  be served (avoiding rejection) at the cost of multiple forward passes per request,
+
+  increasing per-request latency and NPU compute proportional to the number of chunks.
+
+  When disabled, max_output_tokens is computed as max_model_len - max_embed_len, which
+
+  constrains the effective embeddable length.
+
+
+  In vllm/entrypoints/pooling/embed/io_processor.py:70, the flag is read into
+
+  EmbedIOProcessor to drive chunked request handling. There is no Ascend-specific
+
+  kernel or HCCL interaction; the mechanism is pure request-level chunking and
+
+  aggregation, so on Ascend NPU it behaves the same as on GPU (each chunk is a normal
+
+  forward pass through the NPU).
+
+  '
+usage_locations:
+- file: vllm/entrypoints/pooling/base/protocol.py:181
+  context: Selects max_total_tokens = max_embed_len when chunked processing is enabled, otherwise computes max_output_tokens
+    from max_model_len - max_embed_len
+- file: vllm/entrypoints/pooling/embed/io_processor.py:70
+  context: EmbedIOProcessor reads the flag to enable chunked embedding request handling
+related_parameters:
+- name: pooler.max_embed_len
+  relation: Chunk size / max embeddable length used when chunked processing is enabled; also bounds non-chunked embed length
+- name: max_model_len
+  relation: Default token budget when chunking is disabled; chunking allows inputs beyond this limit
+constraints:
+- Only meaningful for pooling/embedding models; has no effect on generative (completion/chat) serving.
+- When enabled, max_total_tokens is bounded by pooler.max_embed_len, so max_embed_len must be set to a sensible value.
+tuning_advice:
+  summary: Enable only when serving embedding requests longer than max_model_len; otherwise leave disabled to avoid extra
+    per-request forward passes.
+  suggested_values:
+  - scenario: Standard embedding serving with inputs within max_model_len
+    value: false
+    reason: Avoids splitting requests into multiple chunks, keeping single-pass latency and NPU compute minimal.
+  - scenario: Embedding long documents exceeding max_model_len
+    value: true
+    reason: Allows long inputs to be chunked and aggregated instead of being rejected, trading latency for coverage.
+  caveats:
+  - Chunking multiplies the number of forward passes per request, increasing latency and NPU compute proportional to chunk
+    count.
+  - No vllm-ascend override exists; behavior on Ascend matches upstream GPU semantics.
+  - Requires pooler.max_embed_len to be configured appropriately as the chunk budget.
+  quick_guide: Leave false unless you must embed inputs longer than max_model_len.
+analysis_date: '2026-10-27'

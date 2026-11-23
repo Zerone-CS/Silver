@@ -1,0 +1,91 @@
+name: VLLM_ASCEND_ENABLE_FLASHCOMM1
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:756
+- tests/ut/test_ascend_config.py:1697
+value_type: bool
+default: '0'
+valid_choices: 'boolean-like string: ''1''/''true'' (case-insensitive) enables; anything else disables'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This env var is read in AscendConfig.derive_and_validate (vllm_ascend/ascend_config.py:756) as an
+
+  alternative way to enable FlashComm1, OR-ed with additional_config.enable_flashcomm1. The resulting
+
+  `flashcomm_explicitly_enabled` flag (combined with enable_dsa_cp) determines `effective_flashcomm`.
+
+  When FlashComm1 is NOT effective, the code forcibly sets
+
+  vllm_config.parallel_config.all2all_backend = "flashinfer_all2allv" (line 765-768), which disables
+
+  sequence-parallel MoE (SP MoE). When FlashComm1 IS effective and use_sequence_parallel_moe is true,
+
+  SP MoE stays enabled and the all2all backend is left as configured (e.g. allgather_reducescatter).
+
+  FlashComm1 is the Ascend SP MoE switch: "it enables sequence-parallel MoE communication"
+
+  (allgather/reducescatter style all2all) which reduces per-rank communication volume and improves
+
+  MoE throughput/latency on multi-NPU deployments. Disabling it falls back to flashinfer_all2allv,
+
+  changing the communication pattern and typically lowering MoE efficiency. It also gates the
+
+  max_num_batched_tokens divisibility writeback (line 809) via enable_sp, which affects scheduling.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:756
+  context: Reads env var to compute flashcomm_explicitly_enabled, OR-ed with additional_config.enable_flashcomm1
+- file: vllm_ascend/ascend_config.py:762
+  context: effective_flashcomm = flashcomm_explicitly_enabled or enable_dsa_cp; drives all2all_backend override
+- file: vllm_ascend/ascend_config.py:764
+  context: When not effective, forces all2all_backend=flashinfer_all2allv and disables SP MoE
+- file: vllm_ascend/ascend_config.py:809
+  context: enable_sp gates max_num_batched_tokens divisibility adjustment for SP
+- file: tests/ut/test_ascend_config.py:1697
+  context: Unit tests pop the env var to test flashcomm on/off SP behavior
+related_parameters:
+- name: additional_config.enable_flashcomm1
+  relation: Equivalent switch; env var is OR-ed with this config field to enable FlashComm1
+- name: enable_dsa_cp
+  relation: Auto-enables FlashComm1 when DSA-CP is on (effective_flashcomm = explicit or dsa_cp)
+- name: parallel_config.use_sequence_parallel_moe
+  relation: FlashComm1 only keeps SP MoE when this is true; otherwise warns and disables
+- name: parallel_config.all2all_backend
+  relation: Forced to flashinfer_all2allv when FlashComm1 is not effective
+- name: max_num_batched_tokens
+  relation: Adjusted for tp_size*pcp_size divisibility when SP (enable_sp) is active
+constraints:
+- FlashComm1 only takes effect for SP MoE when the current parallel config supports sequence-parallel MoE (use_sequence_parallel_moe
+  must be true, typically EP enabled with TP>1 and DP>1); otherwise it is disabled with a warning.
+- When FlashComm1 is not effective, all2all_backend is forcibly overridden to flashinfer_all2allv, so any user-set all2all_backend
+  is ignored.
+- The env var accepts only '1' or 'true' (case-insensitive, whitespace-trimmed) as enabling values; all other values disable
+  it.
+tuning_advice:
+  summary: Enable FlashComm1 (via this env var or additional_config.enable_flashcomm1) for MoE models on multi-NPU to use
+    sequence-parallel MoE communication and improve throughput.
+  suggested_values:
+  - scenario: MoE model with EP enabled, TP>1 and DP>1 (SP MoE supported)
+    value: '1'
+    reason: Enables FlashComm1 so SP MoE stays on and all2all_backend is not forced to flashinfer_all2allv, improving MoE
+      communication efficiency.
+  - scenario: Dense model or config without sequence-parallel MoE support
+    value: '0'
+    reason: FlashComm1 would be disabled anyway with a warning; leaving it off avoids confusion and uses flashinfer_all2allv.
+  - scenario: Using DSA-CP (enable_dsa_cp)
+    value: '1'
+    reason: DSA-CP auto-enables FlashComm1; setting it explicitly is consistent and avoids relying on implicit enablement.
+  caveats:
+  - Confirm use_sequence_parallel_moe is true (EP + TP>1 + DP>1) before enabling, otherwise it is silently disabled with a
+    warning.
+  - Enabling changes the all2all backend; benchmark against flashinfer_all2allv for your workload.
+  - Prefer additional_config.enable_flashcomm1 for reproducibility over the env var in production configs.
+  quick_guide: Set VLLM_ASCEND_ENABLE_FLASHCOMM1=1 for MoE models with EP+TP>1+DP>1 to enable SP MoE communication.
+analysis_date: '2026-10-27'

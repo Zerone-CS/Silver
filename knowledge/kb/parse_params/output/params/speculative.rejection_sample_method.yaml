@@ -1,0 +1,134 @@
+name: speculative.rejection_sample_method
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/vllm.py:1159
+- vllm/v1/spec_decode/llm_base_proposer.py:262
+- vllm/v1/worker/gpu_model_runner.py:6338
+value_type: str
+default: standard
+valid_choices:
+- standard
+- synthetic
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter selects the rejection-sampling algorithm used during the verify
+
+  step of speculative decoding. In upstream vLLM it is read in two hot paths:
+
+  (1) vllm/v1/spec_decode/llm_base_proposer.py:262 sets
+
+  `_enable_probabilistic_draft_probs = (rejection_sample_method == "standard" and
+
+  draft_sample_method == "probabilistic")`, which controls whether the proposer
+
+  materializes and keeps per-token draft probability tensors (`_last_draft_probs`)
+
+  and whether the sampler must run the full probabilistic rejection kernel.
+
+  (2) vllm/v1/worker/gpu_model_runner.py:6338 gates whether dummy `draft_probs`
+
+  tensors are allocated and softmaxed during sampler warm-up, i.e. it changes the
+
+  warm-up memory footprint and the code path exercised by the rejection sampler.
+
+  With "standard" + probabilistic drafting, the verify step computes
+
+  min(1, p_target/p_draft) acceptance per token, requiring extra probability
+
+  tensors and elementwise math over the vocab dimension for every drafted token.
+
+  With "synthetic", acceptance reduces to a simple `uniform < rate` comparison
+
+  against a precomputed per-position schedule, so the verify path skips the
+
+  probability-ratio computation and the associated vocab-sized tensors. On Ascend
+
+  NPU this matters because the rejection sampler runs as device kernels over
+
+  [num_draft_tokens, vocab_size] tensors; avoiding the ratio computation reduces
+
+  NPU compute and HBM traffic in the verify step, which is on the critical path
+
+  of every decode iteration. The vllm-ascend documentation describes an Ascend
+
+  Triton kernel with a SYNTHETIC_MODE=True specialization validated bit-for-bit
+
+  against a PyTorch reference, confirming the synthetic path is a distinct,
+
+  cheaper kernel path on Ascend. Note: "synthetic" produces semantically
+
+  incorrect output and is intended only for benchmarking/kernel validation, so
+
+  its performance benefit is a measurement artifact rather than a production
+
+  speedup.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1159
+  context: 'Watermarking compatibility check: raises if rejection_sample_method != ''standard'' when watermarking is enabled
+    with speculative decoding.'
+- file: vllm/v1/spec_decode/llm_base_proposer.py:262
+  context: Sets _enable_probabilistic_draft_probs, controlling whether draft probability tensors are retained for probabilistic
+    rejection sampling.
+- file: vllm/v1/worker/gpu_model_runner.py:6338
+  context: Gates allocation/softmax of dummy draft_probs during sampler warm-up, changing warm-up memory and the exercised
+    sampler path.
+related_parameters:
+- name: speculative.draft_sample_method
+  relation: Must be 'probabilistic' together with rejection_sample_method='standard' to enable probabilistic draft-prob tracking;
+    'synthetic' bypasses this.
+- name: speculative.synthetic_acceptance_rates
+  relation: Required (mutually exclusive with synthetic_acceptance_length) when rejection_sample_method='synthetic'; defines
+    per-position acceptance schedule.
+- name: speculative.synthetic_acceptance_length
+  relation: Alternative to synthetic_acceptance_rates when rejection_sample_method='synthetic'; resolved to an equivalent
+    rate schedule.
+- name: speculative.num_speculative_tokens
+  relation: synthetic_acceptance_rates must have length equal to num_speculative_tokens.
+- name: watermark_config
+  relation: Watermarking with speculative decoding requires rejection_sample_method='standard'.
+constraints:
+- rejection_sample_method must be either 'standard' or 'synthetic'.
+- When rejection_sample_method is 'synthetic', exactly one of synthetic_acceptance_rates or synthetic_acceptance_length must
+  be provided.
+- synthetic_acceptance_rates must have length equal to num_speculative_tokens, with each entry in [0, 1] and monotonically
+  non-increasing.
+- synthetic_acceptance_length must be in [1, num_speculative_tokens + 1].
+- When watermarking is enabled with speculative decoding, rejection_sample_method must be 'standard' or a ValueError is raised.
+tuning_advice:
+  summary: 'Keep the default ''standard'' for production serving; use ''synthetic'' only for
+
+    benchmarking or validating the Ascend verify-path kernels at a controlled
+
+    acceptance rate.
+
+    '
+  suggested_values:
+  - scenario: Production serving with a trained draft model (eagle/eagle3/mtp) on Ascend NPU
+    value: standard
+    reason: Produces correct output and uses the full probabilistic rejection path; required for watermarking and for draft_sample_method='probabilistic'
+      draft-prob tracking.
+  - scenario: Benchmarking verify-path throughput/latency at a fixed acceptance rate
+    value: synthetic
+    reason: Acceptance reduces to uniform < rate, skipping the vocab-sized probability-ratio computation; useful to isolate
+      verify kernel cost on Ascend.
+  - scenario: Validating the Ascend Triton rejection-sampling kernel against the PyTorch reference
+    value: synthetic
+    reason: Synthetic mode is fully input-determined, enabling bit-for-bit comparison of SYNTHETIC_MODE=True kernel vs reference.
+  caveats:
+  - Synthetic mode accepts draft tokens regardless of target distribution, so output is not semantically correct — never use
+    for production serving.
+  - The apparent speedup from 'synthetic' is a measurement artifact of a cheaper verify path, not a realizable production
+    gain.
+  - With 'standard' + draft_sample_method='probabilistic', the proposer retains per-token draft probability tensors, increasing
+    HBM usage on NPU proportional to num_speculative_tokens × vocab_size.
+  - Enabling watermarking forces 'standard'; combining watermarking with 'synthetic' raises a ValueError at config validation.
+  quick_guide: Use 'standard' for real serving; 'synthetic' only for benchmarking/validation of the Ascend verify kernels.
+analysis_date: '2026-10-27'

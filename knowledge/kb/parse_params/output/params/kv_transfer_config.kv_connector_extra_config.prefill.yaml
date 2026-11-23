@@ -1,0 +1,106 @@
+name: kv_transfer_config.kv_connector_extra_config.prefill
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/kv_transfer.py:93
+- examples/offline_disaggregated_prefill_npu.py:59
+- examples/offline_disaggregated_prefill_npu.py:106
+value_type: dict
+default: {}
+valid_choices: 'A dict describing the prefill (P) instance topology, e.g. {"dp_size": <int>, "tp_size": <int>}'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a free-form entry inside kv_connector_extra_config (vllm/config/kv_transfer.py:93,
+
+  "any extra config that the connector may need"). It is not interpreted by vLLM core; it is
+
+  consumed by the KV connector implementation (e.g. MooncakeConnectorV1 in the Ascend example
+
+  examples/offline_disaggregated_prefill_npu.py:59 and :106). The "prefill" sub-dict declares the
+
+  data-parallel and tensor-parallel size of the prefill (P) side of a PD-disaggregated deployment
+
+  ({"dp_size": 1, "tp_size": 1} in the example). The connector uses this topology to compute how
+
+  many KV-cache blocks/ranks must be matched between the P and D instances and to set up the
+
+  transfer channel. On Ascend NPU, PD disaggregation is the primary mechanism for separating
+
+  compute-heavy prefill from memory/latency-sensitive decode; a correct prefill topology lets the
+
+  connector size its transfer buffers and route KV blocks to the right decode ranks, directly
+
+  affecting time-to-first-token (prefill latency) and decode throughput. A mismatched prefill
+
+  dp_size/tp_size versus the actual prefill instance''s --data-parallel-size/--tensor-parallel-size
+
+  causes KV block routing errors, retransfers, or failed transfers, degrading latency and
+
+  throughput. The parameter itself does not change kernel execution; its impact is indirect via
+
+  correct/incorrect KV transfer setup.
+
+  '
+usage_locations:
+- file: vllm/config/kv_transfer.py:93
+  context: kv_connector_extra_config dict field; prefill is an arbitrary key read by the connector via get_from_extra_config
+- file: vllm/config/kv_transfer.py:154
+  context: get_from_extra_config(key, default) accessor used by connectors to read the prefill sub-config
+- file: examples/offline_disaggregated_prefill_npu.py:59
+  context: Ascend prefill (kv_producer) instance sets prefill/decode dp_size and tp_size for MooncakeConnectorV1
+- file: examples/offline_disaggregated_prefill_npu.py:106
+  context: Ascend decode (kv_consumer) instance sets the same prefill/decode topology so both sides agree
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: The connector (e.g. MooncakeConnectorV1) is what actually reads and interprets the prefill sub-config
+- name: kv_transfer_config.kv_role
+  relation: Must be set (kv_producer on P, kv_consumer on D) for the connector to use the prefill topology
+- name: kv_transfer_config.kv_connector_extra_config.decode
+  relation: Companion sub-dict describing the decode-side dp_size/tp_size; must be consistent with prefill
+- name: tensor_parallel_size
+  relation: prefill.tp_size should match the prefill instance's --tensor-parallel-size
+- name: data_parallel_size
+  relation: prefill.dp_size should match the prefill instance's --data-parallel-size
+constraints:
+- kv_connector must be set and kv_role must be specified (kv_producer/kv_consumer/kv_both) for the connector to read the prefill
+  sub-config; otherwise vLLM raises a ValueError at config construction.
+- The prefill dp_size and tp_size must match the actual prefill instance's data-parallel and tensor-parallel sizes, or KV
+  block routing between P and D will be incorrect.
+- Both the prefill and decode instances must declare the same prefill/decode topology so the connector's block matching is
+  consistent.
+tuning_advice:
+  summary: Set prefill.dp_size/tp_size to exactly match the prefill instance's DP/TP sizes so the KV connector routes blocks
+    correctly and avoids retransfers.
+  suggested_values:
+  - scenario: Single prefill instance, single NPU (example default)
+    value:
+      dp_size: 1
+      tp_size: 1
+    reason: Matches the offline_disaggregated_prefill_npu.py example where prefill runs on one device with TP=1.
+  - scenario: Prefill instance with tensor parallelism across NPUs
+    value:
+      dp_size: 1
+      tp_size: 8
+    reason: prefill.tp_size must equal the prefill instance's --tensor-parallel-size so the connector maps KV blocks to the
+      correct TP ranks.
+  - scenario: Prefill instance with data parallelism
+    value:
+      dp_size: 2
+      tp_size: 4
+    reason: prefill.dp_size must equal the prefill instance's --data-parallel-size so KV blocks are routed to the right DP
+      replica.
+  caveats:
+  - This key is connector-specific; only connectors that read it (e.g. MooncakeConnectorV1) honor it. Other connectors may
+    ignore it.
+  - A mismatch between the declared prefill topology and the real prefill DP/TP sizes causes KV transfer failures or retransfers,
+    hurting TTFT and decode throughput on Ascend.
+  - The decode instance must declare the same prefill/decode topology as the prefill instance; keep both configs in sync.
+  - vLLM core does not validate this dict; errors surface at connector runtime rather than at startup.
+  quick_guide: Set prefill.dp_size/tp_size to the prefill instance's actual DP/TP sizes and keep it identical on both P and
+    D nodes.
+analysis_date: '2026-10-27'

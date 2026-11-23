@@ -1,0 +1,92 @@
+name: GLOO_SOCKET_IFNAME
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- tests/e2e/common/multi_node/benchmark_results.py:12
+- tests/e2e/common/multi_node/external_dp/runtime.py:571
+- tests/e2e/common/multi_node/internal_dp/multi_node_config.py:96
+value_type: str
+default: <computed>
+valid_choices: Any valid Linux network interface name (e.g. eth0, enp0s3, bond0), as reported by ifconfig/ip addr
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'GLOO_SOCKET_IFNAME selects the network interface that PyTorch''s Gloo backend binds to for
+
+  CPU-side collective communication (used by vLLM for control-plane / CPU process group traffic,
+
+  e.g. DP coordinator RPC, distributed init handshakes, and non-NPU tensor exchange). It is not
+
+  read directly by vllm-ascend runtime code; instead it is set by the multi-node test harnesses
+
+  (tests/e2e/common/multi_node/external_dp/runtime.py:571 and
+
+  tests/e2e/common/multi_node/internal_dp/multi_node_config.py:96) via build_dist_envs /
+
+  DistEnvBuilder.build, which derive the NIC name from the node IP using get_net_interface(cur_ip)
+
+  and inject it alongside HCCL_SOCKET_IFNAME, TP_SOCKET_IFNAME, HCCL_IF_IP, LOCAL_IP and
+
+  MASTER_IP. The benchmark_results.py:12 entry classifies it as an INFRA_ENV_KEY, i.e. an
+
+  infrastructure-level env var recorded with benchmark results.
+
+  On Ascend, the actual heavy data-plane traffic (all-reduce/all-gather for TP/EP/DP) goes over
+
+  HCCL via HCCL_SOCKET_IFNAME, so GLOO_SOCKET_IFNAME does not affect NPU collective bandwidth
+
+  directly. However, if Gloo binds to the wrong interface (e.g. loopback or a slow management NIC),
+
+  distributed initialization and CPU-side coordination become slow or fail, which delays engine
+
+  startup and can stall DP/PD coordination — indirectly hurting latency and effective throughput
+
+  in multi-node deployments. Setting it consistently with HCCL_SOCKET_IFNAME avoids cross-NIC
+
+  routing and handshake timeouts.
+
+  '
+usage_locations:
+- file: tests/e2e/common/multi_node/external_dp/runtime.py:571
+  context: build_dist_envs sets GLOO_SOCKET_IFNAME to the NIC name resolved from the node IP for external-DP multi-node runs
+- file: tests/e2e/common/multi_node/internal_dp/multi_node_config.py:96
+  context: DistEnvBuilder.build injects GLOO_SOCKET_IFNAME into the per-node environment for internal-DP multi-node runs
+- file: tests/e2e/common/multi_node/benchmark_results.py:12
+  context: Listed in INFRA_ENV_KEYS so the value is captured/recorded with benchmark results
+related_parameters:
+- name: HCCL_SOCKET_IFNAME
+  relation: Should be set to the same NIC name; HCCL carries NPU data-plane traffic while Gloo carries CPU-side control traffic
+- name: TP_SOCKET_IFNAME
+  relation: Set to the same NIC name in the same env builder; used for TP process-group socket binding
+- name: HCCL_IF_IP
+  relation: Set together with GLOO_SOCKET_IFNAME; the IP whose interface is resolved to derive the NIC name
+- name: LOCAL_IP
+  relation: Current node IP used by get_net_interface to derive the NIC name for GLOO_SOCKET_IFNAME
+- name: MASTER_IP
+  relation: Master node IP for multi-node rendezvous; must be reachable over the interface selected by GLOO_SOCKET_IFNAME
+constraints:
+- The value must be an existing network interface name on every node; an invalid or nonexistent interface causes Gloo process-group
+  initialization to fail.
+- In multi-node deployments the selected interface must be routable to the master node IP (MASTER_IP / --data-parallel-address),
+  otherwise distributed init hangs or times out.
+- The interface must be correctly configured on each node for successful multi-node communication, as stated in the vllm-ascend
+  multi-node docs.
+tuning_advice:
+  summary: Set GLOO_SOCKET_IFNAME to the same high-bandwidth NIC used by HCCL on every node in multi-node deployments.
+  suggested_values:
+  - scenario: Multi-node DP/TP deployment on Ascend (A2/A3) with a dedicated high-speed NIC
+    value: <nic_name from ifconfig, e.g. eth0>
+    reason: The vllm-ascend multi-node harnesses set GLOO_SOCKET_IFNAME to the NIC resolved from the node IP; matching it
+      to HCCL_SOCKET_IFNAME ensures Gloo control traffic uses the same fast, routable interface.
+  - scenario: Single-node deployment
+    value: lo
+    reason: No cross-node Gloo traffic is needed; binding to loopback avoids accidental use of an external NIC.
+  caveats:
+  - Must match the interface that can reach MASTER_IP / --data-parallel-address.
+  - Keep it consistent with HCCL_SOCKET_IFNAME and TP_SOCKET_IFNAME to avoid cross-NIC routing and handshake timeouts.
+  quick_guide: Set GLOO_SOCKET_IFNAME to the same NIC name as HCCL_SOCKET_IFNAME on every node.
+analysis_date: '2026-10-27'

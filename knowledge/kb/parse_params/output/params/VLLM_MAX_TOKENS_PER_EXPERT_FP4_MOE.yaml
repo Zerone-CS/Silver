@@ -1,0 +1,78 @@
+name: VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1734
+- vllm/envs.py:238
+- vllm/_custom_ops.py:1631
+- vllm/_custom_ops.py:1694
+value_type: int
+default: 163840
+valid_choices: positive integer; must be large enough that MAX_TOKENS_PER_EXPERT * topk >= m_numtopk (number of tokens routed
+  to experts)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This env var is only consumed by the NVFP4 (FP4) MoE CUTLASS quantization path in
+
+  vllm/_custom_ops.py (cutlass_moe_fp4 / quantize path). It sets MAX_TOKENS_PER_EXPERT,
+
+  which is used to size the blockscale output tensor:
+
+  `output_scales = torch.empty(MAX_TOKENS_PER_EXPERT * topk, padded_k, dtype=torch.int32)`.
+
+  So it directly controls the allocation size of the activation blockscale buffer for the
+
+  NVFP4 MoE kernel. A larger value allocates more device memory (memory impact); a value
+
+  too small triggers an assertion failure (`m_numtopk must be less than MAX_TOKENS_PER_EXPERT`).
+
+  It does NOT affect compute throughput or latency directly — it is a buffer-sizing /
+
+  OOM-prevention knob. On Ascend NPU, the NVFP4 CUTLASS MoE kernel path is a CUDA-specific
+
+  code path (asserts `not current_platform.is_rocm()`, uses cutlass_moe_fp4); vllm-ascend
+
+  does not reference this env var and Ascend NPU does not run the NVFP4 CUTLASS MoE kernel,
+
+  so on Ascend this parameter has effectively no runtime effect. It is only relevant if the
+
+  FP4 MoE path were ever exercised, which it is not on Ascend hardware.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1734
+  context: Defines the env var with default 163840 via os.getenv.
+- file: vllm/envs.py:238
+  context: 'Type annotation VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: int = 163840.'
+- file: vllm/_custom_ops.py:1631
+  context: Read as MAX_TOKENS_PER_EXPERT to size output_scales buffer and assert m_numtopk bound in cutlass_moe_fp4 quantize.
+- file: vllm/_custom_ops.py:1694
+  context: Same usage in the gate||up layout NVFP4 MoE quantize variant.
+related_parameters:
+- name: VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS
+  relation: Both relate to FP4/NVFP4 kernel selection; skipping fp4_gemm may avoid the NVFP4 path that consumes this buffer
+    size.
+- name: quantization (--quantization)
+  relation: Only relevant when the model uses an NVFP4/FP4 MoE quantization scheme.
+constraints:
+- The number of tokens routed to experts (m_numtopk) must be <= VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE * topk, otherwise an assertion
+  error is raised.
+- The value must be a positive integer; it is parsed with int() from the environment string.
+tuning_advice:
+  summary: Leave at default on Ascend NPU; only raise it on CUDA FP4 MoE deployments that hit the m_numtopk assertion.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: 163840
+    reason: The NVFP4 CUTLASS MoE path is not executed on Ascend, so the default is harmless and no tuning is needed.
+  - scenario: CUDA NVFP4 MoE with large batch/topk hitting the assertion
+    value: 327680
+    reason: Doubling the buffer bound raises the m_numtopk limit at the cost of more device memory for the blockscale tensor.
+  caveats:
+  - Raising this value on Ascend provides no benefit and only risks confusion; it is a CUDA-only knob.
+  - Overly large values waste device memory that could otherwise serve KV cache.
+  quick_guide: No-op on Ascend NPU; keep default 163840.
+analysis_date: '2026-10-27'

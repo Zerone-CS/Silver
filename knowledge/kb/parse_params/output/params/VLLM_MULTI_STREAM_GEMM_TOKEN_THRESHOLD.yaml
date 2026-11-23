@@ -1,0 +1,84 @@
+name: VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:2024
+- vllm/envs.py:298
+- vllm/models/deepseek_v4/attention.py:713
+- vllm/models/deepseek_v41/attention.py:816
+value_type: int
+default: 1024
+valid_choices: non-negative integer; 0 disables the multi-stream path entirely
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is defined only in upstream vLLM (vllm/envs.py:2024, typed at envs.py:298) and is
+
+  consumed exclusively by the DeepSeek-V4 / V4.1 attention modules
+
+  (vllm/models/deepseek_v4/attention.py:713 and vllm/models/deepseek_v41/attention.py:816). It is
+
+  a token-count cutoff passed as the `enable=` predicate to `execute_in_parallel(...)`: when
+
+  `hidden_states.shape[0] <= VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD`, the main FP8 attention-input
+
+  GEMM (`_fused_wqa_wkv_gemm`) is overlapped on a separate CUDA stream with auxiliary bf16 GEMMs
+
+  (indexer weights_proj, compressor kv-score, etc.). Above the threshold the FP8 GEMM saturates the
+
+  device and the cross-stream sync becomes pure overhead, so overlap is skipped. The mechanism is
+
+  CUDA-stream based (`aux_streams`, `ln_events`) and is specific to the NVIDIA DeepSeek-V4 MegaMoE
+
+  path. There is NO reference to this env var anywhere in vllm-ascend, and the DeepSeek-V4/V4.1
+
+  attention modules that read it are not part of the Ascend model implementations. On Ascend NPU
+
+  this parameter therefore has no runtime effect — it neither changes latency, throughput, nor
+
+  memory. It is documented here for completeness because it appears in the shared upstream envs.py.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2024
+  context: Env var definition, default 1024, parsed as int
+- file: vllm/envs.py:298
+  context: 'Typed declaration VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024'
+- file: vllm/models/deepseek_v4/attention.py:713
+  context: enable=hidden_states.shape[0] <= threshold gates execute_in_parallel multi-stream overlap
+- file: vllm/models/deepseek_v41/attention.py:816
+  context: Same gating for DeepSeek-V4.1 attention input GEMM overlap
+related_parameters:
+- name: VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD
+  relation: Sibling token-count cutoff for a different (shared-experts) separate-stream overlap path; same design pattern
+- name: VLLM_DISABLE_SHARED_EXPERTS_STREAM
+  relation: Related stream-overlap toggle for shared experts; both control CUDA-stream parallelism in MoE/attention
+constraints:
+- The value must be a non-negative integer; setting it to 0 disables the multi-stream overlap path entirely.
+- The parameter only takes effect in the upstream DeepSeek-V4/V4.1 attention modules and has no effect on Ascend NPU where
+  those modules are not used.
+tuning_advice:
+  summary: No Ascend tuning needed — this env var only affects the NVIDIA DeepSeek-V4 CUDA-stream overlap path and is inert
+    on Ascend NPU.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: 1024
+    reason: Leave at default; the parameter is not read by any vllm-ascend code path, so changing it has no effect on NPU
+      performance.
+  - scenario: Upstream NVIDIA GPU DeepSeek-V4 with small per-step token counts
+    value: 1024
+    reason: Default empirically tuned (PR 41526) so overlap is a 5-45% win at or below 1024 tokens; only relevant on CUDA,
+      not Ascend.
+  caveats:
+  - This parameter is defined only in upstream vLLM and is not referenced anywhere in vllm-ascend; it has no runtime impact
+    on Ascend NPU.
+  - The overlap mechanism relies on CUDA streams and events (aux_streams, ln_events) which are NVIDIA-specific; the Ascend
+    attention implementations do not use this gating.
+  - Setting it to 0 disables the multi-stream path entirely on the upstream CUDA path, which may hurt small-batch latency
+    there but is irrelevant on Ascend.
+  quick_guide: Ignore on Ascend — CUDA-only DeepSeek-V4 stream-overlap cutoff with no NPU effect.
+analysis_date: '2026-10-27'

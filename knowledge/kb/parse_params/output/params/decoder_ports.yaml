@@ -1,0 +1,98 @@
+name: --decoder-ports
+type: cli
+category: other
+scope: vllm-ascend
+source_file:
+- examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:324
+- examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:708
+- examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:290
+- tests/e2e/conftest.py:631
+- tools/docs_codegen/converters.py:492
+value_type: list[int]
+default: '[8002]'
+valid_choices: any list of valid TCP port numbers (1-65535); length must equal the number of --decoder-hosts
+cli_example: --decoder-ports 8002 8003
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--decoder-ports is not a vLLM engine parameter; it is an argument of the
+
+  disaggregated-prefill (PD) load-balance proxy example scripts shipped in
+
+  vllm-ascend (examples/disaggregated_prefill_v1/*, examples/epd_disaggregated/*)
+
+  and used by the e2e test harness (tests/e2e/conftest.py DisaggPDProxy) and the
+
+  docs codegen tool (tools/docs_codegen/converters.py). It is parsed with
+
+  argparse (type=int, nargs="+") and zipped with --decoder-hosts into
+
+  args.decoder_instances = list(zip(args.decoder_hosts, args.decoder_ports)).
+
+  The proxy then routes decode-phase requests to these (host, port) endpoints.
+
+  It does not touch the vLLM engine, scheduler, KV cache, or HCCL communication
+
+  path, so it has no direct effect on NPU kernel execution. Its only performance
+
+  relevance is indirect: "the number of decoder endpoints determines how decode"
+
+  traffic is load-balanced across decode instances, which affects end-to-end
+
+  latency/throughput of a PD-disaggregated deployment. Misconfiguration (wrong
+
+  port, count mismatch) causes a hard ValueError at proxy startup rather than a
+
+  performance change.
+
+  '
+usage_locations:
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:324
+  context: argparse definition of --decoder-ports (default [8002])
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:349
+  context: validates len(decoder_hosts) == len(decoder_ports), then zips into decoder_instances
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:708
+  context: same host/port count validation in the non-layerwise proxy example
+- file: examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:304
+  context: EPD proxy example validates decoder host/port count (default [])
+- file: tests/e2e/conftest.py:652
+  context: DisaggPDProxy builds --decoder-ports from decoder_ports list for e2e tests
+- file: tools/docs_codegen/converters.py:492
+  context: docs codegen expands decoder group into --decoder-ports CLI options
+related_parameters:
+- name: --decoder-hosts
+  relation: Must have the same number of entries as --decoder-ports; zipped pairwise into decoder instances
+- name: --prefiller-ports
+  relation: Sibling argument for prefill instances; same count-matching rule with --prefiller-hosts
+- name: --port
+  relation: Proxy's own listening port; distinct from the decoder backend ports
+constraints:
+- The number of --decoder-ports values must exactly equal the number of --decoder-hosts values, otherwise the proxy raises
+  ValueError at startup.
+- Each value must be a valid TCP port number for a running decode instance.
+- The proxy --host must not be a wildcard address (0.0.0.0, ::) because decoder hosts must reach the proxy's /metaserver endpoint.
+tuning_advice:
+  summary: 'Set --decoder-ports to the actual listening ports of your decode instances,
+
+    one per --decoder-hosts entry, so the PD proxy can load-balance decode
+
+    traffic across all decode workers.
+
+    '
+  suggested_values:
+  - scenario: Single decode instance on localhost (example default)
+    value: '[8002]'
+    reason: Matches the example default and a single --decoder-hosts localhost entry.
+  - scenario: Multiple decode instances across hosts
+    value: '[8002, 8003, 8004]'
+    reason: Provide one port per decoder host so the proxy round-robins decode requests across all decode workers, improving
+      decode throughput.
+  caveats:
+  - This is an example/test proxy argument, not a vLLM engine flag; it does not affect NPU kernel or HCCL behavior directly.
+  - A host/port count mismatch fails fast with ValueError before the proxy starts serving.
+  - Ensure each decoder port is reachable from the proxy host; unreachable ports cause request failures/timeouts rather than
+    a config error.
+  quick_guide: List one decoder port per --decoder-hosts entry; counts must match.
+analysis_date: '2026-10-27'

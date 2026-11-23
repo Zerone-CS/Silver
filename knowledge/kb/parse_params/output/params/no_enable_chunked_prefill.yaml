@@ -1,0 +1,114 @@
+name: --no-enable-chunked-prefill
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1620
+- vllm/config/scheduler.py:116
+value_type: bool
+default: false
+valid_choices: boolean flag (store_true / store_false pair with --enable-chunked-prefill)
+cli_example: --no-enable-chunked-prefill
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--no-enable-chunked-prefill is the negation of vLLM''s --enable-chunked-prefill flag; it sets
+
+  enable_chunked_prefill=False in the SchedulerConfig. Chunked prefill splits a long prompt into
+
+  smaller chunks that are batched together with decode requests, so a single scheduler step can
+
+  mix prefill (P) and decode (D) tokens. This is the default scheduling mode in vLLM V1 and is
+
+  what gives high throughput on long-context workloads because it keeps the NPU busy and avoids
+
+  the "prefill stalls all decodes" head-of-line blocking pattern.
+
+  Disabling chunked prefill (i.e. passing --no-enable-chunked-prefill) forces the scheduler to
+
+  process each prefill request as a single indivisible batch step. Consequences on Ascend NPU:
+
+  (1) Throughput: long prompts monopolize the NPU for one large prefill step, during which no
+
+  decode tokens are produced for other requests — inter-token latency (ITL) for concurrent
+
+  requests spikes. (2) Memory: the entire prompt''s KV must be materialized in one step, so peak
+
+  activation/KV allocation per step is larger; combined with a fixed --max-num-batched-tokens this
+
+  can force smaller batch sizes. (3) Latency: time-to-first-token for the prefill request itself
+
+  may improve slightly (no chunking overhead), but tail latency for other requests worsens.
+
+  The vllm-ascend docs (batch_invariance.md) explicitly require --no-enable-chunked-prefill
+
+  together with --block-size 128 to enable batch-invariant execution, because chunked prefill
+
+  mixes P and D computations in a way that breaks bit-exact reproducibility. So on Ascend this
+
+  flag is primarily a correctness/determinism switch that carries a real throughput cost.
+
+  vllm-ascend does not appear to override the flag itself; it inherits vLLM''s SchedulerConfig
+
+  behavior, but the Ascend scheduler path (v1 worker dispatchers) consumes the resulting
+
+  enable_chunked_prefill value when building the per-step token budget.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:116
+  context: SchedulerConfig.enable_chunked_prefill field; consumed by the scheduler to decide whether to split prefill into
+    chunks.
+- file: vllm/v1/core/sched/scheduler.py
+  context: Scheduler uses enable_chunked_prefill to decide whether to mix prefill and decode tokens in one step or run prefill
+    as a monolithic batch.
+- file: vllm_ascend/worker/model_runner_v1.py
+  context: Ascend v1 model runner builds the per-step token budget from the scheduler's chunked-prefill decision.
+related_parameters:
+- name: --enable-chunked-prefill
+  relation: Positive form of the same flag; --no-enable-chunked-prefill is its negation.
+- name: --block-size
+  relation: Must be set to 128 together with --no-enable-chunked-prefill when enabling batch invariance (per vllm-ascend docs).
+- name: --max-num-batched-tokens
+  relation: Upper bound on tokens per scheduler step; with chunked prefill disabled a single long prompt can consume the entire
+    budget.
+- name: --enable-prefix-caching
+  relation: Also must be disabled for batch invariance; interacts with chunked prefill scheduling.
+- name: --max-model-len
+  relation: Longer max-model-len makes the monolithic prefill step larger when chunking is disabled.
+constraints:
+- To enable batch-invariant execution you must pass --no-enable-chunked-prefill together with --block-size 128; chunked prefill
+  is not disabled automatically.
+- Chunked prefill, prefix caching, and request preemption are not supported with batch invariance, so --no-enable-chunked-prefill
+  must be paired with disabling prefix caching.
+- Request preemption (triggered when KV cache runs out) breaks batch invariance regardless of this flag, so KV cache must
+  be sized to avoid preemption.
+tuning_advice:
+  summary: Keep chunked prefill enabled (default) for throughput; only disable it when you need batch-invariant / bit-exact
+    reproducibility, and then pair it with --block-size 128 and disabled prefix caching.
+  suggested_values:
+  - scenario: Default high-throughput serving on Ascend NPU
+    value: false
+    reason: Leave chunked prefill enabled (do not pass the flag) so prefill and decode are batched together, maximizing NPU
+      utilization and minimizing inter-token latency for concurrent requests.
+  - scenario: Batch-invariant / deterministic inference required
+    value: true
+    reason: Pass --no-enable-chunked-prefill together with --block-size 128 (and disable prefix caching) as required by vllm-ascend
+      batch_invariance docs to get bit-exact reproducible outputs.
+  - scenario: Very long prompts with strict TTFT and few concurrent requests
+    value: true
+    reason: Disabling chunking lets a single long prompt run as one prefill step, avoiding chunking overhead when there is
+      little decode traffic to interleave.
+  caveats:
+  - Disabling chunked prefill significantly increases inter-token latency for concurrent decode requests because long prefills
+    monopolize the NPU.
+  - Peak per-step KV/activation memory grows when a full prompt is prefilled in one step; may force a smaller --max-num-batched-tokens
+    or batch size.
+  - Batch invariance also requires --block-size 128 and disabled prefix caching; the flag alone is insufficient.
+  - Request preemption still breaks batch invariance even with chunking disabled, so size KV cache to avoid eviction.
+  quick_guide: Leave chunked prefill on for speed; add --no-enable-chunked-prefill --block-size 128 only for batch-invariant
+    runs.
+analysis_date: '2026-10-27'

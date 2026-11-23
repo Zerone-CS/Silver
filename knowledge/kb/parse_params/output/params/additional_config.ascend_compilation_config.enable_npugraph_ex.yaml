@@ -1,0 +1,121 @@
+name: additional_config.ascend_compilation_config.enable_npugraph_ex
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:124
+- vllm_ascend/ascend_config.py:151
+- vllm_ascend/platform.py:1307
+- vllm_ascend/platform.py:1331
+- vllm_ascend/platform.py:1341
+- vllm_ascend/compilation/compiler_interface.py:250
+- vllm_ascend/compilation/compiler_interface.py:289
+- vllm_ascend/worker/worker.py:197
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag selects the graph compilation backend used by AscendCompiler.compile
+
+  (vllm_ascend/compilation/compiler_interface.py:289). When true, the FX graph is
+
+  routed through npugraph_ex_compile, which applies Ascend-native graph compilation
+
+  and optimization (graph fusion, static shape specialization) before execution.
+
+  When false, the graph falls back to fusion_pass_compile, which only performs
+
+  fusion passes without the npugraph_ex backend. The npugraph_ex path is the
+
+  primary mechanism for reducing per-op launch overhead and enabling deeper graph
+
+  fusion on Ascend NPU, so it directly affects decode latency and steady-state
+
+  throughput. The flag is also a hash factor in AscendCompiler.compute_hash
+
+  (compiler_interface.py:250), so toggling it invalidates the compilation cache
+
+  and forces recompilation. It is a prerequisite for enable_static_kernel and
+
+  enable_super_kernel (ascend_config.py:167-170), which further specialize the
+
+  graph for fixed shapes. platform.py forcibly sets it to false when
+
+  cudagraph_mode is NONE (line 1307), when piecewise cudagraphs are used
+
+  (line 1331), or when the cudagraph mode is unsupported and falls back to NONE
+
+  (line 1341), so the effective value depends on the cudagraph configuration.
+
+  worker.py:197 additionally installs static-kernel uninstall signal handlers only
+
+  when both enable_npugraph_ex and enable_static_kernel are true.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:124
+  context: Field definition with default True in AscendCompilationConfig.
+- file: vllm_ascend/ascend_config.py:151
+  context: Hardware-profile validator disables npugraph_ex (and dependent static/super kernel) when the current hardware does
+    not support NPUGRAPH_EX.
+- file: vllm_ascend/platform.py:1307
+  context: Forced to false when cudagraph_mode is NONE.
+- file: vllm_ascend/platform.py:1331
+  context: Forced to false when piecewise cudagraphs are used.
+- file: vllm_ascend/platform.py:1341
+  context: Forced to false when cudagraph_mode is unsupported and falls back to NONE.
+- file: vllm_ascend/compilation/compiler_interface.py:250
+  context: Included in compilation cache hash factors.
+- file: vllm_ascend/compilation/compiler_interface.py:289
+  context: Selects npugraph_ex_compile vs fusion_pass_compile in AscendCompiler.compile.
+- file: vllm_ascend/worker/worker.py:197
+  context: Combined with enable_static_kernel to install static-kernel uninstall signal handlers.
+related_parameters:
+- name: additional_config.ascend_compilation_config.enable_static_kernel
+  relation: Requires enable_npugraph_ex to be true; static kernel generation is asserted to need npugraph_ex.
+- name: additional_config.ascend_compilation_config.enable_super_kernel
+  relation: Requires enable_static_kernel (and transitively enable_npugraph_ex); defaults to the value of enable_static_kernel
+    when omitted.
+- name: compilation_config.cudagraph_mode
+  relation: When NONE, piecewise, or unsupported, platform.py forcibly disables enable_npugraph_ex.
+- name: additional_config.ascend_compilation_config.fuse_norm_quant
+  relation: Sibling fusion-pass toggle; only relevant on the fusion_pass_compile fallback path when npugraph_ex is disabled.
+- name: additional_config.ascend_compilation_config.fuse_qknorm_rope
+  relation: Sibling fusion-pass toggle used on the fallback path.
+- name: additional_config.ascend_compilation_config.fuse_muls_add
+  relation: Sibling fusion-pass toggle used on the fallback path.
+constraints:
+- enable_static_kernel can only be enabled when enable_npugraph_ex is true, otherwise an assertion error is raised.
+- enable_super_kernel can only be enabled when enable_static_kernel is true, which in turn requires enable_npugraph_ex.
+- On hardware profiles that do not support NPUGRAPH_EX (e.g. Atlas 300I DUO and Atlas 200I Pro), enable_npugraph_ex is forcibly
+  disabled at config validation time regardless of the user setting.
+- When cudagraph_mode is NONE, uses piecewise cudagraphs, or is unsupported on NPU, enable_npugraph_ex is overridden to false
+  by the platform configuration.
+tuning_advice:
+  summary: Keep enable_npugraph_ex enabled (default) for best decode latency and throughput on supported Ascend hardware;
+    disable only for unsupported hardware or when a specific feature (e.g. some spec-decode paths) is incompatible.
+  suggested_values:
+  - scenario: Standard dense/MoE inference on Atlas A2/A3 with full or piecewise cudagraphs
+    value: true
+    reason: Routes compilation through npugraph_ex_compile, enabling Ascend graph fusion and reducing per-op launch overhead.
+  - scenario: Atlas 300I DUO / Atlas 200I Pro or other hardware without NPUGRAPH_EX support
+    value: false
+    reason: Hardware profile does not support npugraph_ex; it is auto-disabled anyway, so set explicitly to avoid warnings.
+  - scenario: Speculative decoding (eagle3/dflash/dspark) where npugraph_ex causes issues
+    value: false
+    reason: vllm-ascend e2e spec-decode tests disable npugraph_ex, indicating compatibility concerns on those paths.
+  - scenario: Maximum performance with fixed shapes and compile time available
+    value: true
+    reason: Enabling npugraph_ex is a prerequisite for enable_static_kernel and enable_super_kernel, which further specialize
+      the graph.
+  caveats:
+  - Changing this value invalidates the compilation cache and triggers recompilation.
+  - The platform may override your setting to false depending on cudagraph_mode; verify effective value in logs.
+  - Disabling it also disables static and super kernel, so do not disable it if you rely on those optimizations.
+  quick_guide: Leave enable_npugraph_ex at its default true unless on unsupported hardware or hitting a spec-decode incompatibility.
+analysis_date: '2026-10-27'

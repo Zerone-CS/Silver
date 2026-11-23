@@ -1,0 +1,85 @@
+name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:979
+- vllm/envs.py:78
+- vllm/connections.py:56
+value_type: int
+default: 256
+valid_choices: positive integer (megabytes); no explicit upper bound enforced in code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is an upstream vLLM parameter (vllm/envs.py) with no vllm-ascend override found in the
+
+  provided context. It caps the size of a single remote media download (image/audio/video fetched
+
+  from a URL) in megabytes. The limit is enforced while streaming the response body in
+
+  vllm/connections.py (HTTPConnection.get_bytes / async_get_bytes), so oversized or infinite
+
+  responses cannot grow the API server heap without bound. When exceeded, a
+
+  MediaDownloadSizeExceededError (subclass of ValueError) is raised, which the media connector
+
+  surfaces as VLLMUnprocessableEntityError (see tests/multimodal/media/test_unprocessable_entity_error.py).
+
+  Performance relevance is indirect: "it does not touch NPU compute, HCCL, or KV cache. It only"
+
+  bounds host-side (CPU) memory used during media fetch and prevents pathological downloads from
+
+  stalling request preprocessing. On Ascend, media preprocessing happens on CPU before tensors are
+
+  moved to the NPU, so this parameter affects host memory headroom and request latency for
+
+  multimodal inputs, not NPU throughput directly.
+
+  '
+usage_locations:
+- file: vllm/envs.py:979
+  context: Environment variable definition and default (256 MB) via os.getenv
+- file: vllm/envs.py:78
+  context: 'Typed EnvironmentVariables field declaration VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB: int = 256'
+- file: vllm/connections.py:56
+  context: MediaDownloadSizeExceededError message references the env var; limit enforced during streaming in get_bytes/async_get_bytes
+related_parameters:
+- name: VLLM_MEDIA_CACHE_MAX_SIZE_MB
+  relation: Related media memory bound; cache size limit for downloaded media (default 5120 MB)
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retry count for media fetch; interacts with download timeouts and size limits
+- name: VLLM_IMAGE_FETCH_TIMEOUT
+  relation: Per-fetch timeout for images; complements the size limit for bounding fetch cost
+- name: VLLM_VIDEO_FETCH_TIMEOUT
+  relation: Per-fetch timeout for video; complements the size limit for bounding fetch cost
+- name: VLLM_MAX_AUDIO_CLIP_FILESIZE_MB
+  relation: Analogous size limit for audio files (default 25 MB)
+constraints:
+- The value must be a positive integer number of megabytes; a value of 0 or negative would reject all remote media downloads.
+- The limit is enforced while streaming the response body, so it applies even when the server does not send a Content-Length
+  header.
+- Downloads exceeding the limit raise MediaDownloadSizeExceededError, surfaced to the client as an unprocessable-entity error
+  rather than being truncated.
+tuning_advice:
+  summary: Keep the default 256 MB unless serving large media; raise it only for legitimate large inputs and lower it to harden
+    against oversized downloads.
+  suggested_values:
+  - scenario: Default multimodal serving with typical images/short video
+    value: 256
+    reason: Default balances host memory safety with support for common media sizes.
+  - scenario: Serving high-resolution images or long videos from URLs
+    value: 1024
+    reason: Allows larger legitimate downloads while still bounding host heap growth.
+  - scenario: Untrusted/public endpoints where oversized or infinite responses are a risk
+    value: 64
+    reason: Tighter cap limits host memory exposure from malicious or malformed media URLs.
+  caveats:
+  - Applies to both v1 and v2 Ascend worker paths identically since it is an upstream-only parameter with no Ascend override.
+  - Tune together with VLLM_MEDIA_CACHE_MAX_SIZE_MB and fetch timeouts to bound total host memory and latency for multimodal
+    requests.
+  quick_guide: Leave at 256 MB by default; raise for large media, lower for untrusted sources.
+analysis_date: '2026-10-27'

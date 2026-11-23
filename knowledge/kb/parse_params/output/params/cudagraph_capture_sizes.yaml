@@ -1,0 +1,117 @@
+name: --cudagraph-capture-sizes
+type: cli
+category: compilation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1657
+- vllm/engine/arg_utils.py:2598
+- vllm/config/compilation.py:425
+- vllm_ascend/platform.py:1268
+- vllm_ascend/platform.py:57
+- vllm_ascend/worker/model_runner_v1.py:660
+- vllm_ascend/worker/model_runner_v1.py:6349
+- vllm_ascend/worker/v2/aclgraph_utils.py:114
+- vllm_ascend/worker/worker.py:868
+- vllm_ascend/ascend_config.py:1397
+- vllm_ascend/ascend_forward_context.py:256
+- vllm_ascend/attention/context_parallel/dsa_cp.py:292
+value_type: list[int]
+default: null
+valid_choices: Any list of positive integers (batch/token sizes); None means sizes are auto-inferred from vllm config
+cli_example: --cudagraph-capture-sizes 1 2 4 8 16 32
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter controls which batch/token sizes get an ACL graph (Ascend's CUDA-graph equivalent)\ncaptured.\
+  \ On Ascend, vllm-ascend heavily reworks the upstream value:\n\n1. platform.py:1268 (AscendPlatform.check_and_update_config\
+  \ path) recomputes capture sizes:\n   it merges any `reduced_cg_cap` into the list, sets `cudagraph_num_of_warmups = 1`,\
+  \ then calls\n   `vllm_config._set_cudagraph_sizes()` to rebuild the list. So a user-supplied list is not used\n   verbatim\
+  \ — it is re-derived/truncated by upstream logic after Ascend adjustments.\n2. When TP>1 and SP/DSA-CP/shared-expert-DP\
+  \ is enabled (requires_tp_aligned_capture_sizes),\n   platform.py:1279-1287 calls `update_sizes_for_sequence_parallelism(original_sizes)`\
+  \ to align\n   sizes to TP/CP layout. model_runner_v1.py:6349 `_should_align_cudagraph_capture_sizes` aligns\n   FULL decode\
+  \ keys to LCM(TP, query_len) for stable CP/SP dispatch.\n3. model_runner_v1.py:660 reads the final list into `self.cudagraph_batch_sizes`\
+  \ (sorted ascending);\n   this drives graph replay dispatch — a step whose token count matches a captured size replays a\n\
+  \   graph (fast), otherwise it falls back to eager (slow). More/larger captured sizes = lower\n   per-step latency but higher\
+  \ capture time and NPU memory for graph workspaces.\n4. worker.py:868 uses the list to exclude already-captured sizes from\
+  \ compile warmup and to decide\n   which compile-range endpoints to warm up — affects startup time.\n5. ascend_forward_context.py:256\
+  \ uses `max_cudagraph_capture_size` (derived from this list) to size\n   MC2/MegaMoe communication buffers; dsa_cp.py:292\
+  \ sizes per-request CP buffers to\n   max(max_num_seqs, max_cudagraph_capture_size)+1 — larger capture sizes increase device\
+  \ memory.\n6. ascend_config.py:1397: if the largest capture size does not cover the largest possible step,\n   oproj/mlp\
+  \ tensor-parallel (cross-DP) features are silently disabled to avoid eager fallback\n   desyncing HCCL collectives.\n7.\
+  \ v2 worker (aclgraph_utils.py:114): with speculative decoding under FULL_DECODE_ONLY, raw sizes\n   are rounded up to multiples\
+  \ of decode_query_len, so actual graph sizes differ from the config.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:2598
+  context: Merges CLI value into compilation_config; raises if both CLI and compilation_config set it
+- file: vllm_ascend/platform.py:1268
+  context: Recomputes/merges capture sizes, sets warmups=1, calls _set_cudagraph_sizes, TP-aligns for SP/CP
+- file: vllm_ascend/worker/model_runner_v1.py:660
+  context: Builds sorted cudagraph_batch_sizes used for graph replay dispatch
+- file: vllm_ascend/worker/model_runner_v1.py:6349
+  context: Aligns FULL decode keys to LCM(TP, query_len) for CP/SP dispatch stability
+- file: vllm_ascend/worker/v2/aclgraph_utils.py:114
+  context: 'v2: actual captured token sizes rounded to multiples of decode_query_len under spec decode'
+- file: vllm_ascend/worker/worker.py:868
+  context: Excludes captured sizes from compile warmup; adds compile-range endpoints
+- file: vllm_ascend/ascend_forward_context.py:256
+  context: Sizes MC2/MegaMoe comm buffers from max_cudagraph_capture_size
+- file: vllm_ascend/attention/context_parallel/dsa_cp.py:292
+  context: Sizes per-request CP buffers to max(max_num_seqs, max_cudagraph_capture_size)+1
+- file: vllm_ascend/ascend_config.py:1397
+  context: Disables oproj/mlp TP if largest capture size < largest possible step
+related_parameters:
+- name: --max-cudagraph-capture-size
+  relation: Mutually exclusive with the CLI form of this flag; the max is derived from the largest capture size when unset
+- name: --compilation-config
+  relation: cudagraph_capture_sizes inside compilation_config is mutually exclusive with the top-level --cudagraph-capture-sizes
+    flag
+- name: --cudagraph-mode
+  relation: Capture sizes only take effect when cudagraph_mode != NONE; FULL/FULL_DECODE_ONLY recommended for uniform decode
+- name: --enforce-eager
+  relation: When enforce_eager is set, capture sizes are ignored (no graphs captured)
+- name: --tensor-parallel-size
+  relation: TP>1 with SP/CP triggers TP-aligned capture size recomputation
+- name: --spec-tokens
+  relation: With speculative decoding, sizes must be multiples of (num_speculative_tokens + 1)
+- name: --max-num-seqs
+  relation: Bounds the largest useful capture size; also used to size CP buffers
+constraints:
+- The top-level --cudagraph-capture-sizes flag and compilation_config.cudagraph_capture_sizes are mutually exclusive; setting
+  both raises a ValueError.
+- The top-level --cudagraph-capture-sizes flag and --max-cudagraph-capture-size are mutually exclusive with their compilation_config
+  counterparts.
+- When speculative decoding (EAGLE) is enabled with fullgraph mode, each capture size must be n * (K + 1) where K is num_speculative_tokens
+  and n is a supported batch size.
+- Capture sizes have no effect when cudagraph_mode is NONE or when --enforce-eager is set.
+- If the largest capture size does not cover the largest possible step (max_num_batched_tokens or max_num_seqs * decode_query_len),
+  oproj_tensor_parallel_size and mlp_tensor_parallel_size are silently disabled.
+tuning_advice:
+  summary: Set explicit capture sizes matching your real decode concurrency to maximize graph replay and avoid eager fallback,
+    while keeping the list small enough to fit NPU memory and stream resources.
+  suggested_values:
+  - scenario: Uniform decode workload, no speculative decoding (v1 and v2)
+    value: '[1, 2, 4, 8, 16, 32, 64, 128, 256]'
+    reason: Covers common batch sizes so most decode steps replay a graph; ascending powers-of-two keep the list compact.
+  - scenario: EAGLE speculative decoding with num_speculative_tokens=4 (v1 and v2)
+    value: '[5, 10, 15, 20]'
+    reason: Doc requires each size = n*(K+1); supports batch sizes 1-4 with K=4.
+  - scenario: DSpark / MTP with num_speculative_tokens=5, target ~60 concurrency
+    value: '[360]'
+    reason: Each sequence processes 6 tokens/step, so 360 tokens ≈ 60 concurrency; set explicitly when concurrency is predictable.
+  - scenario: Memory-constrained or stream-resource capture failures
+    value: '[1, 2, 4, 8, 16, 32]'
+    reason: Fewer/smaller graphs reduce NPU workspace memory and avoid Insufficient_Stream_Resources capture failures.
+  - scenario: Cross-DP oproj/mlp tensor parallelism enabled
+    value: list whose max >= max_num_batched_tokens or max_num_seqs * decode_query_len
+    reason: Largest capture size must cover the largest possible step or oproj/mlp TP is silently disabled.
+  caveats:
+  - Leave unset (None) to let vLLM auto-infer sizes; only set explicitly when concurrency patterns are predictable.
+  - Do not set both --cudagraph-capture-sizes and compilation_config.cudagraph_capture_sizes.
+  - Under TP>1 with SP/CP, expect Ascend to realign your sizes to TP/CP layout — verify the effective list in logs.
+  - Prefer FULL or FULL_DECODE_ONLY cudagraph mode for uniform decode to reduce graph count vs PIECEWISE.
+  quick_guide: Pass a compact ascending list of your real decode token sizes (multiples of K+1 under spec decode); keep max
+    large enough to cover the biggest step but small enough to fit NPU memory.
+analysis_date: '2026-10-27'

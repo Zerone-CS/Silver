@@ -1,0 +1,76 @@
+name: VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK
+type: env
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/configuration/additional_config.md:24
+- docs/source/user_guide/configuration/additional_config.md:74
+value_type: bool
+default: true
+valid_choices:
+- '1'
+- '0'
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This environment variable is the legacy switch that controlled whether the KV cache is
+
+  transposed by block (i.e. stored in a block-major layout) via a fused Ascend operator.
+
+  Per the vllm-ascend documentation (additional_config.md:74), the environment variable
+
+  VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK is no longer supported and has been
+
+  replaced by the additional-config field `enable_transpose_kv_cache_by_block` (default
+
+  True). The transpose-by-block path affects how KV cache blocks are laid out and written
+
+  on the NPU: "enabling it lets the fused operator write KV cache in a block-transposed"
+
+  layout, which can reduce per-step KV write overhead and improve memory access patterns
+
+  for page-attention kernels, thereby lowering decode latency. Disabling it falls back to
+
+  the non-transposed layout, which may be slower but can be required for compatibility
+
+  with certain attention backends or cache layouts. Because the env var is deprecated and
+
+  ignored, its runtime effect is now governed entirely by the config key.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/configuration/additional_config.md:24
+  context: Quick reference table mapping the legacy env var to the config key enable_transpose_kv_cache_by_block
+- file: docs/source/user_guide/configuration/additional_config.md:74
+  context: Documents enable_transpose_kv_cache_by_block (default True) and states the legacy env var is no longer supported
+related_parameters:
+- name: enable_transpose_kv_cache_by_block
+  relation: Replacement config key in additional_config; the env var is deprecated in favor of this field
+- name: enable_kv_nz
+  relation: Related KV cache layout option (NZ layout) for MLA models; both influence KV cache memory layout
+constraints:
+- The legacy VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK environment variable is no longer supported and is ignored;
+  use the enable_transpose_kv_cache_by_block config key instead.
+- The replacement config key enable_transpose_kv_cache_by_block is a boolean accepting true/false (env-style '1'/'0' maps
+  to true/false).
+tuning_advice:
+  summary: Do not use this env var; migrate to the enable_transpose_kv_cache_by_block additional-config field, which defaults
+    to True.
+  suggested_values:
+  - scenario: Default deployment on Ascend NPU
+    value: true
+    reason: enable_transpose_kv_cache_by_block defaults to True and enables the fused block-transposed KV cache write path,
+      which is the intended fast path.
+  - scenario: Compatibility issue with a specific attention backend or KV layout
+    value: false
+    reason: Disabling the transpose-by-block path falls back to the non-transposed layout, useful if the fused path is incompatible
+      with the chosen backend.
+  caveats:
+  - Setting VLLM_ASCEND_FUSION_OP_TRANSPOSE_KV_CACHE_BY_BLOCK has no effect; it is deprecated and ignored.
+  - Use the additional_config field enable_transpose_kv_cache_by_block instead of the env var.
+  - Disabling transpose-by-block may increase decode latency due to less efficient KV cache write/access patterns.
+  quick_guide: Ignore this env var; set enable_transpose_kv_cache_by_block in additional_config (default True).
+analysis_date: '2026-10-27'

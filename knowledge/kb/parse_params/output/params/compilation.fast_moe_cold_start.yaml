@@ -1,0 +1,114 @@
+name: compilation.fast_moe_cold_start
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:1714
+- vllm/forward_context.py:233
+- vllm/model_executor/models/config.py:58
+- tests/ut/worker/v2/test_engram_state_hooks.py:285
+value_type: bool
+default: <computed>
+valid_choices:
+- true
+- false
+- null
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'fast_moe_cold_start is a compilation-time optimization that speeds up the
+
+  "cold start" (first-run / graph-capture) path for MoE models. In upstream vLLM
+
+  (vllm/forward_context.py:233), when the flag is true, create_forward_context
+
+  populates ForwardContext.all_moe_layers from
+
+  compilation_config.static_all_moe_layers; when false, all_moe_layers is None.
+
+  This lets the MoE layer dispatch skip a per-call lookup of MoE layers during
+
+  the initial forward passes, reducing cold-start latency. It does NOT change
+
+  steady-state throughput or memory usage — it only affects the one-time
+
+  warmup/capture phase.
+
+  In vllm/config/vllm.py:1714-1721 the default is resolved conservatively:
+
+  forced off when torch >= 2.11 (HAS_OPAQUE_TYPE supersedes it), otherwise
+
+  enabled only when speculative_config is None (disabled if spec decoding is
+
+  used, since a draft model with MoE could produce incorrect execution order).
+
+  vllm/model_executor/models/config.py:58 shows Ernie4.5-VL forcibly disables it
+
+  because conditional text/vision MoE branches can silently produce incorrect
+
+  execution order.
+
+  On Ascend, the v2 worker test (tests/ut/worker/v2/test_engram_state_hooks.py:285)
+
+  constructs compilation_config with fast_moe_cold_start=False, indicating the
+
+  v2 Ascend graph path (ModelAclGraphManager / run_fullgraph) reads this field
+
+  but the test path uses the safe default. No vllm-ascend source override of the
+
+  parameter''s semantics was found; it is consumed via the upstream
+
+  compilation_config object. Because it only affects the cold-start/warmup
+
+  phase and not steady-state inference, its runtime performance impact on
+
+  Ascend NPU is low.
+
+  '
+usage_locations:
+- file: vllm/forward_context.py:233
+  context: create_forward_context reads the flag to decide whether to populate ForwardContext.all_moe_layers from static_all_moe_layers.
+- file: vllm/config/vllm.py:1714
+  context: 'Default resolution: forced off on torch>=2.11 (HAS_OPAQUE_TYPE), otherwise enabled only when speculative_config
+    is None.'
+- file: vllm/model_executor/models/config.py:58
+  context: Ernie4.5-VL verify_and_update_config forcibly sets fast_moe_cold_start=False due to conditional MoE branches.
+- file: tests/ut/worker/v2/test_engram_state_hooks.py:285
+  context: v2 Ascend worker test builds compilation_config with fast_moe_cold_start=False for the ACL graph fullgraph path.
+related_parameters:
+- name: compilation_config.static_all_moe_layers
+  relation: When fast_moe_cold_start is true, this static list is copied into ForwardContext.all_moe_layers; otherwise all_moe_layers
+    is None.
+- name: speculative_config
+  relation: If speculative decoding is configured, the default resolution disables fast_moe_cold_start (draft model with MoE
+    is unsafe).
+- name: compilation_config.cudagraph_mode
+  relation: Cold-start optimization interacts with graph capture; the v2 Ascend fullgraph path reads this flag during graph
+    setup.
+constraints:
+- fast_moe_cold_start is forced to false when torch >= 2.11 (HAS_OPAQUE_TYPE), regardless of user setting.
+- When speculative decoding is enabled, the default resolves to false because a draft model containing MoE can produce incorrect
+  execution order.
+- Models with conditional MoE branches (e.g. Ernie4.5-VL) forcibly disable fast_moe_cold_start to avoid incorrect execution
+  order.
+tuning_advice:
+  summary: Leave at the resolved default; only consider enabling for single-model MoE cold-start latency reduction when no
+    spec decoding and torch < 2.11.
+  suggested_values:
+  - scenario: Standard MoE inference on Ascend without speculative decoding
+    value: true
+    reason: Default resolution enables it when speculative_config is None, reducing cold-start latency by pre-populating all_moe_layers.
+  - scenario: Speculative decoding enabled or conditional-MoE model (e.g. Ernie4.5-VL)
+    value: false
+    reason: Code forces it off to avoid incorrect execution order; keep disabled for correctness.
+  - scenario: torch >= 2.11 (HAS_OPAQUE_TYPE available)
+    value: false
+    reason: OpaqueObject approach supersedes fast_moe_cold_start; the flag is forced off automatically.
+  caveats:
+  - Do not enable when running multiple models or models with conditional MoE branches — the optimization assumes a single
+    decoder forward pass.
+  - Benefit is limited to cold-start/warmup; it does not improve steady-state tokens/sec on Ascend NPU.
+  quick_guide: Keep the default; only enable for single-model MoE cold-start when no spec decoding is used.
+analysis_date: '2026-10-27'

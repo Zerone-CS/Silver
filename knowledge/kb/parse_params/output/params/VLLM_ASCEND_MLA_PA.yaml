@@ -1,0 +1,65 @@
+name: VLLM_ASCEND_MLA_PA
+type: env
+category: model
+scope: vllm-ascend
+source_file:
+- 'vllm_ascend/envs.py: <unknown>'
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (boolean-like env flag)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_ASCEND_MLA_PA is an Ascend-specific environment variable introduced in vllm-ascend
+
+  (release notes v0.9.1rc3) to enable the MLA paged attention operator for DeepSeek MLA
+
+  decode. When enabled, the DeepSeek MLA attention path uses a dedicated Ascend paged
+
+  attention operator instead of the generic attention implementation. This affects the
+
+  decode-phase attention kernel selection for MLA models (e.g. DeepSeek-V2/V3/R1), which
+
+  is a latency- and throughput-sensitive hot path. The exact code path (envs.py definition
+
+  and the attention backend dispatch) was not present in the provided context, so the
+
+  mechanism is inferred from the release note description: "it toggles a specialized MLA"
+
+  paged attention kernel used during decode.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py
+  context: Environment variable registration (definition not present in provided context)
+- file: vllm_ascend/attention/attention_v1.py
+  context: MLA decode attention path selecting paged attention operator (inferred; not in provided context)
+related_parameters:
+- name: VLLM_ASCEND_MLA_PARALLEL
+  relation: Related MLA tuning env var; used to avoid OOM with w4a8 quantization in eager mode
+- name: VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE
+  relation: Another Ascend env toggle introduced in the same release for TP fusion kernels
+constraints:
+- Only meaningful for models using MLA (Multi-head Latent Attention) such as DeepSeek; it has no effect on non-MLA models.
+- The value is treated as a boolean flag; set it to 1 to enable and 0 (or unset) to disable.
+tuning_advice:
+  summary: Enable VLLM_ASCEND_MLA_PA=1 for DeepSeek MLA models to use the specialized MLA paged attention decode operator
+    for better decode latency/throughput.
+  suggested_values:
+  - scenario: Serving DeepSeek MLA models (V2/V3/R1) on Ascend NPU
+    value: '1'
+    reason: Enables the dedicated MLA paged attention operator for decode, which is the intended optimized path for MLA decode.
+  - scenario: Non-MLA models or when debugging attention correctness
+    value: '0'
+    reason: The flag only applies to MLA decode; leaving it disabled avoids the specialized path when not applicable.
+  caveats:
+  - This is an Ascend-specific env var not present in upstream vLLM; behavior is defined solely by vllm-ascend.
+  - The exact definition and dispatch logic were not found in the provided source context; verify against the installed vllm-ascend
+    version before relying on it.
+  - For w4a8 quantization with eager mode, the related VLLM_ASCEND_MLA_PARALLEL=1 is recommended to avoid OOM.
+  quick_guide: Set VLLM_ASCEND_MLA_PA=1 when running DeepSeek MLA models to enable the optimized MLA paged attention decode
+    operator.
+analysis_date: '2026-10-27'

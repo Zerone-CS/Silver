@@ -1,0 +1,89 @@
+name: pooler.use_activation
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:749
+- vllm/v1/engine/core.py:411
+- vllm/model_executor/models/config.py:467
+- vllm/model_executor/models/config.py:771
+value_type: bool
+default: null
+valid_choices:
+- true
+- false
+- null
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'pooler.use_activation is a PoolerConfig field that controls whether an activation
+
+  function (typically softmax for classification, or identity for embeddings) is
+
+  applied to the pooled output. It is only relevant for pooling models
+
+  (runner_type == "pooling", i.e. embedding/classify/reward tasks), not for
+
+  generative LLM inference. On Ascend NPU, the pooling path runs the same
+
+  activation op (softmax/identity) on the NPU as on GPU; the cost is a single
+
+  elementwise/softmax op over the pooled vector (shape [num_seqs, hidden_size]),
+
+  which is negligible relative to the transformer forward pass. Therefore the
+
+  performance impact is low — it does not change throughput or memory in any
+
+  meaningful way. The parameter is read in vllm/v1/engine/core.py:411 only for
+
+  logging (resolving None -> True for the log message), and in model-specific
+
+  VerifyAndUpdateConfig classes (JambaForSequenceClassificationConfig at
+
+  config.py:467, Qwen2ForRewardModelConfig at config.py:771) where None is
+
+  coerced to False. No vllm-ascend override of this parameter was found in the
+
+  provided context; vllm-ascend does not patch PoolerConfig.use_activation.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:749
+  context: Records the source of use_activation (pooler_default) when building pooler config sources; no runtime compute.
+- file: vllm/v1/engine/core.py:411
+  context: Reads use_activation (None -> True) purely for the pooler config log line.
+- file: vllm/model_executor/models/config.py:467
+  context: JambaForSequenceClassificationConfig sets use_activation=False when None.
+- file: vllm/model_executor/models/config.py:771
+  context: Qwen2ForRewardModelConfig sets use_activation=False when None.
+related_parameters:
+- name: pooler.seq_pooling_type
+  relation: Determines the pooling op applied before activation; together they define the pooling output.
+- name: pooler.tok_pooling_type
+  relation: Token-level pooling type used for token classification tasks; activation applies to pooled output.
+- name: runner_type
+  relation: use_activation only has effect when runner_type is 'pooling' (embed/classify/reward).
+constraints:
+- use_activation only affects models running in pooling mode (embedding/classification/reward); it has no effect on generative
+  LLM inference.
+- 'When left as None, the effective value depends on the model: most poolers default to True, but Jamba sequence-classification
+  and Qwen2 reward models force it to False.'
+tuning_advice:
+  summary: Leave use_activation at its default unless you need raw logits; it has negligible performance impact on Ascend
+    NPU.
+  suggested_values:
+  - scenario: Standard embedding/classification serving where model expects post-activation outputs
+    value: unset
+    reason: None lets the pooler/model default apply (True for most, False for Jamba/Qwen2 reward), matching the checkpoint's
+      intended semantics.
+  - scenario: Reward models or classifiers where you need raw logits (e.g. custom post-processing)
+    value: false
+    reason: Disables the activation so the pooled output is raw logits; Qwen2 reward and Jamba classification already default
+      to False.
+  caveats:
+  - This is a semantic knob, not a throughput knob; do not expect measurable latency/throughput gains on Ascend NPU.
+  - Verify downstream consumers expect probabilities vs logits before toggling.
+  quick_guide: Keep default (None) unless you specifically need raw logits; performance impact is negligible.
+analysis_date: '2026-10-27'

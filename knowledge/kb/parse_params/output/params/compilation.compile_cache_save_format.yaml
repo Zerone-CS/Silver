@@ -1,0 +1,77 @@
+name: compilation.compile_cache_save_format
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/backends.py:109
+value_type: str
+default: binary
+valid_choices:
+- binary
+- unpacked
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only controls the on-disk serialization format of the torch.compile
+
+  (Inductor) cache, not the compiled kernel behavior itself. In
+
+  vllm/compilation/backends.py:make_compiler, the value is passed to
+
+  InductorStandaloneAdaptor(compilation_config.compile_cache_save_format) only when
+
+  backend == "inductor" AND envs.VLLM_USE_STANDALONE_COMPILE is set AND
+
+  torch._inductor.standalone_compile exists. Otherwise it is never read (InductorAdaptor
+
+  is used without it). "binary" writes a single multiprocess-safe binary blob; "unpacked"
+
+  writes a directory tree for inspection/debugging and is NOT multiprocess safe. The
+
+  performance effect is indirect and limited to compile-cache save/load I/O time
+
+  (affecting cold-start latency on cache hits/misses), not steady-state inference
+
+  throughput or NPU memory. On Ascend, vllm-ascend does not define or override this
+
+  parameter; it is only reachable through the upstream inductor standalone-compile path,
+
+  which is not the default Ascend compilation flow (Ascend uses its own ACLGraph /
+
+  torchair backends), so its runtime impact on NPU is minimal.
+
+  '
+usage_locations:
+- file: vllm/compilation/backends.py:109
+  context: Passed to InductorStandaloneAdaptor when backend is inductor and VLLM_USE_STANDALONE_COMPILE is enabled
+related_parameters:
+- name: compilation.backend
+  relation: Only used when backend == 'inductor'
+- name: VLLM_USE_STANDALONE_COMPILE
+  relation: Gate env var; parameter is only consumed when this is enabled and torch._inductor.standalone_compile exists
+- name: VLLM_COMPILE_CACHE_SAVE_FORMAT
+  relation: Environment variable that provides the default value when not explicitly set
+constraints:
+- The value must be either 'binary' or 'unpacked'.
+- The parameter is only consumed when compilation backend is 'inductor' and VLLM_USE_STANDALONE_COMPILE is enabled with a
+  PyTorch build exposing torch._inductor.standalone_compile; otherwise it has no effect.
+- '''unpacked'' format is not multiprocess safe and must not be used with multi-process compilation.'
+tuning_advice:
+  summary: Keep the default 'binary' for production; use 'unpacked' only for debugging compile-cache contents.
+  suggested_values:
+  - scenario: Production / multi-process compilation on Ascend
+    value: binary
+    reason: Multiprocess-safe single-file cache avoids corruption when multiple workers compile concurrently; default and
+      recommended.
+  - scenario: Debugging or inspecting the Inductor compile cache
+    value: unpacked
+    reason: Produces a readable directory tree, but only safe in single-process scenarios.
+  caveats:
+  - Has no effect on Ascend unless the upstream inductor standalone-compile path is active; vllm-ascend does not override
+    this parameter.
+  - Using 'unpacked' with multiple processes can corrupt the cache.
+  - Only affects compile-cache save/load I/O (cold-start latency), not steady-state NPU throughput or memory.
+  quick_guide: Leave as 'binary' unless you need to inspect the compile cache for debugging.
+analysis_date: '2026-10-27'

@@ -1,0 +1,85 @@
+name: VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED
+type: env
+category: parallelism
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/large_scale_ep.md:132
+- docs/source/user_guide/feature_guide/large_scale_ep.md:196
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (unset/disabled by default; set to 1 to enable)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This environment variable is documented in vllm-ascend''s large-scale EP feature guide
+
+  (docs/source/user_guide/feature_guide/large_scale_ep.md) as part of the recommended
+
+  environment for enabling the "distributed DP server" in large-scale expert-parallel
+
+  deployments. It is set alongside VLLM_WORKER_MULTIPROC_METHOD="fork" and
+
+  TASK_QUEUE_ENABLE=1. The flag enables an external data-parallel load balancer path
+
+  (EXTERNAL_DP_LB) for vllm-ascend. In a data-parallel (DP) deployment, incoming requests
+
+  must be distributed across DP ranks; an external load balancer can route requests more
+
+  evenly than the default in-engine balancing, which directly affects per-rank utilization
+
+  and therefore aggregate throughput and tail latency. No source definition or usage site
+
+  was found in the provided vllm or vllm-ascend code context (the parameter is only
+
+  referenced in documentation), so the exact code path could not be verified from source;
+
+  the impact assessment is based on the documented role in the large-scale EP deployment
+
+  recipe. Because it governs how requests are balanced across DP ranks, misconfiguration
+
+  can cause rank imbalance (some NPUs idle while others saturate), degrading throughput.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/large_scale_ep.md:132
+  context: Set to 1 in the large-scale EP deployment example to enable the distributed DP server (with VLLM_WORKER_MULTIPROC_METHOD=fork).
+- file: docs/source/user_guide/feature_guide/large_scale_ep.md:196
+  context: Repeated in a second large-scale EP deployment example, again enabling the distributed DP server.
+related_parameters:
+- name: VLLM_WORKER_MULTIPROC_METHOD
+  relation: Documented to be set to 'fork' together with this flag when enabling the distributed DP server.
+- name: TASK_QUEUE_ENABLE
+  relation: Set to 1 in the same large-scale EP deployment recipe.
+- name: --data-parallel-size
+  relation: The external DP load balancer distributes requests across the DP ranks configured by data-parallel-size.
+- name: --additional-config
+  relation: Used in the same recipe to enable vllm-ascend-specific features (e.g. EP settings) alongside this flag.
+constraints:
+- This flag is intended for large-scale expert-parallel / data-parallel deployments; enabling it in a single-rank or non-DP
+  setup provides no benefit.
+- The documentation pairs it with VLLM_WORKER_MULTIPROC_METHOD=fork; using a different multiprocessing method may not be compatible
+  with the distributed DP server path.
+tuning_advice:
+  summary: Enable only for large-scale multi-node DP/EP deployments where request balancing across DP ranks is the bottleneck;
+    leave disabled for single-node or small deployments.
+  suggested_values:
+  - scenario: Large-scale multi-node expert-parallel deployment (e.g. DeepSeek-R1 W8A8 across many NPUs) following the large_scale_ep
+      guide
+    value: '1'
+    reason: The official large-scale EP recipe sets this to 1 together with VLLM_WORKER_MULTIPROC_METHOD=fork to enable the
+      distributed DP server, improving request distribution across DP ranks.
+  - scenario: Single-node or small DP deployment, or when not using expert parallelism
+    value: '0'
+    reason: The external DP load balancer adds coordination overhead and is unnecessary when DP ranks are few or requests
+      are already balanced.
+  caveats:
+  - Only referenced in vllm-ascend documentation; no source definition was found in the provided code context, so behavior
+    should be validated against the installed vllm-ascend version.
+  - Documented to be used together with VLLM_WORKER_MULTIPROC_METHOD=fork; mismatched multiprocessing settings may break the
+    distributed DP server.
+  - Poorly balanced DP routing can leave some NPUs idle while others saturate, hurting aggregate throughput and tail latency.
+  quick_guide: Set VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED=1 only for large-scale multi-node DP/EP deployments, paired with VLLM_WORKER_MULTIPROC_METHOD=fork.
+analysis_date: '2026-10-27'

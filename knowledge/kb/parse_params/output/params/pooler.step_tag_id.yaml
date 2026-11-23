@@ -1,0 +1,63 @@
+name: pooler.step_tag_id
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/model_executor/models/config.py:761
+value_type: int
+default: null
+valid_choices: any integer token id; None means return scores for all tokens
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'pooler.step_tag_id is a PoolerConfig field used by reward/process-reward models
+
+  (e.g. Qwen2ForProcessRewardModel). When set, the pooler only returns the score
+
+  corresponding to the token whose id equals step_tag_id, instead of returning
+
+  scores for all tokens. In vllm/model_executor/models/config.py:761 the
+
+  Qwen2ForProcessRewardModelConfig.verify_and_update_model_config sets a default
+
+  of 151651 when the user leaves it None. This is a post-processing / output
+
+  selection parameter: "it does not change model weights, KV cache, scheduling,"
+
+  or the forward compute graph. Its only runtime effect is reducing the size of
+
+  the returned score tensor (fewer elements to copy/return), which is a marginal
+
+  latency effect on the pooling output path. No vllm-ascend override or
+
+  Ascend-specific handling of this field was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/model_executor/models/config.py:761
+  context: Qwen2ForProcessRewardModelConfig sets step_tag_id default to 151651 when None
+related_parameters:
+- name: pooler_config
+  relation: step_tag_id is a field of PoolerConfig; only meaningful when a pooler/reward model is used
+- name: model_config.pooler_config.step_tag_id
+  relation: auto-populated by VerifyAndUpdateConfig for Qwen2 process-reward models
+constraints:
+- Only meaningful for pooling/reward models that use a pooler; it has no effect on generation-only models.
+- When left unset (None) for Qwen2 process-reward models, it is automatically set to 151651 by verify_and_update_model_config.
+tuning_advice:
+  summary: Leave at default unless you need a specific step-tag token; it only affects which score is returned, not throughput
+    or memory.
+  suggested_values:
+  - scenario: Qwen2 process-reward model with default behavior
+    value: 151651
+    reason: Auto-applied default from Qwen2ForProcessRewardModelConfig; matches the model's step-tag token.
+  - scenario: Custom reward model with a different step-tag token
+    value: <model-specific token id>
+    reason: Set to the token id that marks the step boundary in your model's tokenizer so the correct score is returned.
+  caveats:
+  - This is an output-selection parameter; it does not affect NPU compute, HCCL communication, or KV cache memory.
+  - Setting an incorrect token id will return the wrong (or empty) score rather than improving performance.
+  quick_guide: Keep the default 151651 for Qwen2 process-reward models; only change it to match your model's step-tag token.
+analysis_date: '2026-10-27'

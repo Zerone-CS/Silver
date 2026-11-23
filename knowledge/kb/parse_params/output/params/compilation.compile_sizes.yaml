@@ -1,0 +1,123 @@
+name: compilation.compile_sizes
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm_ascend/worker/worker.py:864
+- vllm/v1/worker/gpu_worker.py:780
+- vllm/compilation/piecewise_backend.py:154
+- vllm/v1/cudagraph_dispatcher.py:96
+value_type: list[int]
+default: null
+valid_choices: list of positive integers, or the string 'cudagraph_capture_sizes' (expanded to cudagraph_capture_sizes at
+  post_init); null means no extra compile sizes
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'compile_sizes controls which batch-size shapes get an ahead-of-time compiled
+
+  (torch.compile / inductor) graph in addition to the cudagraph-captured sizes.
+
+  On Ascend, NPUWorker.compile_or_warm_up_model (vllm_ascend/worker/worker.py:864)
+
+  reads compilation_config.compile_sizes, copies it into warmup_sizes, then removes
+
+  any size already present in cudagraph_capture_sizes (when cudagraph_mode != NONE),
+
+  and finally runs model_runner._dummy_run(size) for each remaining size in
+
+  descending order. Each _dummy_run triggers compilation/warmup for that shape, so
+
+  the number of entries directly increases startup time (compile + warmup cost per
+
+  size) but reduces first-hit latency for those shapes at runtime by avoiding a
+
+  JIT recompile on the first request that hits an uncompiled shape. The upstream
+
+  PiecewiseBackend (vllm/compilation/piecewise_backend.py:154) compiles the FX graph
+
+  once per compile_size, and the CUDAGraphDispatcher (vllm/v1/cudagraph_dispatcher.py:96)
+
+  validates that every compile_size <= max capture size is not remapped by cudagraph
+
+  padding — otherwise it raises ValueError. On Ascend the same validation path applies
+
+  because vllm-ascend reuses the upstream dispatcher; sizes that fall inside a
+
+  cudagraph padding bucket will be rejected. Net effect: medium — it trades startup
+
+  compile time for steady-state latency stability, and does not change steady-state
+
+  throughput once all hot shapes are compiled.
+
+  '
+usage_locations:
+- file: vllm_ascend/worker/worker.py:864
+  context: NPUWorker.compile_or_warm_up_model copies compile_sizes into warmup_sizes, filters out cudagraph_capture_sizes,
+    and dummy-runs each remaining size in descending order to trigger compilation/warmup.
+- file: vllm/v1/worker/gpu_worker.py:780
+  context: Upstream GPU worker mirrors the same logic (reference behavior that vllm-ascend adapts).
+- file: vllm/compilation/piecewise_backend.py:154
+  context: PiecewiseBackend stores compile_sizes and compiles the FX graph once per size; raises NotImplementedError if the
+    string 'cudagraph_capture_sizes' reaches it (should be expanded earlier).
+- file: vllm/v1/cudagraph_dispatcher.py:96
+  context: Validates that compile_sizes are not remapped by cudagraph padding; raises ValueError if a compile_size would be
+    padded to a different value.
+- file: vllm/model_executor/warmup/b12x_warmup.py:64
+  context: b12x warmup (CUDA-only) also consumes compile_sizes; not active on Ascend.
+related_parameters:
+- name: compilation.cudagraph_capture_sizes
+  relation: compile_sizes entries that overlap cudagraph_capture_sizes are removed from warmup on Ascend; the string 'cudagraph_capture_sizes'
+    expands to this list.
+- name: compilation.cudagraph_mode
+  relation: When cudagraph_mode is NONE, the cudagraph_capture_sizes filtering is skipped and all compile_sizes are warmed
+    up.
+- name: compilation.mode
+  relation: Only meaningful when mode is VLLM_COMPILE; in eager mode compile_sizes has no effect.
+- name: compilation.compile_ranges
+  relation: If no compile_size or cudagraph_capture_size falls inside a compile_range, the range end is appended to warmup_sizes
+    automatically.
+- name: model_config.enforce_eager
+  relation: When enforce_eager is true, cudagraph filtering is skipped and all compile_sizes are dummy-run.
+constraints:
+- Each entry must be a positive integer or the literal string 'cudagraph_capture_sizes'; any other string raises NotImplementedError
+  in PiecewiseBackend.
+- When cudagraphs are enabled, every compile_size that is <= the max cudagraph capture size must not be remapped by cudagraph
+  padding, otherwise a ValueError is raised; use values from cudagraph_capture_sizes.
+- compile_sizes only takes effect when compilation_config.mode is VLLM_COMPILE; in eager mode it is ignored.
+tuning_advice:
+  summary: 'Set compile_sizes to the exact batch sizes your workload hits most often but
+
+    that are NOT already covered by cudagraph_capture_sizes, so Ascend compiles
+
+    those shapes once at startup instead of JIT-compiling on the first request.
+
+    '
+  suggested_values:
+  - scenario: Chunked-prefill serving where max_num_batched_tokens is a hot shape not in cudagraph_capture_sizes
+    value: '[max_num_batched_tokens]'
+    reason: Ensures the largest prefill batch is compiled ahead of time, avoiding a first-request compile stall on Ascend.
+  - scenario: Mixed prefill/decode with a few dominant batch sizes
+    value: '[1, 8, 32, 128]'
+    reason: Covers common decode batch sizes; keep the list short to bound startup compile time.
+  - scenario: Cudagraphs enabled and you want compile_sizes to mirror capture sizes
+    value: '''cudagraph_capture_sizes'''
+    reason: The string is expanded to cudagraph_capture_sizes during post_init, so compile and capture shapes stay in sync.
+  - scenario: Startup-time-sensitive deployment (fast cold start)
+    value: 'null'
+    reason: Leaving it null skips extra per-shape compilation; rely on cudagraph_capture_sizes and compile_ranges for coverage.
+  caveats:
+  - On Ascend, any compile_size that also appears in cudagraph_capture_sizes is filtered out of warmup (vllm_ascend/worker/worker.py:870),
+    so listing capture sizes here is redundant.
+  - Each compile_size adds a full _dummy_run + compile pass at startup; large lists significantly increase cold-start time
+    on NPU.
+  - Sizes that fall inside a cudagraph padding bucket (<= max capture size) will raise ValueError in CUDAGraphDispatcher;
+    prefer values that are exact cudagraph_capture_sizes or larger than the max capture size.
+  - If a compile_range contains none of the compile_sizes or cudagraph_capture_sizes, the range end is auto-appended to warmup,
+    so explicit compile_sizes are only needed for shapes outside those ranges.
+  quick_guide: List only hot batch sizes not already in cudagraph_capture_sizes; keep it short to limit Ascend startup compile
+    cost.
+analysis_date: '2026-10-27'

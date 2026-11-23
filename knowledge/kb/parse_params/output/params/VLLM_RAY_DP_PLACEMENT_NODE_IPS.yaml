@@ -1,0 +1,88 @@
+name: VLLM_RAY_DP_PLACEMENT_NODE_IPS
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:1468
+- vllm/envs.py:183
+- vllm/v1/engine/utils.py:584
+value_type: str
+default: ''
+valid_choices: Comma-separated list of node IP addresses (e.g. '10.0.0.1,10.0.0.3'); empty string disables the allowlist
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+impact_detail: 'This env var is read only in vllm/v1/engine/utils.py (CoreEngineActorManager,
+
+  create_dp_placement_groups path) when the data-parallel backend is Ray. When set,
+
+  the comma-separated IPs are parsed into a set (requested_node_ips) and the list of
+
+  Ray nodes with available resources is filtered down to only those whose node IP is
+
+  in the allowlist (the DP master node is force-added). This does not change any
+
+  per-token compute, kernel, or memory behavior — it only constrains WHICH physical
+
+  nodes Ray placement groups are created on. Its performance relevance is indirect:
+
+  by pinning DP ranks to a chosen subset of nodes (e.g. nodes on the same HCCL
+
+  interconnect / same rack / same NPU island), it can avoid cross-switch or
+
+  cross-rack placement that would degrade collective communication (HCCL AllReduce/
+
+  AllGather) throughput for DP/EP/TP groups. If the allowlist is too small to fit
+
+  the requested DP ranks, placement will fail rather than run slowly. There is no
+
+  vllm-ascend override of this variable in the provided context; it is an upstream
+
+  vLLM Ray-only knob that applies equally on Ascend when using the Ray DP backend.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1468
+  context: Definition of the env var accessor, default empty string.
+- file: vllm/envs.py:183
+  context: 'Type stub declaration VLLM_RAY_DP_PLACEMENT_NODE_IPS: str = "".'
+- file: vllm/v1/engine/utils.py:584
+  context: Parsed into requested_node_ips and used to filter Ray nodes for DP placement groups; master node always added.
+related_parameters:
+- name: VLLM_RAY_DP_PACK_STRATEGY
+  relation: Companion Ray DP placement knob (strict/fill/span); both only apply when data-parallel-backend is Ray.
+- name: --data-parallel-backend
+  relation: This env var is ignored unless the DP backend is Ray.
+- name: --data-parallel-size
+  relation: Total DP ranks that must fit within the allowed node set.
+- name: --data-parallel-size-local
+  relation: Number of local DP ranks placed on the DP master node (always included in allowlist).
+- name: --data-parallel-address
+  relation: DP master IP is always force-added to the allowlist even if not listed.
+constraints:
+- This environment variable is ignored if the data-parallel backend is not Ray.
+- The DP master node IP is always included in the allowed set even if it is not listed in VLLM_RAY_DP_PLACEMENT_NODE_IPS.
+- The allowed node set must contain enough nodes/resources to host all requested data-parallel ranks, otherwise placement
+  fails.
+- The DP master node must be alive and present in the Ray cluster, otherwise placement asserts and fails.
+tuning_advice:
+  summary: Use this only with the Ray DP backend to pin DP placement to a chosen set of nodes that share fast HCCL interconnect,
+    avoiding cross-rack placement that hurts collective throughput.
+  suggested_values:
+  - scenario: Multi-node Ray DP deployment on Ascend where some nodes are on a slower/cross-rack network
+    value: 10.0.0.1,10.0.0.2,10.0.0.3,10.0.0.4
+    reason: Restricting placement to nodes on the same high-bandwidth HCCL fabric keeps DP/EP collectives on fast links, improving
+      throughput versus letting Ray scatter ranks across racks.
+  - scenario: Single-node or non-Ray DP deployment
+    value: unset
+    reason: The variable is ignored when the DP backend is not Ray; leaving it empty avoids confusion.
+  caveats:
+  - Only effective when --data-parallel-backend is Ray; it has no effect on the mp backend.
+  - The DP master node is always added to the allowlist, so listing it is optional but harmless.
+  - If the listed nodes cannot fit all DP ranks, placement fails instead of falling back to other nodes.
+  - No vllm-ascend-specific override exists; behavior is identical to upstream vLLM on Ascend NPUs.
+  quick_guide: Set to a comma-separated list of same-fabric node IPs to confine Ray DP placement and keep HCCL collectives
+    on fast links.
+analysis_date: '2026-10-27'

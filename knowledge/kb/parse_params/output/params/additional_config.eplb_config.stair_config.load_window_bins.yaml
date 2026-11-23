@@ -1,0 +1,89 @@
+name: additional_config.eplb_config.stair_config.load_window_bins
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:194
+- vllm_ascend/ascend_config.py:218
+- vllm_ascend/ascend_config.py:242
+value_type: int
+default: 64
+valid_choices: integer in range [2, 256]
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'load_window_bins controls how many chronological bins the MRv2 STAIR EPLB policy
+
+  uses to compress the upstream EPLB load window (vllm_ascend/ascend_config.py:194-196).
+
+  Bin means and weights represent all samples in that window, so this value directly
+
+  determines the statistical horizon over which expert/rank load is aggregated before
+
+  the STAIR rebalancing decision is made. A larger window smooths transient load spikes
+
+  and produces more stable expert placement (fewer unnecessary rebalances, less expert
+
+  migration churn over HCCL), while a smaller window reacts faster to load shifts but
+
+  risks over-reacting to noise, causing frequent rebalancing and extra cross-rank expert
+
+  transfers. Because EPLB rebalancing drives expert redistribution across ranks (and
+
+  potentially cross-node transfers), the choice affects steady-state throughput balance
+
+  and tail latency of MoE inference on Ascend NPU. The parameter is validated in
+
+  StairConfig._validate (vllm_ascend/ascend_config.py:242-243) and is read back from
+
+  additional_config["eplb_config"]["stair_config"] (see tests/ut/patch/platform/
+
+  test_patch_eplb.py:146-161), confirming it is consumed by the Ascend EPLB patch layer.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:218
+  context: StairConfig field definition with default 64
+- file: vllm_ascend/ascend_config.py:242
+  context: Model validator enforcing 2 <= load_window_bins <= 256
+- file: tests/ut/patch/platform/test_patch_eplb.py:146
+  context: Passed via additional_config eplb_config.stair_config and read back by resolve_ascend_eplb_communicator
+related_parameters:
+- name: additional_config.eplb_config.stair_config.load_risk_quantile
+  relation: 'Together define the risk model: window bins aggregate load, quantile sets the z-score risk threshold applied
+    to that aggregated load'
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Rebalance trigger compares current balance against last committed balance; window size affects how stable that
+    balance signal is
+- name: additional_config.eplb_config.stair_config.absolute_balance_threshold
+  relation: Absolute rebalance trigger evaluated on the windowed balance metric
+- name: additional_config.eplb_config.stair_config.cross_node_transfer_limit
+  relation: Larger windows reduce rebalance frequency, indirectly reducing cross-node expert transfers
+constraints:
+- load_window_bins must be an integer between 2 and 256 inclusive; values outside this range raise a ValueError during StairConfig
+  validation.
+- STAIR numeric fields must not be booleans; passing true/false raises a ValueError.
+tuning_advice:
+  summary: Tune load_window_bins to balance rebalance stability against responsiveness for the STAIR EPLB policy on Ascend
+    NPU.
+  suggested_values:
+  - scenario: Stable, steady-state MoE serving with predictable expert load
+    value: 64
+    reason: Default value provides a balanced smoothing horizon that avoids excessive rebalancing churn while still tracking
+      moderate load drift.
+  - scenario: Highly bursty or skewed expert routing where fast reaction matters
+    value: 32
+    reason: Smaller window reacts faster to emerging imbalance, reducing tail latency on overloaded ranks at the cost of more
+      frequent rebalances.
+  - scenario: Noisy load with frequent transient spikes causing rebalance thrash
+    value: 128
+    reason: Larger window smooths transient spikes, reducing unnecessary expert migrations and HCCL transfer overhead.
+  caveats:
+  - Increasing the window reduces rebalance frequency but may leave imbalance uncorrected longer; monitor per-rank load balance
+    after changing.
+  - Only relevant when the MRv2 STAIR EPLB policy is enabled; no effect otherwise.
+  quick_guide: Keep default 64; lower toward 32 for bursty loads, raise toward 128 to suppress rebalance thrash.
+analysis_date: '2026-10-27'

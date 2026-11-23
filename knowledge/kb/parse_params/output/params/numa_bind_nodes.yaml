@@ -1,0 +1,96 @@
+name: --numa-bind-nodes
+type: cli
+category: hardware
+scope: both
+source_file:
+- vllm/config/parallel.py:300
+- vllm/engine/arg_utils.py:1075
+- vllm/engine/arg_utils.py:486
+- vllm/engine/arg_utils.py:2402
+- vllm/utils/numa_utils.py:250
+- vllm/utils/numa_utils.py:376
+- vllm_ascend/platform.py:902
+value_type: list[int]
+default: null
+valid_choices: list of non-negative integers, one NUMA node index per visible GPU (e.g. [0, 0, 1, 1])
+cli_example: --numa-bind-nodes 0 0 1 1
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'On upstream vLLM (GPU), --numa-bind-nodes supplies the per-GPU NUMA node list used by
+
+  vllm/utils/numa_utils.py. In _get_numa_node (line 250) the list is indexed by gpu_index to
+
+  pick the NUMA node for each worker; if unset, get_auto_numa_nodes() auto-detects the
+
+  GPU-to-NUMA topology. The chosen node is then passed to numactl --membind and --cpunodebind
+
+  (or --physcpubind when --numa-bind-cpus is set), pinning worker CPU cores and memory to the
+
+  NUMA-local domain of the GPU. This reduces cross-socket memory latency and improves CPU-side
+
+  scheduling/throughput for the worker processes. _get_enginecore_numa_nodes (line 376) also
+
+  uses the list to compute the union of NUMA nodes for a DP shard''s EngineCore.
+
+  On Ascend NPU, however, this parameter has NO runtime effect. vllm_ascend/platform.py:902
+
+  detects a non-empty numa_bind_nodes and immediately logs that it is ignored and resets it to
+
+  None. The Ascend-native CPU binding (enabled via additional_config enable_cpu_binding, which
+
+  --numa-bind is auto-converted to) performs topo-affinity core allocation internally from NPU
+
+  topology / global logical NPU IDs, so the user-supplied node list is discarded. Therefore on
+
+  Ascend the parameter only affects a log line and cannot change latency, throughput, or memory.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:300
+  context: Field definition and docstring describing per-GPU NUMA node list passed to numactl --membind/--cpunodebind.
+- file: vllm/config/parallel.py:448
+  context: Field validator _validate_numa_bind_nodes rejects empty lists and negative node indices.
+- file: vllm/engine/arg_utils.py:1075
+  context: CLI argument registration --numa-bind-nodes in the ParallelConfig argument group.
+- file: vllm/engine/arg_utils.py:2402
+  context: Passes numa_bind_nodes into the constructed ParallelConfig.
+- file: vllm/utils/numa_utils.py:250
+  context: _get_numa_node indexes numa_bind_nodes by gpu_index; auto-detects if None; raises if index out of range.
+- file: vllm/utils/numa_utils.py:376
+  context: _get_enginecore_numa_nodes computes sorted unique NUMA nodes for a DP shard's EngineCore.
+- file: vllm_ascend/platform.py:902
+  context: 'Ascend override: logs that --numa-bind-nodes is ignored and resets it to None.'
+related_parameters:
+- name: --numa-bind
+  relation: Parent switch; numa_bind_nodes is only meaningful when numa_bind=True. On Ascend, --numa-bind is converted to
+    additional_config enable_cpu_binding.
+- name: --numa-bind-cpus
+  relation: Sibling parameter; when set, numactl uses --physcpubind instead of --cpunodebind. Also ignored on Ascend.
+- name: additional_config.enable_cpu_binding
+  relation: Ascend-native replacement for NUMA binding; performs topo-affinity CPU binding automatically.
+constraints:
+- numa_bind_nodes must not be an empty list; an empty list raises ValueError.
+- numa_bind_nodes must contain only non-negative integers; negative values raise ValueError.
+- The list must contain at least one entry per visible GPU; if a GPU index exceeds the list size, a ValueError is raised.
+- Values must be valid numactl NUMA node indices because they are passed to numactl --membind and --cpunodebind.
+tuning_advice:
+  summary: On Ascend NPU this flag is ignored; rely on --numa-bind (auto-converted to enable_cpu_binding) for CPU affinity
+    instead.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: omit --numa-bind-nodes
+    reason: vllm_ascend/platform.py ignores and resets this parameter; Ascend-native CPU binding handles topo-affinity automatically.
+  - scenario: Ascend NPU wanting CPU affinity
+    value: --numa-bind
+    reason: Auto-converted to additional_config enable_cpu_binding=true, which performs Ascend-native topo-affinity core allocation.
+  - scenario: Upstream GPU with known GPU-to-NUMA topology
+    value: '[0, 0, 1, 1]'
+    reason: Pins each worker to its GPU's NUMA-local CPUs/memory, reducing cross-socket latency (upstream only, not Ascend).
+  caveats:
+  - Do not expect any performance change from this flag on Ascend NPU; it is discarded at platform setup.
+  - On Ascend, use --numa-bind or additional_config enable_cpu_binding to control CPU binding.
+  quick_guide: On Ascend, skip --numa-bind-nodes and use --numa-bind for automatic CPU binding.
+analysis_date: '2026-10-27'

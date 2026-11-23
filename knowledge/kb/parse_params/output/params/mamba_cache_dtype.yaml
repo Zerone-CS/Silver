@@ -1,0 +1,118 @@
+name: --mamba-cache-dtype
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:170
+- vllm/engine/arg_utils.py:1300
+- vllm/engine/arg_utils.py:2111
+- vllm/model_executor/layers/mamba/mamba_utils.py:58
+- vllm_ascend/models/glm5next/kda.py:118
+- vllm_ascend/models/glm5next/model.py:880
+value_type: str
+default: auto
+valid_choices:
+- auto
+- float32
+- float16
+- bfloat16
+- fp8
+- fp8_e4m3
+- fp8_e5m2
+cli_example: --mamba-cache-dtype auto
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'This parameter controls the torch dtype of the Mamba/linear-attention state
+
+  cache (conv state and SSM state). It is consumed by
+
+  MambaStateDtypeCalculator (vllm/model_executor/layers/mamba/mamba_utils.py:58)
+
+  via get_kv_cache_torch_dtype(mamba_cache_dtype, model_dtype): when set to
+
+  "auto" the state dtype is inferred from the model dtype (typically bf16/fp16);
+
+  an explicit dtype (e.g. fp8) shrinks the per-token state footprint and can
+
+  reduce memory bandwidth for state reads/writes during decode.
+
+  On Ascend, the same CacheConfig.mamba_cache_dtype field is read directly by
+
+  vllm-ascend model code: Glm5NextLinearAttention.get_state_dtype
+
+  (vllm_ascend/models/glm5next/kda.py:118) and
+
+  Glm5NextForCausalLM.get_mamba_state_dtype_from_config
+
+  (vllm_ascend/models/glm5next/model.py:880) both call
+
+  MambaStateDtypeCalculator.kda_state_dtype(model_dtype, mamba_cache_dtype).
+
+  So the dtype chosen here determines the actual NPU tensor dtype allocated for
+
+  the KDA/linear-attention state cache, which affects NPU memory usage and the
+
+  cost of state update kernels (AscendC causal-conv / SSM update). Lower
+
+  precision state reduces memory and bandwidth but may require dtype casts in
+
+  the state-update kernels, which can add latency if the kernel is not natively
+
+  fp8-aware. There is no vllm-ascend override of the default value; the
+
+  upstream "auto" default is preserved.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:170
+  context: CacheConfig field definition and docstring; default 'auto' infers dtype from model config.
+- file: vllm/engine/arg_utils.py:1300
+  context: CLI flag registration --mamba-cache-dtype in CacheConfig argument group.
+- file: vllm/engine/arg_utils.py:2111
+  context: Passed into CacheConfig construction from EngineArgs.
+- file: vllm/model_executor/layers/mamba/mamba_utils.py:58
+  context: MambaStateDtypeCalculator resolves mamba_cache_dtype to a torch dtype via get_kv_cache_torch_dtype.
+- file: vllm_ascend/models/glm5next/kda.py:118
+  context: Ascend GLM5Next KDA layer computes state dtype from cache_config.mamba_cache_dtype.
+- file: vllm_ascend/models/glm5next/model.py:880
+  context: Ascend GLM5Next model-level get_mamba_state_dtype_from_config reads mamba_cache_dtype.
+related_parameters:
+- name: --mamba-ssm-cache-dtype
+  relation: Overrides the SSM-state dtype only; conv state still follows --mamba-cache-dtype. When 'auto', SSM dtype is derived
+    from --mamba-cache-dtype.
+- name: --kv-cache-dtype
+  relation: Analogous dtype control for attention KV cache; independent but both affect total cache memory.
+- name: --mamba-cache-mode
+  relation: Determines whether Mamba state is cached per block; interacts with how much state memory the dtype applies to.
+- name: --enable-prefix-caching
+  relation: Mamba state caching (and thus the memory footprint affected by this dtype) is only active with prefix caching
+    / mamba cache mode.
+constraints:
+- The value must be a valid MambaDType; 'auto' infers the dtype from the model config.
+- When --mamba-ssm-cache-dtype is 'auto', the SSM state dtype is determined by --mamba-cache-dtype.
+- The conv state dtype is always controlled by --mamba-cache-dtype regardless of --mamba-ssm-cache-dtype.
+tuning_advice:
+  summary: Keep 'auto' for correctness; consider fp8 only for memory-constrained Mamba/hybrid deployments after validating
+    accuracy and kernel support on Ascend.
+  suggested_values:
+  - scenario: Default / accuracy-sensitive Mamba or hybrid models on Ascend
+    value: auto
+    reason: Infers state dtype from model config (bf16/fp16), matching kernel expectations and avoiding casts; safest baseline.
+  - scenario: Memory-constrained deployment of large Mamba/hybrid models where state cache dominates NPU memory
+    value: fp8
+    reason: Halves state cache footprint and reduces state read/write bandwidth; verify Ascend state-update kernels handle
+      fp8 without extra casts and that accuracy is acceptable.
+  - scenario: Debugging numerical issues in Mamba state updates
+    value: float32
+    reason: Full-precision state eliminates quantization error at the cost of doubled memory and bandwidth; useful for isolating
+      accuracy regressions.
+  caveats:
+  - Only relevant for Mamba/hybrid linear-attention models (e.g. GLM5Next KDA); no effect on pure transformer models.
+  - fp8 state may require dtype casts in AscendC state-update kernels, potentially offsetting memory savings with added latency.
+  - Always validate accuracy when lowering state precision; state quantization error accumulates across decode steps.
+  quick_guide: Leave --mamba-cache-dtype auto unless NPU memory is tight; then try fp8 and validate accuracy.
+analysis_date: '2026-10-27'

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "task_id": null,
+  "parent_task_id": null,
+  "campaign_root": null,
+  "role": null,
+  "goal": null,
+  "mode": null,
+  "artifacts": [],
+  "scenario_scope": {
+    "targets": [],
+    "protected": []
+  },
+  "constraints": {
+    "contract_ref": null,
+    "unchanged_conditions": [],
+    "unresolved": []
+  },
+  "budget": {
+    "time_seconds": null,
+    "runs": null,
+    "api_calls": null,
+    "cost_limit": null,
+    "enforcement": null
+  },
+  "service_access": {
+    "identity_ref": null,
+    "authorization_basis": null,
+    "allowed_actions": [],
+    "exclusive_task_id": null,
+    "conflicts_checked": null
+  },
+  "expected_outputs": [],
+  "return_conditions": [],
+  "notes": "模板不授予权限或自动执行。角色/mode/路径与范围从本次真实委托填写，未知值保留null。"
+}

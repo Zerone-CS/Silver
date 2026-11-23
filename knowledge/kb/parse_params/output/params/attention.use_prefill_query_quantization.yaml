@@ -1,0 +1,78 @@
+name: attention.use_prefill_query_quantization
+type: nested
+category: quantization
+scope: vllm
+source_file:
+- vllm/model_executor/layers/attention/mla_attention.py:2326
+- vllm/models/kimi_k3/nvidia/mla.py:1026
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is a vLLM-upstream nested attention config field (attention_config.use_prefill_query_quantization).
+
+  It is read in MLAAttention.determine_prefill_query_data_type (mla_attention.py:2326) to decide whether
+
+  prefill queries are cast to FP8. The FP8 path is only taken when ALL of the following hold:
+
+  (1) the KV cache is quantized (is_quantized_kv_cache(cache_config.cache_dtype)), (2) this flag is true,
+
+  and (3) backend_supports_prefill_query_quantization() returns true. When active, prefill attention runs
+
+  with FP8 query tensors, which reduces memory bandwidth for the query and can speed up the prefill
+
+  attention matmul on hardware with native FP8 support. On Ascend NPU, no definition or usage of this
+
+  parameter was found in vllm-ascend, and the gating function backend_supports_prefill_query_quantization()
+
+  is an upstream backend capability check that is not satisfied by the Ascend attention backend. Therefore
+
+  on Ascend the flag has no runtime effect: "the code falls into the elif branch (mla_attention.py:2334)"
+
+  which logs a warning and returns model_dtype. It only affects the upstream MLA path (and Kimi-K3 MLA
+
+  asserts at kimi_k3/nvidia/mla.py:1026), not the Ascend NPU execution path.
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/attention/mla_attention.py:2326
+  context: Gates whether prefill query dtype is FP8 in determine_prefill_query_data_type; requires quantized KV cache and
+    backend support.
+- file: vllm/models/kimi_k3/nvidia/mla.py:1026
+  context: Kimi-K3 MLA asserts fp8 prefill query is enabled when KV cache is quantized; error message references this flag.
+related_parameters:
+- name: kv_cache_dtype
+  relation: Must be an FP8/quantized cache dtype for this flag to have any effect; otherwise the FP8 prefill path is skipped.
+- name: backend_supports_prefill_query_quantization
+  relation: Backend capability gate; if the backend (e.g. Ascend) does not support FP8 prefill query, the flag is ignored.
+constraints:
+- The flag only takes effect when --kv-cache-dtype is set to an FP8/quantized dtype.
+- The flag only takes effect when the attention backend supports FP8 prefill query quantization; otherwise it is ignored and
+  a warning is logged.
+- For Kimi-K3 MLA with an FP8 KV cache, this flag must be enabled or an assertion error is raised.
+tuning_advice:
+  summary: 'Leave disabled on Ascend NPU — the Ascend attention backend does not support FP8 prefill query
+
+    quantization, so the flag is silently ignored and only produces a warning log.
+
+    '
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: false
+    reason: vllm-ascend has no support for this flag and backend_supports_prefill_query_quantization() is not satisfied, so
+      enabling it has no performance benefit and only logs a warning.
+  - scenario: Upstream GPU with FP8 KV cache and FP8-capable MLA backend
+    value: true
+    reason: Enables FP8 prefill queries, reducing query memory bandwidth and speeding up prefill attention on hardware with
+      native FP8 support.
+  caveats:
+  - On Ascend NPU this parameter has no runtime effect; do not expect latency or memory gains from enabling it.
+  - Enabling it without an FP8 KV cache triggers a warning and falls back to model dtype.
+  - Kimi-K3 MLA with FP8 KV cache requires this flag to be true or it raises an assertion error.
+  quick_guide: Keep false on Ascend; only relevant for upstream GPU FP8 MLA prefill.
+analysis_date: '2026-10-27'

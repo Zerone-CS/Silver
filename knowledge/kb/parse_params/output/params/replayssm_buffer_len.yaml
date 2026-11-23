@@ -1,0 +1,106 @@
+name: --replayssm-buffer-len
+type: cli
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/config/cache.py:193
+- vllm/engine/arg_utils.py:1319
+- vllm/engine/arg_utils.py:744
+- vllm/engine/arg_utils.py:2119
+- vllm/v1/attention/backends/mamba_attn.py:113
+- vllm/model_executor/layers/mamba/mamba_mixer2.py:524
+- vllm/model_executor/models/nemotron_h.py:808
+value_type: int
+default: 16
+valid_choices: integer > 0 (Field(gt=0))
+cli_example: --replayssm-buffer-len 16
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This parameter only takes effect when --use-replayssm is enabled (vllm/config/cache.py:197-203).
+
+  In mamba_mixer2.py:524-528, replayssm_buffer_len is read from cache_config only if
+
+  cache_config.use_replayssm is True; otherwise it is set to None and the ReplaySSM decode
+
+  kernel path is never taken. When active, it defines the logical history length B of the
+
+  ReplaySSM Mamba2 decode kernel: "the Triton backend allocates B physical ring rows while the"
+
+  FlashInfer backend allocates B+1 (cache.py:194-196). The value therefore directly sizes the
+
+  per-layer ReplaySSM ring buffers appended to (conv_state, ssm_state) via
+
+  MambaStateShapeCalculator.append_replayssm_ring (nemotron_h.py:803-810), affecting KV/state
+
+  cache memory footprint. It also feeds the FlashInfer selective_state_update_replayssm_flashinfer
+
+  call as logical_window (mamba_mixer2.py:1109) and the Triton per-row ring cursor/flush logic
+
+  (mamba_attn.py:79-84). Larger B amortizes the per-step full-state store over more decode steps
+
+  (fewer flushes), which can reduce decode latency, at the cost of more state memory. This is a
+
+  Mamba2-specific, opt-in feature; it has no effect on standard attention models and no effect
+
+  unless --use-replayssm is set. No vllm-ascend override of this parameter was found in the
+
+  provided context, and no Ascend documentation references it.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:193
+  context: Field definition with default 16 and gt=0 constraint; docstring describes Triton B rows vs FlashInfer B+1.
+- file: vllm/engine/arg_utils.py:1319
+  context: CLI argument registration in CacheConfig group.
+- file: vllm/engine/arg_utils.py:2119
+  context: Passed into CacheConfig construction during engine config creation.
+- file: vllm/v1/attention/backends/mamba_attn.py:113
+  context: Read into the Mamba attention backend; used to size ReplaySSM scratch and ring buffers.
+- file: vllm/model_executor/layers/mamba/mamba_mixer2.py:524
+  context: Read only when use_replayssm is True; passed as logical_window to the FlashInfer ReplaySSM kernel.
+- file: vllm/model_executor/models/nemotron_h.py:808
+  context: Used as logical_window when appending ReplaySSM ring to Mamba state shape.
+related_parameters:
+- name: --use-replayssm
+  relation: Master switch; replayssm_buffer_len is ignored (set to None) unless use_replayssm is enabled.
+- name: --mamba-cache-mode
+  relation: ReplaySSM requires mamba_cache_mode 'none' or 'align'; in align mode flushes are most efficient when mamba_block_size
+    is a multiple of replayssm_buffer_len.
+- name: --mamba-block-size
+  relation: In align mode, choosing mamba_block_size as a multiple of replayssm_buffer_len improves flush efficiency.
+- name: --mamba-backend
+  relation: Triton backend uses B physical rows; FlashInfer backend uses B+1 rows. Only Triton/FlashInfer backends support
+    ReplaySSM.
+constraints:
+- replayssm_buffer_len must be greater than 0 (Field(gt=0)).
+- The parameter has no effect unless --use-replayssm is enabled.
+- ReplaySSM requires the Triton or FlashInfer mamba backend and standard (non-speculative) decode only.
+- ReplaySSM requires mamba_cache_mode to be 'none' or 'align'.
+- Kimi-K3 speculative decode does not use this buffer length.
+tuning_advice:
+  summary: 'Leave at the default 16 unless running a Mamba2 model with --use-replayssm enabled; then
+
+    tune B to balance decode-latency amortization against ReplaySSM ring state memory.
+
+    '
+  suggested_values:
+  - scenario: Default / ReplaySSM disabled or non-Mamba2 model
+    value: 16
+    reason: Parameter is ignored when use_replayssm is off; default is safe and has no effect.
+  - scenario: Mamba2 decode with --use-replayssm, memory-constrained
+    value: 8
+    reason: Smaller B reduces ReplaySSM ring state memory footprint at the cost of more frequent flushes.
+  - scenario: Mamba2 decode with --use-replayssm, latency-focused and ample memory
+    value: 32
+    reason: Larger B amortizes the per-step full-state store over more decode steps, reducing flush frequency and decode latency.
+  - scenario: Align mode with prefix caching
+    value: 16
+    reason: Choose B so that mamba_block_size is a multiple of replayssm_buffer_len for most efficient flushes.
+  caveats:
+  - Only meaningful with --use-replayssm; otherwise the value is discarded.
+  - Verify ReplaySSM kernel support on Ascend NPU before relying on this parameter; no Ascend-specific guidance exists.
+  quick_guide: Only tune with --use-replayssm on Mamba2; default 16 balances memory and flush frequency.
+analysis_date: '2026-10-27'

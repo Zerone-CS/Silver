@@ -1,0 +1,74 @@
+name: ec_transfer.ec_connector_extra_config
+type: nested
+category: communication
+scope: vllm
+source_file:
+- vllm/config/ec_transfer.py:1
+value_type: dict
+default: {}
+valid_choices: arbitrary key-value pairs interpreted by the specific EC connector (e.g. ec_enable_nixl)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ec_connector_extra_config is a free-form dict passed to the EC (elastic/external cache)
+
+  connector implementation. It is not defined in vllm-ascend and has no Ascend-specific
+
+  override; the only usage site in the provided context is an upstream v1 unit test
+
+  (tests/v1/ec_connector/unit/test_scheduler_nixl_ctor.py) that sets
+
+  ec_connector_extra_config["ec_enable_nixl"] = "false" to verify that extra config values
+
+  are NOT type-coerced (bool("false") is True, so the scheduler must explicitly compare
+
+  against the string "false" to keep NIXL disabled). The parameter itself does not directly
+
+  drive any compute, memory allocation, or HCCL communication path in vllm-ascend. Its
+
+  performance relevance is indirect: "connector-specific keys (e.g. enabling NIXL-based"
+
+  KV transfer) can change whether KV cache is offloaded/transferred over the network,
+
+  affecting latency and throughput of prefix-cache hits. On Ascend, EC connectors are not
+
+  part of the standard vllm-ascend execution path, so the practical runtime impact is low.
+
+  '
+usage_locations:
+- file: tests/v1/ec_connector/unit/test_scheduler_nixl_ctor.py:54
+  context: Sets ec_connector_extra_config['ec_enable_nixl']='false' to verify string values are not bool-coerced and NIXL
+    stays disabled in ECCPUScheduler
+related_parameters:
+- name: ec_transfer_config.ec_role
+  relation: Determines whether the EC connector is active (ec_both/ec_producer/ec_consumer); extra config only matters when
+    a connector is instantiated
+- name: kv_transfer_config
+  relation: Sibling transfer configuration; EC transfer is an alternative/additional KV transfer mechanism
+constraints:
+- Values in ec_connector_extra_config are not type-coerced; a string like "false" is truthy, so boolean-like flags must be
+  handled explicitly by the connector.
+- The dict is only consumed by the specific EC connector implementation; unrecognized keys are ignored by connectors that
+  do not read them.
+tuning_advice:
+  summary: Leave ec_connector_extra_config empty unless a specific EC connector requires keys; when setting boolean-like flags,
+    use the exact string the connector expects.
+  suggested_values:
+  - scenario: Default Ascend deployment without external KV cache connector
+    value: {}
+    reason: No EC connector is active, so extra config has no effect and adds no overhead.
+  - scenario: Using an EC connector that supports NIXL and you want it disabled
+    value:
+      ec_enable_nixl: 'false'
+    reason: The connector compares against the literal string "false"; this keeps NIXL off as shown in the upstream scheduler
+      test.
+  caveats:
+  - Do not assume Python truthiness for string flags — "false" is truthy and will not disable a feature unless the connector
+    explicitly checks for it.
+  - This parameter is not part of vllm-ascend's tuned paths; validate any connector-specific keys against the connector source
+    before relying on them for performance.
+  quick_guide: Keep empty by default; only set connector-specific keys, using exact expected string values.
+analysis_date: '2026-10-27'

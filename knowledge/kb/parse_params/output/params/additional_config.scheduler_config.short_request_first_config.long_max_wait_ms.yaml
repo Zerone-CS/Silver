@@ -1,0 +1,108 @@
+name: additional_config.scheduler_config.short_request_first_config.long_max_wait_ms
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1571
+- vllm_ascend/ascend_config.py:1578
+- vllm_ascend/patch/platform/patch_balance_schedule.py:132
+- vllm_ascend/core/scheduler_profiling_chunk.py:105
+- vllm_ascend/core/short_request_first_scheduler.py:383
+value_type: float
+default: 0.0
+valid_choices: any float >= 0; 0 disables long-request promotion (strict short-first priority)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only parameter (no upstream vLLM equivalent). It is read from
+
+  additional_config["scheduler_config"]["short_request_first_config"] via the pydantic
+
+  ShortRequestFirstConfig dataclass (vllm_ascend/ascend_config.py:1571) and passed into
+
+  install_short_request_first_waiting_queue() at three scheduler construction sites:
+
+  patch_balance_schedule.py:132 (balance-scheduling patched scheduler),
+
+  scheduler_profiling_chunk.py:105 (profiling-chunk scheduler), and
+
+  short_request_first_scheduler.py:383 (ShortRequestFirstAsyncScheduler). The value is
+
+  only consumed when short_request_first_config.enabled is True; otherwise the waiting
+
+  queue is never installed and the value has no effect.
+
+  Mechanism: "ShortRequestFirst reorders the waiting queue so that requests with"
+
+  num_prompt_tokens <= threshold are scheduled ahead of long prefills. long_max_wait_ms
+
+  is the anti-starvation fairness gate: "once the oldest long request has waited longer"
+
+  than this many milliseconds, it becomes eligible for promotion ahead of waiting short
+
+  requests. Setting it to 0 disables promotion entirely (strict short-first priority),
+
+  which maximizes short-request TTFT but can starve long requests and inflate their
+
+  tail latency. A positive value bounds long-request queueing delay at the cost of
+
+  occasionally delaying short requests, trading short-request TTFT for long-request
+
+  fairness. Because it changes the order in which prefills are admitted into the batch,
+
+  it indirectly affects batch composition, prefill/decode interleaving, and thus
+
+  throughput and TTFT on Ascend NPU — but it is a fairness/latency-shaping knob rather
+
+  than a raw throughput knob.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1571
+  context: Field definition and default (0.0) in ShortRequestFirstConfig pydantic dataclass
+- file: vllm_ascend/ascend_config.py:1578
+  context: model_validator raises ValueError if long_max_wait_ms < 0
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:132
+  context: Passed to install_short_request_first_waiting_queue when enabled, in balance-scheduling patched scheduler
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:105
+  context: Passed to install_short_request_first_waiting_queue in profiling-chunk scheduler
+- file: vllm_ascend/core/short_request_first_scheduler.py:383
+  context: Passed to install_short_request_first_waiting_queue in ShortRequestFirstAsyncScheduler
+related_parameters:
+- name: additional_config.scheduler_config.short_request_first_config.enabled
+  relation: Master switch; long_max_wait_ms is only used when enabled is True
+- name: additional_config.scheduler_config.short_request_first_config.threshold
+  relation: Defines which requests count as short (num_prompt_tokens <= threshold); determines the population that long requests
+    wait behind
+- name: additional_config.scheduler_config.enable_balance_scheduling
+  relation: One of the scheduler paths (patch_balance_schedule) that installs the short-request-first waiting queue
+- name: additional_config.scheduler_config.profiling_chunk_config
+  relation: Profiling-chunk scheduler path also installs the short-request-first waiting queue
+constraints:
+- long_max_wait_ms must be >= 0; a negative value raises ValueError at config validation.
+- long_max_wait_ms has no effect unless short_request_first_config.enabled is True.
+- ShortRequestFirst does not support batch-job-aware, profiling-chunk, or PD-disaggregated D-node scheduling.
+tuning_advice:
+  summary: Start at 0 to establish a strict short-first baseline, measure long-request wait distribution, then set long_max_wait_ms
+    inside [W_normal, W_slo] to bound long-request starvation.
+  suggested_values:
+  - scenario: Baseline measurement / short-request TTFT is the only priority
+    value: 0
+    reason: Disables long-request promotion and keeps strict short-first priority, giving the best short-request TTFT; use
+      this to measure the long-request wait distribution.
+  - scenario: Balanced production serving where long-request tail latency matters
+    value: P90-P95 of long-request wait under the 0 baseline
+    reason: Setting long_max_wait_ms near W_normal bounds long-request queueing delay while preserving most short-first benefit.
+  - scenario: Short-request TTFT is critical but long requests must not starve
+    value: value biased toward W_slo (max tolerable extra queueing delay)
+    reason: Biasing toward W_slo keeps short requests prioritized longer while still guaranteeing long requests eventually
+      get promoted.
+  caveats:
+  - Only takes effect when short_request_first_config.enabled is True.
+  - Not a throughput knob — do not raise it expecting higher tokens/sec; it shapes latency fairness.
+  - Not supported on PD-disaggregated D-node scheduling or batch-job-aware scheduling.
+  quick_guide: Leave at 0 for strict short-first; set to the P90-P95 long-request wait time to prevent long-request starvation.
+analysis_date: '2026-10-27'

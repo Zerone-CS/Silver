@@ -1,0 +1,87 @@
+name: VLLM_NIXL_SIDE_CHANNEL_HOST
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1651
+- vllm/envs.py:226
+- vllm/v1/engine/core.py:2449
+- vllm/v1/executor/ray_utils.py:36
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:75
+value_type: str
+default: localhost
+valid_choices: any valid hostname or IP address string
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only sets the IP/hostname used for the NIXL side-channel handshake
+
+  between remote KV-transfer agents (disaggregated prefill/decode or KV offloading).
+
+  It is read in vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:75
+
+  to populate self.side_channel_host, which is used purely for control-plane
+
+  connection setup (ZMQ/NIXL handshake), not for the actual KV data transfer path.
+
+  In vllm/v1/engine/core.py:2449 it is auto-filled per Ray actor with the node IP
+
+  via os.environ.setdefault, and it is explicitly listed in WORKER_SPECIFIC_ENV_VARS
+
+  (vllm/v1/executor/ray_utils.py:36) so it is NOT propagated from driver to workers.
+
+  It is also excluded from compile_factors (vllm/envs.py:2278), so changing it does
+
+  not invalidate compilation caches. There is no vllm-ascend override of this
+
+  parameter in the provided context; on Ascend the actual KV transfer uses HCCL/
+
+  Ascend-native transports, so this host only affects whether the NIXL handshake
+
+  can reach peers. A wrong value causes connection failures (functional breakage),
+
+  not a gradual performance change; a correct value has negligible runtime cost.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1651
+  context: Definition of the env var with default 'localhost'
+- file: vllm/v1/engine/core.py:2449
+  context: Ray actor sets default to node IP via os.environ.setdefault
+- file: vllm/v1/executor/ray_utils.py:36
+  context: Listed in WORKER_SPECIFIC_ENV_VARS, excluded from driver->worker env copy
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:75
+  context: Read into side_channel_host for NIXL handshake
+- file: vllm/envs.py:2278
+  context: Excluded from compile_factors, does not affect compiled artifacts
+related_parameters:
+- name: VLLM_NIXL_SIDE_CHANNEL_PORT
+  relation: Companion port for the same NIXL side-channel handshake; host+port together identify the peer endpoint
+- name: VLLM_P2P_SIDE_CHANNEL_HOST
+  relation: Analogous host for the P2P KV-offload control socket; same semantics (default localhost, must be routable IP for
+    cross-host)
+- name: VLLM_HOST_IP
+  relation: Also a worker-specific host env var excluded from Ray env propagation
+constraints:
+- For cross-host disaggregated serving or KV transfer, this must be set to the node's routable IP address; the default 'localhost'
+  only works for same-host peers.
+- When running under Ray, the driver-side value is not propagated to workers; each worker fills in its own node IP unless
+  explicitly overridden.
+tuning_advice:
+  summary: Set to the node's routable IP for cross-host disaggregated/KV-transfer deployments; leave default for single-host.
+  suggested_values:
+  - scenario: Single-node deployment (all agents on same host)
+    value: localhost
+    reason: Default works because all NIXL peers are local; no cross-host routing needed.
+  - scenario: Multi-node disaggregated prefill/decode or cross-host KV transfer
+    value: <node-routable-IP>
+    reason: Remote peers must be able to reach the side-channel socket; localhost is unreachable from other hosts.
+  caveats:
+  - Under Ray, the value is per-worker and auto-filled with the node IP; explicit overrides are preserved.
+  - This only affects control-plane connectivity, not KV transfer throughput; do not expect performance gains from tuning
+    it.
+  quick_guide: Use the node IP for cross-host KV transfer, otherwise leave as localhost.
+analysis_date: '2026-10-27'

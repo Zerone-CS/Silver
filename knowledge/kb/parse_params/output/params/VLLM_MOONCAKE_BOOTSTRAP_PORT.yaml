@@ -1,0 +1,93 @@
+name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1679
+- vllm/envs.py:232
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py:2250
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py:2295
+value_type: int
+default: 8998
+valid_choices: TCP port number in range 1-65535
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_MOONCAKE_BOOTSTRAP_PORT sets the base TCP port used by the Mooncake
+
+  disaggregated prefill/decode KV-transfer connector for its bootstrap/handshake
+
+  server. In vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py,
+
+  get_mooncake_side_channel_port() computes the per-rank side-channel port as
+
+  VLLM_MOONCAKE_BOOTSTRAP_PORT + data_parallel_index * tensor_parallel_size, and
+
+  get_mooncake_bootstrap_addr() returns (host, VLLM_MOONCAKE_BOOTSTRAP_PORT) as the
+
+  single bootstrap endpoint prefillers register with. The port value itself does not
+
+  change data-path throughput; it only determines which TCP port the control-plane
+
+  handshake binds to. Its performance relevance is indirect: if the chosen port is
+
+  already occupied or blocked by a firewall, the connector fails to establish the
+
+  bootstrap connection, stalling or failing KV transfer and thus adding latency or
+
+  breaking disaggregated serving entirely. This is an upstream vLLM parameter; no
+
+  vllm-ascend override or reference was found in the provided context, so on Ascend
+
+  it behaves as in upstream vLLM (Mooncake is a host-side RDMA/TCP connector, not
+
+  NPU-specific).
+
+  '
+usage_locations:
+- file: vllm/envs.py:1679
+  context: Defines the env var, parsed as int with default 8998.
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py:2250
+  context: Base port for per-rank side-channel port = base + dp_index * tp_size.
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py:2295
+  context: Bootstrap server port returned by get_mooncake_bootstrap_addr for prefillers.
+related_parameters:
+- name: VLLM_NIXL_SIDE_CHANNEL_PORT
+  relation: Sibling side-channel port for the NIXL connector; must not collide if both connectors run on the same host.
+- name: VLLM_P2P_SIDE_CHANNEL_PORT
+  relation: Another KV-offload control port; avoid overlapping ranges on the same node.
+- name: VLLM_EC_SIDE_CHANNEL_PORT
+  relation: EC connector side-channel port; avoid collision.
+- name: --data-parallel-size
+  relation: Per-rank side-channel port offset uses data_parallel_index, so the port range spans base .. base + (dp_size-1)*tp_size.
+- name: --tensor-parallel-size
+  relation: Multiplier in the per-rank port offset formula.
+constraints:
+- The value must be a valid TCP port number (1-65535); it is parsed with int() and an invalid value raises at import time.
+- The port plus (data_parallel_size - 1) * tensor_parallel_size must remain within the valid TCP port range, otherwise per-rank
+  side-channel ports overflow.
+- The bootstrap port must be reachable from remote prefill/decode peers across hosts; a firewalled or occupied port prevents
+  the Mooncake handshake.
+tuning_advice:
+  summary: Leave at default 8998 unless the port is occupied or firewalled; when scaling DP/TP, ensure the base port leaves
+    room for the full per-rank port range.
+  suggested_values:
+  - scenario: Single-node or default disaggregated prefill/decode deployment
+    value: 8998
+    reason: Default value; works when the port is free and no other connector uses the 8998+ range.
+  - scenario: Port 8998 already in use or blocked by firewall
+    value: 18998
+    reason: Pick a high, less-contended base port; ensure base + (dp_size-1)*tp_size stays below 65535 and the range is open
+      on all nodes.
+  - scenario: Co-locating Mooncake with NIXL/P2P/EC connectors on the same host
+    value: 9000
+    reason: Choose a base whose per-rank range does not overlap NIXL (5600), P2P (5710), or EC (5601) side-channel ports.
+  caveats:
+  - Changing this value does not improve KV-transfer throughput; it only relocates the control-plane handshake port.
+  - All prefill and decode nodes in the disaggregated cluster must agree on the same bootstrap port for the handshake to succeed.
+  - Verify the full per-rank range (base + dp_index*tp_size) is open in firewalls before deployment.
+  quick_guide: Keep default 8998 unless the port conflicts; then pick a free high port and open its full per-rank range across
+    all nodes.
+analysis_date: '2026-10-27'

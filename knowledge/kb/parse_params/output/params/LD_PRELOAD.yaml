@@ -1,0 +1,90 @@
+name: LD_PRELOAD
+type: env
+category: hardware
+scope: both
+source_file:
+- vllm_ascend/ops/triton/kda_state_copy_kernel.py:50
+- tests/e2e/pull_request/four_card/test_minimax_m3.py:52
+- vllm/v1/worker/cpu_worker.py:126
+- vllm/platforms/cpu.py:406
+- vllm/utils/ompmultiprocessing.py:37
+value_type: str
+default: ''
+valid_choices: colon-separated list of shared library paths (e.g. /usr/lib/aarch64-linux-gnu/libjemalloc.so.2, libtcmalloc.so,
+  libmspti.so)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: "LD_PRELOAD is a standard dynamic-linker environment variable, not a vLLM/vllm-ascend\nconfig field. On Ascend\
+  \ NPU it is used to inject alternative memory allocators and\nprofiling libraries into the process before any vLLM code\
+  \ runs, so it affects the\nwhole runtime rather than a single code path.\n\nMemory allocator injection (primary performance\
+  \ lever):\n- \"vllm-ascend docs (optimization_and_tuning.md) recommend preloading libtcmalloc\"\n  (`export LD_PRELOAD=\"\
+  $LD_PRELOAD:<path>/libtcmalloc.so\"`) to reduce malloc/free\n  overhead and fragmentation. The DeepSeek-V3.1 tutorial recommends\
+  \ libjemalloc\n  (`export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD`)\n  \"for better performance\"\
+  . The e2e test tests/e2e/pull_request/four_card/\n  test_minimax_m3.py:_configure_jemalloc() programmatically prepends\n\
+  \  /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 to LD_PRELOAD, confirming this is a\n  real, exercised tuning knob on Ascend.\n\
+  - \"These allocators replace glibc malloc for all host-side allocations (Python\"\n  objects, torch CPU tensors, HCCL/CANN\
+  \ host buffers), reducing allocator contention\n  across the many threads used by the scheduler, model runner and HCCL,\
+  \ which\n  improves throughput and can lower peak host memory.\n\nProfiling injection:\n- \"service_profiling_guide.md:\
+  \ when `acl_task_time` is set to 2 (MSPTI-based dump),\"\n  the user must `export LD_PRELOAD={INSTALL_DIR}/lib64/libmspti.so`\
+  \ before starting\n  the service. This enables operator-level profiling but adds runtime overhead, so\n  it is a debugging\
+  \ aid, not a steady-state performance setting.\n\nCompiler-cache key:\n- \"vllm_ascend/ops/triton/kda_state_copy_kernel.py:_configuration()\
+  \ includes\"\n  LD_PRELOAD (along with LD_LIBRARY_PATH and PYTHONPATH) in the tuple that keys the\n  Triton compile cache.\
+  \ Changing LD_PRELOAD invalidates the cached compiled kernels,\n  forcing recompilation on next start (a one-time latency\
+  \ cost, not steady-state).\n\nUpstream CPU-only paths (vllm/platforms/cpu.py, vllm/v1/worker/cpu_worker.py,\nvllm/utils/ompmultiprocessing.py)\
+  \ inspect LD_PRELOAD to auto-inject libgomp/\nlibtcmalloc and to select iomp vs gomp threading; these are CPU-backend behaviors\n\
+  and do NOT apply to the Ascend NPU backend, but they illustrate the same\nallocator/OpenMP preloading pattern.\n"
+usage_locations:
+- file: vllm_ascend/ops/triton/kda_state_copy_kernel.py:50
+  context: LD_PRELOAD is part of the environment tuple that keys the Triton compile cache; changing it invalidates cached
+    kernels.
+- file: tests/e2e/pull_request/four_card/test_minimax_m3.py:52
+  context: _configure_jemalloc() prepends libjemalloc.so.2 to LD_PRELOAD for better performance in Ascend e2e tests.
+- file: vllm/v1/worker/cpu_worker.py:126
+  context: CPU worker checks LD_PRELOAD for libtcmalloc/libiomp and warns about performance loss if missing (CPU backend only).
+- file: vllm/platforms/cpu.py:406
+  context: CPU platform auto-injects PyTorch libgomp and bundled libtcmalloc into LD_PRELOAD (CPU backend only).
+- file: vllm/utils/ompmultiprocessing.py:37
+  context: Detects libiomp/libomp/libgomp in LD_PRELOAD to choose OpenMP threading strategy (CPU backend only).
+related_parameters:
+- name: LD_LIBRARY_PATH
+  relation: Both are forwarded together to child processes (Ray runtime_env) and both are part of the Triton compile-cache
+    key.
+- name: PYTHONPATH
+  relation: Included alongside LD_PRELOAD in the Triton compile-cache key tuple.
+- name: acl_task_time
+  relation: When set to 2 (MSPTI dump), requires LD_PRELOAD to include libmspti.so.
+constraints:
+- When acl_task_time is set to 2, LD_PRELOAD must include {INSTALL_DIR}/lib64/libmspti.so (CANN install root) or MSPTI-based
+  profiling will not work.
+- The library path added to LD_PRELOAD must exist on the machine; a non-existent path causes the dynamic loader to fail at
+  process start.
+- Changing LD_PRELOAD after Triton kernels have been compiled invalidates the compile cache and forces recompilation.
+tuning_advice:
+  summary: On Ascend NPU, preload a fast memory allocator (libtcmalloc or libjemalloc) via LD_PRELOAD to reduce host-side
+    allocation overhead and fragmentation; only preload libmspti.so when profiling.
+  suggested_values:
+  - scenario: High-throughput production serving on Ascend NPU (tcmalloc available)
+    value: export LD_PRELOAD="$LD_PRELOAD:/usr/lib/aarch64-linux-gnu/libtcmalloc.so"
+    reason: vllm-ascend optimization_and_tuning.md recommends preloading libtcmalloc to reduce malloc overhead and fragmentation.
+  - scenario: High-throughput production serving on Ascend NPU (jemalloc available)
+    value: export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libjemalloc.so.2:$LD_PRELOAD
+    reason: DeepSeek-V3.1 tutorial and the minimax_m3 e2e test use libjemalloc for better performance on Ascend.
+  - scenario: MSPTI-based operator profiling (acl_task_time=2)
+    value: export LD_PRELOAD={INSTALL_DIR}/lib64/libmspti.so
+    reason: service_profiling_guide.md requires libmspti.so in LD_PRELOAD for MSPTI dump; remove after profiling.
+  - scenario: Default / no tuning
+    value: unset
+    reason: Leaving LD_PRELOAD unset uses glibc malloc; correct but higher allocator overhead under heavy concurrency.
+  caveats:
+  - Choose exactly one allocator (tcmalloc OR jemalloc), not both.
+  - Remove libmspti.so from LD_PRELOAD for production throughput runs to avoid profiling overhead.
+  - Verify the library path exists on every node; a bad path breaks process startup.
+  - Changing LD_PRELOAD invalidates the Triton compile cache, causing a one-time recompile.
+  quick_guide: export LD_PRELOAD="$LD_PRELOAD:/usr/lib/aarch64-linux-gnu/libtcmalloc.so" (or libjemalloc.so.2) before launching
+    vLLM on Ascend.
+analysis_date: '2026-10-27'

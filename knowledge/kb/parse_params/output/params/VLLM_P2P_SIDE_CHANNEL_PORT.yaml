@@ -1,0 +1,87 @@
+name: VLLM_P2P_SIDE_CHANNEL_PORT
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1665
+- vllm/envs.py:229
+- vllm/v1/kv_offload/tiering/p2p/manager.py:244
+- vllm/v1/kv_offload/tiering/p2p/manager.py:292
+value_type: int
+default: 5710
+valid_choices: Any valid TCP port number (1-65535); base port plus data_parallel_index must stay within range
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only controls the base TCP port of the ZMQ control socket used by the
+
+  P2P KV-offload secondary tier (vllm/v1/kv_offload/tiering/p2p/manager.py). It is read
+
+  once at P2PSecondaryTierManager construction (line 292) when no explicit `port` kwarg
+
+  is given, then offset by the global data-parallel index (`port = int(port) + dp_index`,
+
+  line 297) so each DP replica binds a distinct socket. The value is used purely as a
+
+  network endpoint identity (`self._local_id = f"{host}:{port}"`); it does not affect
+
+  buffer sizes, thread counts, RDMA transfer parameters, or any compute path. Changing
+
+  the port has no direct effect on NPU compute throughput or memory. Its only indirect
+
+  performance relevance is operational: "if the chosen port collides with another"
+
+  service (or with the NIXL side channel default 5600 / EC side channel 5601), the
+
+  control socket bind fails and P2P KV transfer cannot be established, which would
+
+  stall cross-instance KV reuse and thus degrade effective throughput/latency for
+
+  P2P-offload deployments. There is no vllm-ascend override of this parameter in the
+
+  provided context; it is an upstream-only, connector-specific knob.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1665
+  context: Environment variable definition; parsed as int with default 5710
+- file: vllm/envs.py:229
+  context: 'Type annotation declaration VLLM_P2P_SIDE_CHANNEL_PORT: int = 5710'
+- file: vllm/v1/kv_offload/tiering/p2p/manager.py:292
+  context: Fallback port when P2PSecondaryTierManager is constructed without explicit port
+- file: vllm/v1/kv_offload/tiering/p2p/manager.py:297
+  context: Base port offset by data_parallel_index to give each DP replica a distinct socket
+related_parameters:
+- name: VLLM_P2P_SIDE_CHANNEL_HOST
+  relation: Companion address; together they form the ZMQ control identity host:port
+- name: VLLM_NIXL_SIDE_CHANNEL_PORT
+  relation: Sibling side-channel port (default 5600); must not collide with the P2P port
+- name: VLLM_EC_SIDE_CHANNEL_PORT
+  relation: Sibling EC connector side-channel port (default 5601); avoid collision
+- name: data_parallel_index
+  relation: Added to the base port per DP replica; base + max(dp_index) must remain a valid free port
+constraints:
+- The value must be a valid TCP port number that can be bound and reached by remote peers.
+- The effective bound port is base port plus the data-parallel index, so base + (dp_size - 1) must not exceed 65535.
+- Each DP replica on a host gets a distinct port, so the base port range must be free for all replicas.
+- An explicit `port` passed to the P2P secondary tier config takes precedence over this env var.
+tuning_advice:
+  summary: Set only when using P2P KV-offload and the default 5710 collides with another service; otherwise leave default.
+  suggested_values:
+  - scenario: Default single-node P2P KV-offload deployment with no port conflicts
+    value: 5710
+    reason: Default base port; DP replicas auto-offset so no manual change needed.
+  - scenario: Multi-service host where 5710 is already in use
+    value: 6700
+    reason: Pick a free base port well away from NIXL (5600) and EC (5601) side channels to avoid collisions.
+  - scenario: Large DP deployment on one host
+    value: 6000
+    reason: Ensure base + (dp_size - 1) stays within valid port range and the whole block is free.
+  caveats:
+  - Only affects the P2P KV-offload control socket; irrelevant for non-P2P workloads.
+  - Must be paired with VLLM_P2P_SIDE_CHANNEL_HOST for cross-host operation.
+  quick_guide: Leave at 5710 unless the port is taken; then pick a free base port clear of 5600/5601.
+analysis_date: '2026-10-27'

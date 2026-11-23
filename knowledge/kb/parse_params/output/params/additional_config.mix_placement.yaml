@@ -1,0 +1,83 @@
+name: additional_config.mix_placement
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:587
+- vllm_ascend/ascend_config.py:438
+value_type: bool
+default: false
+valid_choices: 'true or false (lax bool coercion: string ''false''/''true'' also accepted)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- throughput
+impact_detail: 'mix_placement is a vllm-ascend-only switch declared on the AscendConfig pydantic
+
+  dataclass (vllm_ascend/ascend_config.py:587, default False) and passed via
+
+  --additional-config JSON. It is not defined in upstream vLLM. The provided context
+
+  shows no runtime dispatch site inside vllm-ascend (the "Additional usage sites"
+
+  search returned none), so its direct effect on the hot path cannot be confirmed
+
+  from the given snippets. The only documented consumer is the RFork feature
+
+  (docs user_guide/feature_guide/rfork.md:74), where mix_placement is folded into the
+
+  compatibility fingerprint that decides whether a prebuilt model can be reused
+
+  across ranks/nodes. In that role it influences weight placement/layout decisions
+
+  (mixed placement of weights across devices), which can change memory footprint and
+
+  thus indirectly the achievable batch size / throughput, but it does not sit on the
+
+  per-token compute path. Because it is part of the fingerprint, toggling it
+
+  invalidates cached RFork artifacts and forces a rebuild/transfer, which is a
+
+  one-time cost rather than a steady-state performance effect. Overall impact on
+
+  Ascend NPU runtime is low and indirect.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:587
+  context: Field declaration on AscendConfig pydantic dataclass (default False), parsed from --additional-config.
+- file: vllm_ascend/ascend_config.py:438
+  context: Listed in the documented example JSON of all supported additional_config keys.
+- file: docs/user_guide/feature_guide/rfork.md:74
+  context: Included in the RFork compatibility fingerprint that gates model reuse across ranks/nodes.
+related_parameters:
+- name: additional_config
+  relation: mix_placement is a nested key inside the --additional-config JSON object; unknown keys are rejected (extra=forbid).
+- name: model_deploy_strategy_name
+  relation: Both are part of the RFork compatibility fingerprint; changing either invalidates cached RFork artifacts.
+- name: enable_kv_nz
+  relation: Another Ascend weight-layout switch; layout switches affect tensor structure and RFork structural digest.
+constraints:
+- mix_placement must be a boolean; the config uses lax bool coercion so string values like 'false'/'true' are accepted, but
+  other types are rejected.
+- Unknown keys in --additional-config are rejected (extra='forbid'), so mix_placement must be spelled exactly.
+- Changing mix_placement changes the RFork compatibility fingerprint, so previously built RFork artifacts become incompatible
+  and must be rebuilt.
+tuning_advice:
+  summary: Leave mix_placement at its default false unless you specifically need mixed weight placement for RFork reuse; it
+    is a low-impact, fingerprint-affecting layout switch, not a throughput knob.
+  suggested_values:
+  - scenario: Default deployments and general serving
+    value: false
+    reason: Default value; avoids unexpected weight-placement changes and keeps RFork fingerprints stable.
+  - scenario: RFork-based model reuse where mixed placement is required by the deploy strategy
+    value: true
+    reason: Enables mixed placement so the RFork compatibility fingerprint matches the intended deployment; only enable when
+      the deploy strategy requires it.
+  caveats:
+  - Do not toggle mix_placement between runs sharing RFork artifacts; the fingerprint mismatch forces a rebuild.
+  - Measure end-to-end memory and throughput before/after enabling, since the effect is indirect and workload-dependent.
+  quick_guide: Keep mix_placement=false unless your RFork deploy strategy requires mixed placement.
+analysis_date: '2026-10-27'

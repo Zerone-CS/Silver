@@ -1,0 +1,93 @@
+name: additional_config.ascend_compilation_config.fuse_qknorm_rope
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:128
+- vllm_ascend/compilation/graph_fusion_pass_manager.py:65
+value_type: bool
+default: true
+valid_choices: true or false (boolean; note that string values like "false" are parsed by the pydantic config validator, not
+  treated as truthy)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls whether the QKNormRopeFusionPass is registered in the
+
+  GraphFusionPassManager (vllm_ascend/compilation/graph_fusion_pass_manager.py:65-68).
+
+  When true, the pass is appended to the list of Inductor graph-fusion passes that
+
+  run during torch.compile / npugraph_ex graph capture. The pass fuses the QK RMSNorm
+
+  and rotary-position-embedding (RoPE) operations into a single fused kernel, reducing
+
+  the number of separate NPU kernel launches and intermediate tensor materializations
+
+  in the attention QK-normalization + RoPE path. This lowers per-layer launch overhead
+
+  and memory traffic, improving decode latency and steady-state throughput for models
+
+  that use QK-norm + RoPE (e.g. Qwen3-style architectures). When false, the pass is
+
+  not added and the norm and RoPE ops execute as separate kernels, increasing launch
+
+  count and intermediate memory traffic. The flag is read from the recursively
+
+  validated AscendCompilationConfig (get_ascend_config().ascend_compilation_config),
+
+  so string values such as "false" are correctly coerced to boolean False by the
+
+  pydantic validator rather than being treated as truthy. Unlike fuse_norm_quant and
+
+  fuse_muls_add, this pass is NOT gated by a HardwareCapability check — it is added
+
+  purely based on the boolean flag.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:128
+  context: Field definition in AscendCompilationConfig pydantic dataclass, default True.
+- file: vllm_ascend/compilation/graph_fusion_pass_manager.py:65
+  context: Conditionally appends QKNormRopeFusionPass to the fusion pass list when the flag is true.
+- file: tests/ut/compilation/test_graph_fusion_pass_manager.py:30
+  context: Unit test verifying that string "false" is parsed to boolean False and no passes are added.
+related_parameters:
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: Graph fusion passes run within the npugraph_ex / torch.compile graph capture path; disabling npugraph_ex removes
+    the graph optimization context in which this pass operates.
+- name: additional_config.ascend_compilation_config.fuse_norm_quant
+  relation: Sibling fusion pass flag; both are consumed by GraphFusionPassManager.configure and both default to True.
+- name: additional_config.ascend_compilation_config.fuse_muls_add
+  relation: Sibling fusion pass flag; gated additionally by HardwareCapability.GRAPH_MULS_ADD_FUSION, unlike fuse_qknorm_rope.
+constraints:
+- The value must be a boolean; string values are coerced by the pydantic config validator (e.g. "false" becomes False), so
+  do not rely on Python truthiness of raw strings.
+- The fusion pass only takes effect when graph compilation (torch.compile / npugraph_ex) is active; with eager execution the
+  flag has no effect.
+tuning_advice:
+  summary: Keep fuse_qknorm_rope enabled (default True) for QK-norm + RoPE models to fuse norm and RoPE kernels; disable only
+    when Triton is unavailable or the fusion causes correctness/compile issues.
+  suggested_values:
+  - scenario: Standard deployment with Triton available and a QK-norm + RoPE model (e.g. Qwen3) under graph compilation
+    value: true
+    reason: Enables QKNormRopeFusionPass, fusing QK RMSNorm and RoPE into one kernel to cut launch overhead and intermediate
+      memory traffic, improving decode latency and throughput.
+  - scenario: Environment without Triton installed
+    value: false
+    reason: Documentation advises setting fuse_qknorm_rope to False when Triton is not in the environment, since the fusion
+      pass depends on Triton-generated kernels.
+  - scenario: Model without QK-norm (no QK RMSNorm in attention)
+    value: false
+    reason: The pass targets QK-norm + RoPE patterns; for models lacking QK-norm it provides no benefit and can be disabled
+      to avoid unnecessary pass overhead.
+  caveats:
+  - Set the flag under additional_config.ascend_compilation_config; the manager reads the validated config, not the raw dict.
+  - The pass only runs inside the graph compilation path; ensure npugraph_ex / torch.compile is enabled for it to matter.
+  - If you observe compile errors or numerical mismatches after enabling, disable this pass to isolate the fusion as the cause.
+  quick_guide: Leave fuse_qknorm_rope at its default True for QK-norm models with Triton; set it to False only if Triton is
+    missing or the fusion misbehaves.
+analysis_date: '2026-10-27'

@@ -1,0 +1,106 @@
+name: --enable-trace-replay
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:274
+- vllm/engine/arg_utils.py:565
+- vllm/engine/arg_utils.py:921
+- vllm/engine/arg_utils.py:1849
+- vllm/config/vllm.py:1138
+- vllm/v1/engine/input_processor.py:126
+- vllm/v1/worker/gpu/model_runner.py:469
+- vllm/v1/worker/gpu/sample/sampler.py:43
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: --enable-trace-replay
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This flag only gates whether requests may set SamplingParams.trace_decode_token_ids.
+
+  In vllm/config/model.py:274 it defaults to False. When enabled, the sampler
+
+  (vllm/v1/worker/gpu/sample/sampler.py:58-60) allocates a TraceReplayState(req_states)
+
+  per request slot, i.e. a per-request trace buffer reserved for the whole engine
+
+  lifetime — a small but persistent memory cost proportional to max_num_reqs.
+
+  At request time, vllm/v1/engine/input_processor.py:124-132 rejects requests that
+
+  set trace_decode_token_ids unless this flag is on; when on, decoding is forced to
+
+  follow the supplied token sequence (max_tokens overwritten with trace length), so
+
+  the sampling path is bypassed for those requests — this changes latency/throughput
+
+  only for trace-replay requests, not for normal traffic. vllm/config/vllm.py:1136-1141
+
+  additionally requires Model Runner V2 (use_v2_model_runner) when the flag is set.
+
+  No vllm-ascend source in the provided context references enable_trace_replay, so
+
+  there is no Ascend-specific override; the effect on Ascend NPU is the same as
+
+  upstream (a small per-request buffer allocation plus a validation branch). Because
+
+  the flag is off by default and only affects debugging/RL trace-replay workflows,
+
+  its steady-state performance impact on normal serving is negligible.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:274
+  context: ModelConfig field definition and docstring; default False, reserves per-request trace buffer
+- file: vllm/engine/arg_utils.py:921
+  context: CLI argument registration --enable-trace-replay
+- file: vllm/engine/arg_utils.py:1849
+  context: Passed into ModelConfig construction from EngineArgs
+- file: vllm/config/vllm.py:1138
+  context: _verify_trace_replay_config raises ValueError if Model Runner V2 is not used
+- file: vllm/v1/engine/input_processor.py:126
+  context: Rejects requests setting trace_decode_token_ids when flag is off
+- file: vllm/v1/worker/gpu/model_runner.py:469
+  context: Passes enable_trace_replay into Sampler construction
+- file: vllm/v1/worker/gpu/sample/sampler.py:43
+  context: Allocates TraceReplayState when enabled
+related_parameters:
+- name: --use-v2-model-runner
+  relation: 'Required: trace replay raises ValueError unless Model Runner V2 is active'
+- name: SamplingParams.trace_decode_token_ids
+  relation: The per-request field this flag gates; setting it without the flag raises VLLMValidationError
+- name: --logprobs-mode
+  relation: Trace replay computes real logprobs; logprobs_mode controls which logprobs are returned
+- name: --max-num-seqs
+  relation: Per-request trace buffer allocation scales with max_num_reqs
+constraints:
+- Trace replay requires Model Runner V2; enabling --enable-trace-replay without the V2 model runner raises ValueError.
+- Requests that set SamplingParams.trace_decode_token_ids are rejected with VLLMValidationError unless the engine was started
+  with --enable-trace-replay.
+- Trace replay requests are rejected when combined with n > 1, speculative decoding, prompt_logprobs, structured outputs,
+  repetition_detection, thinking_token_budget, or bad_words.
+- max_tokens is overwritten with the trace length and the trace is truncated if it does not fit within max_model_len.
+tuning_advice:
+  summary: Leave disabled for production serving; enable only for debugging or RL workflows that need forced decode token
+    sequences, and only with Model Runner V2.
+  suggested_values:
+  - scenario: Normal production serving on Ascend NPU
+    value: false
+    reason: Default off avoids the per-request trace buffer allocation and keeps the standard sampling path; no throughput
+      benefit from enabling.
+  - scenario: Reproducing exact outputs or computing logprobs for known responses (debugging/RL)
+    value: true
+    reason: Required to accept SamplingParams.trace_decode_token_ids; forces decoding along a predetermined sequence while
+      computing real logprobs.
+  caveats:
+  - Must be paired with Model Runner V2 or the engine raises ValueError at startup.
+  - Trace-replay requests cannot be combined with speculative decoding, structured outputs, prompt_logprobs, n > 1, bad_words,
+    repetition_detection, or thinking_token_budget.
+  - The reserved trace buffer scales with max_num_reqs; keep --max-num-seqs modest if enabling on memory-constrained NPUs.
+  quick_guide: Keep --enable-trace-replay off unless you need forced decode sequences for debugging/RL, and only with Model
+    Runner V2.
+analysis_date: '2026-10-27'

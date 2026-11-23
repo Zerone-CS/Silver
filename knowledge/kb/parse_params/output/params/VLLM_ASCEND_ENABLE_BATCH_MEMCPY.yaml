@@ -1,0 +1,78 @@
+name: VLLM_ASCEND_ENABLE_BATCH_MEMCPY
+type: env
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:81
+- setup.py:316
+value_type: str
+default: null
+valid_choices:
+- '1'
+- '0'
+- null
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var controls whether the aclrtMemcpyBatchAsync compile path is used for
+
+  KV cache offloading. It is read in vllm_ascend/envs.py:81 as a raw string (or None).
+
+  In setup.py:316-319, when the value is not None it is forwarded to CMake as
+
+  -DVLLM_ASCEND_ENABLE_BATCH_MEMCPY=<value>, which selects the compiled code path
+
+  in the C++ extension. When unset (None), CMake auto-detects support from the
+
+  installed CANN headers. The batch memcpy path (aclrtMemcpyBatchAsync) allows
+
+  multiple KV cache copy operations to be issued in a single batched async call
+
+  instead of many individual aclrtMemcpyAsync calls, reducing per-copy launch
+
+  overhead and CPU-side dispatch cost during KV cache offload/onload. This directly
+
+  affects latency and throughput of KV cache offloading workloads (e.g. prefix
+
+  caching / KV offloading to host memory), but has no effect on the core
+
+  prefill/decode compute path when KV offloading is not in use.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py:81
+  context: Defines the env var accessor; returns raw string or None (auto-detect).
+- file: setup.py:316
+  context: Forwards the value to CMake as -DVLLM_ASCEND_ENABLE_BATCH_MEMCPY when explicitly set; otherwise CMake auto-detects
+    from CANN headers.
+related_parameters:
+- name: VLLM_ASCEND_KVPOOL_RANGE_DEBUG
+  relation: Both relate to KV cache offloading/transfer; debug audit of ranged transfers.
+constraints:
+- Valid values are '1' (force enable), '0' (force disable), or unset (auto-detect from CANN headers).
+- The value is consumed at build time by setup.py/CMake, so changing it requires rebuilding the vllm-ascend C++ extension
+  to take effect.
+- Forcing '1' on a CANN version that does not provide aclrtMemcpyBatchAsync will fail to compile or link.
+tuning_advice:
+  summary: Leave unset to auto-detect; force '1' only when CANN supports aclrtMemcpyBatchAsync and KV cache offloading is
+    a bottleneck.
+  suggested_values:
+  - scenario: Default / unknown CANN version
+    value: unset
+    reason: Auto-detection from CANN headers picks the correct path without risking build failure.
+  - scenario: CANN version known to support aclrtMemcpyBatchAsync and KV offloading is hot
+    value: '1'
+    reason: Batches KV cache copies into a single async call, reducing launch overhead and improving offload throughput/latency.
+  - scenario: Build or runtime issues traced to the batch memcpy path
+    value: '0'
+    reason: Forces the fallback per-copy path to isolate or avoid batch memcpy bugs.
+  caveats:
+  - 'This is a build-time switch: it is passed to CMake in setup.py, so it only takes effect after rebuilding the extension.'
+  - Forcing '1' on an unsupported CANN version can break compilation/linking.
+  - No effect on workloads that do not use KV cache offloading.
+  quick_guide: Leave unset unless you know your CANN supports aclrtMemcpyBatchAsync and KV offload is a bottleneck; then set
+    to '1' and rebuild.
+analysis_date: '2026-10-27'

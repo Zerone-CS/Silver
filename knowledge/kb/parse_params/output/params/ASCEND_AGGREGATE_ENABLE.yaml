@@ -1,0 +1,83 @@
+name: ASCEND_AGGREGATE_ENABLE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/DeepSeek-V3.2.md:415
+- docs/source/tutorials/models/GLM4.x.md:394
+value_type: int
+default: '0'
+valid_choices: 0 or 1 (boolean-like integer flag)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ASCEND_AGGREGATE_ENABLE is not defined or read anywhere in the vllm or vllm-ascend
+
+  Python source code — it is a CANN/HCCL runtime environment variable consumed by the
+
+  Ascend communication stack (HCCL transport layer), not by vLLM itself. It is only
+
+  surfaced in vllm-ascend deployment tutorials (DeepSeek-V3.2.md, GLM4.x.md) where it is
+
+  exported alongside other HCCL transport knobs (ASCEND_TRANSPORT_PRINT, ACL_OP_INIT_MODE,
+
+  ASCEND_A3_ENABLE, HCCL_BUFFSIZE). In these multi-node PD-disaggregated / large-EP
+
+  deployments it enables the aggregated transport mode in the HCCL communication layer,
+
+  which affects how collective and point-to-point (KV cache transfer) traffic is batched
+
+  and dispatched across the NPU interconnect. Because it changes the communication path
+
+  used for tensor/expert-parallel all-reduce/all-to-all and Mooncake KV transfer, it
+
+  indirectly affects inter-node latency and overall throughput of distributed inference.
+
+  It does not change memory allocation or model execution semantics directly.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/DeepSeek-V3.2.md:415
+  context: Exported in DeepSeek-V3.2 multi-node PD-disaggregated launch script alongside HCCL_BUFFSIZE=256, ASCEND_TRANSPORT_PRINT=1,
+    ACL_OP_INIT_MODE=1, ASCEND_A3_ENABLE=1
+- file: docs/source/tutorials/models/GLM4.x.md:394
+  context: Exported in GLM4.x multi-node launch script with HCCL_OP_EXPANSION_MODE=AIV and VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1
+related_parameters:
+- name: HCCL_BUFFSIZE
+  relation: Set together in the same launch scripts; controls HCCL communication buffer size and interacts with the transport
+    mode selected by ASCEND_AGGREGATE_ENABLE
+- name: ASCEND_TRANSPORT_PRINT
+  relation: Companion transport-layer debug/print flag exported alongside it
+- name: ASCEND_A3_ENABLE
+  relation: A3 hardware enable flag exported in the same block; aggregate transport mode is typically used on A3 multi-node
+    setups
+- name: ACL_OP_INIT_MODE
+  relation: Exported together; affects CANN operator init behavior in the same distributed launch
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Related HCCL communication tuning knob (AIV expansion) used in the GLM4.x script
+constraints:
+- This is a CANN/HCCL runtime environment variable, not a vLLM or vllm-ascend parameter; it must be set in the process environment
+  before the NPU/HCCL runtime initializes, otherwise it has no effect.
+- It is only meaningful in multi-node distributed deployments that use HCCL communication (tensor/expert parallel or PD-disaggregated
+  KV transfer); in single-node runs it provides no benefit.
+tuning_advice:
+  summary: Enable ASCEND_AGGREGATE_ENABLE=1 for multi-node HCCL-heavy deployments (large EP/TP, PD disaggregation) to improve
+    inter-node communication efficiency; leave unset for single-node runs.
+  suggested_values:
+  - scenario: Multi-node PD-disaggregated or large expert-parallel deployment (DeepSeek-V3.2, GLM4.x) on A3 hardware
+    value: 1
+    reason: Matches the official vllm-ascend tutorial launch scripts, where it is exported together with HCCL_BUFFSIZE=256
+      and ASCEND_A3_ENABLE=1 to optimize HCCL transport for inter-node traffic.
+  - scenario: Single-node deployment or small-scale inference
+    value: 0
+    reason: No inter-node HCCL transport to optimize; leaving it disabled avoids potential overhead from the aggregated transport
+      path.
+  caveats:
+  - Effect depends on the CANN/HCCL version installed; validate with ASCEND_TRANSPORT_PRINT=1 to confirm the transport mode
+    is active.
+  - Tune jointly with HCCL_BUFFSIZE (e.g. 256 in the docs) rather than changing this flag alone.
+  quick_guide: Set ASCEND_AGGREGATE_ENABLE=1 only for multi-node HCCL deployments; otherwise leave it unset.
+analysis_date: '2026-10-27'

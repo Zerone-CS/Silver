@@ -1,0 +1,78 @@
+name: HCCL_CONNECT_TIMEOUT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/GLM5.3.md:405
+- docs/source/tutorials/models/GLM5.3-Flash.md:877
+value_type: int
+default: 120
+valid_choices: positive integer (seconds); no explicit upper bound
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'HCCL_CONNECT_TIMEOUT is a CANN/HCCL runtime environment variable (not defined or
+
+  read directly in vllm or vllm-ascend source code) that controls how long the HCCL
+
+  collective communication library waits when establishing connections between NPU
+
+  ranks during communicator initialization. It does not affect steady-state
+
+  throughput or per-token latency; it only bounds the startup/handshake phase of
+
+  distributed (multi-rank / multi-node) runs. On Ascend, vllm-ascend relies on HCCL
+
+  for tensor-parallel and data-parallel collectives, so if the connect handshake
+
+  exceeds this timeout the process aborts during engine startup rather than
+
+  degrading runtime performance. The vllm-ascend docs list it among the "validated
+
+  A2 startup defaults" (HCCL_CONNECT_TIMEOUT=120) for multi-node GLM-5.3 deployment,
+
+  where slower A2 platforms may need larger values to avoid startup failures.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/GLM5.3.md:405
+  context: Listed as an A2-specific timeout env var (HCCL_CONNECT_TIMEOUT=120) for multi-node startup; increase if engine
+    fails to become ready.
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:877
+  context: Grouped with other validated A2 startup timeout/runtime defaults; keep unless environment requires different values.
+related_parameters:
+- name: HCCL_EXEC_TIMEOUT
+  relation: Companion HCCL timeout for collective execution; both tuned together for multi-node startup/execution.
+- name: VLLM_RPC_TIMEOUT
+  relation: Engine RPC timeout; jointly raised for slow multi-node A2 startup.
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Model execution timeout; part of the same multi-node timeout set.
+- name: VLLM_ENGINE_READY_TIMEOUT_S
+  relation: Engine readiness timeout; must be large enough to cover HCCL connect + init.
+- name: HCCL_HOST_SOCKET_PORT_RANGE
+  relation: Socket port range for HCCL host-side connections; misconfiguration can block startup independently of timeout.
+constraints:
+- Value must be a positive integer number of seconds; a value too small causes HCCL connection establishment to time out and
+  the engine to abort at startup.
+- Only relevant for distributed (multi-rank/multi-node) deployments that use HCCL collectives; single-NPU runs do not exercise
+  it.
+tuning_advice:
+  summary: Keep the validated A2 default of 120s for multi-node startup; raise it only if HCCL connection handshakes time
+    out on slow or congested networks.
+  suggested_values:
+  - scenario: Multi-node A2 deployment (e.g. GLM-5.3) with validated defaults
+    value: 120
+    reason: Documented validated A2 startup default; sufficient for normal multi-node HCCL handshake.
+  - scenario: Slow or congested interconnect causing HCCL connect timeouts at startup
+    value: 300
+    reason: Larger window tolerates slow handshakes; increase alongside HCCL_EXEC_TIMEOUT and VLLM_RPC_TIMEOUT.
+  caveats:
+  - This is a CANN/HCCL runtime variable, not a vLLM/vllm-ascend parameter; it is not read by vllm or vllm-ascend code and
+    only affects communicator initialization.
+  - It does not change steady-state throughput or per-token latency; tuning it only prevents startup failures.
+  - Must be coordinated with VLLM_ENGINE_READY_TIMEOUT_S and VLLM_RPC_TIMEOUT so the engine readiness window covers the HCCL
+    connect phase.
+  quick_guide: Leave at 120s unless multi-node startup fails with HCCL connect timeouts, then raise it.
+analysis_date: '2026-10-27'

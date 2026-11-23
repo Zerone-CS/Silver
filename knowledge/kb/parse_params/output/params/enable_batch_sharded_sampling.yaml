@@ -1,0 +1,129 @@
+name: --enable-batch-sharded-sampling
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:169
+- vllm/engine/arg_utils.py:507
+- vllm/engine/arg_utils.py:1195
+- vllm/config/vllm.py:2944
+- vllm/v1/worker/gpu/model_runner.py:444
+- vllm_ascend/ascend_config.py:959
+value_type: bool
+default: null
+valid_choices: true / false (None means default to False)
+cli_example: --enable-batch-sharded-sampling
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Batch-sharded sampling distributes the sampling (logits computation + token
+
+  selection) across tensor-parallel ranks: instead of every TP rank computing
+
+  logits and sampling for the entire batch, each rank owns a slice of the batch
+
+  (round-robin slot ownership) and only samples its own requests. This reduces
+
+  redundant LM-head / sampler work per rank, lowering per-step sampling latency
+
+  and freeing compute on ranks that would otherwise duplicate the full-batch
+
+  logits pass. On Ascend, the mechanism is gated by the V2 model runner path
+
+  (vllm-ascend tests set VLLM_USE_V2_MODEL_RUNNER=1 and parametrize this flag
+
+  in test_mamba_hybrid.py). The upstream V1 GPU model runner
+
+  (vllm/v1/worker/gpu/model_runner.py:444) only activates a BatchSharder when
+
+  the model implements compute_logits_local; otherwise it logs a warning and
+
+  disables sharding. vllm-ascend adds a hard compatibility check in
+
+  ascend_config.py:959: batch-sharded sampling is mutually exclusive with
+
+  fine-grained TP for the LM head (finegrained_tp_config.lmhead_tensor_parallel_size),
+
+  because lmhead TP overrides NPUModelRunner.sample with a whole-group LM-head
+
+  collective path that conflicts with per-rank sharding. The upstream config
+
+  validator (vllm/config/vllm.py:2944) also rejects enabling it when
+
+  tensor_parallel_size <= 1, when max_num_seqs < tensor_parallel_size, or when
+
+  max_logprobs < 0. Net effect on Ascend: modest decode-step latency/throughput
+
+  improvement from eliminating redundant sampling work across TP ranks, at the
+
+  cost of requiring a model that implements compute_logits_local and a
+
+  compatible parallel configuration.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:169
+  context: ParallelConfig field definition and docstring describing sharding semantics and opt-in requirement
+- file: vllm/engine/arg_utils.py:1195
+  context: CLI argument registration in the parallel argument group
+- file: vllm/config/vllm.py:2944
+  context: _validate_batch_sharded_sampling enforces tp_size>1, max_num_seqs>=tp_size, max_logprobs>=0; defaults to False
+    when unset
+- file: vllm/v1/worker/gpu/model_runner.py:444
+  context: V1 GPU model runner instantiates BatchSharder only if model has compute_logits_local, else warns and disables
+- file: vllm_ascend/ascend_config.py:959
+  context: Ascend config validation rejects combination with finegrained_tp_config.lmhead_tensor_parallel_size
+- file: tests/e2e/pull_request/two_card/model_runner_v2/test_mamba_hybrid.py:56
+  context: Ascend V2 model runner e2e test parametrizes this flag with TP=2 and MTP spec decode
+related_parameters:
+- name: --tensor-parallel-size
+  relation: Must be > 1 for sharding to be meaningful; sharding splits the batch across TP ranks
+- name: --max-num-seqs
+  relation: Must be at least tensor_parallel_size so every rank has work each step
+- name: --max-logprobs
+  relation: Must be non-negative; negative max_logprobs blocks enabling sharded sampling
+- name: finegrained_tp_config.lmhead_tensor_parallel_size
+  relation: Mutually exclusive on Ascend; enabling both raises ValueError
+- name: enable_pcp_embedding_lmhead_weight_sharding
+  relation: Documented as incompatible with batch-sharded sampling
+- name: --speculative-config
+  relation: Tested together with MTP spec decode on Ascend V2 runner; sharding is bit-exact under MTP
+constraints:
+- tensor_parallel_size must be greater than 1, otherwise enabling raises a config error (nothing to shard).
+- max_num_seqs must be at least tensor_parallel_size, otherwise enabling raises a config error.
+- max_logprobs must be non-negative, otherwise enabling raises a config error.
+- On Ascend, enable_batch_sharded_sampling cannot be combined with finegrained_tp_config.lmhead_tensor_parallel_size; enabling
+  both raises ValueError.
+- The model must implement compute_logits_local, otherwise sharding is silently disabled with a warning.
+- enable_pcp_embedding_lmhead_weight_sharding is documented as incompatible with batch-sharded sampling.
+tuning_advice:
+  summary: 'Enable batch-sharded sampling on Ascend only with the V2 model runner, TP>1,
+
+    a model that implements compute_logits_local, and no fine-grained LM-head TP,
+
+    to cut redundant per-rank sampling work.
+
+    '
+  suggested_values:
+  - scenario: Ascend V2 model runner, TP>=2, dense model with compute_logits_local, no lmhead fine-grained TP
+    value: true
+    reason: Each rank samples only its batch slice, removing duplicated full-batch logits/sampling work and reducing decode-step
+      latency.
+  - scenario: Default / unsure whether model supports compute_logits_local
+    value: false
+    reason: Defaults to False; enabling without model support only logs a warning and disables sharding, so leave off unless
+      verified.
+  - scenario: Using finegrained_tp_config.lmhead_tensor_parallel_size > 0
+    value: false
+    reason: Ascend raises ValueError when combined with LM-head fine-grained TP; keep sharding off in that configuration.
+  caveats:
+  - On Ascend this is a V2 model runner feature; tests set VLLM_USE_V2_MODEL_RUNNER=1. V1 paths may not honor it.
+  - If the model lacks compute_logits_local, the flag is silently disabled with a warning — no speedup, no error.
+  - Requires max_num_seqs >= tensor_parallel_size; with too few request slots some ranks idle each step, negating the benefit.
+  - Mutually exclusive with finegrained_tp_config.lmhead_tensor_parallel_size on Ascend due to the whole-group LM-head collective
+    override in NPUModelRunner.sample.
+  - Documented incompatible with enable_pcp_embedding_lmhead_weight_sharding.
+  quick_guide: Enable only on V2 runner with TP>1, model supporting compute_logits_local, and no LM-head fine-grained TP.
+analysis_date: '2026-10-27'

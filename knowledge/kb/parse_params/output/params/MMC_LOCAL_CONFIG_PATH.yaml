@@ -1,0 +1,80 @@
+name: MMC_LOCAL_CONFIG_PATH
+type: env
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:25
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:27
+value_type: str
+default: null
+valid_choices: Path to a Memcache local config file (INI-style key=value lines)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'MMC_LOCAL_CONFIG_PATH points to the Memcache local-service config file used by the
+
+  AscendStore KV-pool backend (vllm-ascend). It is read once by _is_device_sdma() in
+
+  memcache_backend.py, which parses the file line-by-line looking for the key
+
+  "ock.mmc.local_service.protocol" and returns True only when its value equals
+
+  "device_sdma". This boolean selects the data-transfer path for KV-cache offloading
+
+  to the Memcache store: "device_sdma (SDMA-based device-to-device transfer) versus the"
+
+  default host/CPU-mediated path. The choice of transfer path affects KV-cache
+
+  offload/load latency and thus end-to-end throughput, but the env var itself is only
+
+  a config-file locator read at initialization — it does not directly tune any runtime
+
+  loop. Its performance effect is therefore indirect (low), mediated entirely by the
+
+  protocol value it contains. If the variable is unset, _is_device_sdma() raises
+
+  ValueError, so it is mandatory whenever the Memcache backend is used.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:25
+  context: Reads env var to locate the local config file for protocol detection
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:27
+  context: Raises ValueError if the env var is not set
+- file: tests/e2e/common/single_node/kv_pool_runtime.py:221
+  context: Test harness sets MMC_LOCAL_CONFIG_PATH to the generated local config path
+- file: tests/e2e/common/multi_node/external_dp/runtime.py:270
+  context: Multi-node test harness sets MMC_LOCAL_CONFIG_PATH per node
+related_parameters:
+- name: ock.mmc.local_service.protocol
+  relation: Config key inside the file pointed to by MMC_LOCAL_CONFIG_PATH; value 'device_sdma' enables the SDMA transfer
+    path
+- name: MMC_META_CONFIG_PATH
+  relation: Companion env var pointing to the meta-service config file used by the Memcache MetaService
+- name: ock.mmc.local_service.config_store_url
+  relation: Config key in the local config file specifying the config-store endpoint
+constraints:
+- MMC_LOCAL_CONFIG_PATH must be set whenever the Memcache AscendStore backend is used, otherwise _is_device_sdma() raises
+  ValueError.
+- The path must point to a readable file; a missing or unreadable file will cause an open() failure.
+- The file must use INI-style 'key = value' lines; lines starting with '#' or ';' are treated as comments and ignored.
+tuning_advice:
+  summary: Set MMC_LOCAL_CONFIG_PATH to a valid local config file and set ock.mmc.local_service.protocol=device_sdma to enable
+    the faster SDMA KV-transfer path on Ascend.
+  suggested_values:
+  - scenario: Memcache AscendStore backend with SDMA-capable hardware
+    value: /path/to/mmc_local.conf with ock.mmc.local_service.protocol = device_sdma
+    reason: Enables the device_sdma transfer path, reducing KV-cache offload/load latency versus the host-mediated path.
+  - scenario: Memcache AscendStore backend without SDMA support
+    value: /path/to/mmc_local.conf with ock.mmc.local_service.protocol = <non-device_sdma value>
+    reason: Falls back to the default transfer path; still required so the env var is set and no ValueError is raised.
+  caveats:
+  - Ensure the file exists and is readable by the vLLM process; a missing file causes an open() error.
+  - Verify the exact key spelling 'ock.mmc.local_service.protocol' and value 'device_sdma' — any mismatch silently disables
+    SDMA.
+  quick_guide: Point MMC_LOCAL_CONFIG_PATH at your Memcache local config and set ock.mmc.local_service.protocol=device_sdma
+    for the fastest KV offload path.
+analysis_date: '2026-10-27'

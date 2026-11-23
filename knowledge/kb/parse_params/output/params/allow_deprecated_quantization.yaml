@@ -1,0 +1,86 @@
+name: --allow-deprecated-quantization
+type: cli
+category: quantization
+scope: vllm
+source_file:
+- vllm/config/model.py:240
+- vllm/engine/arg_utils.py:583
+- vllm/engine/arg_utils.py:905
+- vllm/config/model.py:1348
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --allow-deprecated-quantization
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This flag is a pure gate/validation switch, not a runtime tuning knob. In
+
+  vllm/config/model.py:1347-1360, ModelConfig._verify_quantization checks whether
+
+  self.quantization is in me_quant.DEPRECATED_QUANTIZATION_METHODS. If it is and
+
+  allow_deprecated_quantization is False (default), a ValueError is raised and the
+
+  engine fails to start. If True, only a warning is logged and startup proceeds.
+
+  The flag itself does not change any kernel, memory layout, or scheduling behavior.
+
+  Its indirect performance relevance is that it lets you run a deprecated
+
+  quantization method (e.g. older AWQ/GPTQ variants) that would otherwise be
+
+  rejected; the actual performance characteristics come from the quantization
+
+  method selected via --quantization, not from this flag. On Ascend, quantization
+
+  support is further gated by vllm-ascend''s platform verify_quantization and its
+
+  quant config patches, so enabling this flag does not by itself guarantee the
+
+  deprecated method is supported on NPU — the Ascend quantization layer must also
+
+  accept it. No vllm-ascend-specific override of this parameter was found in the
+
+  provided context.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:1348
+  context: Gate that raises ValueError for deprecated quantization methods unless this flag is set
+- file: vllm/engine/arg_utils.py:583
+  context: EngineArgs field defaulting to ModelConfig.allow_deprecated_quantization
+- file: vllm/engine/arg_utils.py:905
+  context: CLI argument registration under ModelConfig group
+related_parameters:
+- name: --quantization
+  relation: Determines which method is checked against DEPRECATED_QUANTIZATION_METHODS; this flag only matters when that method
+    is deprecated
+- name: --quantization-config
+  relation: Companion quantization configuration; deprecated methods may still require valid quant config
+constraints:
+- Setting this flag to true only suppresses the deprecation error; it does not make an unsupported quantization method work
+  on Ascend NPU.
+- If --quantization names a method not in the platform's supported_quantization list, startup still fails regardless of this
+  flag.
+tuning_advice:
+  summary: Leave at default false; only enable to run a legacy quantized checkpoint that vLLM marks deprecated, and verify
+    Ascend support separately.
+  suggested_values:
+  - scenario: Standard deployment with a supported, non-deprecated quantization method
+    value: false
+    reason: Default behavior; deprecated methods are rejected, avoiding unsupported/untested paths.
+  - scenario: Running a legacy checkpoint whose quantization method is deprecated but still functional
+    value: true
+    reason: Bypasses the ValueError in ModelConfig._verify_quantization so the engine can start; performance then depends
+      on the quant method itself.
+  caveats:
+  - Enabling this flag does not guarantee the deprecated quantization method is implemented or optimized in vllm-ascend; confirm
+    NPU support before relying on it.
+  - Deprecated methods may be removed in future vLLM versions, so this is a temporary workaround, not a long-term configuration.
+  - The flag has no direct effect on latency/throughput; any performance difference comes from the quantization method, not
+    this switch.
+  quick_guide: Keep false unless you must load a deprecated quantized model; then set true and validate Ascend support.
+analysis_date: '2026-10-27'

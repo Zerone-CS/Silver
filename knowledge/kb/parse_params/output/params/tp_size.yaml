@@ -1,0 +1,112 @@
+name: --tp-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:558
+- vllm_ascend/ascend_config.py:775
+- vllm_ascend/platform.py:1281
+- vllm_ascend/ascend_forward_context.py:182
+- vllm_ascend/worker/model_runner_v1.py:3275
+value_type: int
+default: 1
+valid_choices: positive integer; must satisfy world_size == tp_size * pp_size * pcp_size and tp_size % dcp_size == 0 (when
+  PCP disabled)
+cli_example: --tensor-parallel-size 8
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--tp-size (tensor_parallel_size) is the primary sharding axis on Ascend. It directly\ndetermines how model\
+  \ weights and KV cache are partitioned across NPUs, and how many\ncollective communication ops (HCCL all-reduce / all-gather\
+  \ / reduce-scatter) are issued\nper forward pass.\n\nKey Ascend-specific mechanisms observed in source:\n- \"vllm_ascend/ascend_forward_context.py:182-185:\
+  \ `mmrs_fusion = tp_world_size <= 8`.\"\n  The fused matmul-reduce-scatter (npu_mm_reduce_scatter_base) optimization is\
+  \ only\n  enabled when tp_size <= 8; at tp_size >= 16 it is disabled (TODO comment notes the\n  op does not yet support\
+  \ tp_size >= 16), which increases communication overhead.\n- \"vllm_ascend/ascend_forward_context.py:260-274: MC2 token\
+  \ capacity is computed as\"\n  ceil(max_num_tokens / tp_size) per rank, capped by _MC2_TOKENS_PER_RANK_LIMIT (or\n  MegaMoe/dispatch-ffn-combine\
+  \ limits). Larger tp_size reduces per-rank token count,\n  lowering MC2 buffer memory but also reducing per-rank compute\
+  \ granularity.\n- \"vllm_ascend/worker/model_runner_v1.py:3272-3280: when sequence parallelism (SP) or\"\n  DSA-CP is enabled,\
+  \ scheduled tokens are padded up to a multiple of tp_size\n  (`round_up(num_scheduled_tokens, tp_size)`), so larger tp_size\
+  \ increases padding waste\n  for small batches.\n- \"vllm_ascend/platform.py:1281-1300: when tp_size > 1 and SP/shared-expert-DP/DSA-CP\
+  \ is\"\n  active, cudagraph capture sizes must be multiples of tp_size; otherwise an\n  AssertionError is raised or sizes\
+  \ are rewritten.\n- \"vllm_ascend/ascend_config.py:809-820: with PCP + SP, max_num_batched_tokens is rounded\"\n  up to\
+  \ a multiple of tp_size * pcp_size.\n- \"vllm_ascend/patch/platform/patch_multiproc_executor.py:149-158: tp_size determines\"\
+  \n  driver-worker selection (rank % tp_size == 0) and world_size decomposition.\n\nUpstream constraints also apply: \"world_size\
+  \ must equal tp_size * pp_size * pcp_size\"\n(vllm/v1/executor/multiproc_executor.py:126), and tp_size must be divisible\
+  \ by\ndcp_size when PCP is disabled (vllm/config/parallel.py:564).\n"
+usage_locations:
+- file: vllm_ascend/ascend_forward_context.py:182
+  context: mmrs_fusion gated on tp_world_size <= 8; fused matmul-reduce-scatter disabled at tp>=16
+- file: vllm_ascend/ascend_forward_context.py:260
+  context: MC2 token capacity per rank = ceil(max_num_tokens / tp_size), capped by MC2/MegaMoe limits
+- file: vllm_ascend/worker/model_runner_v1.py:3275
+  context: Token padding to multiple of tp_size when SP or DSA-CP enabled
+- file: vllm_ascend/platform.py:1281
+  context: Cudagraph capture sizes must be multiples of tp_size when SP/shared-expert-DP/DSA-CP active
+- file: vllm_ascend/ascend_config.py:809
+  context: max_num_batched_tokens rounded up to multiple of tp_size * pcp_size under SP
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:149
+  context: Driver worker selection and world_size decomposition
+- file: vllm/config/parallel.py:564
+  context: tp_size must be divisible by dcp_size when PCP disabled
+related_parameters:
+- name: --pipeline-parallel-size
+  relation: world_size must equal tp_size * pp_size * pcp_size
+- name: --prefill-context-parallel-size
+  relation: Multiplies into world_size; with SP, max_num_batched_tokens must be divisible by tp_size * pcp_size
+- name: --decode-context-parallel-size
+  relation: tp_size must be divisible by dcp_size when PCP is disabled
+- name: --enable-expert-parallel
+  relation: Sequence parallelism requires enable_expert_parallel=True for MoE models
+- name: additional_config.enable_flashcomm1
+  relation: SP MoE requires tp_size > 1; FlashComm1 auto-enabled by DSA-CP
+- name: additional_config.enable_dsa_cp
+  relation: Requires tp_size > 1 (SP); migration path suggests tp_size=1 + PCP
+- name: additional_config.enable_prefill_mc2
+  relation: Recommended max_num_batched_tokens = tp_size * 512 when enabled
+- name: additional_config.finegrained_tp_config
+  relation: Fine-grained TP components require tensor_parallel_size == 1 to be effective
+constraints:
+- world_size must equal tensor_parallel_size × pipeline_parallel_size × prefill_context_parallel_size.
+- When PCP is disabled, tp_size must be divisible by decode_context_parallel_size.
+- Sequence parallelism (enable_sp / FlashComm1) is only supported when tp_size > 1.
+- Sequence parallelism requires enable_expert_parallel=True for MoE models.
+- When SP, shared-expert-DP, or DSA-CP is active with tp_size > 1 and cudagraph mode is not NONE, cudagraph_capture_sizes
+  must contain values that are multiples of tp_size, otherwise an AssertionError is raised.
+- Fine-grained TP for o_proj requires tensor_parallel_size == 1; a config-time error is raised otherwise.
+- Fine-grained TP size for any component must be ≤ the DP size and evenly divide the DP size.
+- DSA-CP requires Model Runner V1 and sequence parallelism; setting enable_dsa_cp=true with Model Runner V2 raises a configuration
+  error.
+tuning_advice:
+  summary: Choose tp_size to fit model weights + KV cache in NPU HBM while keeping tp_size <= 8 to retain fused matmul-reduce-scatter,
+    and align with SP/PCP/DCP divisibility requirements.
+  suggested_values:
+  - scenario: Single-node dense model that fits with modest sharding
+    value: 8
+    reason: Keeps tp_size <= 8 so mmrs_fusion (fused matmul-reduce-scatter) stays enabled, maximizing communication efficiency
+      on Ascend.
+  - scenario: Large MoE model requiring more than 8 NPUs for weights
+    value: 16
+    reason: Necessary for memory fit, but note mmrs_fusion is disabled at tp_size >= 16, so expect higher communication overhead;
+      consider EP instead.
+  - scenario: Sequence parallelism / FlashComm1 enabled
+    value: 8
+    reason: SP requires tp_size > 1; keeping tp_size <= 8 preserves fused comm and limits token padding waste.
+  - scenario: Fine-grained TP (embedding/LM head/mlp) deployment
+    value: 1
+    reason: Fine-grained TP components only take effect when tensor_parallel_size == 1; standard TP axis takes over otherwise.
+  - scenario: Migrating from DSA-CP to PCP
+    value: 1
+    reason: Docs recommend --tensor-parallel-size 1 --prefill-context-parallel-size <old_tp_size> to preserve world size when
+      moving to PCP.
+  caveats:
+  - Verify world_size == tp_size * pp_size * pcp_size before launch; mismatch raises an assertion.
+  - When SP/DSA-CP is active, ensure cudagraph_capture_sizes are multiples of tp_size to avoid init failure.
+  - At tp_size >= 16 the fused matmul-reduce-scatter path is disabled; benchmark communication cost before scaling beyond
+    8.
+  - With SP, max_num_batched_tokens is auto-rounded to a multiple of tp_size * pcp_size; account for this in throughput planning.
+  quick_guide: Use the smallest tp_size that fits weights+KV in HBM, prefer <= 8 to keep fused comm, and satisfy world_size
+    and DCP divisibility constraints.
+analysis_date: '2026-10-27'

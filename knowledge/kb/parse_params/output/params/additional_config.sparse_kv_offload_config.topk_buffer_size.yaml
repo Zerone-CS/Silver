@@ -1,0 +1,110 @@
+name: additional_config.sparse_kv_offload_config.topk_buffer_size
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1694
+- vllm_ascend/ascend_config.py:1713
+- vllm_ascend/ascend_config.py:1765
+- vllm_ascend/attention/sfa_kv_offload.py:582
+- vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:117
+value_type: int
+default: 4096
+valid_choices: positive integer; must be >= index_topk; must be divisible by block_size; for fused_copy_sfa must be a multiple
+  of 256, at least Q_max*2048 and at most 32512
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: "topk_buffer_size defines the per-request device-resident \"hot\" KV buffer capacity (in tokens)\nused by the\
+  \ sparse KV offload path on Ascend NPU. It is consumed in three main places:\n\n1. Memory allocation (vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:117-145):\n\
+  \   allocate_kv_offload_topk_buffer_pair computes\n     topk_buffer_k_size_bytes = max_num_topk_rows * topk_buffer_size\
+  \ * num_kv_heads * k_dim * 2\n     topk_buffer_v_size_bytes = max_num_topk_rows * topk_buffer_size * num_kv_heads * v_dim\
+  \ * 2\n   and allocates a single int8 tensor of size (k+v) on NPU. So HBM usage scales linearly with\n   topk_buffer_size\
+  \ * max_num_topk_rows. max_num_topk_rows is min(max_num_batched_tokens,\n   max_num_seqs * decode_width) in the legacy path,\
+  \ or 2*copy_sfa_pool_capacity(max_num_seqs)\n   in the fused_copy_sfa path (plus COPY_SFA_TAIL_BLOCKS*block_size added to\
+  \ topk_buffer_size).\n   Larger topk_buffer_size directly increases NPU HBM footprint of the offload hot buffer.\n\n2. Runtime\
+  \ hot-token window (vllm_ascend/worker/model_runner_v1.py:3509 and\n   vllm_ascend/worker/v2/model_states/default.py:251):\
+  \ passed as `hot_tokens` to\n   request_states.prepare(...). This controls how many recently-used KV tokens are kept resident\n\
+  \   on device (LRU resident capacity, see sfa_kv_offload.py:582 self.lru_resident_capacity =\n   offload_cfg.topk_buffer_size).\
+  \ A larger window means more decode steps hit the device-resident\n   hot buffer instead of fetching from host DRAM, reducing\
+  \ per-step KV fetch latency and\n   improving decode throughput; a smaller window increases DRAM traffic and stalls.\n\n\
+  3. Scheduler-side slot allocation (sfa_pd_rd2h/scheduler.py:552): _resolve_copy_sfa_hot_tokens\n   returns topk_buffer_size\
+  \ when fused_copy_sfa is enabled, sizing the CopySfaTopkSlotAllocator\n   pool. This affects how many hot slots are available\
+  \ for the fused LIM+Copy-SFA path.\n\nNet effect: \"topk_buffer_size trades NPU HBM (linear) against decode latency/throughput\"\
+  \n(larger = fewer DRAM fetches). It is a high-impact knob for the sparse KV offload feature.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1694
+  context: Field definition with default 4096 in SparseKVOffloadConfig dataclass.
+- file: vllm_ascend/ascend_config.py:1713
+  context: 'Validator: raises if topk_buffer_size <= 0.'
+- file: vllm_ascend/ascend_config.py:1765
+  context: 'Precondition: raises if topk_buffer_size < index_topk (self.topk).'
+- file: vllm_ascend/attention/sfa_kv_offload.py:582
+  context: Sets self.lru_resident_capacity = offload_cfg.topk_buffer_size; also validates divisibility by block_size at line
+    585-589.
+- file: vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:117
+  context: Used to compute topk_buffer_k/v_size_bytes for NPU HBM allocation; fused_copy_sfa adds COPY_SFA_TAIL_BLOCKS*block_size.
+- file: vllm_ascend/worker/model_runner_v1.py:3509
+  context: 'v1 worker: passed as hot_tokens to request_states.prepare for offload request state.'
+- file: vllm_ascend/worker/v2/model_states/default.py:251
+  context: 'v2 worker: passed as hot_tokens to request_states.prepare.'
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/scheduler.py:552
+  context: Returns topk_buffer_size as hot_tokens for CopySfaTopkSlotAllocator when fused_copy_sfa enabled.
+related_parameters:
+- name: additional_config.sparse_kv_offload_config.enabled
+  relation: Master switch; topk_buffer_size only takes effect when sparse KV offload is enabled.
+- name: additional_config.sparse_kv_offload_config.fused_op_type
+  relation: When set to fused_copy_sfa, imposes stricter constraints (multiple of 256, >= Q_max*2048, <= 32512) and adds tail
+    blocks to the allocation.
+- name: additional_config.sparse_kv_offload_config.dram_size_per_dp_GB
+  relation: Host DRAM pool size; larger hot buffer reduces DRAM fetch pressure, interacting with DRAM sizing.
+- name: additional_config.sparse_kv_offload_config.keep_device_kv_cache
+  relation: When true (debug), max_num_topk_rows may be enlarged to max(max_num_topk_rows, request_rows), increasing HBM usage.
+- name: model_config.hf_text_config.index_topk
+  relation: topk_buffer_size must be >= index_topk; index_topk is the sparse attention top-k.
+- name: cache_config.block_size
+  relation: topk_buffer_size must be divisible by block_size.
+- name: speculative_config.num_speculative_tokens
+  relation: decode_width = 1 + num_speculative_tokens affects max_num_topk_rows and Q_max for fused path.
+constraints:
+- topk_buffer_size must be a positive integer (greater than 0).
+- topk_buffer_size must be greater than or equal to the model's index_topk.
+- topk_buffer_size must be divisible by the cache block_size.
+- When fused_op_type is fused_copy_sfa, topk_buffer_size must be a multiple of 256, at least Q_max*2048 (Q_max = 1 + num_speculative_tokens,
+  or 1 without speculative decoding), and at most 32512.
+- Sparse KV offload (and thus topk_buffer_size) is only supported for sparse attention models with index_topk and without
+  compress_ratios.
+- Sparse KV offload requires PD disaggregation on the Decode node unless keep_device_kv_cache is enabled for debugging.
+- Sparse KV offload does not support context parallel (prefill_context_parallel_size * decode_context_parallel_size > 1) or
+  pipeline parallel (pipeline_parallel_size > 1).
+tuning_advice:
+  summary: Size topk_buffer_size to hold enough recent KV tokens on device to avoid DRAM fetches during decode, while keeping
+    NPU HBM within budget; start at 2x index_topk and validate divisibility and fused-path bounds.
+  suggested_values:
+  - scenario: Legacy sparse offload path (fused_op_type=none), typical sparse attention model
+    value: 4096
+    reason: Default value; must be >= index_topk and divisible by block_size. Reasonable starting point when HBM is constrained.
+  - scenario: Fused LIM + Copy-SFA path (fused_op_type=fused_copy_sfa) with MTP3
+    value: 8192
+    reason: Documented example value; satisfies multiple-of-256, >= Q_max*2048 (Q_max=4 -> 8192) and <= 32512 bounds.
+  - scenario: HBM-constrained deployment with small index_topk
+    value: 2048
+    reason: Minimum practical value when index_topk is small; reduces hot-buffer HBM footprint at the cost of more DRAM fetches.
+  - scenario: Latency-sensitive decode with ample HBM
+    value: 16384
+    reason: Larger hot window reduces DRAM KV fetches during decode, improving latency/throughput, provided HBM budget allows
+      (must remain <= 32512 for fused path).
+  caveats:
+  - Always verify topk_buffer_size >= index_topk and divisible by block_size before deployment; violations raise ValueError
+    at startup.
+  - For fused_copy_sfa, keep topk_buffer_size a multiple of 256 within [Q_max*2048, 32512]; the runtime adds tail blocks automatically.
+  - Monitor NPU HBM after increasing topk_buffer_size, since allocation scales with max_num_topk_rows which depends on max_num_seqs
+    and speculative tokens.
+  - Do not enable keep_device_kv_cache in production; it retains full device KV cache and defeats the memory-saving purpose.
+  quick_guide: Set topk_buffer_size to ~2x index_topk (multiple of 256 for fused path, <=32512), divisible by block_size,
+    and sized to fit NPU HBM.
+analysis_date: '2026-10-27'

@@ -1,0 +1,63 @@
+name: VLLM_ASCEND_ENABLE_TOPK_TOPP_OPTIMIZATION
+type: env
+category: other
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:1785
+- docs/source/user_guide/release_notes.md:2284
+value_type: bool
+default: '1'
+valid_choices: 0 or 1 (boolean env flag)
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This environment variable was introduced in vllm-ascend (PR #1732) to enable an
+
+  optimized top-k/top-p sampling path, improving the performance of topk-topp
+
+  sampling. Per the release notes, it has since been REMOVED: "VLLM_ASCEND_ENABLE_TOPK_TOPP_OPTIMIZATION
+
+  env is removed. This feature is stable enough. We enable it by default now."
+
+  No definition or usage site was found in the current vllm or vllm-ascend source
+
+  trees, confirming the flag no longer exists in code. The underlying optimization
+
+  it once gated is now always active, so setting this env var has no effect on
+
+  current builds. Its historical performance effect was limited to the sampling
+
+  stage (top-k/top-p token selection), which is a small fraction of end-to-end
+
+  latency/throughput compared to prefill/decode compute and communication.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:1785
+  context: Release note stating the env var is removed and the feature is enabled by default.
+- file: docs/source/user_guide/release_notes.md:2284
+  context: Original release note introducing the env var (default 0) to improve topk-topp sampling performance.
+related_parameters:
+- name: --additional-config
+  relation: Sampling-related tuning is generally configured via additional-config; this env var is no longer part of the active
+    configuration surface.
+constraints:
+- This environment variable has been removed and no longer has any effect on current vllm-ascend versions.
+- The top-k/top-p sampling optimization it previously gated is now always enabled by default.
+tuning_advice:
+  summary: Do not set this env var on current vllm-ascend; the optimization is always on and the flag is a no-op.
+  suggested_values:
+  - scenario: Any deployment on current vllm-ascend (feature already default-on)
+    value: unset
+    reason: The env var was removed; the topk-topp optimization is enabled by default, so setting it changes nothing.
+  - scenario: Legacy vllm-ascend build that still honors the flag
+    value: '1'
+    reason: On older builds where the flag exists, enabling it improves topk-topp sampling performance.
+  caveats:
+  - Setting this env var on current builds is harmless but has no effect; do not rely on it for tuning.
+  - The optimization only affects the sampling stage, so its end-to-end impact is small relative to compute/communication.
+  quick_guide: Leave unset — the topk-topp sampling optimization is now always enabled.
+analysis_date: '2026-10-27'

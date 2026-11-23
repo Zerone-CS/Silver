@@ -1,0 +1,77 @@
+name: additional_config.scheduler_config.batch_job_sched_config.reserve_margin_blocks
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1530
+- vllm_ascend/ascend_config.py:1539
+value_type: int
+default: 2
+valid_choices: non-negative integer (>= 0)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'reserve_margin_blocks is a field of BatchJobSchedConfig in vllm-ascend
+
+  (vllm_ascend/ascend_config.py:1530), part of the batch-job-aware scheduler
+
+  configuration nested under additional_config.scheduler_config.batch_job_sched_config.
+
+  Per the docs, it is an "extra block margin added to the KV cache reserve as safety
+
+  buffer" — i.e. it inflates the number of KV cache blocks held back as reserve when
+
+  the batch-job-aware scheduler decides how much KV cache to reserve for incoming
+
+  jobs. The reserve is bounded by reserve_max_blocks (default 8), so this margin
+
+  only shifts the reserve size within that cap. A larger margin reserves more blocks
+
+  (reducing blocks available for active sequences, potentially lowering concurrency
+
+  and throughput), while a smaller margin frees more blocks for active work but
+
+  risks under-reserving and job preemption/starvation. The effect is only active when
+
+  the batch-job-aware scheduler is enabled (enabled=true); otherwise the field is
+
+  inert. The impact is indirect and modest — it does not itself allocate memory or
+
+  change kernel behavior, it only nudges the scheduler''s reserve heuristic.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1530
+  context: Field definition of reserve_margin_blocks in BatchJobSchedConfig dataclass (default 2).
+- file: vllm_ascend/ascend_config.py:1539
+  context: after model_validator _validate() rejects negative values with ValueError.
+related_parameters:
+- name: additional_config.scheduler_config.batch_job_sched_config.enabled
+  relation: Master switch; reserve_margin_blocks has no effect unless enabled=true.
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_max_blocks
+  relation: Upper bound on the KV cache reserve; reserve_margin_blocks is a margin added within this cap.
+- name: additional_config.scheduler_config.batch_job_sched_config.low_available_tokens_threshold
+  relation: Together with the reserve logic, governs when long vs short decode jobs are prioritised.
+constraints:
+- reserve_margin_blocks must be non-negative (>= 0); a negative value raises ValueError at config validation.
+tuning_advice:
+  summary: Keep the default margin of 2 for most workloads; increase slightly only when jobs are being preempted, and decrease
+    only when KV cache pressure limits concurrency.
+  suggested_values:
+  - scenario: Default / general multi-job serving
+    value: 2
+    reason: Default value provides a small safety buffer without materially reducing available KV cache blocks.
+  - scenario: Frequent job preemption or starvation under bursty multi-job load
+    value: 4
+    reason: A larger margin reserves more blocks as safety buffer, reducing preemption at the cost of some concurrency.
+  - scenario: KV cache pressure limiting active sequence concurrency
+    value: 1
+    reason: A smaller margin frees more blocks for active sequences, improving throughput when reserve is over-provisioned.
+  caveats:
+  - Ensure reserve_margin_blocks does not exceed reserve_max_blocks, otherwise the extra margin is capped and wasted.
+  - Only relevant when batch_job_sched_config.enabled is true.
+  quick_guide: Leave at 2 unless you observe job preemption (raise to ~4) or KV cache starvation (lower to 1).
+analysis_date: '2026-10-27'

@@ -1,0 +1,82 @@
+name: VLLM_ELASTIC_EP_SCALE_UP_LAUNCH
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:2098
+- vllm/envs.py:315
+- vllm/v1/engine/core.py:141
+- vllm/v1/engine/core.py:298
+- vllm/v1/engine/utils.py:896
+- vllm/v1/executor/multiproc_executor.py:677
+- vllm/v1/executor/ray_executor.py:377
+- vllm/v1/executor/uniproc_executor.py:71
+- vllm/distributed/parallel_state.py:1949
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This flag is an internal control signal for elastic expert-parallel (EP) scale-up.\nIt is NOT a user-facing\
+  \ tuning knob: \"the envs.py comment states it \\\"Should only be\"\nset by EngineCoreClient\", and vllm/v1/engine/utils.py:896\
+  \ injects it into the\nRuntimeEnv of newly spawned DP engine actors during a scale-up operation.\nWhen set, it changes the\
+  \ worker startup path in three ways:\n1. Model loading: in multiproc_executor.py:677, ray_executor.py:377, and\n   uniproc_executor.py:71,\
+  \ instead of calling worker.load_model() directly, the\n   executor calls worker.elastic_ep_execute(\"load_model\"), which\
+  \ routes model\n   loading through the elastic-EP coordination path so the joining rank can\n   synchronize with the already-running\
+  \ cluster.\n2. KV cache init: in vllm/v1/engine/core.py:141, _eep_scale_up_before_kv_init()\n   runs before KV cache initialization,\
+  \ and at core.py:298 the engine reuses the\n   pre-computed self.available_gpu_memory_for_kv_cache instead of calling\n\
+  \   model_executor.determine_available_memory() (which would re-profile peak\n   memory). This avoids a redundant memory-profiling\
+  \ pass on the joining rank,\n   saving startup latency and preventing inconsistent KV cache sizing.\n3. Communicator warm-up:\
+  \ in parallel_state.py:1949, on ROCm the joining worker\n   defers NCCL communicator warm-up (defer_comm_warmup_on_rocm)\
+  \ so the warm-up\n   collective has matching peers; both sides warm up at commit.\nOn Ascend NPU, none of these code paths\
+  \ are Ascend-specific — they are generic\nvLLM v1 engine/executor logic. There is no vllm-ascend override of this env var\n\
+  in the provided context. The performance effect is limited to elastic-EP scale-up\nstartup (skipping a memory-profile pass\
+  \ and coordinating model load), not steady-\nstate throughput. For normal (non-elastic) deployments the flag stays 0 and\
+  \ has\nno runtime effect.\n"
+usage_locations:
+- file: vllm/v1/engine/core.py:141
+  context: If set, runs _eep_scale_up_before_kv_init() before KV cache initialization.
+- file: vllm/v1/engine/core.py:298
+  context: If set, reuses pre-computed available_gpu_memory_for_kv_cache instead of re-profiling memory.
+- file: vllm/v1/executor/multiproc_executor.py:677
+  context: Routes model load through worker.elastic_ep_execute('load_model') instead of load_model().
+- file: vllm/v1/executor/ray_executor.py:377
+  context: Ray executor uses collective_rpc('elastic_ep_execute', ('load_model',)) when set.
+- file: vllm/v1/executor/uniproc_executor.py:71
+  context: UniProc executor uses elastic_ep_execute('load_model') when set.
+- file: vllm/v1/engine/utils.py:896
+  context: Injects VLLM_ELASTIC_EP_SCALE_UP_LAUNCH=1 into RuntimeEnv of newly spawned DP engines during scale-up.
+- file: vllm/distributed/parallel_state.py:1949
+  context: On ROCm, defers communicator warm-up for joining elastic-EP workers.
+related_parameters:
+- name: VLLM_ELASTIC_EP_DRAIN_REQUESTS
+  relation: Companion elastic-EP flag controlling whether requests drain before a scaling command.
+- name: data_parallel_size
+  relation: Scale-up increases data_parallel_size; the flag is set on newly added DP ranks.
+- name: enable_expert_parallel
+  relation: Elastic EP scale-up applies to expert-parallel deployments.
+constraints:
+- This env var is intended to be set only by the EngineCoreClient during an elastic-EP scale-up; setting it manually in a
+  normal deployment is unsupported.
+- When set, the engine asserts that available_gpu_memory_for_kv_cache was already populated (> 0) by _eep_scale_up_before_kv_init,
+  otherwise startup fails.
+- Scale-up requires the new data parallel size to be strictly greater than the current data parallel size.
+tuning_advice:
+  summary: Do not set this manually; it is an internal elastic-EP scale-up signal injected by the engine client.
+  suggested_values:
+  - scenario: Normal (non-elastic) deployment on Ascend NPU
+    value: '0'
+    reason: Default; the flag has no effect and the standard load_model()/determine_available_memory() path is used.
+  - scenario: Elastic-EP scale-up (managed by EngineCoreClient)
+    value: '1'
+    reason: Set automatically by vllm/v1/engine/utils.py when spawning new DP engine actors so they join the live cluster
+      and skip redundant memory profiling.
+  caveats:
+  - Leave this unset in production; rely on the elastic-EP controller to inject it.
+  - If you observe KV cache sizing anomalies after a scale-up, verify the flag is only set on newly joining ranks.
+  quick_guide: Leave unset (0); it is an internal elastic-EP scale-up signal, not a tuning knob.
+analysis_date: '2026-10-27'

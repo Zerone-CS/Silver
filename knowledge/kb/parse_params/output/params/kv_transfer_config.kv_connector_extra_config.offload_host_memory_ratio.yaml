@@ -1,0 +1,95 @@
+name: kv_transfer_config.kv_connector_extra_config.offload_host_memory_ratio
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/preempt_offload_connector.md:50
+- docs/source/user_guide/feature_guide/preempt_offload_connector.md:65
+- docs/source/user_guide/feature_guide/preempt_offload_connector.md:297
+value_type: float
+default: 1
+valid_choices: positive float ratio; CPU KV block count = int(ratio * gpu_num_blocks)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This parameter is a sub-field of kv_connector_extra_config for the
+
+  PreemptOffloadConnector (a vllm-ascend KV connector used for preemption offload,
+
+  typically on P/D-disaggregated Decode nodes). It controls the size of the host
+
+  (CPU) KV cache relative to the NPU (GPU) KV cache: the connector allocates
+
+  int(offload_host_memory_ratio * gpu_num_blocks) CPU KV blocks. When a request is
+
+  preempted (e.g. due to NPU KV cache pressure), its KV blocks are offloaded to host
+
+  memory instead of being recomputed. A larger ratio means more preempted requests
+
+  can be retained in CPU memory and later restored, reducing recomputation cost and
+
+  improving effective throughput under memory pressure; a smaller ratio means less
+
+  host memory consumption but more recomputation (higher latency, lower throughput)
+
+  when preemption occurs. It only takes effect when neither cpu_bytes_to_use_per_rank
+
+  nor cpu_bytes_to_use is set (byte-based options have higher priority). It does not
+
+  affect NPU compute directly; its impact is indirect via preemption/recompute
+
+  behavior and host memory footprint.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/preempt_offload_connector.md:50
+  context: Documents offload_host_memory_ratio as optional ratio between CPU and GPU KV block counts, used only when no byte-based
+    option is set, default 1.
+- file: docs/source/user_guide/feature_guide/preempt_offload_connector.md:65
+  context: Explains default ratio=1 allocates one CPU KV block per GPU KV block; other ratios scale capacity without computing
+    physical byte size.
+- file: docs/source/user_guide/feature_guide/preempt_offload_connector.md:297
+  context: 'Troubleshooting guidance: set offload_host_memory_ratio when byte-based options are omitted; default 1 creates
+    equal CPU and GPU KV block counts.'
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Must be set to PreemptOffloadConnector for this extra config field to be read.
+- name: kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use_per_rank
+  relation: Higher priority; if set, offload_host_memory_ratio is ignored.
+- name: kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use
+  relation: Higher priority; if set (and per-rank absent), offload_host_memory_ratio is ignored.
+- name: kv_transfer_config.kv_connector_extra_config.enable_offload_prefix_caching
+  relation: Companion option controlling CPU block sharing; interacts with effective CPU cache utilization.
+- name: scheduler_config.recompute_scheduler_enable
+  relation: Must be enabled in additional-config on P/D-disaggregated Decode nodes for the offload path.
+constraints:
+- offload_host_memory_ratio is only used when neither cpu_bytes_to_use_per_rank nor cpu_bytes_to_use is set; byte-based options
+  take precedence.
+- kv_connector must be set to PreemptOffloadConnector for this extra config field to have any effect.
+- The value must be a positive ratio; the resulting CPU block count is int(ratio * gpu_num_blocks).
+tuning_advice:
+  summary: Use offload_host_memory_ratio to size the host KV cache when byte-based budgets are not specified; raise it to
+    reduce recomputation under preemption, lower it to save host RAM.
+  suggested_values:
+  - scenario: Default / minimal host memory footprint, low preemption expected
+    value: 1
+    reason: Default allocates one CPU KV block per GPU KV block; sufficient when preemption is rare and host RAM is limited.
+  - scenario: High NPU KV cache pressure with frequent preemption, ample host RAM
+    value: 2
+    reason: Doubling CPU blocks retains more preempted requests, reducing recomputation and improving effective throughput
+      at the cost of host memory.
+  - scenario: Precise capacity control or heterogeneous ranks
+    value: use cpu_bytes_to_use_per_rank instead
+    reason: Byte-based options have higher priority and give deterministic per-rank capacity; prefer them over the ratio for
+      production deployments.
+  caveats:
+  - Ignored if cpu_bytes_to_use_per_rank or cpu_bytes_to_use is set.
+  - Large ratios consume host RAM proportional to NPU KV block count; monitor host memory.
+  - No throughput benefit if the workload does not trigger preemption.
+  - Requires kv_connector=PreemptOffloadConnector and, on Decode nodes, recompute_scheduler_enable in additional-config.
+  quick_guide: Leave at 1 unless you see preemption-driven recompute; then raise it (e.g. 2) if host RAM allows, or switch
+    to cpu_bytes_to_use_per_rank for precise control.
+analysis_date: '2026-10-27'

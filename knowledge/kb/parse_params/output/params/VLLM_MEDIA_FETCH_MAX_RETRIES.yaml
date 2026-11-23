@@ -1,0 +1,99 @@
+name: VLLM_MEDIA_FETCH_MAX_RETRIES
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:973
+- vllm/envs.py:77
+- vllm/connections.py:246
+- vllm/connections.py:292
+value_type: int
+default: 3
+valid_choices: integer >= 1 (values below 1 are clamped to 1 via max(..., 1))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only controls the retry loop for fetching remote media (images,
+
+  audio, video) from URLs in multimodal serving, implemented in
+
+  vllm/connections.py via the _sync_retry and _async_retry decorators. At
+
+  vllm/connections.py:246 and :292, max_retries = max(envs.VLLM_MEDIA_FETCH_MAX_RETRIES, 1)
+
+  bounds the number of attempts. Each attempt uses a per-attempt timeout of
+
+  base_timeout * (_RETRY_BACKOFF_FACTOR ** attempt), and on a retryable failure
+
+  the code sleeps for backoff = _RETRY_BACKOFF_FACTOR ** attempt before retrying.
+
+  Therefore a higher value increases worst-case wall-clock latency for a request
+
+  whose media URL is slow or flaky (more attempts, each with a larger timeout,
+
+  plus cumulative sleep), while a lower value fails faster. It does not touch
+
+  NPU compute, HCCL communication, KV cache, or model execution at all — the
+
+  retry happens in the API-server/input-processing HTTP fetch path before any
+
+  NPU work. There is no vllm-ascend override of this parameter; it is a pure
+
+  upstream vLLM env var and behaves identically on Ascend. Impact on Ascend NPU
+
+  runtime is therefore low and indirect: "it only affects end-to-end request"
+
+  latency for multimodal inputs with remote media URLs, not throughput or NPU
+
+  memory.
+
+  '
+usage_locations:
+- file: vllm/envs.py:973
+  context: Definition of VLLM_MEDIA_FETCH_MAX_RETRIES env var, default 3, parsed as int
+- file: vllm/envs.py:77
+  context: 'Type stub declaration VLLM_MEDIA_FETCH_MAX_RETRIES: int = 3'
+- file: vllm/connections.py:246
+  context: Sync retry decorator computes max_retries = max(envs.VLLM_MEDIA_FETCH_MAX_RETRIES, 1) and loops with exponential
+    backoff
+- file: vllm/connections.py:292
+  context: Async retry decorator computes max_retries = max(envs.VLLM_MEDIA_FETCH_MAX_RETRIES, 1) and loops with exponential
+    backoff
+related_parameters:
+- name: VLLM_IMAGE_FETCH_TIMEOUT
+  relation: Base timeout for image fetch; each retry multiplies this by the backoff factor
+- name: VLLM_VIDEO_FETCH_TIMEOUT
+  relation: Base timeout for video fetch; each retry multiplies this by the backoff factor
+- name: VLLM_AUDIO_FETCH_TIMEOUT
+  relation: Base timeout for audio fetch; each retry multiplies this by the backoff factor
+- name: VLLM_MEDIA_CACHE
+  relation: Caching reduces the need to re-fetch media, lowering the practical importance of retries
+- name: VLLM_MEDIA_URL_ALLOW_REDIRECTS
+  relation: Redirect handling affects whether a fetch succeeds on first attempt, influencing retry frequency
+constraints:
+- Values below 1 are clamped to 1, so setting 0 does not disable fetching but results in a single attempt.
+- Only retryable exceptions trigger a retry; non-retryable errors are raised immediately regardless of this value.
+tuning_advice:
+  summary: Keep the default (3) for typical multimodal serving; lower it for latency-sensitive deployments and raise it only
+    when media hosts are known to be flaky.
+  suggested_values:
+  - scenario: Default multimodal serving with reasonably reliable media hosts
+    value: 3
+    reason: Default balances resilience against transient fetch failures with bounded worst-case latency.
+  - scenario: Latency-sensitive online serving where failing fast is preferred
+    value: 1
+    reason: Single attempt avoids the quadrupling timeout and cumulative sleep of retries, minimizing tail latency at the
+      cost of resilience.
+  - scenario: Batch/offline processing against unreliable or rate-limited media hosts
+    value: 5
+    reason: More attempts absorb transient slowness/failures, acceptable because offline latency is less critical.
+  caveats:
+  - Because each retry multiplies the timeout by the backoff factor, raising this value can multiply worst-case latency; pair
+    with a sensible VLLM_IMAGE_FETCH_TIMEOUT/VLLM_VIDEO_FETCH_TIMEOUT.
+  - Enable VLLM_MEDIA_CACHE to avoid repeated fetches and reduce reliance on retries.
+  - This setting does not affect Ascend NPU throughput or memory; do not expect NPU-level gains from tuning it.
+  quick_guide: Leave at 3; set to 1 for fail-fast latency-sensitive serving, raise to 5 only for flaky media hosts in offline
+    jobs.
+analysis_date: '2026-10-27'

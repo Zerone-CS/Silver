@@ -1,0 +1,84 @@
+name: VLLM_ASCEND_ENABLE_MLAPO
+type: env
+category: model
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/configuration/additional_config.md:21
+- docs/source/user_guide/configuration/additional_config.md:70
+- docs/source/_templates/Model-Deployment-Tutorial-Template.md:275
+value_type: bool
+default: true
+valid_choices:
+- '0'
+- '1'
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'VLLM_ASCEND_ENABLE_MLAPO is the legacy environment-variable form of the
+
+  `enable_mlapo` field in vllm-ascend''s additional_config. Per the vllm-ascend
+
+  documentation (additional_config.md:70), the legacy env var is "no longer
+
+  supported" — the setting is now controlled via `--additional-config
+
+  ''{"enable_mlapo": true}''` and defaults to True. MLAPO (Model Layer-wise
+
+  Adaptive Parallel Optimization) is a model-specific optimization for MLA
+
+  models (e.g. DeepSeek) that improves throughput on A3 co-located
+
+  high-throughput nodes and PD decode nodes, at the cost of additional NPU
+
+  memory. Because the env var is deprecated and ignored by current code, its
+
+  runtime effect is now mediated entirely through the `enable_mlapo` config
+
+  key; setting the env var alone will not change behavior on current
+
+  vllm-ascend builds.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/configuration/additional_config.md:21
+  context: Quick reference table mapping legacy env var VLLM_ASCEND_ENABLE_MLAPO to config key enable_mlapo
+- file: docs/source/user_guide/configuration/additional_config.md:70
+  context: enable_mlapo config field description; states legacy VLLM_ASCEND_ENABLE_MLAPO env var is no longer supported
+- file: docs/source/_templates/Model-Deployment-Tutorial-Template.md:275
+  context: Deployment tutorial example showing MLAPO enabled via export VLLM_ASCEND_ENABLE_MLAPO=1 for A3 co-located / PD
+    decode nodes
+related_parameters:
+- name: enable_mlapo
+  relation: Replacement config key in additional_config; the env var is the deprecated alias for this field
+- name: mlapo_keep_prefill_weights
+  relation: Related MLAPO option controlling whether prefill weights are kept on NPU on decode-only nodes (trades memory for
+    stability)
+constraints:
+- The legacy VLLM_ASCEND_ENABLE_MLAPO environment variable is no longer supported; use the enable_mlapo field in --additional-config
+  instead.
+- MLAPO is a model-specific optimization intended for MLA-based models such as DeepSeek; it does not apply to non-MLA architectures.
+tuning_advice:
+  summary: Use the enable_mlapo additional-config key (default True) rather than the deprecated VLLM_ASCEND_ENABLE_MLAPO env
+    var; enable on A3 co-located high-throughput or PD decode nodes for MLA models.
+  suggested_values:
+  - scenario: A3 co-located high-throughput deployment with MLA model (e.g. DeepSeek)
+    value: '{"enable_mlapo": true}'
+    reason: MLAPO improves throughput on A3 co-located nodes per the deployment tuning guidance.
+  - scenario: PD-disaggregated deployment, decode (D) nodes
+    value: '{"enable_mlapo": true}'
+    reason: Docs recommend enabling MLAPO on decode nodes only in PD scenarios.
+  - scenario: Memory-constrained deployment or non-MLA model
+    value: '{"enable_mlapo": false}'
+    reason: MLAPO consumes more NPU memory and only benefits MLA models; disable to save memory when not applicable.
+  caveats:
+  - 'The VLLM_ASCEND_ENABLE_MLAPO env var is deprecated and ignored on current vllm-ascend; setting it alone has no effect
+    — use --additional-config ''{"enable_mlapo": true}''.'
+  - MLAPO consumes more NPU memory; in PD scenarios enable it on decode nodes only.
+  - 'On decode-only nodes, freeing MLAPO prefill weights can crash local-prefill paths (issue #11882); consider mlapo_keep_prefill_weights
+    to trade memory for stability.'
+  quick_guide: 'Prefer --additional-config ''{"enable_mlapo": true}'' over the deprecated VLLM_ASCEND_ENABLE_MLAPO env var;
+    enable for MLA models on A3/PD decode nodes, watch NPU memory.'
+analysis_date: '2026-10-27'

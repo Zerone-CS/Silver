@@ -1,0 +1,82 @@
+name: kv_transfer_config.kv_connector_extra_config.layerwise_max_transfer_bytes
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/mooncake_layerwise_adaptation_and_optimization.md:135
+value_type: int
+default: <computed>
+valid_choices: positive integer (byte count); no explicit upper bound documented
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is a nested key inside kv_transfer_config.kv_connector_extra_config, consumed by the
+
+  Mooncake layerwise KV-transfer connector in vllm-ascend (documented in
+
+  mooncake_layerwise_adaptation_and_optimization.md). No definition or usage site was found in
+
+  the provided vllm or vllm-ascend source context, so the mechanism is derived from the
+
+  documentation: "layerwise_max_transfer_bytes splits an oversized contiguous KV segment into"
+
+  smaller ranges before issuing range-based transfer API calls (GetStart/GetEnd/PutStart and
+
+  scheduler exists queries). By capping the byte size of each contiguous range, it bounds the
+
+  size of Python/C++ argument lists and transient metadata allocations during layerwise KV
+
+  transfer. On Ascend NPU this affects the KV-transfer path between prefill and decode
+
+  instances: "overly large ranges can cause transient metadata memory spikes and larger"
+
+  per-call latency (argument marshalling overhead), while overly small ranges increase the
+
+  number of API round-trips and per-call overhead, raising end-to-end transfer latency.
+
+  It does not change model compute or HCCL collective behavior directly; its effect is on the
+
+  disaggregated KV-cache transfer efficiency and host-side memory churn.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/mooncake_layerwise_adaptation_and_optimization.md:135
+  context: Documents that layerwise_max_transfer_bytes splits an oversized contiguous segment into smaller ranges for range-based
+    transfer calls.
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.layerwise_max_transfer_blocks
+  relation: Companion throttling knob; limits key/block rows per range API call, while this parameter limits bytes per contiguous
+    segment. They jointly bound per-call payload size.
+- name: kv_transfer_config.kv_connector
+  relation: Must select the Mooncake layerwise connector for this extra_config key to take effect.
+- name: kv_transfer_config.kv_role
+  relation: Determines whether the instance is producer (prefill) or consumer (decode) in the disaggregated KV-transfer setup
+    where this throttling applies.
+constraints:
+- This key only has an effect when the Mooncake layerwise KV connector is configured via kv_transfer_config.kv_connector.
+- The value must be a positive integer byte count; a value of zero or negative would make range splitting meaningless or invalid.
+tuning_advice:
+  summary: Tune layerwise_max_transfer_bytes together with layerwise_max_transfer_blocks to balance KV-transfer latency against
+    transient metadata memory spikes in Mooncake layerwise disaggregated serving on Ascend NPU.
+  suggested_values:
+  - scenario: Long prompts / large contiguous KV segments causing metadata spikes or oversized argument lists
+    value: 8388608
+    reason: Splitting large segments into ~8MB ranges bounds per-call metadata and argument-list size, avoiding transient
+      memory spikes during layerwise transfer.
+  - scenario: Latency-sensitive decode with many small transfers where per-call overhead dominates
+    value: 33554432
+    reason: Larger ranges reduce the number of range API round-trips, lowering per-call overhead when metadata spikes are
+      not a concern.
+  caveats:
+  - Setting the value too small increases the number of range API calls, raising per-transfer latency due to per-call overhead.
+  - Setting the value too large reintroduces oversized Python/C++ argument lists and transient metadata memory spikes that
+    this parameter is meant to prevent.
+  - This parameter is only relevant to the Mooncake layerwise KV connector; it has no effect with other KV connectors.
+  - No source definition was found in the provided context; verify the exact key name and accepted range against the installed
+    vllm-ascend version.
+  quick_guide: Cap contiguous KV-transfer range size (e.g. 8-32MB) to trade fewer round-trips against metadata memory spikes
+    in Mooncake layerwise disaggregation.
+analysis_date: '2026-10-27'

@@ -1,0 +1,109 @@
+name: speculative.target_model_config
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/vllm.py:1232
+- vllm/config/speculative.py:1
+- tests/ut/patch/platform/test_patch_engram_config.py:78
+- tests/ut/test_minimax_m3_kv_block_size.py:116
+value_type: dict
+default: <computed>
+valid_choices: Any valid ModelConfig object (resolved from the target model when speculative decoding is enabled)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- throughput
+impact_detail: 'speculative.target_model_config is not a user-facing tunable; it is a derived field on
+
+  SpeculativeConfig that holds the ModelConfig of the target (verifier) model. It is populated
+
+  during SpeculativeConfig construction from the main model_config and is read by downstream
+
+  logic that needs the target model''s properties when the draft model differs.
+
+
+  In upstream vLLM (vllm/config/vllm.py:1228-1232), _resolve_and_verify_engram_config checks
+
+  whether model_config is the draft_model_config; if so it substitutes
+
+  speculative_config.target_model_config so that Engram validation runs against the target
+
+  model''s architecture and hf_text_config (e.g. engram_layer_ids). This is a correctness
+
+  guard, not a performance knob: it can raise ValueError if DeepSeek V4.1 Engram is combined
+
+  with DBO/microbatching, but it does not itself change throughput or memory.
+
+
+  In vllm-ascend, the field is only referenced in unit tests
+
+  (tests/ut/patch/platform/test_patch_engram_config.py:78 constructs a SimpleNamespace with
+
+  target_model_config to exercise _validate_engram_config; tests/ut/test_minimax_m3_kv_block_size.py:116
+
+  uses it to verify that a separate draft model does not reset the shared KV cache block size).
+
+  The MiniMax M3 test shows the field participates in block-size refresh logic: "when the draft"
+
+  model is separate from the target, refresh_block_size must not reset the shared cache block
+
+  size (128 for MiniMaxM3SparseForCausalLM). This indirectly affects KV cache memory layout and
+
+  thus memory footprint, but the value is derived, not set by the user.
+
+
+  Net effect on Ascend NPU runtime: "low. The field is a configuration-resolution artifact that"
+
+  feeds validation and block-size decisions; it does not directly control scheduling, HCCL
+
+  communication, or kernel selection. Its indirect influence is through correct block-size and
+
+  Engram validation, which if mis-resolved could cause errors or suboptimal KV cache sizing.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1232
+  context: Substitutes target_model_config for model_config when validating Engram settings for a draft model
+- file: tests/ut/patch/platform/test_patch_engram_config.py:78
+  context: Ascend unit test builds a SimpleNamespace with target_model_config to exercise _validate_engram_config
+- file: tests/ut/test_minimax_m3_kv_block_size.py:116
+  context: Ascend unit test verifies separate draft model does not reset shared KV cache block size
+related_parameters:
+- name: speculative_config.draft_model_config
+  relation: Companion field; target_model_config is the verifier model config while draft_model_config is the proposer model
+    config
+- name: speculative_config.model
+  relation: The draft model string that triggers construction of SpeculativeConfig and population of target_model_config
+- name: engram_config
+  relation: Engram validation uses target_model_config when the draft model is being validated
+- name: cache_config.block_size
+  relation: Block-size refresh logic consults target/draft model configs to decide whether to reset shared cache block size
+constraints:
+- This field is derived automatically from the target model when speculative decoding is enabled and cannot be set directly
+  via CLI.
+- When the draft model is separate from the target, Engram validation runs against target_model_config, so the target model's
+  architecture and engram_layer_ids determine whether DBO/microbatching is rejected.
+- DeepSeek V4.1 Engram with a target model that has engram_layer_ids cannot be combined with DBO or microbatching; the validation
+  raises ValueError.
+tuning_advice:
+  summary: No direct tuning is needed; ensure speculative decoding is configured correctly so target_model_config resolves
+    to the intended verifier model.
+  suggested_values:
+  - scenario: Standard speculative decoding on Ascend with a separate draft model
+    value: <auto-resolved from --model>
+    reason: The field is populated from the target model config automatically; users should not override it.
+  - scenario: DeepSeek V4.1 Engram target model with speculative decoding
+    value: <auto-resolved; disable --enable-dbo and set --ubatch-size 0>
+    reason: Engram validation against target_model_config rejects DBO/microbatching, so these must be disabled to avoid ValueError.
+  caveats:
+  - Do not attempt to set this field via CLI or config JSON; it is derived during SpeculativeConfig construction.
+  - If you see Engram-related ValueError with speculative decoding, check whether the target model has engram_layer_ids and
+    disable DBO/microbatching.
+  - For MiniMax M3 on Ascend, verify block_size remains 128 when using a separate draft model; incorrect target/draft resolution
+    could alter KV cache memory.
+  quick_guide: Leave speculative.target_model_config at its auto-resolved value; it is a derived config field, not a performance
+    knob.
+analysis_date: '2026-10-27'

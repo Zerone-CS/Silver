@@ -1,0 +1,76 @@
+name: kv_transfer.kv_connector_module_path
+type: nested
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/distributed/kv_transfer/kv_connector/factory.py:102
+value_type: str
+default: null
+valid_choices: Any importable Python module path (dotted notation); empty string is rejected
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only controls *which* KV connector class is dynamically imported
+
+  (vllm/distributed/kv_transfer/kv_connector/factory.py:102-121). When set, the
+
+  factory imports the given module via importlib.import_module and resolves the
+
+  class named by kv_connector from that module, taking priority over the internal
+
+  registry. The import happens once at connector construction time, so it has no
+
+  per-token or per-request runtime cost. Any performance effect is entirely
+
+  indirect: "it determines which KV connector implementation (and therefore which"
+
+  transfer backend, e.g. a custom Ascend-aware connector) is used, which in turn
+
+  affects KV cache transfer latency/throughput. The parameter itself does not
+
+  change scheduling, memory allocation, or compute on the NPU. No vllm-ascend
+
+  override of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/distributed/kv_transfer/kv_connector/factory.py:102
+  context: Reads kv_connector_module_path from KVTransferConfig to decide whether to import an external connector module instead
+    of the internal registry.
+- file: vllm/distributed/kv_transfer/kv_connector/factory.py:107
+  context: importlib.import_module(connector_module_path) dynamically loads the external module.
+- file: vllm/distributed/kv_transfer/kv_connector/factory.py:109
+  context: getattr(connector_module, connector_name) resolves the connector class by the kv_connector name.
+related_parameters:
+- name: kv_transfer.kv_connector
+  relation: The class name resolved via getattr from the imported module; must match an attribute in the module.
+- name: kv_transfer.kv_role
+  relation: Determines producer/consumer role of the connector; used together with the loaded connector class.
+- name: kv_transfer.kv_connector_extra_config
+  relation: Passed to the loaded connector for backend-specific configuration.
+constraints:
+- kv_connector_module_path cannot be an empty string; an empty string raises ValueError.
+- The module path must be importable by Python (importlib.import_module); a non-importable path raises ImportError.
+- The imported module must contain an attribute whose name equals kv_connector, otherwise AttributeError is raised.
+- External v1 KV connectors must accept kv_cache_config as the third constructor argument and pass it to super().__init__();
+  the deprecated 2-argument signature is rejected.
+- Only supported in V1 (per the parameter hint); not applicable to the v2 worker path.
+tuning_advice:
+  summary: Use only when you need a custom KV connector implementation; otherwise leave unset and rely on the built-in registry.
+  suggested_values:
+  - scenario: Using a built-in vLLM/vllm-ascend KV connector
+    value: unset
+    reason: Leave unset so the internal registry resolves the connector by kv_connector name; avoids import overhead and misconfiguration.
+  - scenario: Deploying a custom Ascend-aware KV connector module
+    value: my_package.my_kv_connector
+    reason: Set to the dotted module path containing the connector class named by kv_connector; the class must accept kv_cache_config
+      as the third constructor argument.
+  caveats:
+  - Ensure the module is on PYTHONPATH in every worker process, including prefill/decode instances.
+  - Verify the connector class name matches kv_connector exactly, since resolution uses getattr on that name.
+  - Confirm the custom connector is compatible with Ascend NPU KV transfer (HCCL) before relying on it for performance.
+  quick_guide: Set kv_connector_module_path only for custom connectors; otherwise leave it unset.
+analysis_date: '2026-10-27'

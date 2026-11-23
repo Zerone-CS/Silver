@@ -1,0 +1,85 @@
+name: VLLM_MEDIA_CACHE_MAX_SIZE_MB
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:963
+- vllm/envs.py:75
+- vllm/envs.py:2312
+- vllm/multimodal/media/connector.py:217
+value_type: int
+default: 5120
+valid_choices: positive integer (MB); no explicit upper bound enforced in code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only takes effect when VLLM_MEDIA_CACHE is set to a non-empty,
+
+  writable directory (see connector.py:208-218). It is read once at connector
+
+  construction time and converted to bytes:
+
+  self._media_cache_max_bytes = envs.VLLM_MEDIA_CACHE_MAX_SIZE_MB * 1024 * 1024.
+
+  The value bounds an on-disk LRU cache of downloaded media (images/video/audio
+
+  fetched from URLs). When the cache exceeds this size, least-recently-used
+
+  entries are evicted (per the envs.py comment). Its performance effect is
+
+  indirect: "a larger cache retains more fetched media, avoiding repeated network"
+
+  downloads and thus reducing request latency for repeated media URLs; a smaller
+
+  cache forces more re-fetches. It does NOT affect NPU compute, HCCL
+
+  communication, KV cache, or model execution. There is no vllm-ascend override
+
+  of this parameter — it is a pure upstream vLLM API-server-side media handling
+
+  knob and is device-agnostic (works identically on Ascend since it operates on
+
+  the host filesystem/network, not the NPU).
+
+  '
+usage_locations:
+- file: vllm/multimodal/media/connector.py:217
+  context: Converts MB value to bytes for the media cache max size when VLLM_MEDIA_CACHE is enabled and writable.
+- file: vllm/envs.py:963
+  context: Environment variable definition with default 5120 MB.
+- file: vllm/envs.py:2312
+  context: Listed among env vars propagated to worker processes.
+related_parameters:
+- name: VLLM_MEDIA_CACHE
+  relation: Master switch; if empty/unset or path not writable, this max-size value is ignored and caching is disabled.
+- name: VLLM_MEDIA_CACHE_TTL_HOURS
+  relation: Companion eviction policy; entries older than TTL are evicted regardless of size.
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Per-download size cap; bounds individual entries stored in the cache.
+constraints:
+- This value has no effect unless VLLM_MEDIA_CACHE is set to a non-empty, writable directory.
+- The value is interpreted as megabytes and multiplied by 1024*1024 to derive the byte limit.
+tuning_advice:
+  summary: 'Leave at default unless serving repeated remote media URLs; increase to reduce re-download latency, decrease to
+    bound disk usage.
+
+    '
+  suggested_values:
+  - scenario: Default / mixed workloads with occasional remote media
+    value: 5120
+    reason: Default 5 GB balances disk usage against re-download avoidance for typical multimodal serving.
+  - scenario: High-volume serving of repeated image/video URLs (latency-sensitive)
+    value: 20480
+    reason: Larger cache retains more fetched media, cutting repeated network fetches and reducing per-request latency.
+  - scenario: Disk-constrained host or one-off media
+    value: 1024
+    reason: Smaller footprint when disk is limited or media is rarely reused; eviction cost is low.
+  caveats:
+  - Applies to both v1 and v2 Ascend worker paths identically — it is host-side and device-agnostic.
+  - Must set VLLM_MEDIA_CACHE to a writable directory first, otherwise this value is ignored.
+  - Ensure the cache directory has disk capacity matching the configured MB limit.
+  quick_guide: Set VLLM_MEDIA_CACHE first, then size the cache with VLLM_MEDIA_CACHE_MAX_SIZE_MB (default 5120 MB) based on
+    media reuse and disk budget.
+analysis_date: '2026-10-27'

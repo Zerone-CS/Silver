@@ -1,0 +1,132 @@
+name: additional_config.scheduler_config.dyntra_lb_config.enabled
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1586
+- vllm_ascend/ascend_config.py:524
+- vllm_ascend/platform.py:1079
+- vllm_ascend/patch/platform/patch_engine_core.py:34
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:73
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: 'DyntraLB (Dynamic Traffic Load Balancing) is an Ascend-only scheduler extension that
+
+  rebalances decode requests across data-parallel ranks within a single node. When
+
+  `dyntra_lb_config.enabled` is true, `vllm_ascend/platform.py:1079` validates the
+
+  deployment shape and `vllm_ascend/patch/platform/patch_engine_core.py:34` swaps the
+
+  upstream `DPEngineCoreProc` for `DyntraLBDPEngineCoreProc`. That subclass
+
+  (`patch_dyntra_lb_core.py:324`) reads the sibling knobs (mode, start_step, end_step,
+
+  bubble_threshold, long_req_block_threshold, dynamic_max_step) in `_init_data_parallel`
+
+  and then, during the engine loop, measures per-rank bubble time and long-request
+
+  blocking, and issues cross-rank request migrations to equalize attention KV-cache load.
+
+  The mechanism directly targets DP imbalance: "on a PD-disaggregated decode node with"
+
+  data_parallel_size > 1, uneven KV-cache occupancy across DP ranks causes some ranks to
+
+  finish early (bubble) while others are still decoding, wasting NPU cycles. By moving
+
+  requests from overloaded to underloaded ranks, DyntraLB raises aggregate decode
+
+  throughput and reduces tail latency. The cost is per-step bookkeeping (bubble timing,
+
+  long-request tracking) and the migration overhead itself, which is why it is gated by
+
+  start_step/end_step and bubble_threshold. When false (default), the upstream
+
+  DPEngineCoreProc is used unchanged and no balancing occurs. It is mutually exclusive
+
+  with `enable_balance_scheduling` and interacts with `recompute_scheduler_enable`
+
+  (both true selects the combined DyntraLB recompute scheduler).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1586
+  context: DyntraLBConfig dataclass field definition, default False
+- file: vllm_ascend/ascend_config.py:524
+  context: Default additional_config schema entry under scheduler_config.dyntra_lb_config
+- file: vllm_ascend/platform.py:1079
+  context: 'NPUPlatform validation gate: checks PD-disaggregated D node, dp_size>1, mutual exclusion with enable_balance_scheduling'
+- file: vllm_ascend/platform.py:1136
+  context: Passes dyntra_lb_enabled into recompute scheduler class selection
+- file: vllm_ascend/patch/platform/patch_engine_core.py:34
+  context: Swaps DPEngineCoreProc to DyntraLBDPEngineCoreProc when enabled
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:73
+  context: _dyntra_lb_enabled helper reads the flag to gate balancing logic
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:341
+  context: DyntraLBDPEngineCoreProc._init_data_parallel reads sibling config and logs enabled state
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: Selects static vs dynamic balancing strategy; only meaningful when enabled=true
+- name: additional_config.scheduler_config.dyntra_lb_config.start_step
+  relation: Step at which balancing begins; only used when enabled=true
+- name: additional_config.scheduler_config.dyntra_lb_config.end_step
+  relation: Step at which balancing stops (-1 = never); only used when enabled=true
+- name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+  relation: Bubble-time threshold that triggers rebalancing; only used when enabled=true
+- name: additional_config.scheduler_config.dyntra_lb_config.long_req_block_threshold
+  relation: Long-request blocking threshold; only used when enabled=true
+- name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+  relation: Max steps for dynamic mode; only used when enabled=true and mode=dynamic
+- name: additional_config.scheduler_config.enable_balance_scheduling
+  relation: Mutually exclusive; enabling both raises ValueError
+- name: additional_config.scheduler_config.recompute_scheduler_enable
+  relation: Independent sibling; both true selects combined DyntraLB recompute scheduler
+- name: kv_transfer_config.kv_role
+  relation: Must be 'kv_consumer' (PD-disaggregated D node) for DyntraLB to be valid
+- name: parallel_config.data_parallel_size
+  relation: Must be > 1 for DyntraLB to be valid
+constraints:
+- DyntraLB is only supported on PD-disaggregated decode nodes where kv_role='kv_consumer'; enabling it on prefill or PD-mixed
+  nodes raises ValueError.
+- data_parallel_size must be greater than 1; enabling DyntraLB with data_parallel_size <= 1 raises ValueError.
+- DyntraLB cannot be combined with enable_balance_scheduling; enabling both raises ValueError.
+- DyntraLB balances across data-parallel ranks within one node only; it is not available across multiple DP nodes.
+- dyntra_lb_config.mode must be one of 'static' or 'dynamic'.
+- dyntra_lb_config.start_step must be >= 0.
+- dyntra_lb_config.end_step must be -1 or >= 0, and when set must be greater than start_step.
+- dyntra_lb_config.bubble_threshold must be > 0.
+- dyntra_lb_config.long_req_block_threshold must be > 0.
+- dyntra_lb_config.dynamic_max_step must be > 0.
+- Unknown keys under additional_config are rejected (extra='forbid'); a typo in the dyntra_lb_config block fails fast.
+tuning_advice:
+  summary: Enable DyntraLB only on PD-disaggregated decode nodes with data_parallel_size > 1 and skewed decode load, using
+    dynamic mode for production.
+  suggested_values:
+  - scenario: Production PD-disaggregated decode node with dp_size > 1 and variable request lengths
+    value: true
+    reason: Balances attention KV-cache load across DP ranks, raising aggregate decode throughput and reducing tail latency
+      when ranks are imbalanced.
+  - scenario: Uniform/short decode workloads or single-DP-rank deployments
+    value: false
+    reason: No imbalance to correct; the per-step bookkeeping and migration overhead would only add cost. Also required since
+      dp_size must be > 1.
+  - scenario: Benchmarking or short runs where balancing should not kick in
+    value: false
+    reason: Avoids migration overhead during measurement; alternatively keep enabled but set start_step high and end_step
+      to bound the active window.
+  caveats:
+  - Must be on a kv_role='kv_consumer' D node with data_parallel_size > 1; otherwise platform validation raises ValueError.
+  - Cannot be combined with enable_balance_scheduling.
+  - Pair with mode='dynamic' (recommended for production) and tune bubble_threshold/long_req_block_threshold to the workload's
+    request-length distribution.
+  - Verified models are Qwen3-30B and Qwen3.5-35B; validate on other models before relying on it.
+  quick_guide: Set dyntra_lb_config.enabled=true only on PD-disaggregated decode nodes with dp_size>1 and skewed load; keep
+    false otherwise.
+analysis_date: '2026-10-27'

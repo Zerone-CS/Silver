@@ -1,0 +1,98 @@
+name: --pooler-config
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:944
+- vllm/engine/arg_utils.py:700
+- vllm/engine/arg_utils.py:1874
+- vllm/config/model.py:387
+- vllm/config/model.py:455
+- vllm/config/vllm.py:1730
+- vllm/config/vllm.py:2636
+- vllm/v1/engine/core.py:135
+- vllm/v1/engine/core.py:387
+value_type: dict
+default: null
+valid_choices: PoolerConfig object (fields such as pooling_type, normalize, softmax, step_tag_id, returned_token_ids, etc.)
+  or null
+cli_example: '--pooler-config ''{"pooling_type": "mean", "normalize": true}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "--pooler-config is a ModelConfig field (vllm/config/model.py:387) that controls output\npooling behavior for\
+  \ pooling/embedding models (runner_type == \"pooling\"). It is passed\nthrough EngineArgs into ModelConfig (vllm/engine/arg_utils.py:1874)\
+  \ and is only consumed\nwhen the model runs in pooling mode.\n\nOn the runtime path, the parameter has two observable effects:\n\
+  1. Compilation/graph mode interaction (vllm/config/vllm.py:1730): when\n   compilation_config.cudagraph_mode has full cudagraphs\
+  \ AND model_config.pooler_config\n   is not None, vLLM logs a warning and forces cudagraph_mode to PIECEWISE. This is a\n\
+  \   correctness guard for pooling models (full cudagraphs are unsupported for pooling),\n   and it changes the graph capture\
+  \ strategy — which on Ascend maps to ACL graph capture\n   behavior. This is the only place where pooler_config influences\
+  \ a performance-relevant\n   code path (graph mode selection), and it is a downgrade, not a tuning knob.\n2. Logging only\
+  \ (vllm/v1/engine/core.py:387, _log_pooler_config): pooler_config is read\n   to log supported pooling tasks once; no runtime\
+  \ compute effect.\n\nThe actual pooling math (mean/cls/last-token pooling, normalization, softmax) is\nperformed inside\
+  \ the model's pooler implementation, not driven by this config object\nat the engine level. The config selects which pooling\
+  \ variant is applied, which can\nmarginally change the post-forward reduction cost, but this is negligible relative to\n\
+  the transformer forward pass.\n\nvllm-ascend: \"no override of pooler_config was found in the provided context. The only\"\
+  \nAscend-side references are in unit tests (tests/ut/core/test_recompute_scheduler_short_request_first.py:74\nsets model_config.pooler_config\
+  \ = MagicMock(); tests/ut/model_loader/rfork/test_identity_validation.py:150,189\npass pooler_config through a SimpleNamespace).\
+  \ These are test scaffolding, not runtime\nbehavior. No Ascend-specific env var, config patch, or monkey-patch alters pooler_config\n\
+  semantics. Therefore the upstream behavior (including the cudagraph downgrade guard)\napplies unchanged on Ascend.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:944
+  context: CLI argument registration for --pooler-config in the ModelConfig argument group
+- file: vllm/engine/arg_utils.py:700
+  context: EngineArgs field defaulting to ModelConfig.pooler_config
+- file: vllm/engine/arg_utils.py:1874
+  context: Passed into ModelConfig construction from EngineArgs
+- file: vllm/config/model.py:387
+  context: ModelConfig.pooler_config field definition (PoolerConfig | None)
+- file: vllm/config/model.py:455
+  context: Listed in ignored_factors for config hashing (excluded from hash)
+- file: vllm/config/vllm.py:1730
+  context: Forces cudagraph_mode to PIECEWISE when full cudagraphs requested with a pooler_config present
+- file: vllm/config/vllm.py:2636
+  context: Included in VllmConfig repr/logging
+- file: vllm/v1/engine/core.py:387
+  context: _log_pooler_config logs supported pooling tasks once; no compute effect
+- file: tests/ut/core/test_recompute_scheduler_short_request_first.py:74
+  context: Ascend unit test sets model_config.pooler_config = MagicMock() (test scaffolding only)
+- file: tests/ut/model_loader/rfork/test_identity_validation.py:150
+  context: Ascend unit test helper accepts pooler_config parameter (test scaffolding only)
+related_parameters:
+- name: --runner
+  relation: pooler_config only takes effect when runner is 'pooling' (runner_type == 'pooling'); ignored for generation models
+- name: compilation_config.cudagraph_mode
+  relation: If full cudagraphs are requested while pooler_config is set, cudagraph_mode is forcibly downgraded to PIECEWISE
+- name: --task
+  relation: Pooling tasks (embed, classify, score) determine whether pooling path and pooler_config are used
+constraints:
+- pooler_config only affects models running in pooling mode (runner_type == 'pooling'); it has no effect on generation models.
+- Pooling models do not support full cudagraphs; if cudagraph_mode requests full cudagraphs while pooler_config is set, vLLM
+  overrides cudagraph_mode to PIECEWISE.
+- pooler_config is excluded from the config hash (listed in ignored_factors), so changing it does not invalidate compiled-artifact
+  caching keys.
+tuning_advice:
+  summary: Leave --pooler-config at default (null) unless you run a pooling/embedding model and need to override pooling_type,
+    normalize, or softmax; it is not a throughput knob.
+  suggested_values:
+  - scenario: Standard embedding/classification model with model-provided pooling defaults
+    value: unset
+    reason: The model's own pooler configuration is inferred automatically; leaving it null avoids overriding correct defaults
+      and keeps the cudagraph guard behavior predictable.
+  - scenario: Embedding model requiring L2-normalized mean pooling (e.g. sentence embeddings)
+    value: '{"pooling_type": "mean", "normalize": true}'
+    reason: Explicitly selects mean pooling with normalization when the model config does not specify it; matches common embedding
+      serving requirements.
+  - scenario: Classification model needing softmax over class logits
+    value: '{"pooling_type": "cls", "softmax": true}'
+    reason: Enables softmax on CLS-token logits for classification tasks where probabilities are required.
+  caveats:
+  - Do not set --pooler-config on generation models; it is ignored and only adds confusion.
+  - If you rely on full cudagraphs for pooling workloads, be aware vLLM will downgrade to PIECEWISE when pooler_config is
+    present — plan performance expectations accordingly on Ascend.
+  - Pooling math cost is negligible; focus tuning effort on --max-model-len, --max-num-seqs, and graph mode instead.
+  quick_guide: Only set --pooler-config for pooling/embedding models when you must override pooling_type/normalize/softmax;
+    otherwise leave it null.
+analysis_date: '2026-10-27'

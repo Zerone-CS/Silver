@@ -1,0 +1,146 @@
+name: --enable-moe-shared-loras
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/lora.py:81
+- vllm/engine/arg_utils.py:640
+- vllm/engine/arg_utils.py:1510
+- vllm/lora/model_manager.py:137
+- vllm/lora/model_manager.py:800
+- vllm/lora/utils.py:378
+- vllm/lora/layers/fused_moe.py:56
+- vllm/lora/layers/fused_moe.py:147
+- vllm/model_executor/layers/fused_moe/experts/lora_context.py:49
+- vllm_ascend/lora/fused_moe.py:339
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: --enable-moe-shared-loras
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This flag changes the memory layout of MoE expert LoRA adapters. When enabled,
+
+  the gate/up (w1/w3) lora_A and down (w2) lora_B factors are stored once with
+
+  expert-dim 1 instead of per-expert, and are broadcast to the expert count at
+
+  kernel time via a stride-0 view (see lora_context.py:46-49 comment: "LoRAExpertsMixin
+
+  expands them to local_num_experts via a stride-0 view before the kernel").
+
+
+  Memory effect (upstream vllm): In vllm/lora/layers/fused_moe.py:153-160, the
+
+  `_w13_a_num_experts` and `_w2_b_num_experts` properties return 1 instead of
+
+  `local_num_experts` when the flag is set. This shrinks the w13 lora_A and w2
+
+  lora_B stacked buffers by a factor of local_num_experts, which for large MoE
+
+  models (e.g. 128-256 experts) is a substantial reduction in LoRA adapter memory
+
+  footprint. The w13 lora_B and w2 lora_A remain per-expert (only the "outer"
+
+  factors are shared).
+
+
+  Throughput effect: "The kernel-time broadcast via stride-0 view avoids a physical"
+
+  copy, so the LoRA GEMM reads the same shared factor for all experts. This can
+
+  reduce memory bandwidth pressure on the LoRA path (fewer distinct weight loads
+
+  from HBM), but the compute cost of the LoRA GEMM is unchanged. Net throughput
+
+  gain is modest and workload-dependent.
+
+
+  Ascend override (vllm-ascend): In vllm_ascend/lora/fused_moe.py:339, the
+
+  AscendFusedMoEWithLoRA constructor hard-codes `self.enable_moe_shared_loras = False`,
+
+  deliberately ignoring the upstream LoRAConfig value. The Ascend wrapper skips
+
+  FusedMoEWithLoRA.__init__ (which is GPU/Triton-only) and does not implement the
+
+  shared-outer layout. Therefore on Ascend NPU this flag has NO effect on the
+
+  Ascend-native MoE LoRA path — the shared layout is not honored, and adapters
+
+  are always loaded per-expert. The unit test tests/ut/lora/test_lora.py:55
+
+  asserts this hard-coded False. The flag still flows through LoRAConfig and
+
+  affects upstream model_manager packing logic (model_manager.py:800,
+
+  utils.py:391-400) which may run before the Ascend wrapper is constructed, but
+
+  the Ascend kernel path does not consume the shared layout.
+
+  '
+usage_locations:
+- file: vllm/config/lora.py:81
+  context: LoRAConfig field definition with docstring describing shared-outer layout
+- file: vllm/engine/arg_utils.py:640
+  context: EngineArgs field mapped from LoRAConfig.enable_moe_shared_loras
+- file: vllm/engine/arg_utils.py:1510
+  context: CLI argument registration in LoRAConfig argument group
+- file: vllm/lora/model_manager.py:137
+  context: Sets _enable_moe_shared_loras = is_moe and lora_config.enable_moe_shared_loras
+- file: vllm/lora/model_manager.py:800
+  context: Packs MoE expert adapters via PackedLoRALayerWeights.pack_moe_stacked when shared
+- file: vllm/lora/utils.py:378
+  context: process_packed_modules_mapping rewrites experts mapping to experts.w1/w2/w3
+- file: vllm/lora/layers/fused_moe.py:147
+  context: Passes enable_moe_shared_loras into MoELoRAContext
+- file: vllm/lora/layers/fused_moe.py:153
+  context: _w13_a_num_experts / _w2_b_num_experts return 1 when shared
+- file: vllm/model_executor/layers/fused_moe/experts/lora_context.py:49
+  context: MoELoRAContext field consumed by LoRAExpertsMixin stride-0 broadcast
+- file: vllm_ascend/lora/fused_moe.py:339
+  context: Ascend wrapper hard-codes enable_moe_shared_loras = False, ignoring config
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for this flag to have any effect; LoRA must be active
+- name: --enable-mixed-moe-lora-format
+  relation: Both affect MoE LoRA wrapper selection; mixed format forces 2D wrapper, shared loras changes packing layout
+- name: --max-loras
+  relation: Shared layout reduces per-adapter memory, allowing more adapters within max-loras budget
+- name: --max-lora-rank
+  relation: Memory savings from sharing scale with rank; larger rank benefits more
+- name: --enable-expert-parallel
+  relation: EP shards experts across ranks; shared layout interacts with local_num_experts used in buffer sizing
+constraints:
+- Only meaningful for MoE models whose adapters use the shared-outer layout; ignored for non-MoE models.
+- Requires --enable-lora to be set, otherwise LoRA is not active and the flag has no effect.
+- On Ascend NPU, vllm-ascend hard-codes enable_moe_shared_loras to False in AscendFusedMoEWithLoRA, so the shared layout is
+  not honored by the Ascend MoE LoRA kernel path.
+- The adapter checkpoint must actually use the shared-outer layout (w1/w3 lora_A and w2 lora_B stored once with expert-dim
+  1); enabling this flag for per-expert adapters will cause incorrect loading.
+tuning_advice:
+  summary: Enable only on GPU deployments serving MoE adapters in shared-outer layout to cut LoRA adapter memory; on Ascend
+    NPU this flag is a no-op due to vllm-ascend override.
+  suggested_values:
+  - scenario: GPU (upstream vllm) serving MoE LoRA adapters stored in shared-outer layout with many experts
+    value: true
+    reason: Reduces w13 lora_A and w2 lora_B buffer size by a factor of local_num_experts, freeing HBM for KV cache and allowing
+      more concurrent adapters.
+  - scenario: Ascend NPU (vllm-ascend) deployment
+    value: false
+    reason: vllm-ascend hard-codes enable_moe_shared_loras=False in AscendFusedMoEWithLoRA; setting the flag provides no benefit
+      and may cause adapter-loading mismatches if the checkpoint uses per-expert layout.
+  - scenario: MoE adapters stored per-expert (standard layout)
+    value: false
+    reason: The flag expects shared-outer layout; enabling it for per-expert adapters causes incorrect weight packing and
+      load failures.
+  caveats:
+  - On Ascend NPU this flag is neutralized by vllm-ascend; verify adapter layout matches the actual kernel path before relying
+    on memory savings.
+  - 'Combine with --max-loras tuning: shared layout frees memory that can be reallocated to more resident adapters.'
+  - Test adapter loading correctness after enabling — the packed mapping changes to experts.w1/w2/w3.
+  quick_guide: GPU-only memory optimization for shared-outer MoE adapters; no effect on Ascend NPU (overridden to False).
+analysis_date: '2026-10-27'

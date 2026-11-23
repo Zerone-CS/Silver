@@ -1,0 +1,108 @@
+name: compilation.pass_config.fuse_norm_quant
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/compilation/passes/pass_manager.py:150
+- vllm/compilation/passes/pass_manager.py:187
+- vllm/tests/test_config.py:2842
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'In upstream vLLM, this flag is read in PostGradPassManager.configure()
+
+  (vllm/compilation/passes/pass_manager.py:187). When true, it appends
+
+  RMSNormQuantFusionPass (and RocmAiterRMSNormQuantFusionPass on ROCm/AITER)
+
+  to the post-grad pass list, fusing the custom RMSNorm op with the following
+
+  quant op (e.g. static_scaled_fp8_quant) into a single fused kernel such as
+
+  fused_add_rms_norm_static_fp8_quant. This reduces kernel launches and
+
+  intermediate memory traffic between the norm and quant steps, lowering
+
+  per-layer latency and improving throughput for quantized (FP8/W8A8) models.
+
+  It also participates in the transformers-backend norm canonicalization
+
+  decision (line 150) and affects the pass-manager UUID (test_pass_manager.py),
+
+  meaning toggling it changes the compiled graph cache key.
+
+  On Ascend, vllm-ascend does NOT use this upstream PassConfig field directly;
+
+  instead it exposes an equivalent knob under
+
+  --additional-config ''{"ascend_compilation_config": {"fuse_norm_quant": ...}}''
+
+  (documented default True in vllm-ascend docs). The Ascend implementation
+
+  fuses RMSNorm with quantization into an Ascend-native fused op, reducing
+
+  NPU kernel dispatch overhead and HBM round-trips for norm+quant sequences.
+
+  Disabling it (as recommended for Atlas 300I DUO in several tutorials) falls
+
+  back to separate norm and quant kernels, which can be more stable on
+
+  memory/stream-constrained hardware but costs extra launches and memory traffic.
+
+  '
+usage_locations:
+- file: vllm/compilation/passes/pass_manager.py:150
+  context: fuse_norm_quant contributes to enable_transformers_norm_canonicalization decision
+- file: vllm/compilation/passes/pass_manager.py:187
+  context: Adds RMSNormQuantFusionPass (and ROCm AITER variant) to the pass pipeline
+- file: vllm/tests/test_config.py:2842
+  context: Default O2 config has fuse_norm_quant disabled; enabling rms_norm custom op or FP8 model auto-enables it
+related_parameters:
+- name: compilation.pass_config.fuse_act_quant
+  relation: Sibling fusion pass; both toggled together in pass-manager UUID tests and both fuse quant into adjacent ops
+- name: compilation.pass_config.fuse_allreduce_rms
+  relation: Both feed the transformers norm canonicalization path; AR+RMS runs before RMS+Quant fusion
+- name: compilation.custom_ops
+  relation: Enabling +rms_norm or +quant_fp8 (e.g. FP8 models) auto-enables fuse_norm_quant
+- name: kernel_config.ir_op_priority.rms_norm
+  relation: Using vllm_c RMSNorm kernel via IR priority also enables fuse_norm_quant
+- name: ascend_compilation_config.fuse_norm_quant
+  relation: vllm-ascend's own equivalent knob under --additional-config; takes precedence on Ascend
+constraints:
+- In upstream vLLM, fuse_norm_quant is only effective when compilation mode is VLLM_COMPILE (torch.compile path); it has no
+  effect in eager mode.
+- The fusion requires the RMSNorm and quant ops to be present in the graph; if custom ops are disabled or the model is not
+  quantized, the pass has nothing to fuse.
+- On Ascend, the effective switch is ascend_compilation_config.fuse_norm_quant under --additional-config, not the upstream
+  compilation.pass_config field.
+tuning_advice:
+  summary: Keep fuse_norm_quant enabled on modern Ascend NPUs for quantized models to cut kernel launches; disable it on Atlas
+    300I DUO or when stability/OOM issues appear.
+  suggested_values:
+  - scenario: Quantized (W8A8/FP8) model on Atlas 800/A2/A3 with sufficient streams
+    value: true
+    reason: Fuses RMSNorm+quant into one Ascend kernel, reducing dispatch overhead and HBM traffic, improving latency and
+      throughput.
+  - scenario: Atlas 300I DUO serving path (limited streams/memory)
+    value: false
+    reason: vllm-ascend tutorials recommend disabling fuse_norm_quant on Atlas 300I DUO to avoid stream/memory pressure and
+      instability.
+  - scenario: Non-quantized BF16/FP16 model
+    value: false
+    reason: No quant op to fuse; leaving it on provides no benefit and only adds pass overhead.
+  caveats:
+  - 'Set via --additional-config ''{"ascend_compilation_config": {"fuse_norm_quant": false}}'' on Ascend, not the upstream
+    compilation-config field.'
+  - Changing this value invalidates the compiled graph cache and triggers recompilation.
+  - Verify with profiling that the fused kernel is actually selected; fallback may occur if the model shape/quant scheme is
+    unsupported.
+  quick_guide: Leave default (True) on modern Ascend for quantized models; set false on Atlas 300I DUO or if you hit OOM/instability.
+analysis_date: '2026-10-27'

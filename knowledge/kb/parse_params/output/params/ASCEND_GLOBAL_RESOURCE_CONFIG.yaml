@@ -1,0 +1,101 @@
+name: ASCEND_GLOBAL_RESOURCE_CONFIG
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:105
+- vllm_ascend/distributed/kv_transfer/utils/utils.py:27
+- vllm_ascend/distributed/kv_transfer/utils/utils.py:42
+value_type: str
+default: ''
+valid_choices: JSON object string; recognized fields include comm_resource_config.protocol_desc (list[str]), comm_resource_config.listen_port
+  (int, default 16666), comm_resource_config.qos (int in [0, 4]), store.comm_resource_config.protocol_desc (list[str]), store.comm_resource_config.qos
+  (int in [0, 4]), fabric_memory.max_capacity (int, GB per process)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "ASCEND_GLOBAL_RESOURCE_CONFIG is a JSON string consumed by HIXL (Huawei one-sided\ncommunication library)\
+  \ and the Mooncake transfer engine / Mooncake Store. It is not\nread by vLLM upstream at all; it is purely a vllm-ascend\
+  \ KV-transfer knob.\n\nTwo code paths in vllm-ascend touch it:\n1. vllm_ascend/distributed/kv_transfer/utils/utils.py:inject_qos()\
+  \ — before the\n   transfer engine is initialized, the connector merges its QoS (from\n   kv_connector_extra_config.qos_priority,\
+  \ or the P/D default PD_QOS_DEFAULT=1) into\n   the top-level \"comm_resource_config.qos\" key of the JSON, preserving all\
+  \ other\n   fields, and writes the result back into os.environ. This means the top-level\n   comm_resource_config.qos is\
+  \ effectively controlled by qos_priority, not by the\n   env var directly (a WARN is logged when overriding).\n2. vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:\n\
+  \   _validate_store_qos() — validates store.comm_resource_config.qos is an int in\n   [QOS_VALUE_MIN, QOS_VALUE_MAX] (0..4)\
+  \ and fails fast at MooncakeBackend\n   construction otherwise.\n\nPerformance mechanism: \"the protocol_desc fields select\
+  \ the physical transport\"\n(hccs:device / roce:device / uboe:device) for the top-level PD transfer path\n(MooncakeConnectorV1)\
+  \ and for the store path (AscendStoreConnector). Choosing HCCS\nfor PD traffic and RoCE for store traffic on A3 separates\
+  \ the two traffic classes so\nthey do not contend on the same physical link — this directly affects KV-transfer\nlatency\
+  \ and therefore TTFT/ITL in PD-disaggregated deployments. The qos field sets\nHIXL transfer priority (0..4, larger = higher\
+  \ priority), which influences how KV\ntransfers are scheduled relative to other HIXL users on the same NPU. fabric_memory.\n\
+  max_capacity caps the fabric-memory budget per process, which affects how much KV\ncan be staged in fabric memory and thus\
+  \ transfer efficiency. listen_port only\naffects port binding (no perf effect, but a conflict aborts startup).\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:27
+  context: inject_qos() reads the env var, parses JSON, merges comm_resource_config.qos from kv_connector_extra_config.qos_priority
+    (or PD default 1), and writes it back to os.environ before engine init.
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:42
+  context: Writes the merged JSON back into ASCEND_GLOBAL_RESOURCE_CONFIG so the HIXL/Mooncake transfer engine picks up the
+    QoS.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py:105
+  context: _validate_store_qos() reads the env var at MooncakeBackend construction and validates store.comm_resource_config.qos
+    is an int in [0, 4].
+- file: tests/e2e/pull_request/utils.py:522
+  context: 'E2E test: on 950 (A5 UB) hardware, if neither ASCEND_LOCAL_COMM_RES nor ASCEND_GLOBAL_RESOURCE_CONFIG is set,
+    the test exports ASCEND_LOCAL_COMM_RES=''{"version":"1.3"}'' — showing the two env vars are alternative HIXL resource-format
+    selectors.'
+related_parameters:
+- name: kv_connector_extra_config.qos_priority
+  relation: Takes precedence over the top-level comm_resource_config.qos in ASCEND_GLOBAL_RESOURCE_CONFIG; inject_qos() overwrites
+    the env var value with qos_priority (or PD default 1) and logs a WARN on override.
+- name: ASCEND_LOCAL_COMM_RES
+  relation: Alternative HIXL resource-format selector; on 950PR/950DT (A5 UB) the docs recommend unsetting ASCEND_GLOBAL_RESOURCE_CONFIG
+    and using ASCEND_LOCAL_COMM_RES='{"version":"1.3"}' instead.
+- name: ASCEND_ENABLE_USE_FABRIC_MEM
+  relation: Enables fabric memory; fabric_memory.max_capacity in ASCEND_GLOBAL_RESOURCE_CONFIG sets the per-process fabric
+    memory quota when fabric mem is used.
+- name: kv_transfer_config (kv_role / kv_connector)
+  relation: The env var only matters when a KV-transfer connector (MooncakeConnectorV1 / AscendStoreConnector) is configured;
+    otherwise it is unused.
+constraints:
+- ASCEND_GLOBAL_RESOURCE_CONFIG must be a valid JSON object string; malformed JSON raises ValueError ('ASCEND_GLOBAL_RESOURCE_CONFIG
+  must be a JSON object') in inject_qos().
+- store.comm_resource_config.qos must be an integer in [0, 4]; booleans, non-integers, and out-of-range values raise ValueError
+  at MooncakeBackend construction.
+- kv_connector_extra_config.qos_priority must be an integer in [0, 4]; invalid values raise ValueError before the environment
+  is modified.
+- The top-level comm_resource_config.qos is not validated by _validate_store_qos() — only the store section is checked there;
+  the top-level value is overwritten by inject_qos() anyway.
+- On 950PR/950DT (A5 UB) with the v1.3 HIXL resource format, ASCEND_GLOBAL_RESOURCE_CONFIG should be unset and ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'
+  used instead.
+tuning_advice:
+  summary: Use ASCEND_GLOBAL_RESOURCE_CONFIG to separate PD and store traffic onto different physical links and to set HIXL
+    QoS priority for KV transfers in PD-disaggregated / AscendStore deployments.
+  suggested_values:
+  - scenario: A3 with PD disaggregation + AscendStore, separate PD (HCCS) and store (RoCE) traffic
+    value: '''{"comm_resource_config": {"protocol_desc": ["hccs:device"]}, "store": {"comm_resource_config": {"protocol_desc":
+      ["roce:device"]}}}'''
+    reason: Keeps MooncakeConnectorV1 PD traffic on HCCS while AscendStore traffic uses RoCE, so the two traffic classes do
+      not compete on the same physical link.
+  - scenario: PD disaggregation only, default QoS
+    value: '''{"comm_resource_config": {"protocol_desc": ["hccs:device"]}}'''
+    reason: QoS is injected automatically from qos_priority (default 1); only the transport descriptor needs to be set.
+  - scenario: 950PR/950DT (A5 UB) with v1.3 HIXL resource format
+    value: unset ASCEND_GLOBAL_RESOURCE_CONFIG; export ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'
+    reason: Docs state the A5 UB path requires the v1.3 HIXL resource format via ASCEND_LOCAL_COMM_RES, and ASCEND_GLOBAL_RESOURCE_CONFIG
+      should be unset.
+  - scenario: Fabric memory budget insufficient
+    value: '''{"fabric_memory": {"max_capacity": 32}}'''
+    reason: Sets the per-process fabric memory quota in GB when the default budget is too small for the KV working set.
+  caveats:
+  - Do not rely on setting comm_resource_config.qos here — it is overwritten by kv_connector_extra_config.qos_priority (or
+    the PD default 1).
+  - Invalid store QoS (non-integer or outside [0, 4]) fails fast at MooncakeBackend construction; validate the JSON before
+    deployment.
+  - On 950PR/950DT use ASCEND_LOCAL_COMM_RES instead of ASCEND_GLOBAL_RESOURCE_CONFIG for the v1.3 resource format.
+  quick_guide: Set protocol_desc to split PD (hccs) and store (roce) traffic on A3; leave QoS to qos_priority; on 950 use
+    ASCEND_LOCAL_COMM_RES instead.
+analysis_date: '2026-10-27'

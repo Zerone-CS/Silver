@@ -1,0 +1,102 @@
+name: DYNAMIC_EPLB
+type: env
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:78
+- vllm_ascend/ascend_config.py:326
+- vllm_ascend/patch/platform/__init__.py:40
+- vllm_ascend/platform.py:976
+- vllm_ascend/distributed/parallel_state.py:168
+- vllm_ascend/utils.py:1194
+value_type: str
+default: 'false'
+valid_choices:
+- 'true'
+- '1'
+- 'false'
+- '0'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "DYNAMIC_EPLB is the environment-variable safety guard that enables the legacy\n(Model Runner V1) dynamic Expert-Parallel\
+  \ Load Balancer on Ascend. It is read in\nseveral places:\n1. vllm_ascend/ascend_config.py:326 — when `additional_config.eplb_config.dynamic_eplb`\n\
+  \   is true, an assertion requires DYNAMIC_EPLB in (\"true\",\"1\") or EXPERT_MAP_RECORD==\"true\",\n   otherwise startup\
+  \ fails. So the env var is the actual on/off switch for dynamic EPLB.\n2. vllm_ascend/patch/platform/__init__.py:40 — when\
+  \ enabled, the\n   `patch_multiproc_executor` monkey-patch is imported, changing executor behavior for\n   EPLB (expert-map\
+  \ redistribution across ranks).\n3. vllm_ascend/distributed/parallel_state.py:167-171 — when\n   `eplb_config.dynamic_eplb`\
+  \ is set, a dedicated `dynamic_eplb` HCCL process group is\n   created (init_model_parallel_group with group_name=\"dynamic_eplb\"\
+  ), and\n   vllm_ascend/utils.py:1194 assigns it a fixed hccl_buffer_size of 100\n   (_DYNAMIC_EPLB_BUFFER_SIZE). This adds\
+  \ an extra HCCL communicator and its buffers,\n   consuming NPU HBM.\n4. vllm_ascend/platform.py:976 — under Model Runner\
+  \ V2 (VLLM_USE_V2_MODEL_RUNNER=1),\n   setting DYNAMIC_EPLB raises a ValueError; MRv2 uses upstream --enable-eplb instead.\n\
+  Performance mechanism: \"dynamic EPLB periodically collects per-expert token heat\"\n(expert_heat_collection_interval) and\
+  \ re-runs a balancing algorithm\n(algorithm_execution_interval) to place redundant experts (num_redundant_experts) on\n\
+  the least-loaded ranks. This improves MoE decode throughput and tail latency under\nskewed expert routing by reducing all-to-all\
+  \ imbalance, at the cost of extra memory\n(redundant expert weights + dynamic_eplb HCCL buffers) and periodic rebalancing\n\
+  overhead. When disabled, expert placement is static and hot experts can bottleneck\nspecific ranks.\n"
+usage_locations:
+- file: vllm_ascend/envs.py:78
+  context: Defines DYNAMIC_EPLB env var, default 'false', lowercased string.
+- file: vllm_ascend/ascend_config.py:326
+  context: 'Assertion guard: dynamic_eplb config requires DYNAMIC_EPLB=true/1 or EXPERT_MAP_RECORD=true.'
+- file: vllm_ascend/patch/platform/__init__.py:40
+  context: Conditionally imports patch_multiproc_executor when DYNAMIC_EPLB or EXPERT_MAP_RECORD is enabled.
+- file: vllm_ascend/platform.py:976
+  context: Rejects DYNAMIC_EPLB under Model Runner V2; MRv2 must use --enable-eplb.
+- file: vllm_ascend/distributed/parallel_state.py:168
+  context: Creates the dedicated dynamic_eplb HCCL process group when dynamic_eplb is active.
+- file: vllm_ascend/utils.py:1194
+  context: Assigns hccl_buffer_size=100 to the dynamic_eplb group.
+related_parameters:
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: Config flag that, when true, requires DYNAMIC_EPLB=true (or EXPERT_MAP_RECORD=true) to pass the assertion.
+- name: EXPERT_MAP_RECORD
+  relation: Alternative env guard; either DYNAMIC_EPLB or EXPERT_MAP_RECORD enables the EPLB patch path.
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: Controls how often expert heat is collected; must be a non-negative integer.
+- name: additional_config.eplb_config.algorithm_execution_interval
+  relation: Controls how often the balancing algorithm runs; must be a non-negative integer.
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: Number of redundant physical experts; drives extra memory usage.
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: Balancing policy (0-3); docs recommend SwiftBalanceEplb (2).
+- name: --enable-eplb
+  relation: Upstream EPLB flag used instead of DYNAMIC_EPLB under Model Runner V2.
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: When enabled, DYNAMIC_EPLB is rejected; use --enable-eplb.
+constraints:
+- Setting additional_config.eplb_config.dynamic_eplb to true requires DYNAMIC_EPLB to be 'true' or '1' (or EXPERT_MAP_RECORD
+  to be 'true'), otherwise startup raises an assertion error.
+- DYNAMIC_EPLB must not be set when using Model Runner V2 (VLLM_USE_V2_MODEL_RUNNER=1); it raises a ValueError and you must
+  use --enable-eplb instead.
+- DYNAMIC_EPLB only takes effect for MoE models running with expert parallelism (--enable-expert-parallel).
+- expert_heat_collection_interval, algorithm_execution_interval, and num_redundant_experts must be non-negative integers.
+- eplb_policy_type must be one of 0, 1, 2, 3.
+tuning_advice:
+  summary: Enable DYNAMIC_EPLB only for MoE models with expert parallelism on Model Runner V1 to rebalance hot experts; leave
+    it unset for dense models or Model Runner V2.
+  suggested_values:
+  - scenario: MoE model (e.g. Qwen3-30B-A3B) with --enable-expert-parallel on Model Runner V1, skewed expert routing
+    value: 'true'
+    reason: Enables dynamic EPLB so hot experts are replicated to under-loaded ranks, improving decode throughput and tail
+      latency; must be paired with eplb_config.dynamic_eplb=true.
+  - scenario: Dense (non-MoE) model or no expert parallelism
+    value: 'false'
+    reason: EPLB has no effect without MoE/EP and only adds an extra HCCL group and buffers.
+  - scenario: Model Runner V2 (VLLM_USE_V2_MODEL_RUNNER=1)
+    value: 'false'
+    reason: MRv2 rejects DYNAMIC_EPLB; use --enable-eplb with upstream EPLBConfig fields instead.
+  caveats:
+  - Enabling DYNAMIC_EPLB creates an extra 'dynamic_eplb' HCCL process group with a fixed hccl_buffer_size of 100, consuming
+    additional NPU HBM.
+  - Redundant experts (num_redundant_experts) increase weight memory; size them against available HBM.
+  - Rebalancing runs periodically (algorithm_execution_interval); too-frequent rebalancing adds overhead and can cause transient
+    imbalance.
+  - Docs recommend eplb_policy_type=2 (SwiftBalanceEplb) for current versions.
+  - 'The env var is a safety guard: setting dynamic_eplb in config alone is insufficient — DYNAMIC_EPLB must also be true.'
+  quick_guide: export DYNAMIC_EPLB=true only for MoE+EP on Model Runner V1; unset it for MRv2 and use --enable-eplb.
+analysis_date: '2026-10-27'

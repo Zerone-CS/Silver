@@ -1,0 +1,101 @@
+name: additional_config.scheduler_config.dyntra_lb_config.mode
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1588
+- vllm_ascend/ascend_config.py:1595
+- vllm_ascend/ascend_config.py:1599
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:330
+value_type: str
+default: dynamic
+valid_choices:
+- static
+- dynamic
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This parameter selects the load-balancing strategy used by the DyntraLB data-parallel
+
+  engine-core patch (vllm_ascend/patch/platform/patch_dyntra_lb_core.py). In
+
+  DyntraLBDPEngineCoreProc._init_data_parallel the value is read from
+
+  ascend_config.scheduler_config.dyntra_lb_config.mode and stored in self._lb_mode
+
+  (line 330). The mode governs how the DP engine core rebalances blocks across DP ranks
+
+  to reduce pipeline bubbles: "\"static\" applies a fixed/one-shot rebalancing decision,"
+
+  while "dynamic" allows repeated rebalancing up to dynamic_max_step steps, gated by
+
+  start_step/end_step, bubble_threshold and long_req_block_threshold. Because the
+
+  rebalancing changes which DP rank processes which blocks, it directly affects DP
+
+  load balance, per-step bubble time, and therefore end-to-end throughput and tail
+
+  latency in data-parallel deployments. The mode itself does not allocate memory; it
+
+  only changes the frequency/aggressiveness of the rebalancing decisions. The whole
+
+  feature is inert unless dyntra_lb_config.enabled is true.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1588
+  context: Field definition of DyntraLBConfig.mode with default 'dynamic'.
+- file: vllm_ascend/ascend_config.py:1595
+  context: _valid_modes ClassVar set {'static', 'dynamic'} used for validation.
+- file: vllm_ascend/ascend_config.py:1599
+  context: model_validator raises ValueError if mode is not in _valid_modes.
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:330
+  context: Read into self._lb_mode during _init_data_parallel of DyntraLBDPEngineCoreProc.
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Master switch; mode has no effect unless enabled is true.
+- name: additional_config.scheduler_config.dyntra_lb_config.start_step
+  relation: Step at which rebalancing begins; must be >= 0.
+- name: additional_config.scheduler_config.dyntra_lb_config.end_step
+  relation: Step at which rebalancing stops (-1 = unbounded); must be > start_step when set.
+- name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+  relation: Bubble threshold that triggers rebalancing; must be > 0.
+- name: additional_config.scheduler_config.dyntra_lb_config.long_req_block_threshold
+  relation: Long-request block threshold used in rebalancing decisions; must be > 0.
+- name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+  relation: Upper bound on dynamic rebalancing steps; only meaningful in dynamic mode.
+- name: additional_config.scheduler_config.dyntra_lb_config.enable_diagnostics
+  relation: Enables diagnostic logging of the load-balancing decisions.
+constraints:
+- dyntra_lb_config.mode must be one of 'static' or 'dynamic'; any other value raises a ValueError at config validation.
+- The mode setting only takes effect when dyntra_lb_config.enabled is true.
+- Unknown keys under additional_config are rejected (extra='forbid'), so the mode must be nested exactly under scheduler_config.dyntra_lb_config.
+tuning_advice:
+  summary: 'Leave mode at the default ''dynamic'' for workloads with variable request lengths where
+
+    DP load imbalance accumulates over time; use ''static'' only when the workload is stable
+
+    and you want to minimize scheduling overhead. Always enable dyntra_lb_config.enabled
+
+    first and tune start_step/bubble_threshold alongside mode.
+
+    '
+  suggested_values:
+  - scenario: Long-running serving with heterogeneous/variable sequence lengths on multi-DP-rank Ascend deployment
+    value: dynamic
+    reason: Dynamic mode repeatedly rebalances up to dynamic_max_step steps, adapting to shifting DP load and reducing pipeline
+      bubbles over time.
+  - scenario: Stable, homogeneous workload where scheduling overhead should be minimized
+    value: static
+    reason: Static mode makes a single rebalancing decision, avoiding the repeated rebalancing overhead of dynamic mode.
+  caveats:
+  - Ensure dyntra_lb_config.enabled is true; otherwise mode is ignored.
+  - Pair dynamic mode with a sensible start_step (default 250) and bubble_threshold (default 5.0) to avoid premature or excessive
+    rebalancing.
+  - Enable enable_diagnostics temporarily to observe rebalancing behavior before committing to a mode in production.
+  quick_guide: Use 'dynamic' (default) for adaptive DP load balancing; switch to 'static' only for stable workloads to cut
+    scheduling overhead.
+analysis_date: '2026-10-27'

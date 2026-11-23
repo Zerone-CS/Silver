@@ -1,0 +1,102 @@
+name: VLLM_DP_SIZE
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:1441
+- vllm/envs.py:175
+- vllm/config/parallel.py:936
+- examples/offline_data_parallel.py:122
+value_type: int
+default: 1
+valid_choices: integer >= 1 (world size of the data parallel group)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'VLLM_DP_SIZE sets the world size of the data-parallel (DP) group when the engine
+
+  is launched in offline SPMD mode. In vllm/config/parallel.py:936, when
+
+  data_parallel_size is not explicitly provided via engine args, ParallelConfig
+
+  falls back to envs.VLLM_DP_SIZE (alongside VLLM_DP_RANK, VLLM_DP_RANK_LOCAL,
+
+  VLLM_DP_MASTER_IP, VLLM_DP_MASTER_PORT). This value directly determines how many
+
+  independent model replicas are launched, each processing a disjoint shard of the
+
+  request stream. On Ascend NPU this is the primary lever for scaling aggregate
+
+  throughput: "each DP rank owns its own set of NPUs (tp_size NPUs per rank), so"
+
+  total NPUs consumed = dp_size * tp_size. Because each replica runs its own
+
+  scheduler and KV cache, increasing dp_size multiplies total KV-cache memory
+
+  footprint and per-rank HCCL process groups, but also multiplies achievable
+
+  tokens/sec roughly linearly until NPU or host resources saturate. The vllm-ascend
+
+  example examples/offline_data_parallel.py:122 sets VLLM_DP_SIZE per worker
+
+  process and shards the prompt list by dp_size, confirming this is the supported
+
+  offline DP entry point on Ascend. Note the upstream guard at parallel.py:942:
+
+  offline DP with dp_size > 1 is only allowed for MoE models, so for dense models
+
+  this parameter has no useful effect (it raises).
+
+  '
+usage_locations:
+- file: vllm/envs.py:1441
+  context: Defines VLLM_DP_SIZE env var, default 1, parsed as int.
+- file: vllm/config/parallel.py:936
+  context: ParallelConfig falls back to envs.VLLM_DP_SIZE for data_parallel_size in offline SPMD mode.
+- file: examples/offline_data_parallel.py:122
+  context: vllm-ascend offline DP example sets VLLM_DP_SIZE per worker and shards prompts by dp_size.
+- file: tests/e2e/conftest.py:908
+  context: Ascend e2e test harness sets VLLM_DP_SIZE for DP worker processes.
+related_parameters:
+- name: VLLM_DP_RANK
+  relation: Global DP rank of the current process; must be in [0, VLLM_DP_SIZE).
+- name: VLLM_DP_RANK_LOCAL
+  relation: Local DP rank on the node; defaults to VLLM_DP_RANK when unset.
+- name: VLLM_DP_MASTER_IP
+  relation: Master node IP for the DP group rendezvous.
+- name: VLLM_DP_MASTER_PORT
+  relation: Master node port for the DP group rendezvous.
+- name: --data-parallel-size
+  relation: Engine-arg equivalent; when provided it takes precedence over VLLM_DP_SIZE.
+- name: --tensor-parallel-size
+  relation: Total NPUs consumed = dp_size * tp_size; must fit available devices.
+constraints:
+- VLLM_DP_SIZE must be a positive integer; the default of 1 means single-replica (no data parallelism).
+- Each process's VLLM_DP_RANK must be in the range [0, VLLM_DP_SIZE), otherwise ParallelConfig raises a ValueError.
+- Offline data parallel mode with VLLM_DP_SIZE > 1 is only supported for MoE models; for dense models it raises 'Offline data
+  parallel mode is not supported/useful for dense models.'
+- dp_size multiplied by tensor-parallel-size must not exceed the number of available NPUs.
+- VLLM_DP_SIZE is only consulted when data_parallel_size is not explicitly set via engine args (offline SPMD fallback path).
+tuning_advice:
+  summary: Set VLLM_DP_SIZE to the number of independent model replicas you want, keeping dp_size * tp_size within available
+    NPUs, primarily for MoE models in offline SPMD mode.
+  suggested_values:
+  - scenario: Single replica, small model or limited NPUs
+    value: 1
+    reason: Default; no data parallelism, lowest memory and communication overhead.
+  - scenario: MoE model, throughput scaling across multiple NPU groups
+    value: <number of available NPUs / tp_size>
+    reason: Maximizes aggregate throughput by running one replica per NPU group while respecting device count.
+  - scenario: Latency-sensitive single-stream serving
+    value: 1
+    reason: Data parallelism does not reduce per-request latency; a single replica avoids extra coordination overhead.
+  caveats:
+  - Only effective for MoE models in offline mode; dense models raise an error when dp_size > 1.
+  - Ensure VLLM_DP_RANK is set uniquely per process in [0, VLLM_DP_SIZE).
+  - Total NPUs = dp_size * tp_size must fit the node/cluster; oversubscription fails at startup.
+  quick_guide: Set VLLM_DP_SIZE = number of replicas (NPUs / tp_size) for MoE offline serving; leave at 1 otherwise.
+analysis_date: '2026-10-27'

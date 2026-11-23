@@ -1,0 +1,72 @@
+name: VLLM_TORCH_PROFILER_DIR
+type: env
+category: observability
+scope: both
+source_file:
+- 'vllm/envs.py: (deprecated in vLLM mainline; no active definition found in provided context)'
+- 'vllm_ascend: no active definition; removed per PR #5928'
+value_type: str
+default: null
+valid_choices: any writable directory path
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_TORCH_PROFILER_DIR was an environment variable that, when set, enabled the
+
+  PyTorch profiler to dump trace files to the given directory. It is a pure
+
+  observability/debugging switch: it does not change model execution, scheduling,
+
+  memory allocation, or communication logic. Its only runtime effect is that when
+
+  profiling is active, the profiler instrumentation adds overhead (kernel-level
+
+  tracing, synchronization, trace serialization) which increases latency and can
+
+  reduce throughput during the profiling window. On Ascend, per the vllm-ascend
+
+  release notes and service profiling guide, this env var (and
+
+  VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY) no longer works with vLLM Ascend
+
+  (removed in PR #5928); the vLLM mainline has also deprecated it. Users must use
+
+  the `--profiler-config` CLI parameter (online) or `profiler_config` (offline)
+
+  instead. Because the variable is inert on current vllm-ascend, it has no
+
+  measurable performance effect on Ascend NPU runtime.
+
+  '
+usage_locations:
+- file: docs/source/developer_guide/performance_and_debug/service_profiling_guide.md:49
+  context: Notes that VLLM_TORCH_PROFILER_DIR is deprecated in vLLM mainline; use --profiler-config / profiler_config instead.
+- file: docs/source/user_guide/release_notes.md:1600
+  context: Release notes state profiler envs such as VLLM_TORCH_PROFILER_DIR do not work with vLLM Ascend; use --profiler-config.
+related_parameters:
+- name: --profiler-config
+  relation: Replacement for this env var; online profiling configuration.
+- name: profiler_config
+  relation: Offline (LLM(...)) replacement for this env var.
+- name: VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY
+  relation: Companion profiler env var, also removed/unsupported on vLLM Ascend.
+constraints:
+- VLLM_TORCH_PROFILER_DIR does not work with vLLM Ascend and has been removed; setting it will not enable profiling.
+- The variable is deprecated in the vLLM mainline; use --profiler-config (online) or profiler_config (offline) instead.
+tuning_advice:
+  summary: Do not use VLLM_TORCH_PROFILER_DIR on Ascend; migrate to --profiler-config / profiler_config and only enable profiling
+    for short debug windows.
+  suggested_values:
+  - scenario: Any Ascend deployment (v1 or v2 worker)
+    value: unset
+    reason: The env var is removed/unsupported on vllm-ascend and has no effect; leaving it unset avoids confusion.
+  - scenario: Need to collect profiler traces on Ascend
+    value: --profiler-config <config>
+    reason: The supported replacement path; use the CLI flag for online serving or profiler_config for offline LLM instantiation.
+  caveats:
+  - Profiling adds runtime overhead; enable only for short diagnostic windows and disable afterward.
+  - Applies to both v1 and v2 Ascend worker paths since the env var is globally removed.
+  quick_guide: Unset VLLM_TORCH_PROFILER_DIR; use --profiler-config / profiler_config for Ascend profiling.
+analysis_date: '2026-10-27'

@@ -1,0 +1,94 @@
+name: VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1830
+- vllm/envs.py:261
+- vllm/config/vllm.py:2002
+value_type: bool
+default: true
+valid_choices: 0 or 1 (boolean)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: 'This flag gates whether the Hybrid KV cache manager (HMA) is allowed to be
+
+  used together with chunked local attention (models with attention_chunk_size,
+
+  e.g. Llama4). In vllm/config/vllm.py:1991-2011, when the model has a non-null
+
+  attention_chunk_size and no eagle speculative config, the code checks
+
+  envs.VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE. If it is False, it
+
+  sets need_disable_hybrid_kv_cache_manager = True, which disables the hybrid KV
+
+  cache manager entirely for that model. Disabling HMA means the KV cache is
+
+  allocated uniformly across all layers instead of per-layer (per-group) sizes,
+
+  which wastes KV-cache memory on layers that need less (the local-attention
+
+  layers), reducing the number of concurrent sequences / max context length that
+
+  fit in NPU HBM. Conversely, enabling it (default 1) saves KV-cache memory and
+
+  enables longer contexts, but the upstream comment notes a latency regression
+
+  when combining chunked local attention with HMA. On Ascend NPU, KV-cache
+
+  memory directly bounds batch size and context length, so this flag trades
+
+  memory capacity (throughput/concurrency) against per-step latency. Note the
+
+  upstream default here is "1" (True) in this code snapshot, though the comment
+
+  text describes disabling by default; the actual behavior is governed by the
+
+  env default value. vllm-ascend does not appear to override this env var in the
+
+  provided context, so upstream behavior applies on Ascend.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1830
+  context: Defines the env var accessor with default int(os.getenv(..., "1")) -> bool
+- file: vllm/envs.py:261
+  context: 'Type stub declaration VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE: bool = True'
+- file: vllm/config/vllm.py:2002
+  context: Gates need_disable_hybrid_kv_cache_manager when model has attention_chunk_size and no eagle spec
+related_parameters:
+- name: --disable-hybrid-kv-cache-manager
+  relation: When this env is 0, HMA is auto-disabled for chunked-local-attn models; explicit disable always wins
+- name: attention_chunk_size (model config)
+  relation: Only relevant for models that set a chunked local attention size (e.g. Llama4)
+- name: speculative_config (eagle)
+  relation: If eagle spec decode is enabled, HMA is disabled regardless of this flag
+- name: kv_transfer_config
+  relation: Connector configs that do not support HMA also force-disable it independently of this flag
+constraints:
+- Only has an effect for models that define a chunked local attention size (attention_chunk_size); for other models the flag
+  is irrelevant.
+- If eagle speculative decoding is enabled, the hybrid KV cache manager is disabled regardless of this flag's value.
+- If the KV transfer connector does not support HMA, the hybrid KV cache manager is disabled regardless of this flag.
+tuning_advice:
+  summary: Keep enabled (1) when KV-cache memory / long context is the bottleneck; set to 0 only if per-step latency regression
+    from HMA+chunked-local-attn is unacceptable.
+  suggested_values:
+  - scenario: Long-context or high-concurrency serving of Llama4-style chunked-local-attn models on Ascend, memory-bound
+    value: 1
+    reason: Enables hybrid KV cache manager, saving KV-cache HBM and allowing longer contexts / larger batches.
+  - scenario: Latency-sensitive single-stream serving where HMA+chunked-local-attn latency regression dominates
+    value: 0
+    reason: Disables HMA for chunked-local-attn models, avoiding the documented latency regression at the cost of more KV-cache
+      memory.
+  caveats:
+  - Measure both TTFT/TPOT and max concurrency before/after; the tradeoff is memory vs latency.
+  - No effect unless the model uses chunked local attention (attention_chunk_size set).
+  - Eagle spec decode or non-HMA-compatible KV connectors override this flag.
+  quick_guide: Default 1 saves KV-cache memory for chunked-local-attn models; set 0 only to avoid the HMA latency regression.
+analysis_date: '2026-10-27'

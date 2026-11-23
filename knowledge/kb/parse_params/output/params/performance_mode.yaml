@@ -1,0 +1,125 @@
+name: --performance-mode
+type: cli
+category: compilation
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1741
+- vllm/engine/arg_utils.py:770
+- vllm/engine/arg_utils.py:2674
+- vllm/config/vllm.py:446
+- vllm/config/vllm.py:1262
+value_type: str
+default: balanced
+valid_choices:
+- balanced
+- interactivity
+- throughput
+cli_example: --performance-mode throughput
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: '--performance-mode is a VllmConfig field (vllm/config/vllm.py:446) with default
+
+  "balanced". Its docstring states that ''interactivity'' favors low end-to-end
+
+  per-request latency at small batch sizes via fine-grained CUDA graphs and
+
+  latency-oriented kernels, while ''throughput'' favors aggregate tokens/sec at high
+
+  concurrency via larger CUDA graphs, more aggressive batching, and
+
+  throughput-oriented kernels. The value is threaded from EngineArgs
+
+  (arg_utils.py:770) into VllmConfig (arg_utils.py:2674) and consumed during
+
+  config resolution (vllm.py:1262 logs it when non-balanced). The concrete
+
+  performance effect is realized indirectly: "the mode influences CUDA graph"
+
+  capture-size derivation (see tests/compile/test_config.py:527 where
+
+  config.performance_mode is set to None before running _set_cudagraph_sizes,
+
+  indicating the mode participates in cudagraph size selection) and kernel
+
+  selection. On Ascend NPU, "CUDA graphs" map to ACL graph capture
+
+  (cudagraph_mode / capture sizes in CompilationConfig), so the mode can shift
+
+  the number/size of captured graphs and thus decode latency vs. throughput
+
+  tradeoff. However, the provided context contains NO vllm-ascend source that
+
+  reads or overrides performance_mode, and no vllm-ascend documentation mentions
+
+  it. Therefore on Ascend the effect is limited to whatever upstream config
+
+  resolution propagates into compilation/cudagraph sizing; Ascend-specific
+
+  kernel selection (e.g. torch_npu fused ops, HCCL) is not gated on this flag in
+
+  the available code. Impact is medium: it can change graph capture granularity
+
+  and batching aggressiveness, but does not directly control memory allocation or
+
+  communication.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1741
+  context: Registers the --performance-mode CLI argument from VllmConfig field.
+- file: vllm/engine/arg_utils.py:770
+  context: EngineArgs dataclass field mirroring VllmConfig.performance_mode.
+- file: vllm/engine/arg_utils.py:2674
+  context: Passes performance_mode into the constructed VllmConfig.
+- file: vllm/config/vllm.py:446
+  context: Field definition with default 'balanced' and docstring describing interactivity/throughput tradeoffs.
+- file: vllm/config/vllm.py:1262
+  context: Logs the mode when not balanced during __post_init__ config verification.
+- file: tests/compile/test_config.py:527
+  context: Test sets performance_mode=None before _set_cudagraph_sizes, showing it feeds cudagraph size derivation.
+related_parameters:
+- name: --compilation-config / cudagraph_mode
+  relation: performance_mode influences CUDA/ACL graph capture granularity and sizes; interacts with cudagraph settings.
+- name: --max-num-seqs
+  relation: interactivity targets small batch sizes; throughput targets high concurrency, so the mode should be chosen consistently
+    with max-num-seqs.
+- name: --max-num-batched-tokens
+  relation: throughput mode favors more aggressive batching, aligning with larger batched-token budgets.
+- name: --optimization-level
+  relation: Both trade startup cost for runtime performance; optimization-level controls compile-time effort while performance-mode
+    controls runtime graph/kernel orientation.
+constraints:
+- 'The value must be one of the PerformanceMode literals: ''balanced'', ''interactivity'', or ''throughput''.'
+- No vllm-ascend source in the provided context reads or overrides this parameter, so its Ascend effect is limited to upstream
+  config propagation.
+tuning_advice:
+  summary: 'Leave at ''balanced'' unless you have a clear latency-vs-throughput objective; on Ascend prefer ''throughput''
+    for high-concurrency serving and ''interactivity'' only for small-batch low-latency chat, and verify ACL graph capture
+    sizes align with your batch profile.
+
+    '
+  suggested_values:
+  - scenario: High-concurrency offline batch inference / serving on Ascend NPU
+    value: throughput
+    reason: Favors aggregate tokens/sec via larger graph capture sizes and more aggressive batching, matching high max-num-seqs
+      workloads.
+  - scenario: Interactive chat with small batch sizes and strict per-request latency
+    value: interactivity
+    reason: Favors low end-to-end per-request latency via fine-grained graph capture and latency-oriented kernels at small
+      batches.
+  - scenario: Default / mixed workload or uncertain tuning
+    value: balanced
+    reason: Default mode; avoids over-specializing graph sizing when batch profile is unknown.
+  caveats:
+  - On Ascend, confirm the mode actually changes ACL graph capture sizes via --compilation-config; if cudagraph_mode is disabled
+    (eager), the mode has little runtime effect.
+  - Pair the mode with consistent --max-num-seqs and --max-num-batched-tokens; mismatched settings can cause inefficient graph
+    capture.
+  - Benchmark both modes on your target NPU model before committing, since Ascend kernel selection is not gated on this flag
+    in the available code.
+  quick_guide: Use 'throughput' for high-concurrency serving, 'interactivity' for small-batch low-latency chat, otherwise
+    keep 'balanced'.
+analysis_date: '2026-10-27'

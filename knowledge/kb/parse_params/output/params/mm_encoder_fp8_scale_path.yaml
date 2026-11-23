@@ -1,0 +1,104 @@
+name: --mm-encoder-fp8-scale-path
+type: cli
+category: quantization
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1409
+- vllm/engine/arg_utils.py:612
+- vllm/config/model.py:408
+- vllm/config/model.py:541
+- vllm/config/multimodal.py:192
+- vllm/model_executor/layers/attention/mm_encoder_attention.py:430
+- vllm/model_executor/layers/attention/mm_encoder_attention.py:470
+value_type: str
+default: null
+valid_choices: Any filesystem path to a JSON file mapping layer names to per-layer FP8 Q/K/V scales; null disables static
+  scaling
+cli_example: --mm-encoder-fp8-scale-path /path/to/scales.json
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only takes effect when --mm-encoder-attn-dtype is set to "fp8"
+
+  (vllm/config/multimodal.py:187-195). In mm_encoder_attention.py:430, the presence
+
+  of a scale path flips `self._fp8_dynamic_scale` to False: when a path is provided,
+
+  static per-tensor Q/K/V scales are loaded from the JSON file in
+
+  process_weights_after_loading (line 470-487) and used directly; when omitted,
+
+  dynamic scaling is used, which registers amax history buffers and computes scales
+
+  from observed Q/K/V amax values at runtime (lines 439-446).
+
+  The performance difference is therefore between static and dynamic FP8 scaling of
+
+  the ViT encoder attention: "static scaling avoids the per-forward amax reduction /"
+
+  scale computation overhead, giving a small latency/throughput benefit for the
+
+  encoder path. The magnitude is small because it only affects the multimodal
+
+  encoder attention (not the language model decode path), and only when FP8 ViT
+
+  attention is enabled at all.
+
+  On Ascend NPU: "the FP8 ViT attention path in upstream vLLM is gated to"
+
+  ROCM_AITER_FA (ROCm) or FlashInfer cuDNN (CUDA Blackwell) backends
+
+  (mm_encoder_attention.py:414-427). No vllm-ascend override of this parameter was
+
+  found in the provided context, and the Ascend attention backends do not implement
+
+  this cuDNN/AITER FP8 SDPA path, so on Ascend this parameter is effectively inert
+
+  unless a compatible FP8 encoder attention backend is available. Hence low impact.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:192
+  context: Field definition and docstring describing static vs dynamic scaling behavior
+- file: vllm/model_executor/layers/attention/mm_encoder_attention.py:430
+  context: Sets _fp8_dynamic_scale = (mm_encoder_fp8_scale_path is None), selecting static vs dynamic scaling
+- file: vllm/model_executor/layers/attention/mm_encoder_attention.py:470
+  context: Loads per-layer scales from the JSON file in process_weights_after_loading; raises if layer missing
+- file: vllm/engine/arg_utils.py:1409
+  context: CLI argument registration under MultiModalConfig group
+related_parameters:
+- name: --mm-encoder-attn-dtype
+  relation: Must be set to 'fp8' for this parameter to have any effect; setting the scale path without fp8 dtype raises ValueError
+- name: --mm-encoder-fp8-scale-save-path
+  relation: 'Complementary: saves dynamically calibrated scales to a file that can later be supplied here as static scales'
+- name: --mm-encoder-fp8-scale-save-margin
+  relation: Safety margin applied when auto-saving scales; affects the values later loaded via this path
+- name: --mm-encoder-attn-backend
+  relation: FP8 encoder attention requires a backend supporting FP8 SDPA (ROCM_AITER_FA or FlashInfer cuDNN)
+constraints:
+- Setting --mm-encoder-fp8-scale-path without --mm-encoder-attn-dtype=fp8 raises a ValueError mentioning mm_encoder_attn_dtype.
+- The JSON file must contain scales for every ViT encoder attention layer name; a missing layer raises ValueError listing
+  available layers.
+- FP8 encoder attention (and thus this parameter) requires either the ROCM_AITER_FA backend on ROCm or the FlashInfer cuDNN
+  backend on CUDA Blackwell; other backends raise ValueError.
+tuning_advice:
+  summary: Only relevant when FP8 ViT encoder attention is enabled; prefer static scales from a calibrated file for slightly
+    lower encoder latency, but on Ascend this path is generally inactive.
+  suggested_values:
+  - scenario: CUDA Blackwell with FlashInfer cuDNN backend, FP8 ViT attention enabled, calibrated scales available
+    value: /path/to/calibrated_scales.json
+    reason: Static per-tensor scales avoid per-forward amax reduction overhead in the encoder attention, giving a small latency/throughput
+      gain.
+  - scenario: No calibration data yet, or Ascend NPU deployment
+    value: unset
+    reason: Omit the flag to use dynamic scaling (or leave FP8 encoder attention disabled entirely on Ascend where the FP8
+      SDPA path is unavailable).
+  caveats:
+  - Ensure --mm-encoder-attn-dtype=fp8 is also set, otherwise the engine raises a ValueError.
+  - Generate the scale file via --mm-encoder-fp8-scale-save-path during a calibration run before using it here.
+  - On Ascend NPU, verify that the selected --mm-encoder-attn-backend actually supports FP8 encoder attention; otherwise this
+    parameter is inert.
+  quick_guide: Use only with --mm-encoder-attn-dtype=fp8 and a matching calibrated JSON; on Ascend it typically has no effect.
+analysis_date: '2026-10-27'

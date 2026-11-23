@@ -1,0 +1,98 @@
+name: HCCL_SOCKET_IFNAME
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- tests/e2e/common/multi_node/external_dp/runtime.py:570
+- tests/e2e/common/multi_node/internal_dp/multi_node_config.py:95
+- tests/e2e/common/multi_node/benchmark_results.py:11
+value_type: str
+default: <computed>
+valid_choices: Any valid Linux network interface name (e.g. eth0, enp0s3, bond0), as reported by ifconfig/ip link
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_SOCKET_IFNAME is a CANN/HCCL runtime environment variable that selects which host
+
+  network interface HCCL uses for its socket-based bootstrap and control-plane traffic
+
+  (connection establishment, rank handshake, and out-of-band coordination). It is not
+
+  defined or read by vLLM or vllm-ascend Python code directly; instead it is consumed by
+
+  the underlying HCCL library when the process group is initialized. In the vllm-ascend
+
+  test harness it is set alongside HCCL_IF_IP, GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to
+
+  the NIC name resolved by get_net_interface(cur_ip) (see
+
+  tests/e2e/common/multi_node/external_dp/runtime.py:570 and
+
+  tests/e2e/common/multi_node/internal_dp/multi_node_config.py:95), and it is treated as an
+
+  infrastructure env key in benchmark_results.py:11. Performance impact is indirect but
+
+  real: "if the interface is wrong or points to a slow/management NIC, HCCL bootstrap and"
+
+  control messages traverse the wrong path, increasing collective setup latency and, in
+
+  multi-node DP/TP deployments, risking timeouts (HCCL_CONNECT_TIMEOUT) or degraded
+
+  all-reduce/all-gather throughput. When correctly bound to the high-bandwidth RoCE/
+
+  data-plane NIC, it enables HCCL to use the intended fast interconnect, which is a
+
+  prerequisite for good multi-node scaling. It does not affect single-node compute or
+
+  memory usage.
+
+  '
+usage_locations:
+- file: tests/e2e/common/multi_node/external_dp/runtime.py:570
+  context: build_dist_envs sets HCCL_SOCKET_IFNAME to the NIC name resolved from the node IP for external-DP multi-node runs
+- file: tests/e2e/common/multi_node/internal_dp/multi_node_config.py:95
+  context: DistEnvBuilder.build injects HCCL_SOCKET_IFNAME (with GLOO/TP_SOCKET_IFNAME) into the per-node environment for
+    internal-DP multi-node runs
+- file: tests/e2e/common/multi_node/benchmark_results.py:11
+  context: Listed in INFRA_ENV_KEYS so the benchmark records which NIC was used for HCCL
+related_parameters:
+- name: HCCL_IF_IP
+  relation: Companion variable; binds HCCL to the IP of the selected interface. Should match the IP of the NIC named by HCCL_SOCKET_IFNAME.
+- name: GLOO_SOCKET_IFNAME
+  relation: Same NIC selection for the Gloo (PyTorch) process group; typically set to the same interface.
+- name: TP_SOCKET_IFNAME
+  relation: Same NIC selection for tensor-parallel socket communication; typically set to the same interface.
+- name: HCCL_CONNECT_TIMEOUT
+  relation: If the wrong interface is chosen, HCCL connection setup can exceed this timeout and fail.
+- name: HCCL_EXEC_TIMEOUT
+  relation: Collective execution timeout; misconfigured interface can cause slow collectives that trip this timeout.
+constraints:
+- The value must be an existing network interface name on the host (as shown by ifconfig/ip link); an invalid name causes
+  HCCL initialization to fail.
+- In multi-node deployments, HCCL_SOCKET_IFNAME must be correctly configured on every node for multi-node communication to
+  succeed.
+- The interface named must be able to reach the peer nodes' IPs; otherwise HCCL bootstrap cannot complete.
+tuning_advice:
+  summary: Set HCCL_SOCKET_IFNAME to the high-bandwidth data-plane NIC name on every node in multi-node deployments; leave
+    unset for single-node runs.
+  suggested_values:
+  - scenario: Multi-node DP/TP deployment on Ascend (v1 and v2 worker paths)
+    value: <data-plane NIC name, e.g. eth0/enp0s3 as reported by ifconfig>
+    reason: HCCL uses this interface for bootstrap and control traffic; binding to the fast interconnect is required for correct
+      and performant multi-node collectives.
+  - scenario: Host with separate management and compute networks
+    value: <RoCE/compute NIC name>
+    reason: Avoids routing HCCL traffic over the slow management NIC, which would increase latency and risk timeouts.
+  - scenario: Single-node deployment
+    value: <unset>
+    reason: No cross-node HCCL socket traffic; the variable has no meaningful effect and can be left unset.
+  caveats:
+  - Verify the NIC name with ifconfig/ip link before setting; a typo causes HCCL init failure.
+  - Set the same NIC for HCCL_SOCKET_IFNAME, GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to keep all distributed traffic on one
+    path.
+  - If multi-node startup times out, check this variable first, then consider raising HCCL_CONNECT_TIMEOUT.
+  quick_guide: export HCCL_SOCKET_IFNAME=<data-plane NIC> on every node for multi-node runs; leave unset for single-node.
+analysis_date: '2026-10-27'

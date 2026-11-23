@@ -1,0 +1,84 @@
+name: VLLM_USE_SIMPLE_KV_OFFLOAD
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:2135
+- vllm/config/vllm.py:1049
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via int(), any non-zero integer is truthy)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This env var only takes effect inside VllmConfig._post_init_kv_transfer_config()
+
+  (vllm/config/vllm.py:1049), and only when cache_config.kv_offloading_size is set
+
+  AND cache_config.kv_offloading_backend == "native". In that branch it selects the
+
+  KV connector class name: "\"SimpleCPUOffloadConnector\" when the env var is truthy,"
+
+  otherwise "OffloadingConnector". Both connectors receive the same
+
+  cpu_bytes_to_use = kv_offloading_size * (1 << 30) extra config, so the amount of
+
+  host memory reserved for offloaded KV blocks is identical; only the connector
+
+  implementation differs. The connector choice affects how KV blocks are moved
+
+  between NPU HBM and host CPU memory (copy/scheduling strategy), which can change
+
+  per-request latency when offloading is active and the efficiency of host-memory
+
+  usage, but it does not change model compute, does not alter KV cache sizing, and
+
+  has no effect at all when kv_offloading_size is unset (the function returns early
+
+  at line 1039-1040). No vllm-ascend override of this env var was found in the
+
+  provided context; the parameter is read purely from upstream vLLM config code.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2135
+  context: Environment variable definition; parsed as bool(int(os.getenv(..., '0'))), default disabled.
+- file: vllm/config/vllm.py:1049
+  context: Selects kv_connector = 'SimpleCPUOffloadConnector' vs 'OffloadingConnector' when kv_offloading_backend == 'native'.
+related_parameters:
+- name: kv_offloading_size
+  relation: 'Gate: KV offload (and thus this env var) is only activated when kv_offloading_size is set; otherwise _post_init_kv_transfer_config
+    returns early.'
+- name: kv_offloading_backend
+  relation: This env var is only consulted when kv_offloading_backend == 'native'; ignored for 'lmcache'.
+- name: kv_transfer_config.kv_connector
+  relation: The env var's sole effect is choosing this connector class name.
+- name: kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use
+  relation: Set to kv_offloading_size * (1 << 30) regardless of connector choice.
+constraints:
+- The env var has no effect unless kv_offloading_size is set, because _post_init_kv_transfer_config returns early when it
+  is None.
+- The env var is only consulted when kv_offloading_backend is 'native'; it is ignored for the 'lmcache' backend.
+- The value is parsed with int(), so it must be an integer string such as '0' or '1'; non-integer strings will raise a ValueError
+  at env access time.
+tuning_advice:
+  summary: Leave disabled unless you are using native KV offload and want to try the simpler CPU offload connector; it only
+    matters when kv_offloading_size is set with kv_offloading_backend=native.
+  suggested_values:
+  - scenario: Default deployments without KV offload
+    value: '0'
+    reason: The env var is inert when kv_offloading_size is unset; keeping it at the default avoids any connector-path surprises.
+  - scenario: Native KV offload enabled and you want the simpler connector implementation
+    value: '1'
+    reason: Selects SimpleCPUOffloadConnector instead of OffloadingConnector for kv_offloading_backend=native; useful for
+      benchmarking which offload path performs better on your Ascend setup.
+  caveats:
+  - Benchmark both connector choices with your actual kv_offloading_size before committing; the difference is in the offload
+    data path, not in memory sizing.
+  - Do not expect any effect if kv_offloading_backend is 'lmcache' or kv_offloading_size is not set.
+  quick_guide: Only set VLLM_USE_SIMPLE_KV_OFFLOAD=1 when using native KV offload (kv_offloading_size set, backend=native)
+    and you want to try SimpleCPUOffloadConnector; otherwise leave it at 0.
+analysis_date: '2026-10-27'

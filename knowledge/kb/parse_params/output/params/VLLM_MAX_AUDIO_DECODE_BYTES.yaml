@@ -1,0 +1,113 @@
+name: VLLM_MAX_AUDIO_DECODE_BYTES
+type: env
+category: memory
+scope: vllm
+source_file:
+- vllm/envs.py:1012
+- vllm/envs.py:83
+- vllm/envs.py:2319
+- vllm/entrypoints/speech_to_text/base/serving.py:127
+- vllm/multimodal/media/audio.py:185
+- vllm/multimodal/media/audio.py:233
+value_type: int
+default: 268435456
+valid_choices: Any non-negative integer (bytes); 0 or negative effectively disables the guard when passed as max_decode_bytes
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This env var is read once at SpeechToText serving init
+
+  (vllm/entrypoints/speech_to_text/base/serving.py:127) into
+
+  self.max_audio_decode_bytes and passed down as max_decode_bytes to the audio
+
+  loaders (vllm/multimodal/media/audio.py). It is a security/memory-safety guard,
+
+  not a throughput knob: "in load_audio_soundfile it is checked BEFORE decoding"
+
+  (estimated_bytes = frames * channels * 4 compared against the limit, raising
+
+  ValueError before f.read allocates the PCM buffer), and in the pyav path it is
+
+  checked incrementally during decoding (total_decode_bytes accumulated per chunk,
+
+  raising before the full allocation). Its performance effect is therefore
+
+  indirect: "it bounds the peak host (CPU) RAM a single audio request can allocate"
+
+  during preprocessing, preventing a decompression-bomb style multi-GiB float32
+
+  PCM allocation that could trigger host OOM / swap and stall the API server
+
+  frontend. It does not touch NPU compute, HCCL, KV cache, or the model forward
+
+  path. There is no vllm-ascend override of this variable in the provided
+
+  context; it is a pure upstream vLLM frontend/media parameter that applies
+
+  identically on Ascend since audio preprocessing runs on CPU before tensors are
+
+  moved to the NPU.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1012
+  context: Definition of the env var with default 268435456 (256 MiB)
+- file: vllm/envs.py:83
+  context: Type annotation in the envs module (int = 268_435_456)
+- file: vllm/envs.py:2319
+  context: Listed in the set of env vars propagated to worker processes
+- file: vllm/entrypoints/speech_to_text/base/serving.py:127
+  context: Read into self.max_audio_decode_bytes at STT serving init
+- file: vllm/multimodal/media/audio.py:185
+  context: 'pyav decode path: raises ValueError when accumulated decoded bytes exceed the limit'
+- file: vllm/multimodal/media/audio.py:233
+  context: 'soundfile path: pre-decode estimate frames*channels*4 checked against the limit'
+related_parameters:
+- name: VLLM_MAX_AUDIO_DECODE_DURATION_S
+  relation: Companion guard limiting decoded audio duration in seconds; both are enforced during audio decoding and either
+    can reject a request
+- name: VLLM_MAX_AUDIO_CLIP_FILESIZE_MB
+  relation: Companion guard limiting the compressed audio file size before decoding
+- name: VLLM_MAX_AUDIO_PREPROCESS_WORKERS
+  relation: Controls the thread pool size for STT preprocessing; together they bound frontend CPU/memory pressure
+- name: VLLM_MAX_EMBED_DECODE_BYTES
+  relation: Analogous memory guard for client-supplied embedding payloads
+constraints:
+- Audio inputs whose decoded float32 PCM would exceed VLLM_MAX_AUDIO_DECODE_BYTES are rejected with a ValueError before the
+  buffer is allocated.
+- The limit is enforced both as a pre-decode estimate (soundfile path) and incrementally during decoding (pyav path), so it
+  cannot be bypassed by header sample-rate forgery.
+- The default of 256 MiB is sized to cover 600s of mono 48 kHz float32 audio; lowering it below the size of legitimate inputs
+  will cause valid requests to fail.
+tuning_advice:
+  summary: 'Leave at the default 256 MiB for typical speech-to-text workloads; only raise
+
+    it if you legitimately serve long or multi-channel audio, and lower it only
+
+    when host RAM is tight and inputs are known to be short.
+
+    '
+  suggested_values:
+  - scenario: Standard STT serving with short-to-medium clips (<= 10 min mono)
+    value: 268435456
+    reason: Default 256 MiB covers 600s mono 48 kHz float32 and matches the companion duration guard; no change needed.
+  - scenario: Long-form or multi-channel audio (e.g. stereo/multichannel meetings, > 10 min)
+    value: 1073741824
+    reason: Raise to 1 GiB so legitimate multi-channel inputs are not rejected, while still bounding a single request's host
+      PCM allocation.
+  - scenario: Memory-constrained host / many concurrent audio requests
+    value: 67108864
+    reason: Lower to 64 MiB to cap per-request host RAM when inputs are known to be short, reducing OOM risk on the API server
+      frontend.
+  caveats:
+  - This is a host (CPU) memory guard, not an NPU memory knob; it does not affect HBM usage, KV cache, or NPU throughput.
+  - Setting it too low causes valid audio requests to fail with a ValueError mentioning VLLM_MAX_AUDIO_DECODE_BYTES.
+  - It is enforced before allocation, so raising it does not by itself increase steady-state memory — only the worst-case
+    per-request peak.
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM on Ascend.
+  quick_guide: Keep the 256 MiB default unless serving long/multichannel audio (raise) or host RAM is tight (lower).
+analysis_date: '2026-10-27'

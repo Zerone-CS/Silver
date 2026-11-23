@@ -1,0 +1,76 @@
+name: VLLM_KV_OFFLOAD_MAX_BATCH_DESCRIPTORS
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:2063
+- vllm/envs.py:305
+- vllm/v1/simple_kv_offload/cuda_mem_ops.py:69
+- vllm/v1/simple_kv_offload/cuda_mem_ops.py:83
+value_type: int
+default: 0
+valid_choices: '0 or any positive integer (0 = platform default: 8192 on ROCm, uncapped on CUDA)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only affects the CPU-KV-offload path in vllm/v1/simple_kv_offload/cuda_mem_ops.py,
+
+  which uses CUDA''s cuMemcpyBatchAsync / ROCm''s hipMemcpyBatchAsync to batch-copy KV cache blocks
+
+  between host and device. _resolve_max_batch_descriptors() reads the env var once (lazily cached in
+
+  the module-global _max_batch_descriptors) and returns it as the max number of copy descriptors
+
+  passed to a single batch-memcpy call. When 0, the platform default is used: 8192 on ROCm (because
+
+  hipMemcpyBatchAsync faults above that count) and unlimited (0) on CUDA. Setting a positive value
+
+  chunks larger transfers into multiple batch calls, trading more kernel/driver calls for smaller
+
+  per-call descriptor counts. On Ascend NPU this code path is not exercised: vllm-ascend does not
+
+  use the CUDA/ROCm batch-memcpy FFI (ctypes CFUNCTYPE over cuMemcpyBatchAsync/hipMemcpyBatchAsync),
+
+  and there is no vllm-ascend override or usage of this env var in the provided context. Therefore
+
+  on Ascend it has no runtime effect on latency, throughput, or memory.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2063
+  context: Env var definition, parsed as int with default 0.
+- file: vllm/v1/simple_kv_offload/cuda_mem_ops.py:83
+  context: Read in _resolve_max_batch_descriptors() to override the platform default chunk size for batch memcpy.
+- file: vllm/v1/simple_kv_offload/cuda_mem_ops.py:69
+  context: Comment documenting the ROCm 8192-descriptor ceiling and the override env var.
+related_parameters:
+- name: VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY
+  relation: Related CPU-offload memory configuration; both concern host-device data movement.
+- name: VLLM_WEIGHT_OFFLOADING_DISABLE_UVA
+  relation: Related CPU-offload memory configuration affecting host-device addressing.
+constraints:
+- The value must be a non-negative integer; a value of 0 means use the platform default rather than disabling batching.
+- On ROCm, hipMemcpyBatchAsync faults when more than 8192 descriptors are passed in one call, so the effective cap must not
+  exceed 8192 there.
+tuning_advice:
+  summary: Irrelevant on Ascend NPU; only tune on CUDA/ROCm CPU-KV-offload deployments if batch-memcpy behavior needs adjustment.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: 0
+    reason: The batch-memcpy FFI path is CUDA/ROCm-specific and not used by vllm-ascend, so leave at default 0; changing it
+      has no effect.
+  - scenario: ROCm GPU with CPU KV offload and batch copy optimized
+    value: 8192
+    reason: Matches the documented safe ceiling to avoid hipMemcpyBatchAsync faults on rocm 7.14/7.15.
+  - scenario: CUDA GPU with CPU KV offload
+    value: 0
+    reason: CUDA cuMemcpyBatchAsync handles arbitrary descriptor counts, so uncapped (0) is optimal.
+  caveats:
+  - This parameter only affects the simple_kv_offload batch-memcpy path; it does nothing when CPU KV offload is not enabled.
+  - On Ascend NPU the CUDA/ROCm batch-memcpy code path is not invoked, so this env var is effectively a no-op.
+  - Setting a small positive value forces chunking and adds extra driver calls, which can increase latency for large offload
+    transfers.
+  quick_guide: Leave at 0 on Ascend; only adjust on CUDA/ROCm CPU-KV-offload setups.
+analysis_date: '2026-10-27'

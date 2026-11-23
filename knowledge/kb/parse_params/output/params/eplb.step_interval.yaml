@@ -1,0 +1,81 @@
+name: eplb.step_interval
+type: nested
+category: scheduling
+scope: both
+source_file:
+- vllm/distributed/eplb/eplb_state.py:467
+- vllm/config/parallel.py
+value_type: int
+default: 3000
+valid_choices: positive integer (number of inference steps); no explicit upper bound
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: "`eplb.step_interval` (upstream `EPLBConfig.step_interval`) controls how often the\nExpert Parallel Load Balancer\
+  \ rearranges physical experts across NPUs. In\n`vllm/distributed/eplb/eplb_state.py:467-471`, the value is read once at\
+  \ init:\n`expert_rearrangement_step` is seeded to 3/4 of the interval (so the first\nrearrangement happens after ~75% of\
+  \ the interval), and\n`expert_rearrangement_step_interval` stores the recurring period. On every\nforward step the EPLB\
+  \ state machine checks whether the current step has reached\nthe rearrangement threshold; when it fires, the policy (on\
+  \ Ascend the `stair`\npolicy per the vllm-ascend docs) computes a new logical-to-physical expert map\nand the runtime performs\
+  \ an all-to-all / HCCL-based redistribution of expert\nweights and token routing tables across NPUs.\nPerformance mechanism:\n\
+  - \"Too small an interval => frequent expert rearrangement => repeated HCCL\"\n  all-to-all weight shuffles and routing-table\
+  \ rebuilds, which stall the MoE\n  forward pass and hurt latency/throughput, especially on Ascend where HCCL\n  collective\
+  \ latency is significant.\n- \"Too large an interval => the load balancer reacts slowly to hot-expert skew,\"\n  leaving\
+  \ some NPUs overloaded (stragglers) while others idle, reducing\n  effective MoE throughput.\n- \"The interval also interacts\
+  \ with `window_size`: the docstring notes that if\"\n  `step_interval` > `window_size`, only the last `window_size` steps\
+  \ of load\n  metrics are used for the rearrangement decision, so the balancing quality is\n  bounded by the window.\nvllm-ascend\
+  \ does not redefine the field; it consumes the upstream `EPLBConfig`\n(MRv2 path) and documents `step_interval` default\
+  \ 3000 with tuning guidance.\n"
+usage_locations:
+- file: vllm/distributed/eplb/eplb_state.py:467
+  context: Reads eplb_config.step_interval to seed expert_rearrangement_step (3/4 of interval) and expert_rearrangement_step_interval
+    (recurring period).
+- file: vllm/distributed/eplb/eplb_state.py:455
+  context: Adjacent read of eplb_config.window_size which bounds the load metrics used when step_interval > window_size.
+- file: tests/distributed/test_elastic_ep.py:189
+  context: Test passes --eplb-config.step_interval 300 with window_size 5.
+related_parameters:
+- name: eplb.window_size
+  relation: Bounds the load-metric history; if step_interval > window_size only the last window_size steps are used for rearrangement.
+- name: eplb.num_redundant_experts
+  relation: Number of redundant physical experts that rearrangement redistributes; must make (num_experts + num_redundant_experts)
+    divisible by EP size.
+- name: eplb.policy
+  relation: Policy (stair on Ascend) computes the new expert map each time the interval fires.
+- name: eplb.use_async
+  relation: On Ascend MRv2 always async; async rearrangement overlaps the HCCL redistribution with compute, mitigating interval
+    cost.
+- name: enable_eplb
+  relation: Master switch; step_interval has no effect unless --enable-eplb is set.
+constraints:
+- step_interval has no effect unless --enable-eplb is enabled.
+- If step_interval is greater than window_size, only the metrics of the last window_size steps are used for rearranging experts.
+- The first rearrangement is scheduled at 3/4 of step_interval after startup, not immediately.
+tuning_advice:
+  summary: Tune step_interval together with window_size to balance rearrangement overhead against responsiveness to expert-load
+    skew on Ascend NPUs.
+  suggested_values:
+  - scenario: Steady-state serving with stable expert load (default)
+    value: 3000
+    reason: Upstream default; infrequent rearrangement minimizes HCCL redistribution overhead when load is already balanced.
+  - scenario: Highly skewed / bursty MoE traffic needing fast rebalancing (Ascend MRv2 doc example)
+    value: 50
+    reason: vllm-ascend doc example pairs step_interval 50 with window_size 50 for Qwen3-30B-A3B on TP16, reacting quickly
+      to hot-expert skew.
+  - scenario: Elastic EP test / short runs
+    value: 300
+    reason: Used in upstream elastic EP tests with window_size 5; moderate interval suitable for shorter benchmark runs.
+  caveats:
+  - Setting step_interval too small causes frequent expert rearrangement, each triggering HCCL all-to-all weight redistribution
+    that stalls the MoE forward pass on Ascend.
+  - If step_interval exceeds window_size, only the last window_size steps of load metrics inform the rearrangement, capping
+    balancing quality.
+  - On Ascend MRv2, use_async is always true, so rearrangement runs asynchronously; still avoid excessively small intervals
+    to prevent HCCL contention.
+  - Tune step_interval and window_size jointly; the vllm-ascend docs recommend tuning both against the target workload.
+  quick_guide: Keep step_interval large (default 3000) for stable load; lower it (e.g. 50) with a matching window_size when
+    expert load is skewed.
+analysis_date: '2026-10-27'

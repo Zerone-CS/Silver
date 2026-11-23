@@ -1,0 +1,74 @@
+name: VLLM_MAX_AUDIO_CLIP_FILESIZE_MB
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:997
+- vllm/envs.py:81
+- vllm/multimodal/media/audio.py:528
+- vllm/entrypoints/speech_to_text/base/utils.py:29
+- vllm/entrypoints/launchers/run_batch.py:79
+- vllm/entrypoints/speech_to_text/realtime/connection.py:55
+value_type: int
+default: 25
+valid_choices: positive integer (megabytes); no explicit upper bound enforced in code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: "This env var sets the maximum compressed audio file size (in MB) accepted by\nvLLM's audio input paths. It\
+  \ is read in vllm/envs.py:997 (default 25) and\nconsumed at several sites:\n- \"vllm/multimodal/media/audio.py:528 (AudioMediaIO.get_max_bytes)\
+  \ — converts\"\n  MB to bytes and is checked in _validate_encoded_size before decoding.\n- \"vllm/entrypoints/speech_to_text/base/utils.py:29\
+  \ (read_upload_with_limit) —\"\n  used as the default max_size_mb for chunked upload reads, so oversized\n  uploads are\
+  \ rejected before full materialization.\n- \"vllm/entrypoints/launchers/run_batch.py:79 — download limit for batch\"\n \
+  \ transcription audio URLs.\n- \"vllm/entrypoints/speech_to_text/realtime/connection.py:55 — per-connection\"\n  audio size\
+  \ cap for realtime transcription.\nThe parameter does NOT affect model execution, KV cache, scheduling, or NPU\ncompute.\
+  \ Its only performance relevance is memory safety on the API server\nhost: \"it bounds how much compressed audio bytes can\
+  \ be buffered before\"\ndecoding. It does not bound decoded PCM size — that is governed by\nVLLM_MAX_AUDIO_DECODE_DURATION_S\
+  \ and VLLM_MAX_AUDIO_DECODE_BYTES. There is no\nvllm-ascend override of this parameter; it is a pure upstream vLLM env var\
+  \ and\nis not referenced in vllm-ascend source. On Ascend NPU deployments the effect\nis identical to GPU deployments: \"\
+  it only gates audio ingestion on the host\"\nside, not NPU memory or throughput.\n"
+usage_locations:
+- file: vllm/envs.py:997
+  context: Definition and default (25 MB) of the env var.
+- file: vllm/multimodal/media/audio.py:528
+  context: get_max_bytes() converts MB to bytes; _validate_encoded_size rejects oversized encoded audio before decoding.
+- file: vllm/entrypoints/speech_to_text/base/utils.py:29
+  context: Default max_size_mb for chunked upload reads; enforces limit before full materialization.
+- file: vllm/entrypoints/launchers/run_batch.py:79
+  context: Audio download limit for batch transcription requests.
+- file: vllm/entrypoints/speech_to_text/realtime/connection.py:55
+  context: Per-connection audio filesize cap for realtime transcription.
+related_parameters:
+- name: VLLM_MAX_AUDIO_DECODE_DURATION_S
+  relation: Companion guard limiting decoded audio duration; filesize limit alone does not bound decoded PCM memory.
+- name: VLLM_MAX_AUDIO_DECODE_BYTES
+  relation: Companion guard limiting float32 PCM bytes allocated during decoding.
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: General remote media download size limit; audio-specific limit applies to audio inputs.
+constraints:
+- Audio inputs larger than this limit (in MB) are rejected with a VLLMValidationError before decoding.
+- The value is interpreted as an integer number of megabytes and multiplied by MiB_bytes to obtain the byte limit.
+- This limit applies to compressed/encoded audio size only; it does not bound decoded PCM memory, which is controlled by VLLM_MAX_AUDIO_DECODE_DURATION_S
+  and VLLM_MAX_AUDIO_DECODE_BYTES.
+tuning_advice:
+  summary: Leave at the default 25 MB unless your audio workloads legitimately require larger files; this is a host-memory
+    safety guard, not a performance knob.
+  suggested_values:
+  - scenario: Default multimodal / speech-to-text serving
+    value: 25
+    reason: Default is sufficient for typical short audio clips and bounds host memory buffering.
+  - scenario: Long-form audio transcription (e.g. meeting recordings) requiring larger uploads
+    value: 100
+    reason: Allows larger compressed audio files while still bounding host memory; pair with appropriate VLLM_MAX_AUDIO_DECODE_DURATION_S
+      and VLLM_MAX_AUDIO_DECODE_BYTES.
+  - scenario: Untrusted / public-facing endpoint
+    value: 25
+    reason: Keep the conservative default to limit memory exposure from oversized uploads.
+  caveats:
+  - Increasing this value does not improve NPU throughput or latency; it only relaxes the audio ingestion size cap.
+  - Ensure decoded-audio guards (VLLM_MAX_AUDIO_DECODE_DURATION_S, VLLM_MAX_AUDIO_DECODE_BYTES) are also sized to prevent
+    large PCM allocations.
+  quick_guide: Keep at 25 MB by default; raise only if legitimate audio inputs exceed it, and adjust decode guards accordingly.
+analysis_date: '2026-10-27'

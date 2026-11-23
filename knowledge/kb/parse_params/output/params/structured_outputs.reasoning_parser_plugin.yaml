@@ -1,0 +1,76 @@
+name: structured_outputs.reasoning_parser_plugin
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1041
+- vllm/engine/arg_utils.py:2589
+- vllm/v1/structured_output/__init__.py:83
+value_type: str
+default: null
+valid_choices: Any importable Python module path string (e.g. 'my_pkg.my_reasoning_parser'); no fixed enum
+cli_example: --reasoning-parser-plugin <module_path>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only supplies a module path used to dynamically import and register a
+
+  custom reasoning parser class. In vllm/v1/structured_output/__init__.py:83-86, the value
+
+  is read once during StructuredOutputManager initialization and, if non-empty and longer
+
+  than 3 characters, passed to ReasoningParserManager.import_reasoning_parser(). This is a
+
+  one-time import/registration at engine startup — it does not run per-request and does not
+
+  touch the NPU compute path, KV cache, or scheduling. The actual reasoning parsing work is
+
+  performed by the registered parser class (selected via --reasoning-parser), whose cost is
+
+  independent of this plugin-path parameter. Therefore the parameter itself has only a
+
+  negligible startup-time effect (module import cost) and no steady-state throughput or
+
+  memory impact on Ascend NPU. No vllm-ascend override or monkey-patch of this parameter
+
+  was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1041
+  context: Registers the --reasoning-parser-plugin CLI argument from StructuredOutputsConfig kwargs.
+- file: vllm/engine/arg_utils.py:2589
+  context: Copies the top-level reasoning_parser_plugin value into structured_outputs_config during EngineArgs.create_engine_config().
+- file: vllm/v1/structured_output/__init__.py:83
+  context: Reads structured_outputs_config.reasoning_parser_plugin and imports the plugin module via ReasoningParserManager.import_reasoning_parser()
+    at manager init.
+related_parameters:
+- name: structured_outputs.reasoning_parser
+  relation: The plugin path registers a parser class that is then selected by name via --reasoning-parser; the plugin must
+    be imported before the parser name can be resolved.
+- name: structured_outputs.enable_in_reasoning
+  relation: Controls whether structured output constraints are applied during the reasoning phase; works together with the
+    selected reasoning parser.
+constraints:
+- The value must be a valid importable Python module path; an invalid path will fail at import time during engine startup.
+- The plugin path is only imported when its length is greater than 3 characters (vllm/v1/structured_output/__init__.py:85);
+  shorter strings are silently ignored.
+- The plugin only registers a parser class; the parser must still be selected by name via --reasoning-parser to take effect.
+- Import only occurs when skip_tokenizer_init is false; if the tokenizer is skipped, the reasoning parser plugin is not loaded.
+tuning_advice:
+  summary: Set only when using a custom reasoning parser; it has negligible runtime impact and mainly affects startup import.
+  suggested_values:
+  - scenario: Using a built-in reasoning parser (e.g. deepseek_r1)
+    value: unset
+    reason: No plugin needed; built-in parsers are already registered, so leave the plugin path unset.
+  - scenario: Using a custom/third-party reasoning parser on Ascend NPU
+    value: my_pkg.my_reasoning_parser
+    reason: Provide the importable module path so the parser class is registered before --reasoning-parser resolves it; ensure
+      the module is on PYTHONPATH in all workers.
+  caveats:
+  - Ensure the plugin module is installed and importable in every worker process; a missing module aborts engine startup.
+  - Do not expect throughput or memory gains from this parameter — it only registers a parser class.
+  quick_guide: Set --reasoning-parser-plugin to your custom parser's module path only when using a non-built-in reasoning
+    parser; otherwise leave it unset.
+analysis_date: '2026-10-27'

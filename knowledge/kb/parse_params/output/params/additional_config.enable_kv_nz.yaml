@@ -1,0 +1,91 @@
+name: additional_config.enable_kv_nz
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:579
+- vllm_ascend/ascend_config.py:430
+- tests/ut/test_ascend_config.py:1921
+value_type: bool
+default: false
+valid_choices: 'true / false (lax bool coercion: string "true"/"false" accepted)'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'enable_kv_nz controls whether the KV cache is stored in the Ascend "NZ" (fractal / zN) memory
+
+  layout instead of the default ND layout. It is defined only in vllm-ascend (AscendConfig field,
+
+  vllm_ascend/ascend_config.py:579) and is passed via --additional-config JSON; there is no
+
+  upstream vLLM equivalent. The doc states it "only takes effect on models using MLA (e.g.,
+
+  DeepSeek)". The unit test test_enable_kv_nz_uses_vllm_config_preconditions
+
+  (tests/ut/test_ascend_config.py:1912) shows the gating preconditions: model_config.is_deepseek_mla
+
+  must be True and kv_transfer_config.is_kv_consumer must be True (i.e. a PD-disaggregated decode
+
+  node). When enabled, the KV cache tensors are allocated in NZ format so that the attention
+
+  (MLA) kernels can consume them directly without an on-the-fly ND->NZ transpose, which reduces
+
+  per-step attention latency and improves decode throughput on the D node. The tradeoff is that
+
+  the NZ layout is a hardware-specific format: "it is only beneficial when the attention kernel"
+
+  actually supports NZ input, and it is only meaningful on the decode (kv_consumer) side of a
+
+  PD deployment. Because the flag is a pure layout switch, it does not change the number of KV
+
+  blocks or total KV memory footprint materially, but it can affect kernel selection and thus
+
+  latency/throughput.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:579
+  context: 'AscendConfig field definition: enable_kv_nz: bool = False (user-input switch, lax bool coercion).'
+- file: vllm_ascend/ascend_config.py:430
+  context: Documented in the AscendConfig docstring example JSON passed via --additional-config.
+- file: tests/ut/test_ascend_config.py:1921
+  context: 'Test sets additional_config={''enable_kv_nz'': ''true''} with is_deepseek_mla=True and is_kv_consumer=True, verifying
+    the flag resolves to True.'
+related_parameters:
+- name: kv_transfer_config (is_kv_consumer)
+  relation: enable_kv_nz only takes effect on a PD decode (kv_consumer) node; the test gates on is_kv_consumer=True.
+- name: model_config.is_deepseek_mla
+  relation: Only effective for MLA models (e.g. DeepSeek); the test gates on is_deepseek_mla=True.
+- name: weight_nz_mode
+  relation: Sibling NZ-layout switch for weights (0/1/2); enable_kv_nz is the KV-cache analogue.
+- name: enable_transpose_kv_cache_by_block
+  relation: Related KV-cache layout/transpose optimization; both affect how KV cache is laid out and consumed by attention
+    kernels.
+constraints:
+- enable_kv_nz only takes effect on models using MLA (e.g. DeepSeek); on non-MLA models it has no effect.
+- enable_kv_nz is intended for PD-disaggregated decode (kv_consumer) nodes; the unit test requires kv_transfer_config.is_kv_consumer
+  to be True for the flag to be meaningful.
+- The value must be a boolean; string values are lax-coerced ("true" -> True, "false" -> False), and unknown keys in additional_config
+  are rejected (extra=forbid).
+tuning_advice:
+  summary: Enable enable_kv_nz on MLA (DeepSeek) PD decode nodes to let attention kernels consume NZ-layout KV cache directly
+    and cut per-step transpose overhead.
+  suggested_values:
+  - scenario: DeepSeek/MLA model on a PD-disaggregated decode (kv_consumer) node
+    value: true
+    reason: NZ KV layout lets the MLA attention kernel read KV cache without an on-the-fly ND->NZ transpose, reducing decode-step
+      latency and improving throughput.
+  - scenario: Non-MLA model, or prefill (P) node, or non-PD deployment
+    value: false
+    reason: The flag only takes effect for MLA models on kv_consumer nodes; elsewhere it is a no-op, so leave it at the default
+      to avoid confusion.
+  caveats:
+  - Verify the deployed attention backend/kernel supports NZ KV input before enabling; otherwise the flag may not deliver
+    the expected speedup.
+  - Benchmark decode latency with and without the flag on your specific MLA model and CANN version, since kernel support for
+    NZ can vary.
+  quick_guide: Set enable_kv_nz=true only for MLA (DeepSeek) models on PD decode nodes; otherwise leave it false.
+analysis_date: '2026-10-27'

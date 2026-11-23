@@ -1,0 +1,108 @@
+name: --disable-cascade-attn
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:284
+- vllm/engine/arg_utils.py:546
+- vllm/engine/arg_utils.py:927
+- vllm/engine/arg_utils.py:1851
+- vllm/config/vllm.py:1506
+- vllm/config/vllm.py:1906
+- vllm/v1/worker/gpu_model_runner.py:568
+- vllm_ascend/platform.py:729
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: --disable-cascade-attn
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Cascade attention is a GPU-oriented optimization that splits the attention
+
+  computation into a shared prefix (cascade) part and per-request parts to avoid
+
+  recomputing common prefix KV blocks. In upstream vLLM it is consumed at
+
+  vllm/v1/worker/gpu_model_runner.py:568 where `self.cascade_attn_enabled =
+
+  not self.model_config.disable_cascade_attn` gates whether the model runner
+
+  builds cascade attention metadata. It also interacts with cudagraph mode
+
+  (vllm/config/vllm.py:1906 warns that full cudagraphs fall back to eager when
+
+  cascade attention is enabled without piecewise cudagraphs) and with async
+
+  speculative decoding (vllm/config/vllm.py:1506 force-disables cascade attention
+
+  when async spec decode is on).
+
+
+  On Ascend NPU this parameter has effectively NO runtime performance effect.
+
+  vllm-ascend''s platform check_and_update_config path calls
+
+  _fix_incompatible_config (vllm_ascend/platform.py:729), which detects
+
+  disable_cascade_attn=True, logs a warning ("GPU-specific parameter is not
+
+  supported on Ascend ... resetting to False"), and forcibly sets
+
+  model_config.disable_cascade_attn = False. Because the Ascend attention
+
+  backends do not implement the cascade-attention metadata path, the flag is
+
+  neutralized regardless of user input. The only residual effect is the
+
+  one-time warning log when the user passes the flag. Therefore the parameter
+
+  does not change latency, throughput, or memory on Ascend.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:284
+  context: ModelConfig field definition with default True and docstring describing opt-in semantics.
+- file: vllm/engine/arg_utils.py:927
+  context: CLI argument registration --disable-cascade-attn.
+- file: vllm/engine/arg_utils.py:1851
+  context: Passed into ModelConfig construction from EngineArgs.
+- file: vllm/v1/worker/gpu_model_runner.py:568
+  context: GPU model runner sets cascade_attn_enabled = not disable_cascade_attn to gate cascade metadata building.
+- file: vllm/config/vllm.py:1506
+  context: Force-disables cascade attention when async speculative decoding is enabled.
+- file: vllm/config/vllm.py:1906
+  context: Warns about eager fallback when full cudagraphs combined with cascade attention.
+- file: vllm_ascend/platform.py:729
+  context: Ascend _fix_incompatible_config resets disable_cascade_attn to False with a warning.
+related_parameters:
+- name: --speculative-config
+  relation: Async speculative decoding force-disables cascade attention upstream (vllm/config/vllm.py:1506).
+- name: compilation_config.cudagraph_mode
+  relation: Full cudagraphs without piecewise cudagraphs fall back to eager when cascade attention is enabled (vllm/config/vllm.py:1906).
+- name: --enable-prefix-caching
+  relation: Cascade attention benefits from shared prefixes; prefix caching affects whether cascade opportunities exist.
+constraints:
+- On Ascend NPU, setting --disable-cascade-attn is silently reset to False by vllm-ascend; the flag has no effect on the actual
+  attention computation.
+- Even when set to False upstream, cascade attention is only used when the internal heuristic determines it is beneficial.
+tuning_advice:
+  summary: On Ascend NPU this flag is a no-op (reset to False by vllm-ascend); leave it at default and do not rely on it for
+    tuning.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: true
+    reason: Default value; vllm-ascend resets it to False anyway, so passing the flag only produces a warning log with no
+      performance change.
+  - scenario: GPU (upstream vLLM) deployment wanting to avoid numerical issues
+    value: true
+    reason: Upstream default; disabling cascade attention avoids potential numerical issues at the cost of not using the prefix-sharing
+      optimization.
+  caveats:
+  - Do not expect any throughput or latency change from this flag on Ascend; the cascade attention code path is not implemented
+    in Ascend attention backends.
+  - Passing --disable-cascade-attn on Ascend triggers a warning in logs; omit it to keep logs clean.
+  quick_guide: Ignore this flag on Ascend — it is reset to False by vllm-ascend and has no runtime performance effect.
+analysis_date: '2026-10-27'

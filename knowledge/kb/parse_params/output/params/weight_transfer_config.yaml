@@ -1,0 +1,108 @@
+name: --weight-transfer-config
+type: cli
+category: communication
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1743
+- vllm/engine/arg_utils.py:783
+- vllm/config/vllm.py:453
+- vllm_ascend/worker/worker.py:850
+- vllm_ascend/worker/worker.py:301
+- vllm_ascend/utils.py:1500
+- vllm_ascend/model_loader/rfork/safety.py:16
+value_type: dict
+default: null
+valid_choices: backend values include 'hccl' (Ascend cross-NPU), 'ipc' (Ascend same-NPU, mapped to NPUIPCWeightTransferEngine),
+  'nccl' (upstream), 'sparse_nccl', 'sharded_rdt'
+cli_example: '--weight-transfer-config ''{"backend": "hccl"}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter enables the RL online weight-update path. On Ascend it is read in
+
+  vllm_ascend/worker/worker.py:850 (load_model): when weight_transfer_config is not None,
+
+  the worker instantiates a WeightTransferEngine via WeightTransferEngineFactory.create_engine,
+
+  which for backend "hccl" registers an HCCL process group with the trainer and for "ipc"
+
+  selects NPUIPCWeightTransferEngine. This is not a per-token hot-path parameter, but it has
+
+  real runtime consequences:
+
+  (1) Memory: vllm_ascend/utils.py:1500 is_rl_weight_update_enabled() returns True whenever
+
+  weight_transfer_config is set, which keeps parameters alive that would otherwise be released
+
+  (dispose_layer call sites), increasing resident weight memory.
+
+  (2) Latency: weight updates go through a pause -> start_weight_update -> transfer groups ->
+
+  finish_weight_update -> resume cycle (see rl.md control flow), so generation is paused during
+
+  transfer; the backend choice (hccl vs ipc) determines transfer bandwidth and thus pause duration.
+
+  (3) Compatibility: vllm_ascend/model_loader/rfork/safety.py:16 disables RFork mutable-weight
+
+  registration when weight_transfer_config is set, and the RL start path validates that
+
+  FRACTAL_NZ is disabled (worker.py:314 _check_nz_disabled), so enabling this parameter forces
+
+  weight_nz_mode=0 which can change kernel selection/precision behavior.
+
+  '
+usage_locations:
+- file: vllm_ascend/worker/worker.py:850
+  context: load_model() creates WeightTransferEngine from weight_transfer_config after model load
+- file: vllm_ascend/worker/worker.py:301
+  context: _check_weight_transfer_engine raises if engine not configured; init_weight_transfer_engine sets up HCCL PG
+- file: vllm_ascend/worker/worker.py:314
+  context: _check_nz_disabled rejects FRACTAL_NZ mode during RL weight updates
+- file: vllm_ascend/utils.py:1500
+  context: is_rl_weight_update_enabled returns True if weight_transfer_config is set, keeping weights alive
+- file: vllm_ascend/model_loader/rfork/safety.py:16
+  context: RFork skips mutable-weight registration when weight_transfer_config is set
+- file: vllm/v1/worker/gpu_worker.py:512
+  context: 'Upstream reference: same engine creation pattern in GPU worker load_model'
+- file: vllm/v1/engine/core.py:1676
+  context: weight_transfer_backend reported to scheduler from config.backend
+related_parameters:
+- name: --additional-config (rl_config.enabled)
+  relation: Companion switch; rl_config.enabled applies RL defaults (disables NZ, enables dev endpoints). Either switch alone
+    marks an RL weight-update deployment.
+- name: --additional-config (weight_nz_mode)
+  relation: Must be 0 when weight transfer is active; RL start path raises if FRACTAL_NZ is enabled.
+- name: --enable-sleep-mode
+  relation: Alternative same-device mode (sleep/wake + IPC) vs cross-device pause/resume + HCCL transfer.
+- name: --distributed-executor-backend
+  relation: With ray, sharded_rdt backend requires enable_tensor_transport actor option (ray_executor_v2.py:356).
+constraints:
+- Weight transfer must be configured (weight_transfer_config set) before calling init_weight_transfer_engine, otherwise a
+  RuntimeError is raised.
+- FRACTAL_NZ mode must be disabled (weight_nz_mode=0) when performing RL weight updates, otherwise a ValueError is raised.
+- The 'ipc' backend requires VLLM_ALLOW_INSECURE_SERIALIZATION=1 because it serializes IPC handles, and should only be used
+  in trusted environments.
+- The 'sharded_rdt' backend requires a compatible Ray version (check_ray_rdt_version) and only works with the ray distributed
+  executor.
+tuning_advice:
+  summary: Use --weight-transfer-config only for RL rollouts; pick 'hccl' for cross-NPU transfer and 'ipc' for same-NPU transfer,
+    and pair it with rl_config.enabled.
+  suggested_values:
+  - scenario: Cross-NPU weight transfer (trainer and inference on different NPU cards)
+    value: '{"backend": "hccl"}'
+    reason: Registers the Ascend HCCL transfer engine, the documented cross-device mode for RL weight updates.
+  - scenario: Same-NPU weight transfer (trainer and inference share the NPU)
+    value: '{"backend": "ipc"}'
+    reason: Maps to NPUIPCWeightTransferEngine for same-device IPC transfer; requires VLLM_ALLOW_INSECURE_SERIALIZATION=1.
+  - scenario: Plain inference (no RL weight updates)
+    value: unset
+    reason: Leave unset to avoid keeping weights resident and to allow RFork mutable-weight registration.
+  caveats:
+  - 'Always pair with --additional-config ''{"rl_config": {"enabled": true}}'' to apply RL defaults and disable NZ automatically.'
+  - For same-device mode consider --enable-sleep-mode with VLLM_WORKER_MULTIPROC_METHOD=spawn instead of cross-device transfer.
+  - Ensure weight_nz_mode=0 (or rl_config.enabled) to avoid the FRACTAL_NZ ValueError during weight updates.
+  quick_guide: 'RL rollouts: --weight-transfer-config ''{"backend": "hccl"}'' (cross-NPU) or ''{"backend": "ipc"}'' (same-NPU),
+    plus rl_config.enabled=true.'
+analysis_date: '2026-10-27'

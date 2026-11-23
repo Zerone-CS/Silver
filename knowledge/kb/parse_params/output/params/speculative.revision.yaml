@@ -1,0 +1,85 @@
+name: speculative.revision
+type: nested
+category: speculation
+scope: both
+source_file:
+- 'vllm/config/speculative.py: (SpeculativeConfig.draft_model_config / ModelConfig.revision field)'
+- 'vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py: (DSparkPrefixKeys.from_config reads draft_model_config.revision)'
+value_type: str
+default: null
+valid_choices: Any valid git branch name, tag name, or commit id; null means the model's default revision
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'speculative.revision selects which checkpoint revision of the draft (speculative) model is
+
+  loaded. It is a model-identity field, not a runtime tuning knob: it does not change kernel
+
+  selection, scheduling, or communication behavior on Ascend NPU. Its only runtime-adjacent
+
+  effect is indirect — a different revision may ship different weights/dtype/architecture,
+
+  which in turn changes draft-model memory footprint and speculative acceptance rate, and
+
+  therefore end-to-end throughput. In vllm-ascend, the field is consumed by
+
+  DSparkPrefixKeys.from_config (vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/
+
+  dspark_prefix_cache.py), where draft_model_config.revision participates in the prefix-cache
+
+  key identity. Changing the revision changes the identity digest, which invalidates previously
+
+  cached DSpark prefix entries (cache miss on first request after the change) but does not
+
+  alter steady-state performance. The mooncake layerwise doc explicitly notes that different
+
+  revisions with the same model basename can collide in key namespaces, which is a correctness
+
+  concern rather than a throughput one.
+
+  '
+usage_locations:
+- file: 'vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py: DSparkPrefixKeys.from_config'
+  context: Draft model revision is folded into the DSpark prefix-cache key identity; a revision change produces a different
+    identity and invalidates cached prefixes.
+- file: tests/ut/distributed/ascend_store/test_dspark_prefix_cache.py:363
+  context: Unit test mutates speculative_config.draft_model_config.revision and asserts the prefix key identity changes.
+- file: 'vllm/config/speculative.py: SpeculativeConfig'
+  context: Upstream field that resolves the draft model checkpoint revision when loading the speculative model.
+related_parameters:
+- name: speculative.model
+  relation: Draft model path/name; revision selects a specific checkpoint of this model.
+- name: speculative.method
+  relation: Determines whether a draft model is loaded at all (e.g. dspark/eagle/mtp); revision is only meaningful when a
+    draft model is used.
+- name: speculative.num_speculative_tokens
+  relation: Together with the draft model revision, defines the speculative decoding configuration and its acceptance characteristics.
+- name: model
+  relation: Target model; the draft revision must be architecturally compatible with the target model.
+constraints:
+- The revision must exist in the draft model's repository (valid branch, tag, or commit id); an invalid revision causes model
+  loading to fail.
+- The draft model at the specified revision must be architecturally compatible with the target model, otherwise speculative
+  decoding cannot be initialized.
+- When using DSpark prefix caching, changing the revision changes the cache key identity, so previously cached prefixes for
+  the old revision will not be reused.
+tuning_advice:
+  summary: Pin an explicit, immutable revision for the draft model to keep speculative decoding behavior and Ascend prefix-cache
+    keys stable; this is a reproducibility setting, not a throughput knob.
+  suggested_values:
+  - scenario: Production deployment (v1 and v2 Ascend workers)
+    value: <explicit commit id>
+    reason: An immutable commit id guarantees identical draft weights across restarts, keeping speculative acceptance rate
+      and memory footprint predictable and DSpark prefix-cache keys stable.
+  - scenario: Development / experimentation
+    value: unset
+    reason: Leaving revision unset uses the model's default revision, which is convenient when iterating but may silently
+      change weights if the default branch moves.
+  caveats:
+  - Do not rely on a moving branch name in production; the resolved weights can change without any config change.
+  - After changing the revision, expect a transient prefix-cache miss in DSpark-based KV transfer setups.
+  quick_guide: Set speculative.revision to a fixed commit id for reproducible draft-model weights; it does not directly affect
+    NPU kernel performance.
+analysis_date: '2026-10-27'

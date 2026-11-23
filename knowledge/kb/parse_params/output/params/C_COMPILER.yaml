@@ -1,0 +1,77 @@
+name: C_COMPILER
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:57
+- setup.py:252
+value_type: str
+default: null
+valid_choices: Any valid C compiler executable name or absolute path (e.g. gcc, clang, /usr/bin/gcc); null means the system
+  default C compiler is used
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'C_COMPILER is read only at package build time (setup.py:252) and, when non-null,
+
+  is passed to CMake as -DCMAKE_C_COMPILER=<value>. It has no runtime read path in
+
+  vllm-ascend''s inference code — it does not affect scheduling, memory, HCCL, or
+
+  kernel dispatch at serving time. Its only performance relevance is indirect:
+
+  the choice of C compiler (and its optimization flags) influences the code
+
+  generated for the C/C++ portions of the vllm-ascend extension (e.g. torch-npu
+
+  bindings, custom op wrappers) during the one-time build. A better-optimized
+
+  compiler can yield marginally faster host-side glue code, but the dominant
+
+  compute (AscendC/Triton kernels) is compiled by CANN''s bisheng/ccec toolchain,
+
+  not by C_COMPILER. Therefore impact on runtime latency/throughput is negligible
+
+  and only manifests through build-time artifacts.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py:57
+  context: Defines the C_COMPILER env var accessor, defaulting to None (system default C compiler).
+- file: setup.py:252
+  context: In CMakeExtension.configure, if envs.C_COMPILER is not None it appends -DCMAKE_C_COMPILER=<value> to the cmake
+    args used to build the extension.
+related_parameters:
+- name: CXX_COMPILER
+  relation: Companion variable; sets -DCMAKE_CXX_COMPILER for the C++ compiler. Usually set together with C_COMPILER to a
+    matching toolchain.
+- name: CMAKE_BUILD_TYPE
+  relation: Controls optimization level (Release/Debug/RelWithDebugInfo); interacts with compiler choice to determine generated
+    code quality.
+- name: COMPILE_CUSTOM_KERNELS
+  relation: If False, custom kernels are skipped; C_COMPILER only matters when the C/C++ extension is actually built.
+- name: MAX_JOBS
+  relation: Controls build parallelism; affects build wall-clock time, not runtime performance.
+constraints:
+- C_COMPILER is only consumed during package build (setup.py); setting it at serving time has no effect on a pre-built installation.
+- The value must be a valid C compiler executable that CMake can invoke, otherwise the build fails at CMake configuration/compile
+  time.
+- If left unset (null), CMake falls back to the system default C compiler, which must be present on PATH.
+tuning_advice:
+  summary: Leave C_COMPILER unset unless your environment requires a specific compiler; it only affects the one-time build,
+    not NPU runtime performance.
+  suggested_values:
+  - scenario: Standard build on a system with a working default gcc/clang
+    value: unset
+    reason: Default (None) lets CMake pick the system C compiler, which is sufficient and avoids toolchain mismatch.
+  - scenario: Environment with multiple toolchains where a specific compiler is required for compatibility
+    value: /usr/bin/gcc
+    reason: Explicitly pinning the compiler ensures the extension builds against the intended toolchain; set CXX_COMPILER
+      to the matching C++ compiler.
+  caveats:
+  - Do not expect runtime speedups from changing C_COMPILER; NPU compute is dominated by CANN-compiled kernels.
+  - Always pair C_COMPILER with a compatible CXX_COMPILER to avoid ABI/link failures.
+  quick_guide: Build-time only; leave unset unless you need a specific compiler, and pair it with CXX_COMPILER.
+analysis_date: '2026-10-27'

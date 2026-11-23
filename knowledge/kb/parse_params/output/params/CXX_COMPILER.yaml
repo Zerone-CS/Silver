@@ -1,0 +1,76 @@
+name: CXX_COMPILER
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:54
+- setup.py:250
+value_type: str
+default: null
+valid_choices: Any valid C++ compiler executable name or absolute path (e.g. g++, clang++, /usr/bin/g++-12)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'CXX_COMPILER is a build-time-only environment variable. It is read in
+
+  vllm_ascend/envs.py:54 via os.getenv("CXX_COMPILER", None) and consumed only in
+
+  setup.py:250-251, where it is appended to the CMake invocation as
+
+  -DCMAKE_CXX_COMPILER=<value> when building the vllm-ascend C++/AscendC custom
+
+  kernel extensions. It has no runtime read path in the inference engine — it does
+
+  not affect scheduling, memory allocation, HCCL communication, or kernel dispatch
+
+  at serving time. Its only performance relevance is indirect: the choice of C++
+
+  compiler (and its optimization capabilities) determines the quality of the
+
+  compiled custom Ascend kernels (e.g. the C++ glue around AscendC kernels), which
+
+  can marginally affect the latency of those kernels. The default (None) means
+
+  CMake auto-detects the system default compiler, which is the recommended path.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py:54
+  context: Defines the env var accessor; returns os.getenv('CXX_COMPILER', None).
+- file: setup.py:250
+  context: If set, appends -DCMAKE_CXX_COMPILER=<value> to cmake_args during extension configuration.
+related_parameters:
+- name: C_COMPILER
+  relation: Companion variable for the C compiler; passed as -DCMAKE_C_COMPILER. Usually set together with CXX_COMPILER.
+- name: CMAKE_BUILD_TYPE
+  relation: Controls optimization level of the same build; interacts with compiler choice to determine final kernel code quality.
+- name: COMPILE_CUSTOM_KERNELS
+  relation: If False, custom kernels are not compiled, making CXX_COMPILER irrelevant.
+- name: MAX_JOBS
+  relation: Controls build parallelism; affects build time, not runtime.
+constraints:
+- The value must be a valid C++ compiler that CMake can invoke; an invalid path or incompatible compiler causes the build
+  to fail.
+- CXX_COMPILER only takes effect at package build time; changing it after installation has no effect until the package is
+  rebuilt.
+- If COMPILE_CUSTOM_KERNELS is set to False, CXX_COMPILER is not used because no custom kernels are compiled.
+tuning_advice:
+  summary: Leave CXX_COMPILER unset to use the system default compiler; only override when the default toolchain is incompatible
+    with CANN/AscendC.
+  suggested_values:
+  - scenario: Standard Ascend environment with a working system toolchain
+    value: unset
+    reason: Default None lets CMake auto-detect the system compiler, which is validated against CANN and is the safest choice.
+  - scenario: Multiple GCC versions installed and the default is too old for CANN/AscendC
+    value: /usr/bin/g++
+    reason: Explicitly pin a known-good compiler path so the custom kernel build uses a CANN-compatible toolchain.
+  caveats:
+  - This is a build-time variable only; it does not affect runtime throughput or memory usage of a deployed model.
+  - An incompatible or non-standard compiler may produce kernels that fail to load or run slower; always rebuild and re-validate
+    after changing it.
+  - Set C_COMPILER alongside CXX_COMPILER to keep the C and C++ toolchains consistent.
+  quick_guide: Usually leave unset; only set to a specific compiler path if the default toolchain cannot build the Ascend
+    custom kernels.
+analysis_date: '2026-10-27'

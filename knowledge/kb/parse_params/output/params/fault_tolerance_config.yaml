@@ -1,0 +1,86 @@
+name: --fault-tolerance-config
+type: cli
+category: other
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:772
+- vllm/engine/arg_utils.py:817
+- vllm/engine/arg_utils.py:1259
+- vllm/config/parallel.py:435
+- vllm/v1/fault_tolerance/engine_core_sentinel.py:42
+value_type: dict
+default: '{}'
+valid_choices: A dict of FaultToleranceConfig fields (e.g. engine_recovery_timeout_sec); no fixed enumeration
+cli_example: '--fault-tolerance-config ''{"engine_recovery_timeout_sec": 60}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter is a nested config object (FaultToleranceConfig) that only takes effect
+
+  when fault tolerance is enabled. In vllm/engine/arg_utils.py:817-826, if a dict is passed
+
+  for fault_tolerance_config and enable_fault_tolerance is False, vLLM logs a warning and
+
+  auto-enables fault tolerance, then constructs FaultToleranceConfig(**dict). The config is
+
+  consumed in vllm/v1/fault_tolerance/engine_core_sentinel.py:42-43, where
+
+  engine_recovery_timeout_sec is read to govern how long an engine core waits during
+
+  recovery. This is a resilience/recovery mechanism, not a hot-path compute parameter: it
+
+  does not change kernel selection, memory allocation, or per-token compute. Its only
+
+  performance relevance is indirect — enabling fault tolerance adds sentinel/health-check
+
+  bookkeeping and, on a fault, triggers recovery (a stall whose duration is bounded by
+
+  engine_recovery_timeout_sec). On Ascend NPU, recovery involves re-initializing HCCL
+
+  communication groups and re-allocating device memory, so a large timeout can extend the
+
+  outage window while a too-small timeout can cause premature recovery failures. No
+
+  vllm-ascend override of this parameter was found in the provided context; it is an
+
+  upstream vLLM v1 feature.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:817
+  context: EngineArgs.__post_init__ converts dict to FaultToleranceConfig and auto-enables fault tolerance
+- file: vllm/engine/arg_utils.py:1259
+  context: CLI argument registration in the parallel argument group
+- file: vllm/config/parallel.py:435
+  context: ParallelConfig field definition with default_factory=FaultToleranceConfig
+- file: vllm/v1/fault_tolerance/engine_core_sentinel.py:42
+  context: EngineCoreSentinel reads engine_recovery_timeout_sec from the config
+related_parameters:
+- name: --enable-fault-tolerance
+  relation: Passing --fault-tolerance-config auto-enables this flag if not already set
+- name: --data-parallel-size
+  relation: Fault tolerance is used to scale down/recover faulted DPEngineCore instances
+constraints:
+- Passing --fault-tolerance-config as a dict automatically enables fault tolerance even if --enable-fault-tolerance is not
+  set.
+- The value must be a dict whose keys are valid FaultToleranceConfig fields, otherwise FaultToleranceConfig(**dict) construction
+  fails.
+tuning_advice:
+  summary: Only enable fault tolerance for long-running production services needing auto-recovery; keep it off for benchmark/latency-critical
+    runs.
+  suggested_values:
+  - scenario: Benchmarking or latency-critical single-run workloads
+    value: not set (fault tolerance disabled)
+    reason: Avoids sentinel/health-check overhead and recovery machinery that provide no benefit in short runs.
+  - scenario: Long-running production service on Ascend NPU with DP deployment
+    value: '{"engine_recovery_timeout_sec": 60}'
+    reason: Allows enough time for HCCL group re-initialization and memory re-allocation during recovery while bounding outage
+      duration.
+  caveats:
+  - A too-small engine_recovery_timeout_sec may cause recovery to fail on Ascend due to slower HCCL re-init.
+  - Passing this flag silently enables fault tolerance, which may surprise users expecting it to be off.
+  quick_guide: Leave unset unless you need auto-recovery; if set, tune engine_recovery_timeout_sec for Ascend HCCL re-init
+    latency.
+analysis_date: '2026-10-27'

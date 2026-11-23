@@ -1,0 +1,101 @@
+name: --mm-tensor-ipc
+type: cli
+category: communication
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:225
+- vllm/engine/arg_utils.py:1435
+- vllm/engine/arg_utils.py:624
+- vllm/engine/arg_utils.py:1884
+- vllm/config/model.py:415
+- vllm/config/vllm.py:1526
+- vllm/config/vllm.py:2727
+- vllm/v1/engine/core_client.py:683
+- vllm/v1/engine/utils.py:1127
+value_type: str
+default: direct_rpc
+valid_choices:
+- direct_rpc
+- torch_shm
+cli_example: --mm-tensor-ipc torch_shm
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter selects the transport used to move multimodal (image/video) tensors\nfrom the API server /\
+  \ frontend process to the engine core process. It is defined\nupstream in vllm/config/multimodal.py:225 as `mm_tensor_ipc:\
+  \ MMTensorIPC = \"direct_rpc\"`.\nNo vllm-ascend override of this parameter was found in the provided context, so the\n\
+  upstream behavior applies on Ascend as well.\n\nMechanism:\n- \"\\\"direct_rpc\\\" (default): tensors are serialized with\
+  \ msgspec and sent over the\"\n  regular RPC channel. This copies the tensor bytes through the host (CPU) and\n  serializes/deserializes\
+  \ them, adding per-request latency proportional to the\n  multimodal tensor size. In vllm/v1/engine/core_client.py:683-688,\
+  \ when\n  mm_tensor_ipc != \"torch_shm\" (or no tensor_queue exists), `tensor_ipc_sender`\n  stays None and the MsgpackEncoder\
+  \ has no out-of-band tensor consumer, so all\n  tensor data goes through the normal serialization path.\n- \"\\\"torch_shm\\\
+  \": in vllm/v1/engine/utils.py:1127-1128 a multiprocessing Queue is\"\n  created (`get_mp_context().Queue()`) and in core_client.py:684-685\
+  \ a\n  `TensorIpcSender(tensor_queue)` is attached to the MsgpackEncoder as an\n  out-of-band tensor consumer, enabling\
+  \ zero-copy shared-memory IPC of the\n  multimodal tensors. This avoids the host copy/serialization of large image/video\n\
+  \  tensors, reducing frontend->engine latency and CPU overhead for multimodal\n  workloads.\n- \"Additionally, in vllm/config/vllm.py:2727-2742,\
+  \ on an EPD encoder instance\"\n  (encode-only EC producer), \"torch_shm\" is the ONLY transport that allows the\n  multimodal\
+  \ processor to run on the accelerator (`--mm-processor-device=auto`\n  resolves to the device only when mm_tensor_ipc ==\
+  \ \"torch_shm\"). With\n  \"direct_rpc\" the processor is forced to CPU because any other transport would\n  copy device\
+  \ tensors back to host, negating the benefit. So on Ascend, choosing\n  \"torch_shm\" can move image/video preprocessing\
+  \ onto the NPU for encoder\n  instances, which is a meaningful throughput/latency win for EPD deployments.\n\nOn Ascend\
+  \ NPU specifically, the shared-memory path is host-side (torch.multiprocessing\nshared memory), so it does not use HCCL;\
+  \ it reduces CPU-side copy/serialization\noverhead. The benefit scales with multimodal tensor size and request rate.\n"
+usage_locations:
+- file: vllm/config/multimodal.py:225
+  context: Field definition and docstring; default 'direct_rpc'.
+- file: vllm/engine/arg_utils.py:1435
+  context: CLI flag --mm-tensor-ipc registered in MultiModalConfig argument group.
+- file: vllm/engine/arg_utils.py:624
+  context: EngineArgs field mm_tensor_ipc defaulting to MultiModalConfig.mm_tensor_ipc.
+- file: vllm/engine/arg_utils.py:1884
+  context: Passed into VllmConfig construction.
+- file: vllm/config/vllm.py:1526
+  context: 'Validation: torch_shm requires VLLM_WORKER_MULTIPROC_METHOD=spawn, else ValueError.'
+- file: vllm/config/vllm.py:2727
+  context: 'EPD encoder: only torch_shm allows mm processor on accelerator; otherwise forced to CPU.'
+- file: vllm/v1/engine/core_client.py:683
+  context: Creates TensorIpcSender when torch_shm and tensor_queue present.
+- file: vllm/v1/engine/utils.py:1127
+  context: Creates multiprocessing Queue for tensor IPC when torch_shm.
+related_parameters:
+- name: --mm-processor-device
+  relation: On EPD encoder instances, 'auto' resolves to the accelerator only when --mm-tensor-ipc=torch_shm; otherwise it
+    stays on CPU.
+- name: VLLM_WORKER_MULTIPROC_METHOD
+  relation: Must be set to 'spawn' when --mm-tensor-ipc=torch_shm, otherwise a ValueError is raised.
+- name: --mm-ipc-gpu-memory-gb
+  relation: Related IPC memory budget for multimodal tensor IPC.
+- name: --mm-processor-kwargs
+  relation: The device for the HF processor is stored here; torch_shm enables device tensors to be carried.
+constraints:
+- When --mm-tensor-ipc=torch_shm is set, VLLM_WORKER_MULTIPROC_METHOD must be set to 'spawn', otherwise vLLM raises a ValueError
+  at startup.
+- torch_shm tensor IPC is only supported for DP=1 data flow (a single tensor queue is created since only DP=1 is supported
+  for this data flow).
+- On an EPD encoder instance, the multimodal processor runs on the accelerator only if --mm-tensor-ipc=torch_shm; with any
+  other value it is forced to CPU.
+tuning_advice:
+  summary: Use torch_shm for multimodal workloads to avoid host copies of image/video tensors; keep direct_rpc for text-only
+    or when spawn multiprocessing is not feasible.
+  suggested_values:
+  - scenario: Multimodal (image/video) serving with large tensors and DP=1
+    value: torch_shm
+    reason: Enables zero-copy shared-memory IPC via TensorIpcSender, avoiding msgspec serialization and host copies of large
+      multimodal tensors, reducing frontend->engine latency.
+  - scenario: EPD encode/prefill/decode deployment with encode-only encoder instances
+    value: torch_shm
+    reason: Only torch_shm allows --mm-processor-device=auto to run the multimodal processor on the NPU accelerator, offloading
+      preprocessing from CPU.
+  - scenario: Text-only models or deployments where spawn multiprocessing is not usable
+    value: direct_rpc
+    reason: Default transport; no shared-memory queue overhead and no spawn requirement.
+  caveats:
+  - Must set VLLM_WORKER_MULTIPROC_METHOD=spawn when using torch_shm, or startup fails with ValueError.
+  - Only beneficial for multimodal workloads; no effect on text-only models.
+  - Only DP=1 data flow is supported for the tensor IPC queue.
+  quick_guide: For multimodal serving on Ascend, set --mm-tensor-ipc torch_shm together with VLLM_WORKER_MULTIPROC_METHOD=spawn
+    to cut host-copy latency.
+analysis_date: '2026-10-27'

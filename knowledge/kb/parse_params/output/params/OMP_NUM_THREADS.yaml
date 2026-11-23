@@ -1,0 +1,86 @@
+name: OMP_NUM_THREADS
+type: env
+category: hardware
+scope: both
+source_file:
+- vllm/v1/executor/multiproc_executor.py:1105
+- vllm/utils/torch_utils.py:244
+- vllm/utils/torch_utils.py:261
+- vllm/utils/ompmultiprocessing.py:78
+- vllm_ascend/distributed/eplb/policy/stair.py:26
+value_type: int
+default: <computed>
+valid_choices: positive integer; typically 1 for NPU serving, or a bounded share of available CPUs for CPU-bound startup work
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "OMP_NUM_THREADS controls the OpenMP intra-op thread pool size used by torch/CPU-side\noperations. On Ascend\
+  \ NPU the model compute runs on the NPU, so this variable does not\naffect the main matmul/attention kernels. Its performance\
+  \ effect is indirect and comes\nfrom CPU-side work in the engine hot loop and startup:\n- \"Upstream vLLM (vllm/v1/executor/multiproc_executor.py:1105)\
+  \ sets OMP_NUM_THREADS for\"\n  worker processes only if the user has NOT already set it (early return when\n  \"OMP_NUM_THREADS\"\
+  \ in os.environ). It computes startup_omp_num_threads(local_world_size)\n  = available_cpu_count() // local_world_size (vllm/utils/torch_utils.py:249)\
+  \ and marks\n  it via VLLM_OMP_NUM_THREADS_SET_BY_VLLM so a worker may later drop it.\n- \"set_torch_threads_for_runtime()\
+  \ (vllm/utils/torch_utils.py:261) reduces torch intra-op\"\n  threads to 1 for steady-state serving, because multi-threaded\
+  \ torch CPU ops in the\n  engine hot loop leave OMP workers spin-waiting after each parallel region, stealing\n  cycles\
+  \ from the step's serial code and burning cgroup CPU quota. If the user sets\n  OMP_NUM_THREADS > 1 externally, this reduction\
+  \ is skipped and a warning is emitted,\n  meaning the spin-wait contention can persist during serving.\n- \"vllm-ascend\
+  \ does not override this variable for the main serving path; it only pins\"\n  OMP_NUM_THREADS=1 (along with OPENBLAS/MKL/NUMEXPR\
+  \ thread vars) for the STAIR EPLB\n  planner subprocess (vllm_ascend/distributed/eplb/policy/stair.py:26) to avoid CPU\n\
+  \  oversubscription in that auxiliary process.\n- \"vllm-ascend e2e tests and docs consistently set OMP_NUM_THREADS=1 (or\
+  \ a small value)\"\n  for NPU serving, and the GLM5.3-Flash doc lists it among validated A2 startup defaults.\nNet effect:\
+  \ \"setting it too high on Ascend can degrade latency/throughput via CPU\"\nspin-wait contention and cgroup throttling;\
+  \ setting it to 1 keeps the CPU side lean.\n"
+usage_locations:
+- file: vllm/v1/executor/multiproc_executor.py:1105
+  context: Skips auto-setting OMP_NUM_THREADS if user already set it; otherwise sets it to available_cpu_count() // local_world_size
+    for workers.
+- file: vllm/utils/torch_utils.py:261
+  context: set_torch_threads_for_runtime reduces torch threads to 1 for serving unless user-set OMP_NUM_THREADS > 1, in which
+    case it warns and leaves threads unchanged.
+- file: vllm/utils/ompmultiprocessing.py:78
+  context: CPU platform path sets OMP_NUM_THREADS per rank from assigned CPU list (not used on NPU).
+- file: vllm_ascend/distributed/eplb/policy/stair.py:26
+  context: Pins OMP_NUM_THREADS=1 for the STAIR EPLB planner subprocess environment.
+related_parameters:
+- name: OMP_PROC_BIND
+  relation: Companion OpenMP binding variable; docs set OMP_PROC_BIND=false alongside OMP_NUM_THREADS for NPU serving.
+- name: VLLM_OMP_NUM_THREADS_SET_BY_VLLM
+  relation: Internal marker set by vLLM when it auto-chooses OMP_NUM_THREADS; determines whether a worker may drop the value
+    after startup.
+- name: OPENBLAS_NUM_THREADS
+  relation: Sibling thread-count env var pinned to 1 together with OMP_NUM_THREADS in the STAIR planner.
+- name: MKL_NUM_THREADS
+  relation: Sibling thread-count env var pinned to 1 together with OMP_NUM_THREADS in the STAIR planner.
+constraints:
+- If OMP_NUM_THREADS is already present in the environment, vLLM will not auto-compute a worker thread count and will use
+  the user-provided value as-is.
+- A user-set OMP_NUM_THREADS greater than 1 disables the automatic reduction of torch intra-op threads to 1 for serving, so
+  the value must be a valid integer string or the check silently falls back.
+tuning_advice:
+  summary: On Ascend NPU, keep OMP_NUM_THREADS=1 for steady-state serving to avoid CPU spin-wait contention and cgroup throttling;
+    only raise it for CPU-bound startup/weight-loading scenarios.
+  suggested_values:
+  - scenario: Standard NPU serving (single or multi-card, TP/DP/PP)
+    value: '1'
+    reason: Matches vllm-ascend e2e tests and docs; keeps torch intra-op threads at 1 so CPU-side ops in the engine hot loop
+      do not spin-wait and steal cycles from serial step code.
+  - scenario: Multi-node / large deployment following vllm-ascend validated defaults
+    value: '1'
+    reason: GLM5.3-Flash doc lists OMP_NUM_THREADS among validated A2 startup defaults; keep unless environment requires otherwise.
+  - scenario: CPU-heavy startup or weight loading where more CPU parallelism helps
+    value: <available_cpu_count // local_world_size>
+    reason: Upstream startup_omp_num_threads uses this formula for worker startup work; leaving it unset lets vLLM pick a
+      bounded share automatically.
+  caveats:
+  - Setting OMP_NUM_THREADS > 1 externally causes vLLM to skip reducing torch threads to 1 for serving, emitting a warning
+    about spin-wait contention and cgroup CPU-quota throttling.
+  - vllm-ascend does not override this variable for the main serving path; it only pins it to 1 inside the STAIR EPLB planner
+    subprocess.
+  - On NPU the main compute is on the NPU, so this variable has no effect on matmul/attention kernel performance — only on
+    CPU-side engine work.
+  - Pair with OMP_PROC_BIND=false as done in vllm-ascend docs/tests to avoid thread binding issues.
+  quick_guide: Set OMP_NUM_THREADS=1 for Ascend NPU serving; leave unset only if you want vLLM to auto-size startup threads.
+analysis_date: '2026-10-27'

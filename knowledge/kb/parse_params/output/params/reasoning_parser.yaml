@@ -1,0 +1,105 @@
+name: --reasoning-parser
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1037
+- vllm/engine/arg_utils.py:662
+- vllm/config/structured_outputs.py:35
+- vllm/config/reasoning.py:22
+- vllm/config/reasoning.py:83
+value_type: str
+default: ''
+valid_choices: Registered reasoning parser names (e.g. deepseek_v4, glm45, glm47) plus any parser registered via --reasoning-parser-plugin;
+  validated after parsing to include plugins
+cli_example: --reasoning-parser deepseek_v4
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--reasoning-parser selects a ReasoningParser implementation used to split model
+
+  output into "reasoning content" vs. final answer for the OpenAI-compatible API.
+
+  In vllm/config/reasoning.py:83 (initialize_token_ids), when reasoning_parser is
+
+  set, the parser class is looked up via ReasoningParserManager and instantiated
+
+  with the tokenizer; its reasoning_start_str / reasoning_end_str are tokenized
+
+  once at engine startup to derive reasoning_start_token_ids,
+
+  reasoning_end_token_ids and natural_reasoning_end_token_ids. These token IDs are
+
+  then used at request time to detect reasoning boundaries (and to force the end
+
+  string when a thinking budget is exhausted). This is a CPU-side, per-request
+
+  string/token scan over generated output — it does not touch the NPU compute
+
+  graph (StructuredOutputsConfig.compute_hash explicitly notes "this config will
+
+  not affect the computation graph"). Therefore it has no effect on model
+
+  forward-pass throughput or NPU memory; its only runtime cost is a small
+
+  host-side parsing overhead proportional to output length, which can marginally
+
+  affect end-to-end latency for very long reasoning outputs. vllm-ascend does not
+
+  override or patch this parameter; the docs only show it as a required flag for
+
+  correct reasoning-output formatting on specific models (DeepSeek-V4, GLM-5.x).
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1037
+  context: CLI argument registration under StructuredOutputsConfig group; choices validated after parsing to include plugins
+- file: vllm/engine/arg_utils.py:662
+  context: EngineArgs field reasoning_parser mapped from StructuredOutputsConfig.reasoning_parser
+- file: vllm/config/reasoning.py:83
+  context: initialize_token_ids looks up parser class and derives start/end token IDs from parser strings
+- file: vllm/config/structured_outputs.py:35
+  context: StructuredOutputsConfig.reasoning_parser field definition; compute_hash notes no effect on computation graph
+- file: vllm/engine/protocol.py:100
+  context: reasoning_parser_kwargs passed per-request through generate()
+related_parameters:
+- name: --reasoning-parser-plugin
+  relation: Dynamically loads and registers additional reasoning parser classes so their names become valid choices for --reasoning-parser
+- name: --tool-call-parser
+  relation: Companion parser for tool/function calling; docs recommend setting both together with --enable-auto-tool-choice
+- name: --enable-auto-tool-choice
+  relation: Typically enabled alongside --reasoning-parser and --tool-call-parser for agentic models
+- name: --tokenizer-mode
+  relation: Model-specific tokenizer mode (e.g. deepseek_v4) must match the reasoning parser family for correct parsing
+constraints:
+- The value must be a registered reasoning parser name; unknown names fail validation after argument parsing (plugin-registered
+  names are also accepted).
+- If a parser plugin is needed, its path must be supplied via --reasoning-parser-plugin so the parser name is registered before
+  validation.
+- Reasoning token IDs are only initialized when both a start and end string can be resolved (from the parser or explicit reasoning_start_str/reasoning_end_str);
+  otherwise reasoning parsing is effectively disabled.
+tuning_advice:
+  summary: Set the parser matching your model family for correct reasoning-output formatting; it has negligible NPU performance
+    impact.
+  suggested_values:
+  - scenario: DeepSeek-V4 / DeepSeek-V4-Pro on Ascend
+    value: deepseek_v4
+    reason: vllm-ascend DeepSeek-V4-Pro tutorial pairs --tokenizer-mode deepseek_v4 with --reasoning-parser deepseek_v4 for
+      correct reasoning parsing.
+  - scenario: GLM-5.2 / GLM-5.3-Flash on Ascend
+    value: glm45
+    reason: vllm-ascend GLM5.2 and GLM5.3-Flash docs recommend --reasoning-parser glm45 together with --tool-call-parser glm47.
+  - scenario: GLM-5.3 on Ascend
+    value: glm47
+    reason: vllm-ascend GLM5.3 doc recommends --reasoning-parser glm47 with --tool-call-parser glm47.
+  - scenario: Model without reasoning output / plain chat
+    value: unset
+    reason: Leaving it empty disables reasoning parsing and avoids any host-side parsing overhead.
+  caveats:
+  - Do not expect throughput gains from changing this flag; it is a correctness/formatting knob, not a performance knob.
+  - Match the parser to the exact model variant; mismatched parsers silently mis-split reasoning content.
+  - If you use a custom parser, register it with --reasoning-parser-plugin before referencing its name.
+  quick_guide: Pick the parser matching your model (deepseek_v4, glm45, glm47, ...); it only affects output formatting, not
+    NPU performance.
+analysis_date: '2026-10-27'

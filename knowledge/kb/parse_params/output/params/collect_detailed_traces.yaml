@@ -1,0 +1,89 @@
+name: --collect-detailed-traces
+type: cli
+category: observability
+scope: vllm
+source_file:
+- vllm/config/observability.py:39
+- vllm/engine/arg_utils.py:676
+- vllm/engine/arg_utils.py:1528
+- vllm/engine/arg_utils.py:1535
+value_type: list[str]
+default: null
+valid_choices: Any single DetailedTraceModules value (e.g. model, worker, all) or a comma-joined pair of them (e.g. model,worker)
+cli_example: --collect-detailed-traces model
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is an observability-only parameter. It is defined in vllm/config/observability.py
+
+  (ObservabilityConfig.collect_detailed_traces) and exposed as a CLI flag in
+
+  vllm/engine/arg_utils.py. It does not alter scheduling, memory allocation, parallelism,
+
+  quantization, or compilation behavior. Its only runtime effect is to enable extra
+
+  timing instrumentation: "the cached properties collect_model_forward_time (true when"
+
+  "model" or "all" is in the list) and collect_model_execute_time (true when "worker" or
+
+  "all" is in the list) gate per-request timing collection. The docstring explicitly warns
+
+  that this "involves use of possibly costly and or blocking operations and hence might
+
+  have a performance impact" and that "collecting detailed timing information for each
+
+  request can be expensive." On Ascend NPU, the tracing path relies on the upstream
+
+  OpenTelemetry instrumentation; there is no vllm-ascend-specific override of this
+
+  parameter in the provided context, so the effect is the same generic per-request
+
+  timing overhead (extra host-side timestamping and trace export) layered on top of the
+
+  normal NPU execution. Because it only adds measurement overhead and does not change
+
+  the compute graph or memory footprint, the impact is low and only relevant when
+
+  tracing is actively enabled.
+
+  '
+usage_locations:
+- file: vllm/config/observability.py:39
+  context: Field definition with docstring warning about costly/blocking operations and per-request timing expense.
+- file: vllm/config/observability.py:101
+  context: collect_model_forward_time cached property returns true when 'model' or 'all' is selected.
+- file: vllm/config/observability.py:107
+  context: collect_model_execute_time cached property returns true when 'worker' or 'all' is selected.
+- file: vllm/engine/arg_utils.py:676
+  context: EngineArgs field mapping to ObservabilityConfig.collect_detailed_traces.
+- file: vllm/engine/arg_utils.py:1528
+  context: CLI choices/metavar construction, including comma-joined permutations of DetailedTraceModules.
+related_parameters:
+- name: --otlp-traces-endpoint
+  relation: Only meaningful when set; detailed traces are exported to this endpoint.
+- name: --enable-layerwise-nvtx-tracing
+  relation: Another tracing/observability toggle in the same ObservabilityConfig group.
+constraints:
+- It only makes sense to set --collect-detailed-traces when --otlp-traces-endpoint is also set.
+- The value must be one of the DetailedTraceModules choices (e.g. model, worker, all) or a comma-joined pair of them.
+tuning_advice:
+  summary: Leave disabled in production; enable only temporarily for profiling with an OTLP endpoint configured.
+  suggested_values:
+  - scenario: Normal production serving
+    value: unset
+    reason: Tracing adds per-request timing overhead with no throughput benefit; keep it off.
+  - scenario: Profiling model forward/execute latency
+    value: model,worker
+    reason: Collects both model forward and worker execute timing to diagnose where latency is spent, paired with --otlp-traces-endpoint.
+  - scenario: Full detailed trace for debugging
+    value: all
+    reason: Enables all detailed trace modules; use only for short diagnostic runs due to overhead.
+  caveats:
+  - Collecting detailed timing per request can be expensive and may add measurable latency/throughput overhead; do not leave
+    enabled in steady-state production.
+  - Has no effect unless --otlp-traces-endpoint is configured to receive the traces.
+  - No vllm-ascend-specific override was found; behavior follows upstream vLLM tracing instrumentation on Ascend NPU.
+  quick_guide: Keep off in production; enable with --otlp-traces-endpoint only for temporary profiling.
+analysis_date: '2026-10-27'

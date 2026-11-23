@@ -1,0 +1,124 @@
+name: --fully-sharded-loras
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/lora.py:39
+- vllm/engine/arg_utils.py:1496
+- vllm/engine/arg_utils.py:2463
+- vllm/lora/layers/base_linear.py:118
+- vllm/lora/layers/base_linear.py:127
+- vllm/lora/layers/column_parallel_linear.py:26
+- vllm/lora/layers/column_parallel_linear.py:221
+- vllm/lora/layers/fused_moe.py:239
+- vllm_ascend/lora/punica_npu.py:62
+value_type: bool
+default: false
+valid_choices: 'true or false (BooleanOptionalAction: --fully-sharded-loras / --no-fully-sharded-loras)'
+cli_example: --fully-sharded-loras
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'Controls how LoRA computation is partitioned across tensor-parallel ranks.
+
+  Upstream (vllm/lora/layers/base_linear.py:115-129 and column_parallel_linear.py:219-223):
+
+  when False, ColumnParallelLinear keeps the full lora_A output dim (max_lora_rank) on every
+
+  TP rank and RowParallelLinear keeps the full lora_B output dim (output_size) per rank, so
+
+  only half of the LoRA matmul is sharded. When True, lora_A output dim becomes
+
+  divide(max_lora_rank, tp_size) and lora_B output dim becomes divide(output_size, tp_size),
+
+  fully sharding both factors. This shrinks per-rank LoRA weight buffers (memory) and reduces
+
+  per-rank matmul FLOPs, but requires an all-gather/all-reduce of the shrunk intermediate
+
+  (see _mcp_apply in column_parallel_linear.py:26-63, which allocates a [n_slices, tokens,
+
+  local_lora_rank] buffer and calls punica_wrapper.add_shrink then communicates). At high
+
+  sequence length, high max_lora_rank, or large TP size the reduced compute outweighs the
+
+  added communication, hence "likely faster".
+
+  Ascend-specific: "vllm_ascend/lora/punica_npu.py:58-63 gates the single-LoRA fast path"
+
+  (_single_lora_slot) on `not self.lora_config.fully_sharded_loras`. On A2/A3 devices with
+
+  max_loras == 1, enabling --fully-sharded-loras DISABLES the optimized single-slot kernel
+
+  path and its preallocated mask buffer, falling back to the general multi-slot path. So on
+
+  Ascend the flag trades the fast single-adapter path for full sharding; the net win depends
+
+  on TP size and sequence length. The flag also participates in LoRAConfig.compute_hash
+
+  (lora.py:103), so toggling it changes the compilation cache key and forces recompilation.
+
+  '
+usage_locations:
+- file: vllm/config/lora.py:39
+  context: Field definition and docstring describing full sharding of LoRA computation.
+- file: vllm/engine/arg_utils.py:1496
+  context: CLI argument registration in LoRAConfig argument group.
+- file: vllm/engine/arg_utils.py:2463
+  context: Passed into LoRAConfig construction when --enable-lora is set.
+- file: vllm/lora/layers/base_linear.py:118
+  context: ColumnParallelLinear lora_A output size divided by tp_size when fully sharded.
+- file: vllm/lora/layers/base_linear.py:127
+  context: RowParallelLinear lora_B output size divided by tp_size when fully sharded.
+- file: vllm/lora/layers/column_parallel_linear.py:26
+  context: _mcp_apply fully-sharded (S-LoRA) apply path with communication buffer.
+- file: vllm/lora/layers/column_parallel_linear.py:221
+  context: create_lora_weights partitions lora_A output dim by tp_size.
+- file: vllm/lora/layers/fused_moe.py:239
+  context: Assertion forbidding fully_sharded_loras together with expert parallelism.
+- file: vllm_ascend/lora/punica_npu.py:62
+  context: Ascend single-LoRA fast path disabled when fully_sharded_loras is True.
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for this flag to take effect; LoRAConfig is only built when enable_lora is True.
+- name: --tensor-parallel-size
+  relation: Larger TP size increases the benefit of full sharding (more compute reduction) but also more communication.
+- name: --max-lora-rank
+  relation: Higher rank increases per-rank LoRA matmul cost, making full sharding more beneficial.
+- name: --max-loras
+  relation: On Ascend A2/A3, max_loras == 1 enables the single-slot fast path which this flag disables.
+- name: --enable-expert-parallel
+  relation: Mutually exclusive with fully sharded LoRA for Fused MoE layers; enabling both raises an assertion error.
+constraints:
+- Fused MoE LoRA does not support --enable-expert-parallel together with --fully-sharded-loras; enabling both raises an assertion
+  error.
+- The flag only has effect when --enable-lora is set; otherwise no LoRAConfig is created.
+- When fully sharded, max_lora_rank must be divisible by tensor-parallel size (divide() is used on the rank dim).
+- When fully sharded, the RowParallelLinear output size must be divisible by tensor-parallel size.
+tuning_advice:
+  summary: Enable --fully-sharded-loras when using LoRA with large tensor-parallel size, high max-lora-rank, or long sequences;
+    keep it off for single-adapter (max-loras 1) Ascend A2/A3 workloads where the fast path matters.
+  suggested_values:
+  - scenario: LoRA with TP >= 4, high max-lora-rank (32/64), long sequences
+    value: true
+    reason: Full sharding divides LoRA matmul work across ranks, reducing per-rank FLOPs and weight memory; the compute savings
+      outweigh added communication at large TP/rank.
+  - scenario: Single adapter (--max-loras 1) on Ascend A2/A3
+    value: false
+    reason: Enabling it disables the optimized single-LoRA-slot fast path in punica_npu.py, likely losing more than the sharding
+      gains.
+  - scenario: Small TP size (1-2) with short sequences
+    value: false
+    reason: Communication overhead of full sharding dominates when there is little compute to shard.
+  - scenario: MoE model with --enable-expert-parallel
+    value: false
+    reason: Fused MoE LoRA asserts against combining expert parallelism with fully sharded LoRA.
+  caveats:
+  - Benchmark both settings on your actual TP size and sequence length; the win is workload-dependent.
+  - Verify max_lora_rank and output sizes are divisible by TP size before enabling.
+  - Expect a recompilation when toggling the flag due to hash change.
+  quick_guide: Turn on --fully-sharded-loras for large-TP, high-rank, long-sequence LoRA; leave off for single-adapter Ascend
+    A2/A3 or small TP.
+analysis_date: '2026-10-27'

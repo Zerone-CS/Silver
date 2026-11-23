@@ -1,0 +1,74 @@
+name: profiler.torch_profiler_with_memory
+type: nested
+category: observability
+scope: both
+source_file:
+- vllm/profiler/wrapper.py:210
+- vllm/profiler/wrapper.py:250
+- vllm_ascend/profiler/torch_npu_profiler.py:68
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag is passed as `profile_memory` to the underlying profiler. On Ascend,
+
+  vllm_ascend/profiler/torch_npu_profiler.py:68 forwards it to
+
+  torch_npu.profiler.profile(profile_memory=...). On upstream GPU it is forwarded to
+
+  torch.profiler.profile(profile_memory=...) at vllm/profiler/wrapper.py:250.
+
+  When enabled, the profiler additionally records per-operator memory allocation/free
+
+  events, which increases profiling overhead (extra bookkeeping per allocation) and
+
+  inflates trace size. This only affects runtime while profiling is active — it does
+
+  not change steady-state inference behavior when profiling is off. Because profiling
+
+  itself is a diagnostic activity, the impact on production throughput/latency is
+
+  negligible; the effect is confined to the profiling window (higher CPU overhead,
+
+  larger trace files, more memory consumed by the profiler buffers).
+
+  '
+usage_locations:
+- file: vllm_ascend/profiler/torch_npu_profiler.py:68
+  context: Passed as profile_memory to torch_npu.profiler.profile on Ascend NPU
+- file: vllm/profiler/wrapper.py:250
+  context: Passed as profile_memory to torch.profiler.profile (upstream GPU reference)
+- file: vllm/profiler/wrapper.py:210
+  context: Logged in profiler config debug output
+related_parameters:
+- name: profiler.torch_profiler_with_stack
+  relation: Sibling profiler option; with_stack adds call-stack capture (noted as high overhead on NPU), often enabled together
+    for detailed traces
+- name: profiler.torch_profiler_record_shapes
+  relation: Sibling profiler option controlling shape recording; combined with memory profiling increases trace size
+- name: profiler.torch_profiler_dir
+  relation: Output directory where larger memory-profiling traces are written
+constraints:
+- Only takes effect while the torch profiler is active (profiler enabled); it has no effect on normal inference runs.
+- On Ascend it is mapped to torch_npu.profiler.profile's profile_memory argument, so it must be a boolean.
+tuning_advice:
+  summary: Keep disabled for routine profiling; enable only when diagnosing NPU memory allocation behavior.
+  suggested_values:
+  - scenario: Routine latency/throughput profiling on Ascend NPU
+    value: false
+    reason: Avoids extra per-allocation overhead and keeps trace files small; sufficient for op-level timing analysis.
+  - scenario: Debugging memory fragmentation or allocation hotspots on NPU
+    value: true
+    reason: Records per-operator memory events needed to trace allocation/free patterns, at the cost of larger traces and
+      higher profiling overhead.
+  caveats:
+  - Applies to both v1 and v2 worker paths since the profiler wrapper is shared; the Ascend mapping is in torch_npu_profiler.py.
+  - Combine with a bounded active_iterations/warmup_iterations schedule to limit the profiling window and trace size when
+    memory profiling is on.
+  quick_guide: Leave false unless you specifically need NPU memory allocation traces.
+analysis_date: '2026-10-27'

@@ -1,0 +1,78 @@
+name: additional_config.mc2_comm_alg
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:605
+- vllm_ascend/ascend_config.py:580
+- vllm_ascend/ascend_config.py:664
+value_type: str
+default: ''
+valid_choices:
+- ''
+- fullmesh
+- hierarchy
+- fullmesh_v2
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: "mc2_comm_alg is a vllm-ascend-only field (Literal[\"\", \"fullmesh\", \"hierarchy\", \"fullmesh_v2\"])\ndefined\
+  \ in AscendConfig. It is passed as the `comm_alg` parameter to the fused MC2\ndispatch/combine operators used in MoE expert-parallel\
+  \ communication on Ascend NPU.\nThe MC2 (Matmul-Communication-2) fused ops overlap the all-to-all dispatch/combine\ncommunication\
+  \ with the expert FFN matmuls; the `comm_alg` selection determines which\ncommunication algorithm the CANN operator uses\
+  \ to move tokens between EP ranks:\n- \"\\\"\\\" (default): let the operator pick its built-in algorithm.\"\n- \"\\\"fullmesh\\\
+  \": full-mesh all-to-all algorithm, best when the EP group fits within a\"\n  single node / high-bandwidth HCCL domain (A2/A3\
+  \ supported).\n- \"\\\"hierarchy\\\": hierarchical (intra-node then inter-node over ROCE) algorithm, intended\"\n  for multi-node\
+  \ EP where full-mesh would saturate inter-node links; only supported on\n  A2/A3.\n- \"\\\"fullmesh_v2\\\": newer full-mesh\
+  \ variant, only supported on A3.\"\nBecause dispatch/combine communication is on the critical path of every MoE layer in\n\
+  decode and prefill, the chosen algorithm directly affects per-token latency and overall\nthroughput. A suboptimal choice\
+  \ (e.g. fullmesh across many nodes) can bottleneck on\ninter-node bandwidth, while hierarchy adds extra hops that hurt single-node\
+  \ deployments.\nThe deprecated boolean enable_mc2_hierarchy_comm is translated into mc2_comm_alg=\"hierarchy\"\nin the after-validator,\
+  \ so the two are semantically equivalent.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:605
+  context: Field definition with Literal type restricting to "", fullmesh, hierarchy, fullmesh_v2
+- file: vllm_ascend/ascend_config.py:664
+  context: After-validator maps deprecated enable_mc2_hierarchy_comm=True to mc2_comm_alg="hierarchy"
+related_parameters:
+- name: enable_mc2_hierarchy_comm
+  relation: Deprecated boolean that, when True, forces mc2_comm_alg to "hierarchy"
+- name: enable_fused_mc2
+  relation: Selects the fused MC2/MegaMoe path whose dispatch/combine ops consume comm_alg
+- name: enable_prefill_mc2
+  relation: Controls whether MC2 token capacity is reserved for prefill batches, interacting with MC2 op usage
+- name: combine_quant_mode
+  relation: Controls the combine stage communication quantization mode used alongside the MC2 comm algorithm
+- name: mega_moe_max_tokens
+  relation: Per-rank token capacity for the fused MC2/MegaMoe dispatch path
+constraints:
+- mc2_comm_alg must be one of "", "fullmesh", "hierarchy", or "fullmesh_v2"; any other value fails pydantic validation.
+- The "hierarchy" algorithm is only supported on A2/A3 hardware.
+- The "fullmesh_v2" algorithm is only supported on A3 hardware.
+- Setting enable_mc2_hierarchy_comm to true overrides mc2_comm_alg to "hierarchy" regardless of the value provided.
+- Unknown keys in additional_config are rejected (extra="forbid"), so a typo in the key name fails fast.
+tuning_advice:
+  summary: Match the MC2 communication algorithm to your EP topology and Ascend hardware generation to minimize dispatch/combine
+    latency.
+  suggested_values:
+  - scenario: Single-node EP deployment on A2/A3
+    value: fullmesh
+    reason: Full-mesh all-to-all exploits high intra-node HCCL bandwidth with minimal hops.
+  - scenario: Multi-node EP deployment on A2/A3
+    value: hierarchy
+    reason: Hierarchical algorithm does intra-node then inter-node (ROCE) communication, avoiding inter-node link saturation.
+  - scenario: A3 hardware with large EP group
+    value: fullmesh_v2
+    reason: Newer full-mesh variant supported only on A3, offering improved all-to-all for large groups.
+  - scenario: Unsure / let operator decide
+    value: unset
+    reason: Default defers algorithm selection to the CANN operator's built-in heuristic.
+  caveats:
+  - Verify hardware generation before selecting "hierarchy" (A2/A3 only) or "fullmesh_v2" (A3 only).
+  - Benchmark fullmesh vs hierarchy for your specific node count; the crossover depends on inter-node bandwidth.
+  - Prefer mc2_comm_alg over the deprecated enable_mc2_hierarchy_comm boolean.
+  quick_guide: Use "fullmesh" for single-node EP, "hierarchy" for multi-node EP on A2/A3, and "fullmesh_v2" on A3.
+analysis_date: '2026-10-27'

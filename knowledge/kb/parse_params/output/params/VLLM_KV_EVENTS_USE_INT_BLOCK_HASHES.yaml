@@ -1,0 +1,78 @@
+name: VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1923
+- vllm/envs.py:278
+- vllm/v1/core/kv_cache_utils.py:97
+value_type: bool
+default: true
+valid_choices: 'boolean: 0 (raw bytes) or 1 (64-bit integer)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only controls the *representation* of block hashes emitted in KV
+
+  cache events, not the hashing or caching itself. In
+
+  vllm/v1/core/kv_cache_utils.py:97, maybe_convert_block_hash() checks
+
+  envs.VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES: when True (default) it converts the
+
+  raw BlockHash bytes into a 64-bit integer via
+
+  int.from_bytes(hash_bytes, byteorder="big") & ((1 << 64) - 1); when False it
+
+  returns the raw bytes unchanged. This conversion is a cheap per-block operation
+
+  executed only when KV cache events are produced (e.g. for KV event publishing /
+
+  offloading tiers), so it does not touch the hot inference path, attention
+
+  kernels, or HCCL communication. On Ascend NPU there is no vllm-ascend override
+
+  of this variable — it is read purely from upstream vllm/envs.py and used in the
+
+  upstream KV cache utils. The only runtime effect is a negligible CPU-side
+
+  int.from_bytes call per emitted block hash versus passing bytes through, and a
+
+  smaller serialized payload (8 bytes vs 32 bytes) for event consumers. It does
+
+  not affect NPU compute, memory allocation, or throughput.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1923
+  context: Definition of the env var; default '1' (True) for backward compatibility.
+- file: vllm/envs.py:278
+  context: 'Type annotation VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES: bool = True.'
+- file: vllm/v1/core/kv_cache_utils.py:97
+  context: maybe_convert_block_hash() branches on the flag to convert bytes to 64-bit int or return raw bytes.
+related_parameters:
+- name: VLLM_USE_V1
+  relation: The consuming code path (vllm/v1/core/kv_cache_utils.py) is part of the v1 engine.
+- name: kv_transfer_config / KV offloading tiers
+  relation: Block hash representation is consumed by KV event publishers and offloading tiers that decode block keys.
+constraints:
+- The value must be parseable as an integer 0 or 1 (bool(int(...))); other strings raise ValueError at env access time.
+- When set to 0, KV event consumers receive raw bytes block hashes instead of 64-bit integers, so downstream consumers must
+  be able to decode the byte form.
+tuning_advice:
+  summary: Leave at the default (1) unless a downstream KV event consumer requires raw byte hashes.
+  suggested_values:
+  - scenario: Default deployments and any KV event consumer expecting integer hashes
+    value: true
+    reason: Default is True for backward compatibility; integer hashes are more compact (8 bytes) and avoid per-consumer byte
+      decoding.
+  - scenario: Custom KV offloading tier or event subscriber that decodes raw byte block hashes
+    value: false
+    reason: Setting to 0 returns raw bytes from maybe_convert_block_hash(), matching consumers written against the byte format.
+  caveats:
+  - Do not expect any NPU performance change from this flag; it only alters event payload format.
+  - Mismatched setting versus consumer expectations can cause decode errors in KV event handling.
+  quick_guide: Keep default 1; only set 0 if your KV event consumer needs raw byte hashes.
+analysis_date: '2026-10-27'

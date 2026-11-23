@@ -1,0 +1,83 @@
+name: speculative.attention_backend
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/v1/worker/gpu/spec_decode/dflash/utils.py:31
+- vllm/v1/worker/gpu/spec_decode/dspark/utils.py:74
+- vllm/v1/worker/gpu/spec_decode/eagle/utils.py:97
+- vllm/transformers_utils/config.py:742
+value_type: str
+default: null
+valid_choices: Any attention backend name supported by the platform (e.g. FLASH_ATTN, FLASHINFER, TRITON_ATTN, FLEX_ATTENTION);
+  None means auto-select
+cli_example: '--speculative-config ''{"method": "eagle", "model": "<draft-model>", "attention_backend": "<backend>"}'''
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This is a nested field of the speculative decoding config (SpeculativeConfig.attention_backend)\nthat only\
+  \ affects the DRAFT model's attention backend selection, not the target model.\nIn upstream vLLM it is consumed at draft-model\
+  \ load time:\n- \"eagle/utils.py:97-106: if set, it replaces vllm_config.attention_config.backend before\"\n  get_model()\
+  \ constructs the eagle draft, so the draft layers are built with that backend.\n- \"dflash/utils.py:26-32: it is passed\
+  \ as attention_config.backend together with\"\n  use_non_causal derived from the draft HF config; a non-causal drafter requires\
+  \ a backend\n  that supports non-causal attention, otherwise construction fails.\n- \"dspark/utils.py:72-88: resolved via\
+  \ _resolve_dspark_attention_backend() with fallback to\"\n  the target's attention_config.backend.\nThe performance effect\
+  \ is indirect: \"the chosen backend determines which attention kernel\"\n(and its memory layout / KV cache layout) the draft\
+  \ model uses during speculative decoding.\nA faster draft attention kernel reduces per-step draft latency, which can raise\
+  \ end-to-end\ntokens/sec, and a backend with a different KV-cache layout can change draft KV memory usage.\nWhen None, auto-selection\
+  \ picks a compatible backend (see test_non_causal_autoselect_backend),\nwhich is normally the correct and performant choice.\
+  \ No vllm-ascend definition or override of\nthis field was found in the provided context; on Ascend the available backends\
+  \ are constrained\nby the vllm-ascend attention backend registry, so the practical effect is limited to selecting\namong\
+  \ Ascend-supported backends for the draft model.\n"
+usage_locations:
+- file: vllm/v1/worker/gpu/spec_decode/eagle/utils.py:97
+  context: Overrides draft vllm_config attention backend before get_model() when set; keeps target KV cache layout otherwise
+- file: vllm/v1/worker/gpu/spec_decode/dflash/utils.py:31
+  context: Sets draft attention backend together with use_non_causal for DFlash draft model construction
+- file: vllm/v1/worker/gpu/spec_decode/dspark/utils.py:74
+  context: Resolved with target backend fallback for DSpark draft model
+- file: vllm/transformers_utils/config.py:742
+  context: User --speculative-config overrides (including attention_backend) merged into speculators-format config
+related_parameters:
+- name: --attention-backend
+  relation: Target model backend; draft inherits it when speculative attention_backend is None (eagle keeps target KV cache
+    layout)
+- name: speculative.kv_cache_dtype
+  relation: Sibling draft override applied alongside attention_backend when constructing the draft config
+- name: speculative.method
+  relation: Determines which draft loader (eagle/dflash/dspark) consumes this field
+- name: speculative.moe_backend
+  relation: Another draft-only override applied in the same eagle load path
+constraints:
+- If the drafter uses non-causal attention (e.g. DFlash), the selected backend must support non-causal attention or draft
+  model construction fails.
+- The value must name an attention backend available on the current platform; unsupported backend names will fail at draft
+  model construction.
+- For eagle, the override is only applied when the field is not None; leaving it None preserves the target's KV cache layout
+  shared with the draft.
+tuning_advice:
+  summary: Leave it unset (None) to let auto-selection pick a compatible, performant draft backend; only override when the
+    drafter requires a specific backend (e.g. non-causal DFlash).
+  suggested_values:
+  - scenario: Default / most speculative decoding setups (eagle, mtp, ngram) on Ascend
+    value: unset
+    reason: Auto-selection picks a backend compatible with the draft's attention and preserves target KV cache layout sharing
+      in eagle, avoiding extra memory and layout conversion.
+  - scenario: Drafter requires non-causal attention (DFlash-style) and auto-selection fails or is suboptimal
+    value: <Ascend-supported backend that supports non-causal attention>
+    reason: A causal-only backend cannot host non-causal draft layers; explicitly choosing a non-causal-capable backend is
+      required for correctness and avoids fallback overhead.
+  - scenario: Draft model benefits from a faster Ascend attention kernel than the target's backend
+    value: <fastest Ascend backend for the draft head size/dtype>
+    reason: A faster draft attention kernel lowers per-step draft latency, improving speculative decoding throughput, provided
+      KV cache layout compatibility is acceptable.
+  caveats:
+  - Only override after confirming the backend is registered in vllm-ascend for the draft's head size, dtype and KV cache
+    dtype.
+  - 'Watch draft KV cache memory: a backend with a different layout than the target may prevent sharing and raise memory usage.'
+  - Benchmark end-to-end acceptance rate and tokens/sec; draft backend changes can shift the latency/throughput balance rather
+    than uniformly improving it.
+  quick_guide: Keep speculative.attention_backend unset unless the drafter needs a specific (e.g. non-causal) backend.
+analysis_date: '2026-10-27'

@@ -1,0 +1,72 @@
+name: attention.flash_attn_max_num_splits_for_cuda_graph
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/v1/attention/backends/flash_attn.py:720
+- vllm/v1/attention/backends/mla/flashattn_mla.py:155
+value_type: int
+default: <computed>
+valid_choices: positive integer (number of splits); typical values 8-16
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This parameter only takes effect in the upstream vLLM FlashAttention (FA3) backend
+
+  when full CUDA graph capture is enabled with the AOT scheduler
+
+  (use_full_cuda_graph and aot_schedule). In that path it sets self.max_num_splits,
+
+  which is the upper bound on the number of split-KV partitions used during decode.
+
+  The value is used to pre-allocate intermediate buffers large enough during graph
+
+  capture (see comment at flash_attn.py:716-718). It does NOT change runtime compute
+
+  directly; it only sizes the pre-allocated split buffers so that the captured graph
+
+  can accommodate up to that many splits. On Ascend NPU, vllm-ascend does not use the
+
+  upstream FlashAttention CUDA backend — it uses Ascend-native attention backends
+
+  (e.g. AscendAttention / Ascend MLA) and its own graph capture path. There is no
+
+  definition or usage of this parameter in vllm-ascend, so it has no runtime effect
+
+  on Ascend hardware. It is a CUDA/FA3-specific knob.
+
+  '
+usage_locations:
+- file: vllm/v1/attention/backends/flash_attn.py:720
+  context: Sets self.max_num_splits upper bound for FA3 CUDA graph capture buffer sizing
+- file: vllm/v1/attention/backends/mla/flashattn_mla.py:155
+  context: Same buffer-sizing role for MLA FlashAttention backend under full CUDA graph
+related_parameters:
+- name: attention_config.backend
+  relation: Only relevant when backend is FLASH_ATTN (FA3); ignored by Ascend backends
+- name: compilation_config.cudagraph_mode
+  relation: Only used when full CUDA graph capture is active (use_full_cuda_graph)
+- name: attention_config.flash_attn_version
+  relation: Applies to FA3 AOT scheduler path
+constraints:
+- Only has an effect when the FlashAttention (FA3) backend is selected with full CUDA graph capture and the AOT scheduler
+  enabled.
+- Has no effect on Ascend NPU because vllm-ascend does not use the upstream FlashAttention CUDA backend.
+tuning_advice:
+  summary: CUDA/FA3-only buffer-sizing knob; irrelevant on Ascend NPU — leave at default.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: leave default
+    reason: vllm-ascend uses Ascend-native attention backends and does not read this parameter, so tuning it has no effect
+      on NPU performance.
+  - scenario: Upstream GPU FA3 with full CUDA graph
+    value: 16
+    reason: Test suite uses 16 as a representative upper bound for split buffers during graph capture.
+  caveats:
+  - This is a CUDA FlashAttention-specific parameter; on Ascend it is silently inert.
+  - Setting it too low on GPU could under-size split buffers during graph capture; on Ascend this risk does not apply.
+  quick_guide: Ignore on Ascend NPU; only meaningful for upstream FA3 CUDA graph capture.
+analysis_date: '2026-10-27'

@@ -1,0 +1,84 @@
+name: --vllm-start-port
+type: cli
+category: other
+scope: vllm-ascend
+source_file:
+- examples/external_online_dp/launch_online_dp.py:16
+- examples/external_online_dp/launch_online_dp.py:29
+- examples/external_online_dp/launch_online_dp.py:57
+value_type: int
+default: 9000
+valid_choices: any valid TCP port; vllm_start_port + (dp_size_local - 1) must stay within the valid port range (<= 65535)
+cli_example: --vllm-start-port 7100
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is NOT a vLLM or vllm-ascend engine parameter — it is an argument of the
+
+  example launcher script examples/external_online_dp/launch_online_dp.py used for
+
+  external online data-parallel (DP) deployment of Prefill-Decode disaggregated
+
+  serving (e.g. DeepSeek-V3.1). The script computes each DP rank''s engine port as
+
+  `vllm_engine_port = vllm_start_port + i` (line 57) and passes it to
+
+  run_dp_template.sh, which starts one vLLM engine process per local DP rank bound
+
+  to that port. The value itself does not change model execution, memory, or
+
+  compute. Its only performance-relevant effect is indirect: if the chosen port
+
+  range collides with another service (or with another launcher instance on the
+
+  same node), engine startup fails or retries, delaying service readiness and
+
+  potentially breaking the DP/PD topology. Choosing a free, non-conflicting range
+
+  ensures all DP ranks come up promptly and the proxy can route requests.
+
+  '
+usage_locations:
+- file: examples/external_online_dp/launch_online_dp.py:29
+  context: Reads args.vllm_start_port into vllm_start_port variable
+- file: examples/external_online_dp/launch_online_dp.py:57
+  context: Computes per-rank engine port as vllm_start_port + i for each local DP rank
+- file: examples/external_online_dp/launch_online_dp.py:37
+  context: Passes the computed port to run_dp_template.sh as the engine port argument
+related_parameters:
+- name: --dp-size-local
+  relation: Number of local DP ranks; the highest port used is vllm_start_port + dp_size_local - 1, so the port range must
+    accommodate dp_size_local consecutive ports
+- name: --dp-rank-start
+  relation: Offsets the DP rank index; combined with dp-size-local determines which ranks this node launches (port assignment
+    uses local index i, not dp_rank)
+- name: --dp-rpc-port
+  relation: Separate RPC port for DP master communication; must not collide with the vllm-start-port range
+- name: --dp-address
+  relation: IP of the DP master node used together with the engine ports for the DP topology
+constraints:
+- The port range vllm_start_port through vllm_start_port + dp_size_local - 1 must all be free and within the valid TCP port
+  range (<= 65535).
+- The chosen port range must not overlap with --dp-rpc-port or any other service on the node, otherwise engine startup fails.
+tuning_advice:
+  summary: Pick a free, non-conflicting port range large enough for all local DP ranks; the value itself does not affect NPU
+    performance.
+  suggested_values:
+  - scenario: Single launcher instance per node (A3 / default)
+    value: 7100
+    reason: Docs use 7100 in the DeepSeek-V3.1 PD-disaggregated examples; leaves room for dp_size_local consecutive ports.
+  - scenario: Multiple launcher instances on the same node (950DT, p0_0/p0_1)
+    value: 7100
+    reason: Each instance uses the same start port but different dp-rank-start; ensure the ranges do not overlap by offsetting
+      start ports per instance if needed.
+  - scenario: Default when unspecified
+    value: 9000
+    reason: Script default; acceptable if ports 9000..9000+dp_size_local-1 are free.
+  caveats:
+  - Verify the port range is free with tools like ss/netstat before launch to avoid startup failures.
+  - Keep the range clear of --dp-rpc-port (default 12345) and any proxy ports.
+  quick_guide: Set --vllm-start-port to a free base port; each local DP rank uses base+i, so reserve dp_size_local consecutive
+    ports.
+analysis_date: '2026-10-27'

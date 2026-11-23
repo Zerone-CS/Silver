@@ -1,0 +1,100 @@
+name: --ignore-patterns
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:995
+- vllm/engine/arg_utils.py:645
+- vllm/engine/arg_utils.py:1920
+- vllm/config/load.py:103
+- vllm/config/load.py:142
+- vllm/model_executor/model_loader/default_loader.py:201
+- vllm/model_executor/model_loader/weight_utils.py:158
+value_type: list[str]
+default: '[''original/**/*'']'
+valid_choices: Any glob pattern(s) accepted by huggingface_hub snapshot_download / modelscope ignore_file_pattern
+cli_example: --ignore-patterns 'original/**/*'
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only affects the model weight download step, not the NPU
+
+  inference runtime. In vllm/config/load.py:103 it is a LoadConfig field
+
+  (default ["original/**/*"]) that is passed through create_load_config
+
+  (arg_utils.py:1920) into the model loader. It is consumed only inside
+
+  download_weights_from_hf calls in default_loader.py:201,
+
+  runai_streamer_loader.py:100, sharded_state_loader.py:104, and
+
+  weight_utils.py:158 (maybe_download_from_modelscope, where it maps to
+
+  modelscope''s ignore_file_pattern). These paths are only taken when the
+
+  model is NOT a local directory (is_local check). The patterns filter which
+
+  files are fetched from the HF/ModelScope hub, so they can reduce download
+
+  time and disk usage (e.g. skipping "original/**/*" llama checkpoints or
+
+  redundant .bin/.pt files), which shortens cold-start latency. Once weights
+
+  are on disk, the parameter has zero effect on NPU compute, HCCL
+
+  communication, KV-cache allocation, or token throughput. vllm-ascend does
+
+  not override or re-read this parameter; the only Ascend-side reference is
+
+  tools/aisbench.py:381, a benchmark helper that forwards ignore_patterns to
+
+  ModelScope snapshot_download, mirroring upstream behavior.
+
+  '
+usage_locations:
+- file: vllm/config/load.py:103
+  context: LoadConfig field definition with default ['original/**/*']
+- file: vllm/config/load.py:142
+  context: Field validator that logs non-default ignore patterns
+- file: vllm/engine/arg_utils.py:1920
+  context: create_load_config passes ignore_patterns into LoadConfig
+- file: vllm/model_executor/model_loader/default_loader.py:201
+  context: Passed to download_weights_from_hf for non-local models
+- file: vllm/model_executor/model_loader/weight_utils.py:158
+  context: Forwarded as ignore_file_pattern to ModelScope snapshot_download
+- file: tools/aisbench.py:381
+  context: vllm-ascend benchmark helper forwards ignore_patterns to ModelScope download
+related_parameters:
+- name: --load-format
+  relation: Determines allow_patterns (e.g. *.safetensors) that ignore_patterns filters against during download
+- name: --download-dir
+  relation: Cache directory where filtered files are stored; affects whether download happens at all
+- name: --model
+  relation: If model is a local path, ignore_patterns is bypassed entirely (is_local branch)
+- name: VLLM_USE_MODELSCOPE
+  relation: When set, ignore_patterns is passed to ModelScope's ignore_file_pattern instead of HF
+constraints:
+- ignore_patterns only takes effect when the model is downloaded from a remote hub; if --model points to a local directory,
+  the patterns are ignored.
+- Patterns must be valid glob patterns accepted by huggingface_hub snapshot_download or modelscope ignore_file_pattern; invalid
+  patterns may cause download errors.
+- Overly broad ignore patterns can exclude required weight files, causing the loader to fail to find model weights.
+tuning_advice:
+  summary: Leave at default unless you need to trim download size/time; it does not affect NPU runtime performance.
+  suggested_values:
+  - scenario: Standard HF model download (default)
+    value: '[''original/**/*'']'
+    reason: Default avoids downloading redundant llama original checkpoints, reducing cold-start download time.
+  - scenario: Model repo contains large unused files (e.g. .bin alongside .safetensors)
+    value: '[''original/**/*'', ''*.bin'', ''*.pt'']'
+    reason: Skips redundant weight formats, reducing download time and disk usage when only safetensors are needed.
+  - scenario: Model already present locally
+    value: '[''original/**/*'']'
+    reason: When --model is a local path, ignore_patterns is bypassed; keep default for consistency.
+  caveats:
+  - Do not ignore patterns that match required weight files or the loader will fail to find weights.
+  - No impact on NPU compute, HCCL, or KV-cache; purely a download-time optimization.
+  quick_guide: Keep default 'original/**/*'; only add patterns to skip unused weight formats to speed up cold-start downloads.
+analysis_date: '2026-10-27'

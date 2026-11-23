@@ -1,0 +1,116 @@
+name: --scheduler-cls
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:159
+- vllm/config/scheduler.py:212
+- vllm/engine/arg_utils.py:1628
+- vllm/engine/arg_utils.py:2442
+- vllm/v1/engine/core.py:149
+- vllm_ascend/patch/platform/patch_balance_schedule.py:893
+- vllm_ascend/platform.py:1063
+- vllm_ascend/platform.py:1134
+- vllm_ascend/core/recompute_scheduler.py:54
+- vllm_ascend/core/batch_job_aware_scheduler.py:33
+value_type: str
+default: null
+valid_choices: Any importable scheduler class or dotted path 'mod.custom_class'; None selects Scheduler (or AsyncScheduler
+  when --async-scheduling is set)
+cli_example: --scheduler-cls vllm_ascend.core.batch_job_aware_scheduler.BatchJobAwareScheduler
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--scheduler-cls selects the concrete scheduler implementation that EngineCore\ninstantiates via SchedulerConfig.get_scheduler_cls()\
+  \ (vllm/config/scheduler.py:212)\nand constructs in vllm/v1/engine/core.py:149. The scheduler decides, every step,\nwhich\
+  \ requests are admitted, how many tokens are batched (max_num_batched_tokens\nbudget), how KV blocks are reserved/preempted,\
+  \ and whether async scheduling is\nused. Therefore the choice of class directly governs NPU utilization, preemption\nrate,\
+  \ and KV-cache pressure — a high-impact runtime knob.\n\nOn Ascend, vllm-ascend heavily overrides this parameter:\n1. When\
+  \ scheduler_cls is unset, vllm_ascend/patch/platform/patch_balance_schedule.py:897\n   monkey-patches the module-global\
+  \ name `_sched_mod.Scheduler = BalanceScheduler`.\n   So the \"default\" scheduler on Ascend is actually BalanceScheduler,\
+  \ which adds a\n   cross-DP-rank all-gather (balance_gather) inside _has_global_unfinished_reqs to\n   keep DP ranks lock-stepped.\
+  \ This is a communication cost per non-idle step but\n   prevents DP imbalance/deadlock. Setting --scheduler-cls explicitly\
+  \ BYPASSES this\n   patch (the comment at line 893-896 states recompute/dynamic-batch/profiling\n   schedulers set scheduler_cls\
+  \ and correctly bypass this name).\n2. vllm_ascend/platform.py:1063 — when ShortRequestFirst scheduling is enabled with\n\
+  \   async_scheduling, the platform forcibly sets scheduler_cls to\n   ShortRequestFirstAsyncScheduler, overriding whatever\
+  \ the user passed.\n3. vllm_ascend/platform.py:1134 — when recompute_scheduler_enable is set on a\n   PD-disaggregated D\
+  \ node, the platform replaces the whole SchedulerConfig with a\n   RecomputeSchedulerConfig whose scheduler_cls is RecomputeScheduler\
+  \ or\n   AsyncRecomputeScheduler (vllm_ascend/core/recompute_scheduler.py:54,64-68),\n   again overriding the user value.\n\
+  4. vllm_ascend/core/batch_job_aware_scheduler.py provides BatchJobAwareScheduler,\n   a job-aware scheduler with EWMA decode-length\
+  \ estimation, KV reserve to suppress\n   preemption, and O(log n) best-fit request buckets — a throughput/latency win for\n\
+  \   multi-tenant batch workloads, selected via --scheduler-cls.\n\nUpstream also warns (scheduler.py:224-230) that a custom\
+  \ scheduler subclassing\nScheduler instead of AsyncScheduler disables async scheduling and degrades\nperformance. On Ascend\
+  \ this interacts with the async_scheduling flag and the\nv2 model runner requirements.\n"
+usage_locations:
+- file: vllm/config/scheduler.py:212
+  context: get_scheduler_cls() resolves None to Scheduler/AsyncScheduler, else imports the custom class and warns about non-public
+    interface
+- file: vllm/v1/engine/core.py:149
+  context: EngineCore instantiates the resolved scheduler class
+- file: vllm/engine/arg_utils.py:2442
+  context: scheduler_cls passed into SchedulerConfig construction
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:897
+  context: Monkey-patches module-global Scheduler to BalanceScheduler when scheduler_cls is unset
+- file: vllm_ascend/platform.py:1063
+  context: Forces ShortRequestFirstAsyncScheduler when ShortRequestFirst + async_scheduling enabled
+- file: vllm_ascend/platform.py:1134
+  context: Replaces SchedulerConfig with RecomputeSchedulerConfig (RecomputeScheduler/AsyncRecomputeScheduler) on PD D nodes
+- file: vllm_ascend/core/recompute_scheduler.py:54
+  context: RecomputeSchedulerConfig default scheduler_cls and async variant selection
+- file: vllm_ascend/core/batch_job_aware_scheduler.py:33
+  context: BatchJobAwareScheduler selected via scheduler_cls for job-aware batching
+related_parameters:
+- name: --async-scheduling
+  relation: When scheduler_cls is None, async_scheduling selects AsyncScheduler; custom schedulers subclassing Scheduler disable
+    async scheduling and degrade performance
+- name: --scheduling-policy
+  relation: ShortRequestFirst scheduling requires policy='fcfs'; policy is validated in platform.py before scheduler_cls override
+- name: additional_config.scheduler_config.short_request_first_config.enabled
+  relation: When enabled with async_scheduling, forces scheduler_cls to ShortRequestFirstAsyncScheduler
+- name: additional_config.scheduler_config.recompute_scheduler_enable
+  relation: When enabled on PD D node, replaces SchedulerConfig and overrides scheduler_cls to RecomputeScheduler/AsyncRecomputeScheduler
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Influences which recompute scheduler class is chosen (_get_recompute_scheduler_cls)
+- name: --max-num-batched-tokens
+  relation: Scheduler uses this budget to decide per-step batch composition
+- name: --enable-chunked-prefill
+  relation: Scheduler behavior for chunked prefill depends on the chosen class
+constraints:
+- A custom scheduler class must implement the SchedulerInterface; the interface is not public and compatibility is not guaranteed.
+- ShortRequestFirst scheduling requires --scheduling-policy fcfs, otherwise a ValueError is raised.
+- ShortRequestFirst scheduling cannot be combined with batch_job_sched_config; enabling both raises a ValueError.
+- ShortRequestFirst scheduling is only supported on prefill or PD-mixed nodes, not on PD-disaggregated D nodes (kv_role='kv_consumer').
+- recompute_scheduler_enable can only be enabled on PD-disaggregated D nodes (kv_role='kv_consumer') and is not supported
+  in PD-mixed mode.
+- profiling_chunk_config with async scheduling requires the v2 model runner (VLLM_USE_V2_MODEL_RUNNER=1).
+tuning_advice:
+  summary: Leave --scheduler-cls unset for default Ascend DP-balanced scheduling; use Ascend-provided schedulers (BatchJobAwareScheduler,
+    ShortRequestFirst, RecomputeScheduler) for specific workload patterns rather than writing custom ones.
+  suggested_values:
+  - scenario: Default single-node or DP deployment without special workload needs
+    value: unset
+    reason: Unset activates BalanceScheduler via the Ascend monkey-patch, keeping DP ranks lock-stepped and avoiding imbalance/deadlock.
+  - scenario: Multi-tenant batch inference with many concurrent jobs
+    value: vllm_ascend.core.batch_job_aware_scheduler.BatchJobAwareScheduler
+    reason: Groups requests by job, estimates decode length via EWMA, reserves KV to suppress preemption, and uses O(log n)
+      best-fit buckets for higher tokens-per-round throughput.
+  - scenario: Latency-sensitive short-request workloads on prefill/PD-mixed nodes with async scheduling
+    value: vllm_ascend.core.short_request_first_scheduler.ShortRequestFirstAsyncScheduler
+    reason: Prioritizes short requests; auto-selected by platform when short_request_first_config is enabled with async_scheduling
+      (requires policy=fcfs).
+  - scenario: PD-disaggregated decode node needing recompute-based scheduling
+    value: vllm_ascend.core.recompute_scheduler.RecomputeScheduler
+    reason: Auto-selected when recompute_scheduler_enable is set on a kv_consumer D node; async variant chosen automatically
+      when async_scheduling is on.
+  caveats:
+  - Explicitly setting --scheduler-cls bypasses the BalanceScheduler DP-balancing patch; verify DP balance manually if you
+    override it.
+  - ShortRequestFirst and recompute paths override your --scheduler-cls value — do not set both a custom class and these features
+    expecting the custom class to win.
+  - Prefer subclassing AsyncScheduler to keep async scheduling enabled and avoid throughput loss.
+  quick_guide: Leave --scheduler-cls unset unless you need an Ascend-provided scheduler (BatchJobAware/ShortRequestFirst/Recompute);
+    custom classes bypass DP balancing and may disable async scheduling.
+analysis_date: '2026-10-27'

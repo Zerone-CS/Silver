@@ -1,0 +1,83 @@
+name: HCCL_ALGO
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/GLM5.md:688
+- docs/source/tutorials/models/GLM5.md:753
+- docs/source/tutorials/models/GLM5.md:818
+- docs/source/tutorials/models/GLM5.md:886
+value_type: str
+default: <computed>
+valid_choices: HCCL algorithm selection string, e.g. 'level0:fullmesh'; other values are defined by the CANN/HCCL runtime
+  (e.g. ring, halving-doubling, fullmesh per level)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_ALGO is not defined or read by vLLM or vllm-ascend Python code; it is consumed by the
+
+  underlying Huawei CANN/HCCL collective communication library that vllm-ascend relies on for all
+
+  multi-NPU collectives (tensor-parallel all-reduce/all-gather, expert-parallel all-to-all,
+
+  data-parallel all-reduce, pipeline-parallel send/recv). The vllm-ascend docs (GLM5.md) explicitly
+
+  set `export HCCL_ALGO=level0:fullmesh` in the multi-node/multi-NPU launch scripts, indicating it
+
+  selects the algorithm used for the level-0 (intra-node) communication domain. Choosing fullmesh
+
+  for intra-node collectives lets HCCL use direct point-to-point links among all ranks instead of
+
+  ring/halving-doubling, which reduces collective latency and improves throughput for the
+
+  all-reduce/all-gather operations that dominate TP/EP decode and prefill. Because these collectives
+
+  sit on the critical path of every forward pass, the algorithm choice directly affects end-to-end
+
+  token latency and throughput. It does not affect memory footprint directly.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/GLM5.md:688
+  context: Launch script exports HCCL_ALGO=level0:fullmesh before vllm serve for multi-NPU deployment
+- file: docs/source/tutorials/models/GLM5.md:753
+  context: Same export in a second GLM5 deployment variant
+- file: docs/source/tutorials/models/GLM5.md:818
+  context: Same export with larger HCCL_BUFFSIZE=1200 variant
+- file: docs/source/tutorials/models/GLM5.md:886
+  context: Same export in another GLM5 deployment variant
+related_parameters:
+- name: HCCL_BUFFSIZE
+  relation: Companion HCCL env var set alongside HCCL_ALGO in the same launch scripts; controls collective buffer size
+- name: HCCL_DFS_CONFIG
+  relation: Set together in the same launch scripts; controls HCCL DFS behavior
+- name: HCCL_IF_IP
+  relation: Set together; selects the HCCL communication interface IP
+- name: HCCL_SOCKET_IFNAME
+  relation: Set together; selects the HCCL socket NIC
+- name: tensor_parallel_size
+  relation: Determines the number and shape of intra-node collectives whose algorithm HCCL_ALGO selects
+constraints:
+- HCCL_ALGO must be a valid algorithm string recognized by the installed CANN/HCCL runtime; an unsupported value causes collective
+  initialization to fail.
+- The 'level0' prefix targets the intra-node communication domain; algorithm names must match the HCCL version shipped with
+  the CANN toolkit.
+tuning_advice:
+  summary: For multi-NPU Ascend deployments, set HCCL_ALGO=level0:fullmesh to use direct intra-node links for TP/EP collectives,
+    reducing collective latency.
+  suggested_values:
+  - scenario: Multi-NPU single-node deployment with full HCCS mesh interconnect (e.g. GLM5 tutorials)
+    value: level0:fullmesh
+    reason: Docs explicitly use this for GLM5 multi-NPU launch; fullmesh exploits direct links among all intra-node ranks
+      to lower all-reduce/all-gather latency.
+  - scenario: Topology without full intra-node connectivity or when fullmesh underperforms
+    value: <unset>
+    reason: Let HCCL auto-select the algorithm based on detected topology to avoid suboptimal or failing collectives.
+  caveats:
+  - Benchmark fullmesh vs default per model and world size; gains vary with collective sizes and interconnect.
+  - Export before launching vllm serve and keep identical across all ranks.
+  quick_guide: export HCCL_ALGO=level0:fullmesh for full-mesh intra-node Ascend clusters to speed up TP/EP collectives.
+analysis_date: '2026-10-27'

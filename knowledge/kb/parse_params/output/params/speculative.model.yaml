@@ -1,0 +1,117 @@
+name: speculative.model
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/speculative.py:1169
+- vllm/engine/arg_utils.py:1702
+- vllm/v1/spec_decode/custom_class_proposer.py:15
+- vllm_ascend/spec_decode/llm_base_proposer.py:361
+- vllm_ascend/worker/model_runner_v1.py:2009
+- vllm_ascend/attention/mla_v1.py:997
+value_type: str
+default: null
+valid_choices: Any HuggingFace model path/ID, a local checkpoint directory, or a full module path 'module.ClassName' when
+  method='custom_class'; for ngram/ngram_gpu/suffix/extract_hidden_states the value is auto-set internally
+cli_example: '--speculative-config ''{"method": "eagle3", "model": "path/to/draft/model", "num_speculative_tokens": 3}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "speculative.model selects the draft model / eagle head / additional weights that the\nspeculative decoding\
+  \ proposer loads and runs every decode step. It is the single most\nconsequential knob in the speculation subsystem because\
+  \ it determines:\n(1) whether speculation is enabled at all — in vllm/config/speculative.py:1169, if\n    num_speculative_tokens\
+  \ is provided without a model (and method is not one of the\n    built-in ngram/suffix/extract_hidden_states/custom_class),\
+  \ a ValueError is raised;\n(2) the drafter's per-step compute and memory footprint — vllm_ascend/spec_decode/\n    llm_base_proposer.py:361\
+  \ loads the draft checkpoint via get_model() with\n    set_model_tag(\"eagle_head\"), so the draft model's parameter count,\
+  \ layer count and\n    dtype directly add to NPU HBM usage and to per-decode-step latency;\n(3) the attention path taken\
+  \ on Ascend — vllm_ascend/worker/model_runner_v1.py:2009\n    branches on speculative_config.use_eagle() / uses_draft_model()\
+  \ to choose between\n    the eagle/draft-model proposer path and the ngram/medusa path, and\n    vllm_ascend/attention/mla_v1.py:997\
+  \ applies a different seq_lens/actual_seq_lengths\n    layout when use_eagle() is true (spec_multiple = num_speculative_tokens\
+  \ + 1),\n    changing the NPU fused attention kernel invocation shape;\n(4) the KV-cache reservation — vllm/config/vllm.py:645\
+  \ reserves num_speculative_tokens\n    (or +1 for dflash) extra KV slots per request when use_eagle()/uses_draft_model()\n\
+  \    is true, so a larger draft model with more speculative tokens reduces the number of\n    concurrent sequences that\
+  \ fit in HBM.\nOn Ascend specifically, the draft model must be compatible with the NPU fused attention\noperator (npu_fused_infer_attention_score\
+  \ supports at most 16 tokens per decode round,\nso num_speculative_tokens + 1 <= 16), and for DFlash2 on model runner V2\
+  \ the draft must\nrun eager (enforce_eager: true) and use the target's unquantized LM head. Choosing a\ndraft model that\
+  \ is too large erodes the throughput gain of speculation because the\ndrafter's forward pass dominates decode latency; choosing\
+  \ one that is too small yields\nlow acceptance rates and wasted verification compute.\n"
+usage_locations:
+- file: vllm/config/speculative.py:1169
+  context: Raises ValueError when num_speculative_tokens is set but no speculative model is provided (and method is not a
+    built-in proposer).
+- file: vllm/engine/arg_utils.py:1702
+  context: Registers --spec-model CLI flag from SpeculativeConfig.model; also settable via --speculative-config JSON.
+- file: vllm/v1/spec_decode/custom_class_proposer.py:15
+  context: When method='custom_class', speculative_config.model is interpreted as a full module path 'module.ClassName' and
+    imported/instantiated.
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:361
+  context: Loads the draft model checkpoint via get_model() under set_model_tag('eagle_head'); logs method/load_format/model.
+- file: vllm_ascend/worker/model_runner_v1.py:2009
+  context: Branches on use_eagle()/uses_draft_model() to select the eagle/draft-model propose path vs ngram/medusa path.
+- file: vllm_ascend/attention/mla_v1.py:997
+  context: Adjusts seq_lens_list and actual_seq_lengths for the NPU fused attention kernel when use_eagle() is true (spec_multiple
+    = num_speculative_tokens + 1).
+- file: vllm/config/vllm.py:645
+  context: num_lookahead_tokens reserves extra KV slots per request when use_eagle()/uses_draft_model() is true.
+related_parameters:
+- name: speculative.method
+  relation: Determines how speculative.model is interpreted (eagle/eagle3/mtp/draft_model/dflash/dspark load a checkpoint;
+    custom_class treats it as a module path; ngram/suffix/extract_hidden_states auto-set it).
+- name: speculative.num_speculative_tokens
+  relation: Must be provided together with model for checkpoint-based methods; together they set the KV lookahead and the
+    fused-attention query shape (num_speculative_tokens + 1 <= 16 on Ascend).
+- name: speculative.draft_tensor_parallel_size
+  relation: Controls how the draft model is sharded across NPUs; must be compatible with the target's TP layout.
+- name: speculative.enforce_eager
+  relation: 'DFlash2 on model runner V2 requires the draft to run eager (enforce_eager: true).'
+- name: speculative.parallel_drafting
+  relation: Only compatible with EAGLE and draft model methods; requires the draft model to be trained for parallel drafting.
+- name: speculative.draft_load_config
+  relation: Load format/quantization used when loading the draft checkpoint named by model.
+constraints:
+- If num_speculative_tokens is provided without a speculative model (and method is not ngram/ngram_gpu/suffix/extract_hidden_states/custom_class),
+  vLLM raises ValueError 'num_speculative_tokens was provided but without speculative model.'
+- When method='custom_class', speculative.model must be a full module path containing a dot (e.g. 'my_module.MyProposer'),
+  otherwise a ValueError is raised.
+- On Ascend NPUs, (num_speculative_tokens + 1) must be <= 16 because npu_fused_infer_attention_score supports at most 16 tokens
+  per decode round.
+- 'DFlash2 on model runner V2 requires the draft model to run eager (set enforce_eager: true in speculative_config); graph
+  mode for the draft is not yet supported.'
+- DFlash2 requires the draft to use the target's unquantized LM head; a reduced draft vocabulary is not supported.
+- parallel_drafting is only compatible with EAGLE and draft model methods, and requires the draft model to be trained to support
+  parallel drafting.
+- Remote DSpark draft-KV transfer does not support PCP or DCP.
+tuning_advice:
+  summary: Pick a draft model whose size and architecture give high acceptance rate without dominating decode latency, and
+    keep num_speculative_tokens + 1 <= 16 on Ascend.
+  suggested_values:
+  - scenario: EAGLE3 on Ascend NPU with a Qwen/Llama-family target, latency-sensitive decode
+    value: path/to/eagle3-draft-checkpoint
+    reason: EAGLE3 draft heads are small (typically 1-2 layers) and give high acceptance rates; combined with num_speculative_tokens=3
+      this keeps the fused-attention query length at 4, well under the 16-token Ascend limit.
+  - scenario: DFlash2 on model runner V2 (VLLM_USE_V2_MODEL_RUNNER=1)
+    value: z-lab/Qwen3.8-27B-DFlash2
+    reason: 'Documented DFlash2 example; must set enforce_eager: true in speculative_config and use the target''s unquantized
+      LM head.'
+  - scenario: DSpark on GLM5.2 family with layerwise/sparse KV offloading
+    value: /path/to/GLM-MLA-draft
+    reason: Documented DSpark example with num_speculative_tokens=8; auxiliary capture layers are resolved from the draft
+      checkpoint automatically.
+  - scenario: Custom proposer implementation
+    value: my_module.MyProposer
+    reason: When method='custom_class', model must be a full module path; the class is imported and instantiated with vllm_config.
+  caveats:
+  - Do not exceed num_speculative_tokens + 1 = 16 on Ascend; the npu_fused_infer_attention_score operator will not support
+    longer decode rounds.
+  - A draft model that is too large can make speculation a net loss; benchmark acceptance rate and end-to-end throughput before
+    committing.
+  - 'DFlash2 on model runner V2 requires enforce_eager: true for the draft; the target can still use FULL_DECODE_ONLY graph
+    mode.'
+  - Ensure the draft checkpoint's vocabulary matches the target unless use_heterogeneous_vocab is enabled (which requires
+    method='draft_model').
+  quick_guide: Use a small, high-acceptance EAGLE3/DFlash2/DSpark draft checkpoint and keep num_speculative_tokens + 1 <=
+    16 on Ascend.
+analysis_date: '2026-10-27'

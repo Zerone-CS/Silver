@@ -1,0 +1,84 @@
+name: VLLM_USE_MODELSCOPE
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:717
+- vllm/transformers_utils/__init__.py:6
+- vllm/transformers_utils/config.py:47
+- vllm/model_executor/model_loader/weight_utils.py:161
+- vllm/tokenizers/registry.py:117
+- vllm/lora/utils.py:348
+- vllm_ascend/quantization/utils.py:111
+value_type: bool
+default: false
+valid_choices: 'Boolean-like string: ''1'' or ''true'' (case-insensitive) enables; anything else disables'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "VLLM_USE_MODELSCOPE is a model/tokenizer source selector, not a runtime compute knob.\nIn vllm/envs.py:717\
+  \ it is parsed as a boolean from the env string. When true, vLLM\nroutes model weight, config, tokenizer, and LoRA downloads\
+  \ through ModelScope instead\nof Hugging Face Hub:\n- \"vllm/model_executor/model_loader/weight_utils.py:161 (maybe_download_from_modelscope)\"\
+  \n  uses modelscope snapshot_download under a file lock.\n- \"vllm/tokenizers/registry.py:117 downloads the tokenizer via\
+  \ ModelScope.\"\n- \"vllm/transformers_utils/config.py:47 imports AutoConfig from modelscope instead of\"\n  transformers.\n\
+  - \"vllm/transformers_utils/__init__.py:6 calls modelscope patch_hub() to redirect HF\"\n  hub calls to ModelScope.\n- \"\
+  vllm/lora/utils.py:348 resolves LoRA adapters from ModelScope.\"\nOn Ascend, vllm_ascend/quantization/utils.py:111 (get_model_file)\
+  \ checks\nenvs.VLLM_USE_MODELSCOPE to decide whether to fetch quantization config files\n(e.g. quant_model_description.json)\
+  \ via modelscope model_file_download or\nhuggingface_hub hf_hub_download. This only affects the one-time model/config\n\
+  acquisition path at startup, not the per-token inference loop, so it does not\nchange steady-state throughput or NPU memory\
+  \ usage. Its only performance effect is\non startup latency (download speed / reachability of the chosen hub), which is\
+  \ why\nit is classified low. It is explicitly excluded from torch.compile cache-key factors\n(vllm/envs.py:2260), confirming\
+  \ it has no effect on compiled graph artifacts.\n"
+usage_locations:
+- file: vllm/envs.py:717
+  context: Parses VLLM_USE_MODELSCOPE env string into a bool (default False).
+- file: vllm/transformers_utils/__init__.py:6
+  context: When enabled, imports modelscope and calls patch_hub() to redirect HF hub downloads to ModelScope.
+- file: vllm/transformers_utils/config.py:47
+  context: Selects modelscope.AutoConfig vs transformers.AutoConfig for config loading.
+- file: vllm/model_executor/model_loader/weight_utils.py:161
+  context: maybe_download_from_modelscope downloads model weights via ModelScope snapshot_download under a file lock.
+- file: vllm/tokenizers/registry.py:117
+  context: Downloads tokenizer files from ModelScope when enabled.
+- file: vllm/lora/utils.py:348
+  context: Resolves LoRA adapter paths from ModelScope instead of HF Hub.
+- file: vllm_ascend/quantization/utils.py:111
+  context: Ascend quantization config file fetch chooses modelscope model_file_download vs hf_hub_download based on this flag.
+- file: vllm/envs.py:2260
+  context: Listed in ignored_factors for torch.compile cache keys, so it does not affect compiled artifacts.
+related_parameters:
+- name: HF_ENDPOINT
+  relation: Alternative mirror mechanism for HF Hub downloads; VLLM_USE_MODELSCOPE switches the source entirely to ModelScope.
+- name: VLLM_CACHE_ROOT
+  relation: ModelScope/HF downloads land in the cache directory; cache location affects reuse of downloaded weights.
+- name: download_dir
+  relation: Passed to snapshot_download as cache_dir when downloading from ModelScope.
+- name: HF_HUB_OFFLINE
+  relation: Mapped to local_files_only in ModelScope snapshot_download calls.
+constraints:
+- modelscope>=1.18.1 must be installed when VLLM_USE_MODELSCOPE is enabled, otherwise an ImportError is raised at import time.
+- VLLM_USE_MODELSCOPE only controls model and tokenizer loading in vLLM; it does not redirect benchmark dataset downloads
+  to ModelScope.
+- ModelScope does not provide an image_processor interface, so get_hf_image_processor_config returns an empty dict when this
+  flag is enabled.
+tuning_advice:
+  summary: Set VLLM_USE_MODELSCOPE=True only to speed up or enable model/tokenizer downloads from ModelScope (e.g. in mainland
+    China); it does not affect NPU inference performance.
+  suggested_values:
+  - scenario: Deploying on Ascend in a region where Hugging Face Hub is slow or unreachable and models are hosted on ModelScope
+    value: 'True'
+    reason: Routes weight, config, tokenizer, and quantization-config downloads through ModelScope, reducing startup latency
+      and avoiding HF connectivity failures.
+  - scenario: Models already downloaded to a local directory or HF Hub is fast/reachable
+    value: 'False'
+    reason: Local paths bypass the download path entirely; keeping the default avoids requiring modelscope>=1.18.1 and avoids
+      the patch_hub import overhead.
+  caveats:
+  - Requires modelscope>=1.18.1 installed; otherwise import fails with an ImportError.
+  - Does not redirect benchmark dataset downloads; use dataset-specific options for those.
+  - No impact on steady-state throughput or NPU memory; only affects model acquisition/startup.
+  quick_guide: export VLLM_USE_MODELSCOPE=True to pull weights/tokenizer from ModelScope; leave unset for local or HF-hosted
+    models.
+analysis_date: '2026-10-27'

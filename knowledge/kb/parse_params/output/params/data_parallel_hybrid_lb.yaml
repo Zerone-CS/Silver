@@ -1,0 +1,121 @@
+name: --data-parallel-hybrid-lb
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1171
+- vllm/engine/arg_utils.py:502
+- vllm/config/parallel.py:158
+- vllm/config/parallel.py:609
+- vllm/entrypoints/cli/serve.py:85
+- vllm/entrypoints/cli/serve.py:193
+- vllm/v1/engine/utils.py:1267
+value_type: bool
+default: false
+valid_choices: true or false (store_true style boolean flag)
+cli_example: --data-parallel-hybrid-lb
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This flag selects the data-parallel load-balancing topology, which changes how
+
+  requests are routed across DP ranks and therefore affects throughput and tail
+
+  latency of a DP deployment. In upstream vLLM, `data_parallel_hybrid_lb` is read
+
+  in `ParallelConfig.local_engines_only` (vllm/config/parallel.py:609): when true,
+
+  the client (API server / AsyncLLM) manages only the LOCAL EngineCores and relies
+
+  on an external LB to distribute traffic between vLLM nodes, while vLLM itself
+
+  load-balances across the local DP ranks. This is contrasted with pure internal
+
+  LB (client manages local+remote EngineCores) and pure external LB (one rank per
+
+  node). The mode also affects startup handshake logic in
+
+  `wait_for_engine_startup` (vllm/v1/engine/utils.py:1267), where
+
+  `remote_should_be_headless` is true only when neither hybrid nor external LB is
+
+  set — i.e. hybrid LB changes which remote engines run headless, altering the
+
+  process/communication topology. In `vllm/entrypoints/cli/serve.py:85-103` the
+
+  flag participates in LB-mode detection and defaults `api_server_count`, and
+
+  `arg_utils.py:2163-2172` enforces mutual exclusion with external LB and
+
+  headless mode. On Ascend NPU, the DP ranks communicate via HCCL all-reduce for
+
+  DP synchronization (dp_sync_interval); the LB topology determines how many
+
+  ranks are co-located per node and thus how much cross-node HCCL traffic is
+
+  generated. Hybrid LB keeps local DP ranks on one node (local HCCL/HCCS
+
+  communication) while external LB fans out across nodes, which can reduce
+
+  cross-node HCCL overhead and improve per-node throughput. No vllm-ascend
+
+  override of this parameter was found in the provided context; the behavior is
+
+  inherited from upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:609
+  context: local_engines_only property returns true for hybrid or external LB, controlling which EngineCores the client manages
+- file: vllm/v1/engine/utils.py:1267
+  context: remote_should_be_headless is false when hybrid LB is enabled, changing startup handshake topology
+- file: vllm/entrypoints/cli/serve.py:85
+  context: LB-mode detection and api_server_count defaulting; mutual-exclusion check across LB modes
+- file: vllm/engine/arg_utils.py:2163
+  context: asserts hybrid LB is not used in headless mode; raises if combined with external LB
+related_parameters:
+- name: --data-parallel-external-lb
+  relation: Mutually exclusive; cannot be enabled together with hybrid LB
+- name: --data-parallel-start-rank
+  relation: Setting start-rank implicitly infers hybrid LB mode when not headless
+- name: --data-parallel-size
+  relation: Hybrid LB only applies when data_parallel_size > 0
+- name: --data-parallel-size-local
+  relation: If local size is 1, hybrid LB is downgraded to full external LB with a warning
+- name: --headless
+  relation: Hybrid LB is not applicable in headless mode
+- name: --data-parallel-multi-port-external-lb
+  relation: Another mutually exclusive LB mode; only one LB mode may be selected
+constraints:
+- --data-parallel-hybrid-lb and --data-parallel-external-lb cannot be enabled together; only one load-balancing mode may be
+  selected.
+- --data-parallel-hybrid-lb is not applicable in headless mode and raises an error if combined with --headless.
+- Hybrid LB only applies to online serving and when --data-parallel-size is greater than 0.
+- If --data-parallel-size-local is 1, hybrid LB is downgraded to full external LB (with a warning) rather than honored.
+- Only one of --data-parallel-multi-port-external-lb, --data-parallel-external-lb (or --data-parallel-rank), and --data-parallel-hybrid-lb
+  (or --data-parallel-start-rank) may be used.
+tuning_advice:
+  summary: Enable hybrid LB for multi-node DP deployments where each node hosts multiple DP ranks and an external LB fronts
+    the nodes, to keep local DP traffic on-node and reduce cross-node HCCL overhead.
+  suggested_values:
+  - scenario: Multi-node MoE DP deployment with several DP ranks per node and an external LB in front
+    value: true
+    reason: Hybrid LB lets vLLM balance across local DP ranks while the external LB balances across nodes, minimizing cross-node
+      HCCL synchronization traffic.
+  - scenario: Single-node DP deployment or one rank per node
+    value: false
+    reason: Hybrid LB provides no benefit when all ranks are local or when local size is 1 (it degrades to external LB); use
+      internal or external LB instead.
+  - scenario: Headless worker nodes in a disaggregated setup
+    value: false
+    reason: Hybrid LB is not applicable in headless mode and raises an error.
+  caveats:
+  - Ensure --data-parallel-size-local reflects the actual number of DP ranks per node; a value of 1 silently downgrades to
+    external LB.
+  - Do not combine with --data-parallel-external-lb or --data-parallel-multi-port-external-lb.
+  - On Ascend, verify HCCL DP synchronization cost across nodes; hybrid LB reduces but does not eliminate cross-node all-reduce.
+  quick_guide: Use --data-parallel-hybrid-lb only for multi-node DP with multiple local ranks per node and an external LB;
+    leave off for single-node or headless setups.
+analysis_date: '2026-10-27'

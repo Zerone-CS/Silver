@@ -1,0 +1,87 @@
+name: additional_config.scheduler_config.batch_job_sched_config.max_jobs
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1529
+- vllm_ascend/ascend_config.py:1538
+value_type: int
+default: 20
+valid_choices: any non-negative integer; 0 means unlimited
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'max_jobs bounds the number of jobs tracked by the batch-job-aware scheduler
+
+  (BatchJobSchedConfig in vllm_ascend/ascend_config.py). This scheduler is an
+
+  Ascend-specific scheduling feature (only active when
+
+  additional_config.scheduler_config.batch_job_sched_config.enabled is true).
+
+  It tracks per-job state to decide how KV cache blocks are reserved and how
+
+  long-decode vs short-decode jobs are prioritised (via
+
+  low_available_tokens_threshold and short_decode_token_threshold). max_jobs
+
+  caps how many distinct jobs are tracked; when the cap is reached, older/other
+
+  jobs are no longer tracked, so their scheduling decisions fall back to the
+
+  default path. A larger max_jobs gives the scheduler more context to make
+
+  better block-reservation and prioritisation decisions (improving decode
+
+  throughput and tail latency under multi-job/batch workloads), at the cost of
+
+  more bookkeeping. A value of 0 means unlimited tracking. This is a
+
+  scheduling-policy knob, not a compute/memory knob, so its effect on raw NPU
+
+  kernel throughput is indirect — it influences how efficiently KV cache blocks
+
+  are reserved and how decode batches are prioritised.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1529
+  context: Field definition of max_jobs in BatchJobSchedConfig (default 20).
+- file: vllm_ascend/ascend_config.py:1538
+  context: after model_validator raises ValueError if max_jobs < 0.
+related_parameters:
+- name: additional_config.scheduler_config.batch_job_sched_config.enabled
+  relation: Master switch; max_jobs has no effect unless enabled is true.
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_margin_blocks
+  relation: Works with max_jobs to size the KV cache reserve buffer.
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_max_blocks
+  relation: Upper bound on reserved blocks used alongside job tracking.
+- name: additional_config.scheduler_config.batch_job_sched_config.low_available_tokens_threshold
+  relation: Threshold used to prioritise long vs short decode jobs among tracked jobs.
+- name: additional_config.scheduler_config.batch_job_sched_config.short_decode_token_threshold
+  relation: Classifies a tracked job as short-decode.
+constraints:
+- max_jobs must be non-negative; a negative value raises a ValueError at config validation.
+- max_jobs only takes effect when batch_job_sched_config.enabled is set to true.
+tuning_advice:
+  summary: Set max_jobs to cover your expected number of concurrent jobs (or 0 for unlimited) when the batch-job-aware scheduler
+    is enabled.
+  suggested_values:
+  - scenario: Single-tenant serving with a small, fixed number of concurrent jobs
+    value: 20
+    reason: Default covers typical small job counts without extra bookkeeping overhead.
+  - scenario: Multi-tenant / many concurrent jobs where all should be tracked
+    value: 0
+    reason: 0 means unlimited tracking, ensuring no job falls back to default scheduling; monitor overhead if job count is
+      very large.
+  - scenario: Large but bounded job pool with known maximum concurrency
+    value: 64
+    reason: Set to the expected peak concurrent job count to track all jobs while bounding bookkeeping cost.
+  caveats:
+  - Only relevant when batch_job_sched_config.enabled is true.
+  - Too-small values silently drop tracking for excess jobs, reducing scheduler effectiveness.
+  quick_guide: Set max_jobs to your peak concurrent job count, or 0 for unlimited, when the batch-job-aware scheduler is enabled.
+analysis_date: '2026-10-27'

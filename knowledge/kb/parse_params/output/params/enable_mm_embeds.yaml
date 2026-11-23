@@ -1,0 +1,88 @@
+name: --enable-mm-embeds
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1373
+- vllm/engine/arg_utils.py:590
+- vllm/engine/arg_utils.py:1857
+- vllm/config/model.py:397
+- vllm/config/model.py:530
+- vllm/config/multimodal.py:111
+- vllm/config/vllm.py:2666
+- vllm/entrypoints/chat_utils.py:709
+- vllm/v1/worker/gpu_model_runner.py:6485
+- vllm/v1/worker/gpu/mm/encoder_runner.py:123
+value_type: bool
+default: false
+valid_choices: true / false (boolean flag)
+cli_example: --enable-mm-embeds
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: "This flag controls whether precomputed multimodal embeddings (tensors) can be\npassed as input instead of\
+  \ raw media. It is defined in vLLM upstream\n(vllm/config/multimodal.py:111, MultiModalConfig.enable_mm_embeds) and threaded\n\
+  through EngineArgs (arg_utils.py:590, 1857) into ModelConfig as an InitVar\n(model.py:397, 530). No vllm-ascend override\
+  \ of this parameter was found in the\nprovided context; it is a pure upstream config consumed by the multimodal\nfrontend/worker\
+  \ paths.\n\nPerformance relevance is indirect and mostly memory-related:\n1. Embedding-only mode: when enable_mm_embeds=True\
+  \ AND --limit-mm-per-prompt is\n   set to 0 for a modality, the engine skips loading the encoder modules\n   (multimodal.py:117-120\
+  \ docstring). This saves NPU memory that would otherwise\n   be occupied by vision/audio encoder weights, and avoids encoder\
+  \ profiling\n   (gpu_model_runner.py:6477-6486, encoder_runner.py:117-125 log \"Skipping\n   encoder profiling for embedding-only\
+  \ mode\"). Less encoder memory => more KV\n   cache available => higher throughput potential.\n2. When limits are > 0, embeddings\
+  \ still go through the encoder path and the\n   flag has essentially no runtime cost difference versus raw media.\n3. In\
+  \ the OpenAI server path (chat_utils.py:707-716), the flag only bypasses\n   num_items validation for *_embeds content when\
+  \ the modality limit is 0 — a\n   correctness/validation behavior, not a hot-path performance change.\n4. In EC/KV-consumer\
+  \ deployments (vllm.py:2660-2673), the flag is auto-enabled\n   so the frontend accepts metadata-only requests; this is\
+  \ a functional\n   requirement, not a tuning knob.\n\nOn Ascend NPU, the encoder modules (e.g. vision tower) run on the\
+  \ NPU; skipping\nthem frees NPU HBM. The flag itself does not alter HCCL/CANN compilation or\nattention kernels, so its\
+  \ direct throughput/latency effect is small — the main\nlever is the memory saved by not loading encoders in embedding-only\
+  \ mode.\n"
+usage_locations:
+- file: vllm/config/multimodal.py:111
+  context: Field definition of enable_mm_embeds with docstring describing embedding-only mode and memory savings.
+- file: vllm/engine/arg_utils.py:1373
+  context: CLI argument registration under MultiModalConfig group.
+- file: vllm/engine/arg_utils.py:1857
+  context: Passed from EngineArgs into VllmConfig/ModelConfig construction.
+- file: vllm/config/vllm.py:2666
+  context: Auto-enabled for EC/KV consumer roles to accept metadata-only embedding requests.
+- file: vllm/entrypoints/chat_utils.py:709
+  context: Bypasses num_items validation for *_embeds content when modality limit is 0.
+- file: vllm/v1/worker/gpu_model_runner.py:6485
+  context: Skips encoder profiling in embedding-only mode (all modality limits=0).
+- file: vllm/v1/worker/gpu/mm/encoder_runner.py:123
+  context: Skips encoder cache profiling when mm_max_toks_per_item is 0 (embedding-only).
+related_parameters:
+- name: --limit-mm-per-prompt
+  relation: Setting a modality limit to 0 together with --enable-mm-embeds triggers embedding-only mode (skips encoder loading,
+    saves memory).
+- name: --language-model-only
+  relation: Also disables multimodal inputs by zeroing all modality limits; overlaps with embedding-only intent.
+- name: --skip-mm-profiling
+  relation: Alternative way to skip encoder memory profiling; embedding-only mode skips profiling implicitly.
+- name: --mm-encoder-only
+  relation: Related encoder/EC deployment mode; EC/KV consumer roles auto-enable enable_mm_embeds.
+constraints:
+- The vLLM engine may crash if embeddings of an incorrect shape are passed, so only enable this flag for trusted users.
+- When a modality limit is greater than 0, that limit still applies to embeddings; the validation bypass only occurs when
+  the limit is 0.
+- The validation bypass in the OpenAI server only applies to content whose type ends with '_embeds'.
+tuning_advice:
+  summary: Enable only when feeding precomputed embeddings and pair with --limit-mm-per-prompt 0 to skip encoder loading and
+    free NPU HBM.
+  suggested_values:
+  - scenario: Serving precomputed multimodal embeddings with no on-device encoder (embedding-only mode)
+    value: true
+    reason: Combined with --limit-mm-per-prompt 0 for the modality, the engine skips loading encoder modules and encoder profiling,
+      freeing NPU HBM for KV cache.
+  - scenario: Standard multimodal serving with raw images/video and on-device encoder
+    value: false
+    reason: Encoders are needed and limits are > 0; enabling the flag provides no benefit and only relaxes input validation.
+  caveats:
+  - Only trusted clients should be allowed to send embeddings, since malformed tensors can crash the engine.
+  - Pair with --limit-mm-per-prompt 0 to actually realize the memory savings on Ascend NPU.
+  quick_guide: Use --enable-mm-embeds true with --limit-mm-per-prompt 0 for embedding-only serving to save NPU memory; otherwise
+    leave it off.
+analysis_date: '2026-10-27'

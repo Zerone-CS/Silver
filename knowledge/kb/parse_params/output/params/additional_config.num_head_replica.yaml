@@ -1,0 +1,71 @@
+name: additional_config.num_head_replica
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:649
+- vllm_ascend/ascend_config.py:557
+value_type: int
+default: 1
+valid_choices: positive integer; derived automatically at runtime (not user-settable)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'num_head_replica is a pure-derived field in the vllm-ascend AscendConfig pydantic model
+
+  (vllm_ascend/ascend_config.py:649). The class docstring explicitly lists it among
+
+  "Pure-derived fields computed automatically and not user-settable" alongside
+
+  enable_sp_by_pass, pd_tp_ratio, and pd_head_ratio (vllm_ascend/ascend_config.py:555-557).
+
+  It is initialized to a sentinel default of 1 and is intended to be overwritten by the
+
+  derive_and_validate() business-validation pass (vllm_ascend/ascend_config.py:684) based on
+
+  the parallel configuration (e.g. PD-disaggregated TP/head ratios). Because it is derived
+
+  rather than user-controlled, it does not itself introduce a tunable performance knob; any
+
+  performance effect is indirect, flowing through the PD-disaggregation / head-replication
+
+  logic that consumes it. No direct usage sites were found in the provided context, so the
+
+  concrete runtime consumer cannot be confirmed from source alone. Setting it manually has no
+
+  meaningful tuning effect and is discouraged.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:649
+  context: Field declaration with sentinel default 1 in AscendConfig; overwritten by derive_and_validate.
+- file: vllm_ascend/ascend_config.py:557
+  context: Docstring lists num_head_replica as a pure-derived, non-user-settable field.
+related_parameters:
+- name: additional_config.pd_tp_ratio
+  relation: Sibling pure-derived field; both computed from parallel config during derive_and_validate.
+- name: additional_config.pd_head_ratio
+  relation: Sibling pure-derived field; head-replica count is typically derived from the same PD head-ratio computation.
+- name: additional_config.enable_sp_by_pass
+  relation: Another pure-derived field in the same derived-fields group.
+constraints:
+- num_head_replica is a pure-derived field and is not user-settable; it is computed automatically during config derivation.
+- Because AscendConfig uses extra="forbid", unknown or misspelled keys in additional_config raise an error at startup.
+tuning_advice:
+  summary: Do not tune num_head_replica directly — it is a derived field; control the underlying parallel/PD configuration
+    instead.
+  suggested_values:
+  - scenario: Standard (non-PD) deployment
+    value: 1
+    reason: Default sentinel; no head replication is derived when PD disaggregation is not in use.
+  - scenario: PD-disaggregated deployment needing head replication
+    value: <computed>
+    reason: Let derive_and_validate() compute it from the parallel/PD configuration rather than setting it manually.
+  caveats:
+  - Setting this field manually has no effect because it is overwritten during config derivation.
+  - Tune the upstream parallel settings (tensor-parallel-size, PD ratios) that drive the derivation instead of this field.
+  quick_guide: Leave num_head_replica unset; it is auto-derived from your parallel/PD configuration.
+analysis_date: '2026-10-27'

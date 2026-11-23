@@ -1,0 +1,79 @@
+name: VLLM_DISABLE_DSV4_MEGAMOE_SHARED_EXPERT_FUSION
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:2006
+- vllm/envs.py:296
+- vllm/models/deepseek_v4/nvidia/model.py:937
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via int() then bool())
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This flag is defined only in upstream vLLM (vllm/envs.py:2006) and is consumed
+
+  exclusively by the NVIDIA DeepSeek-V4 MegaMoE path in
+
+  vllm/models/deepseek_v4/nvidia/model.py:937. It gates `fuse_shared_experts`,
+
+  which controls whether DeepGEMM computes the replicated FP8 shared experts in
+
+  the same persistent SM100 kernel as the routed FP4 experts. When set to 1, the
+
+  fusion is disabled and the shared MLP runs on the serial path instead.
+
+  The fusion condition additionally requires `use_sequence_parallel or tp_size == 1`
+
+  and `not use_fi_mega_moe`, so the flag only has any effect when those hold.
+
+  Crucially, this is an NVIDIA-specific (DeepGEMM / SM100 / FP4) optimization.
+
+  vllm-ascend does not reference this env var anywhere in the provided context,
+
+  and the Ascend DeepSeek-V4 MoE path does not use DeepGEMM or the SM100
+
+  persistent kernel. Therefore on Ascend NPU this parameter has no runtime
+
+  effect on latency, throughput, or memory — it is effectively a no-op. It is
+
+  only relevant as an emergency rollback knob on NVIDIA hardware.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2006
+  context: Environment variable definition and default (0 = fusion enabled).
+- file: vllm/envs.py:296
+  context: Type annotation declaration in the envs module.
+- file: vllm/models/deepseek_v4/nvidia/model.py:937
+  context: Read to compute fuse_shared_experts for the DeepSeek-V4 MegaMoE NVIDIA path.
+related_parameters:
+- name: VLLM_DISABLE_SHARED_EXPERTS_STREAM
+  relation: Related shared-expert execution control; disables separate CUDA stream for shared experts.
+- name: VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD
+  relation: Token threshold governing when shared experts run in a separate stream.
+- name: VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD
+  relation: Token cutoff for multi-stream GEMM overlap in DeepSeek-V4; same NVIDIA-specific optimization family.
+constraints:
+- The flag only affects behavior when the model is DeepSeek-V4 running the NVIDIA MegaMoE path; it has no effect on other
+  models or on Ascend NPU.
+- Shared-expert fusion is only active when sequence parallelism is enabled or tensor-parallel size is 1, and when the FlashInfer
+  megakernel path is not in use; otherwise the serial path is used regardless of this flag.
+tuning_advice:
+  summary: Leave at default (0) on Ascend; this flag is an NVIDIA-only rollback and has no effect on NPU.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: 0
+    reason: The variable is not consumed by vllm-ascend; the default 0 keeps upstream behavior and has no Ascend impact.
+  - scenario: NVIDIA DeepSeek-V4 MegaMoE with suspected shared-expert fusion correctness issue
+    value: 1
+    reason: Emergency rollback that disables fused shared-expert kernel, falling back to the serial path.
+  caveats:
+  - Do not attempt to tune Ascend performance with this flag; it does not affect the Ascend MoE path.
+  - On NVIDIA, enabling the rollback (value 1) generally lowers throughput.
+  quick_guide: Ignore on Ascend; keep default 0. Only set to 1 on NVIDIA DeepSeek-V4 as a correctness rollback.
+analysis_date: '2026-10-27'

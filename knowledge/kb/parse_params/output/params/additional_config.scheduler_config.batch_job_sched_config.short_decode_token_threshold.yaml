@@ -1,0 +1,79 @@
+name: additional_config.scheduler_config.batch_job_sched_config.short_decode_token_threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1533
+- vllm_ascend/ascend_config.py:1552
+value_type: int
+default: 32
+valid_choices: any positive integer (> 0)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This parameter is defined only in vllm-ascend (vllm_ascend/ascend_config.py:1533) as part of
+
+  BatchJobSchedConfig, the config for the batch-job-aware scheduler. It is a threshold used to
+
+  classify a decode job as "short decode" (per docs: "Threshold for classifying a job as ''short
+
+  decode''"). The batch-job-aware scheduler uses this classification together with
+
+  low_available_tokens_threshold to decide scheduling priority: "when available KV tokens exceed"
+
+  low_available_tokens_threshold, long decode jobs are prioritised; when available tokens are at
+
+  or below that threshold, short decode jobs are prioritised. By changing which jobs count as
+
+  "short", this parameter shifts which requests get scheduled first under KV-cache pressure,
+
+  affecting decode-step latency distribution and overall throughput (e.g. protecting short jobs
+
+  from head-of-line blocking by long jobs, or vice versa). It has no effect unless
+
+  batch_job_sched_config.enabled is true. The parameter does not directly allocate memory or
+
+  change kernel behavior; its impact is indirect via scheduling order.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1533
+  context: Field definition with default 32 in BatchJobSchedConfig pydantic dataclass
+- file: vllm_ascend/ascend_config.py:1552
+  context: after model_validator rejects values <= 0 with ValueError
+related_parameters:
+- name: additional_config.scheduler_config.batch_job_sched_config.enabled
+  relation: Master switch; short_decode_token_threshold has no effect unless enabled is true
+- name: additional_config.scheduler_config.batch_job_sched_config.low_available_tokens_threshold
+  relation: Companion threshold that decides long-vs-short decode prioritisation based on available KV tokens
+- name: additional_config.scheduler_config.batch_job_sched_config.max_jobs
+  relation: Bounds how many jobs are tracked by the same scheduler
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_margin_blocks
+  relation: KV block reserve used by the same scheduler under low-availability conditions
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_max_blocks
+  relation: Upper bound on reserved blocks used by the same scheduler
+constraints:
+- short_decode_token_threshold must be a positive integer; values <= 0 raise a ValueError at config validation time.
+- The parameter only takes effect when batch_job_sched_config.enabled is set to true.
+tuning_advice:
+  summary: Tune short_decode_token_threshold to match the workload's short-output length so the batch-job-aware scheduler
+    can protect short decode jobs under KV pressure.
+  suggested_values:
+  - scenario: Chat/interactive workloads with many short responses (tens of tokens)
+    value: 32
+    reason: Default 32 matches typical short chat completions; keeps short jobs classified correctly.
+  - scenario: Workloads dominated by very short outputs (e.g. classification, yes/no answers)
+    value: 16
+    reason: Lower threshold so only truly short jobs are prioritised, avoiding over-prioritisation.
+  - scenario: Mixed workloads with longer short-form outputs (e.g. summaries of ~100 tokens)
+    value: 128
+    reason: Raise threshold so medium-length jobs also benefit from short-decode prioritisation under KV pressure.
+  caveats:
+  - Only effective when batch_job_sched_config.enabled is true.
+  - Tune jointly with low_available_tokens_threshold; the two together determine scheduling order.
+  - Monitor per-job latency distribution after changing to ensure long jobs are not starved.
+  quick_guide: Set to roughly the p50 output length of your short requests; default 32 is fine for chat.
+analysis_date: '2026-10-27'

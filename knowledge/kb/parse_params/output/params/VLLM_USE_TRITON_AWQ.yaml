@@ -1,0 +1,86 @@
+name: VLLM_USE_TRITON_AWQ
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1165
+- vllm/envs.py:122
+- vllm/_custom_ops.py:552
+- vllm/_custom_ops.py:585
+- vllm/platforms/rocm.py:979
+- vllm/usage/usage_lib.py:40
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag only switches the AWQ dequantize/GEMM implementation between the
+
+  compiled CUDA custom op (torch.ops._C.awq_dequantize / awq_gemm) and a Triton
+
+  reference implementation (awq_dequantize_triton / awq_gemm_triton) inside
+
+  vllm/_custom_ops.py (lines 552 and 585). It is only consulted when an AWQ
+
+  quantized model is loaded and the AWQ linear path calls these custom ops.
+
+  On Ascend NPU, the CUDA custom ops (_C) and Triton kernels are not the
+
+  execution path — vllm-ascend provides its own Ascend-native quantized linear
+
+  implementations and does not route AWQ through these CUDA/Triton ops. No
+
+  usage of VLLM_USE_TRITON_AWQ was found in vllm-ascend source, so on Ascend
+
+  this flag has no effect on the actual kernel executed. Even on GPU, the flag
+
+  only selects between two functionally equivalent implementations of the same
+
+  AWQ math, so its performance effect is limited to kernel-level differences
+
+  (Triton is typically slower than the hand-tuned CUDA kernel). It does not
+
+  change memory footprint, scheduling, or parallelism.
+
+  '
+usage_locations:
+- file: vllm/_custom_ops.py:552
+  context: awq_dequantize dispatches to awq_dequantize_triton when VLLM_USE_TRITON_AWQ is set, else torch.ops._C.awq_dequantize
+- file: vllm/_custom_ops.py:585
+  context: awq_gemm dispatches to awq_gemm_triton when VLLM_USE_TRITON_AWQ is set, else torch.ops._C.awq_gemm
+- file: vllm/envs.py:1165
+  context: Environment variable definition, default 0 (False)
+- file: vllm/platforms/rocm.py:979
+  context: ROCm platform forces VLLM_USE_TRITON_AWQ=1 for AWQ quantization
+- file: vllm/usage/usage_lib.py:40
+  context: Collected in usage statistics env var list (non-performance)
+related_parameters:
+- name: --quantization
+  relation: Only relevant when quantization is awq; has no effect for other quantization methods
+- name: VLLM_DISABLED_KERNELS
+  relation: Both influence quantization kernel selection, though for different kernel families (MPLinear vs AWQ)
+constraints:
+- The value is parsed as bool(int(...)), so it must be an integer string such as 0 or 1; non-integer values will raise a ValueError
+  at startup.
+- This flag only affects AWQ quantized models; it has no effect when the model is not quantized with AWQ.
+- On ROCm platforms the flag is forcibly set to 1 regardless of the user value.
+tuning_advice:
+  summary: Leave VLLM_USE_TRITON_AWQ at its default (0) on Ascend NPU; it does not affect the Ascend AWQ execution path.
+  suggested_values:
+  - scenario: Running AWQ quantized models on Ascend NPU
+    value: 0
+    reason: vllm-ascend does not consume this flag and uses Ascend-native quantized kernels; the Triton AWQ path is a CUDA-oriented
+      fallback and is not exercised on NPU.
+  - scenario: Debugging or comparing AWQ kernel implementations on GPU
+    value: 1
+    reason: Forces the Triton reference implementation of AWQ dequantize/GEMM, useful for numerical comparison, but generally
+      slower than the compiled CUDA op.
+  caveats:
+  - Do not expect any throughput or latency change on Ascend from toggling this flag.
+  - The value must be an integer string (0/1); other strings cause a startup ValueError.
+  quick_guide: Keep VLLM_USE_TRITON_AWQ=0 on Ascend; it only selects a CUDA/Triton AWQ kernel path that Ascend does not use.
+analysis_date: '2026-10-27'

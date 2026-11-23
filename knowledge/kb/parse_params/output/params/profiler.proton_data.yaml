@@ -1,0 +1,72 @@
+name: profiler.proton_data
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:395
+value_type: str
+default: tree
+valid_choices:
+- tree
+- trace
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'profiler.proton_data is a nested field of ProfilerConfig consumed only by the
+
+  ProtonProfilerWrapper (vllm/profiler/wrapper.py:395). It selects the output data
+
+  format produced by the Triton Proton profiler: "\"tree\" emits Hatchet-format"
+
+  call-tree data, "trace" emits a Chrome trace. The value is stored as self._data
+
+  and passed to the underlying triton.profiler session; it does not alter model
+
+  execution, kernel dispatch, memory allocation, or HCCL communication on Ascend.
+
+  Its only runtime effect is on the profiler''s own post-processing/serialization
+
+  path (how collected profiling events are aggregated and written to disk), which
+
+  can marginally affect profiling overhead and output size, but has no effect on
+
+  inference throughput or latency when profiling is disabled. There is no
+
+  vllm-ascend override of this field; it is a pure upstream vLLM observability knob.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:395
+  context: ProtonProfilerWrapper.__init__ reads profiler_config.proton_data into self._data for the Triton Proton profiler
+    session.
+related_parameters:
+- name: profiler.proton_output_format
+  relation: Companion field controlling the serialized output format; proton_data selects the data model (tree vs trace) while
+    output_format selects the file encoding.
+- name: profiler.proton_backend
+  relation: Selects the Proton backend; the available data formats may depend on backend capabilities.
+- name: profiler.proton_mode
+  relation: Determines profiling mode; data format interacts with how events are collected.
+- name: profiler.proton_profiler_dir
+  relation: Output directory where the tree/trace data is written.
+constraints:
+- The Proton profiler requires a Triton installation with triton.profiler support, otherwise a RuntimeError is raised at wrapper
+  construction.
+- proton_data only takes effect when the Proton profiler is selected as the active profiler.
+tuning_advice:
+  summary: Leave at default unless you specifically need Hatchet call-tree analysis or a Chrome trace for visualization; it
+    does not affect Ascend inference performance.
+  suggested_values:
+  - scenario: Analyzing call-tree / hierarchical kernel time breakdown
+    value: tree
+    reason: Produces Hatchet data suitable for hierarchical aggregation of profiling events.
+  - scenario: Visualizing timeline in Chrome/perfetto
+    value: trace
+    reason: Produces a Chrome trace consumable by chrome://tracing or Perfetto.
+  caveats:
+  - Only relevant when the Proton profiler is active; irrelevant to normal inference tuning on Ascend.
+  - Requires Triton with triton.profiler support; verify availability on your Ascend environment before relying on it.
+  quick_guide: Use 'tree' for call-tree analysis or 'trace' for timeline visualization; no Ascend inference impact.
+analysis_date: '2026-10-27'

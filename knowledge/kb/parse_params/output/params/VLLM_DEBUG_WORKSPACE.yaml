@@ -1,0 +1,83 @@
+name: VLLM_DEBUG_WORKSPACE
+type: env
+category: observability
+scope: vllm
+source_file:
+- vllm/envs.py:1998
+- vllm/envs.py:294
+- vllm/v1/worker/workspace.py:85
+- vllm/v1/worker/workspace.py:212
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_DEBUG_WORKSPACE is a pure diagnostic flag defined in upstream vLLM
+
+  (vllm/envs.py:1998, default "0"). It is only read inside the v1 worker
+
+  WorkspaceManager (vllm/v1/worker/workspace.py) at three points: lock()
+
+  (line 85), unlock() (line 102), and the resize path in get_simultaneous
+
+  (line 212). When enabled, each of these emits a logger.info call that
+
+  formats workspace sizes in MB (and, on resize, calls get_caller_info()).
+
+  It does NOT change allocation logic, workspace sizing, locking behavior,
+
+  or any compute path — the resize/empty_cache logic runs identically
+
+  regardless of the flag. The only runtime cost is the extra logging
+
+  (string formatting + I/O) on workspace lock/unlock/resize events, which
+
+  are infrequent (once per lock cycle and per workspace growth). On Ascend
+
+  NPU this is the same: "the flag has no interaction with HCCL, CANN, or"
+
+  NPU memory allocator behavior. There is no vllm-ascend override of this
+
+  env var in the provided context, so it retains upstream semantics.
+
+  Because workspace resize can happen during elastic EP scaling or DBO
+
+  ubatch/lane growth, enabling it in a hot loop could add minor latency
+
+  from logging, but this is negligible relative to model execution.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1998
+  context: Env var definition, parsed as bool(int(os.getenv(..., '0')))
+- file: vllm/envs.py:294
+  context: 'Type annotation VLLM_DEBUG_WORKSPACE: bool = False'
+- file: vllm/v1/worker/workspace.py:85
+  context: lock() logs current workspace sizes when enabled
+- file: vllm/v1/worker/workspace.py:212
+  context: get_simultaneous resize path logs old->new size and caller info when enabled
+related_parameters:
+- name: VLLM_GC_DEBUG
+  relation: Sibling debug/logging env var; both only add diagnostic output
+- name: VLLM_PATTERN_MATCH_DEBUG
+  relation: Another debug-only env var with no compute-path effect
+constraints:
+- Value must be parseable as an integer 0 or 1; any non-integer string will raise a ValueError at env access time.
+- Only affects the v1 worker WorkspaceManager; it has no effect on v0 or on code paths that do not use workspace resize.
+tuning_advice:
+  summary: Leave disabled in production; enable only when diagnosing workspace memory growth or resize behavior.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU
+    value: '0'
+    reason: No functional benefit; avoids unnecessary logging overhead on workspace lock/resize events.
+  - scenario: Debugging workspace OOM or unexpected memory growth / elastic EP scaling
+    value: '1'
+    reason: Logs workspace sizes at lock/unlock and old->new sizes on resize, helping trace memory growth.
+  caveats:
+  - This flag does not fix or change memory behavior; it only reports it.
+  - Combine with VLLM_GC_DEBUG only when actively debugging; both add log noise.
+  quick_guide: Set VLLM_DEBUG_WORKSPACE=1 only to trace workspace resize/lock events; keep 0 otherwise.
+analysis_date: '2026-10-27'

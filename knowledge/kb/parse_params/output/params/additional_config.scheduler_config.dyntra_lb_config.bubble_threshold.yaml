@@ -1,0 +1,112 @@
+name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1591
+- vllm_ascend/ascend_config.py:1610
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:333
+value_type: float
+default: 5.0
+valid_choices: Any float > 0; values >= 1 are interpreted as absolute KV-cache block difference, values < 1 as normalized
+  ratio (max - avg) / max
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'bubble_threshold is the sensitivity knob of the DyntraLB (dynamic load balancing) planner
+
+  in vllm-ascend. It is read in DyntraLBDPEngineCoreProc._init_data_parallel
+
+  (vllm_ascend/patch/platform/patch_dyntra_lb_core.py:333) into self._lb_threshold and used
+
+  by the planner to decide whether the maximum-to-average rank-load difference is large
+
+  enough to justify modifying the per-rank request/block assignment plan. When the observed
+
+  imbalance exceeds the threshold, the planner emits modifications (pausing/admission
+
+  changes, block re-assignment across DP ranks); when it does not, the plan is left
+
+  untouched. This directly affects decode-side throughput and tail latency in a
+
+  data-parallel deployment: "a lower threshold makes the balancer act more often, smoothing"
+
+  rank-load skew (better aggregate throughput under skewed workloads) but adding
+
+  request-pausing/admission churn and planner overhead; a higher threshold makes DyntraLB
+
+  rarely intervene, preserving steady-state scheduling but leaving DP ranks imbalanced
+
+  (bubble time, lower effective throughput). The parameter only has any effect when
+
+  dyntra_lb_config.enabled is true and the DyntraLB scheduler is selected; otherwise it is
+
+  parsed and validated but never consulted. It does not affect memory footprint directly.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1591
+  context: Field definition of bubble_threshold in DyntraLBConfig with default 5.0
+- file: vllm_ascend/ascend_config.py:1610
+  context: Model validator rejects bubble_threshold <= 0 with ValueError
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:333
+  context: Assigned to self._lb_threshold in DyntraLBDPEngineCoreProc._init_data_parallel; consumed by the DyntraLB planner
+    to gate plan modifications
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:363
+  context: Logged when enable_diagnostics is on
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Master switch; bubble_threshold has no effect unless enabled is true and the DyntraLB scheduler is selected
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: In static mode the planner runs on a fixed activation; in dynamic mode balancing is additionally gated by long_req_block_threshold
+    and dynamic_max_step
+- name: additional_config.scheduler_config.dyntra_lb_config.long_req_block_threshold
+  relation: In dynamic mode, a newly added request above this block count activates balancing; works together with bubble_threshold
+    to decide when to act
+- name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+  relation: Bounds how many active steps dynamic balancing continues without a new long request
+- name: additional_config.scheduler_config.dyntra_lb_config.start_step
+  relation: DyntraLB cannot generate a plan before this completed engine step
+- name: additional_config.scheduler_config.dyntra_lb_config.end_step
+  relation: Exclusive final snapshot step; -1 means no upper bound
+constraints:
+- bubble_threshold must be greater than 0; a value <= 0 raises a ValueError at config validation.
+- bubble_threshold only takes effect when dyntra_lb_config.enabled is true and a DyntraLB-aware scheduler is selected.
+- Values greater than or equal to 1 are interpreted as an absolute KV-cache block difference between maximum and average rank
+  load; values below 1 are interpreted as the normalized ratio (maximum - average) / maximum, so 1 means one KV-cache block,
+  not 100%.
+tuning_advice:
+  summary: 'Tune bubble_threshold from the observed per-rank block-count distribution: keep the default 5.0 as a starting
+    point, lower it for skewed workloads that need aggressive balancing, raise it to reduce scheduling churn.'
+  suggested_values:
+  - scenario: Default / initial deployment with DyntraLB enabled in dynamic mode
+    value: 5.0
+    reason: Documented default; a moderate absolute block-difference threshold that balances responsiveness against planner
+      churn.
+  - scenario: Highly skewed request lengths across DP ranks, throughput is the priority
+    value: 2.0
+    reason: Lower absolute block threshold makes the planner act on smaller imbalances, smoothing rank-load skew and improving
+      aggregate decode throughput at the cost of more frequent pausing/admission changes.
+  - scenario: Stable, near-uniform workloads where scheduling churn hurts tail latency
+    value: 10.0
+    reason: Higher threshold makes DyntraLB rarely modify the plan, avoiding request pausing and admission churn when ranks
+      are already balanced.
+  - scenario: Scale-invariant tuning across different block sizes / model sizes
+    value: 0.1
+    reason: A value below 1 is treated as the normalized ratio (max - avg) / max, so 0.1 triggers balancing when the max rank
+      load exceeds the average by 10%, independent of absolute block counts.
+  caveats:
+  - A very small bubble_threshold can cause frequent request pausing and admission changes, adding scheduling overhead and
+    hurting tail latency.
+  - A very large value makes DyntraLB rarely modify the normal schedule, leaving DP ranks imbalanced and wasting bubble time.
+  - Absolute values (>= 1) are expressed in KV-cache blocks, not tokens; their token equivalent depends on the configured
+    block size.
+  - The parameter is inert unless dyntra_lb_config.enabled is true; enabling it together with recompute_scheduler_enable selects
+    the combined DyntraLB recompute scheduler.
+  - Keep enable_diagnostics off during performance measurement; use it only for short functional/troubleshooting runs.
+  quick_guide: Start at 5.0; lower toward 2.0 for skewed workloads, raise toward 10.0 for stable ones, or use a sub-1 normalized
+    ratio for block-size-independent tuning.
+analysis_date: '2026-10-27'

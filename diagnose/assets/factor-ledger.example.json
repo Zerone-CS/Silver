@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "ledger_id": null,
+  "run_id": null,
+  "run_purpose": null,
+  "profiler_enabled": null,
+  "contract_ref": {
+    "path": null,
+    "sha256": null
+  },
+  "window": {
+    "window_id": null,
+    "definition": null,
+    "clock": null,
+    "start": null,
+    "end": null,
+    "timestamp_unit": null,
+    "relation_to_benchmark": null,
+    "cross_boundary_policy": null
+  },
+  "scope": {
+    "service_identity": null,
+    "replicas": null,
+    "ranks": null,
+    "round_definition": null,
+    "logical_count_owner": null,
+    "output_join_keys": null
+  },
+  "counts": {
+    "T": {
+      "definition": "同一完整测量窗口的墙钟时长，包括窗口内等待、失败和收尾",
+      "unit": "s",
+      "value": null,
+      "status": "unavailable",
+      "source_ids": [],
+      "aggregation": null,
+      "coverage": null,
+      "missing_reason": "尚未检查实际原件与字段语义"
+    },
+    "K": {
+      "definition": "已定义且完成的逻辑产出轮数；全部计分输出须唯一归属这些轮",
+      "unit": "round",
+      "value": null,
+      "status": "unavailable",
+      "source_ids": [],
+      "aggregation": null,
+      "coverage": null,
+      "missing_reason": "尚未检查实际原件与字段语义"
+    },
+    "N_B": {
+      "definition": "各轮实际参与的不同序列数之和；同轮重复调用不重复计参与",
+      "unit": "sequence_participation",
+      "value": null,
+      "status": "unavailable",
+      "source_ids": [],
+      "aggregation": null,
+      "coverage": null,
+      "missing_reason": "尚未检查实际原件与字段语义"
+    },
+    "N_G": {
+      "definition": "算法接受/采样产生、停止及计数筛选前的唯一逻辑输出数",
+      "unit": "token",
+      "value": null,
+      "status": "unavailable",
+      "source_ids": [],
+      "aggregation": null,
+      "coverage": null,
+      "missing_reason": "尚未检查实际原件与字段语义"
+    },
+    "N_C": {
+      "definition": "停止及计数筛选后保留的输出数，尚未剔除最终失败请求",
+      "unit": "token",
+      "value": null,
+      "status": "unavailable",
+      "source_ids": [],
+      "aggregation": null,
+      "coverage": null,
+      "missing_reason": "尚未检查实际原件与字段语义"
+    },
+    "N_Y": {
+      "definition": "N_C中最终成功请求贡献的有效输出数",
+      "unit": "token",
+      "value": null,
+      "status": "unavailable",
+      "source_ids": [],
+      "aggregation": null,
+      "coverage": null,
+      "missing_reason": "尚未检查实际原件与字段语义"
+    }
+  },
+  "factors": {
+    "X": {
+      "definition": "完整窗口有效输出吞吐",
+      "formula": "N_Y/T",
+      "unit": "token/s",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "R": {
+      "definition": "逻辑轮完成速率",
+      "formula": "K/T",
+      "unit": "round/s",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "B_bar": {
+      "definition": "每轮实际序列参与数",
+      "formula": "N_B/K",
+      "unit": "sequence_participation/round",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "G_bar": {
+      "definition": "每次序列参与的逻辑产出",
+      "formula": "N_G/N_B",
+      "unit": "token/sequence_participation",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "r_stop": {
+      "definition": "停止及计数规则筛选保留比例",
+      "formula": "N_C/N_G",
+      "unit": "ratio",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "r_success": {
+      "definition": "按token加权的最终成功保留比例，不是请求成功率",
+      "formula": "N_Y/N_C",
+      "unit": "ratio",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "Y_bar": {
+      "definition": "每轮有效产出",
+      "formula": "N_Y/K",
+      "unit": "token/round",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    },
+    "tau": {
+      "definition": "有效完成间隔；并发流水下不等于轮生命周期均值",
+      "formula": "T/K",
+      "unit": "s/round",
+      "value": null,
+      "status": "unavailable",
+      "validity_conditions": null,
+      "uncertainty": null
+    }
+  },
+  "sources": [],
+  "extraction_plan": [],
+  "observations": [],
+  "coverage": {
+    "inventory": [],
+    "branches_reviewed": [],
+    "unavailable": [],
+    "next_measurements": []
+  },
+  "bottleneck_candidates": [],
+  "reconciliation": {
+    "status": "not_evaluated",
+    "same_run_and_window": null,
+    "logical_dedup_verified": null,
+    "output_to_round_mapping_verified": null,
+    "count_inclusion_verified": null,
+    "nonzero_denominators": null,
+    "token_reconciliation": null,
+    "time_partition_reconciliation": null,
+    "factor_product": null,
+    "throughput_reference": null,
+    "tolerance_and_basis": null,
+    "unresolved": [],
+    "independent_evidence_checks": []
+  }
+}

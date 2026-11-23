@@ -1,0 +1,99 @@
+name: additional_config.dynamic_spec_config.method_params
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1314
+- vllm_ascend/spec_decode/dflash_proposer.py:94
+- vllm_ascend/spec_decode/dspark_proposer.py:67
+value_type: dict
+default: {}
+valid_choices: 'Method-dependent keys; for dspark/dflash: initial_verify_budget_per_req, budget_update_interval, budget_threshold'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'method_params is a dict of method-specific hyperparameters passed verbatim into
+
+  DynamicSpecScheduler when the dynamic speculative-length path is enabled. In
+
+  vllm_ascend/spec_decode/dflash_proposer.py:94 (method == "dflash") and
+
+  vllm_ascend/spec_decode/dspark_proposer.py:67 (method == "dspark"), the proposer
+
+  constructs DynamicSpecScheduler(method=..., method_params=dynamic_spec_config.method_params, ...).
+
+  The scheduler uses these params to dynamically adjust the per-request verify budget
+
+  (number of speculative tokens verified per step). initial_verify_budget_per_req sets
+
+  the starting verify budget per request, budget_update_interval controls how often the
+
+  budget is re-estimated, and budget_threshold controls the acceptance threshold that
+
+  triggers budget changes. Because the verify budget directly determines how many draft
+
+  tokens are verified per decode step, it trades off acceptance rate against wasted
+
+  compute: "a larger budget raises potential tokens-per-step (throughput) but increases"
+
+  rejected-token compute (latency), while a smaller budget reduces wasted verification
+
+  but may under-utilize the speculative path. When method_params is empty, each method
+
+  falls back to its own built-in defaults. Note the DSpark path runs eager only
+
+  (use_cuda_graph = False at dspark_proposer.py:73), so budget tuning there has a
+
+  larger latency footprint than a graph-captured path.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1314
+  context: DynamicSpecConfig.method_params field definition; default empty dict, keys depend on method
+- file: vllm_ascend/spec_decode/dflash_proposer.py:94
+  context: Passed to DynamicSpecScheduler when dynamic_spec_config.method == 'dflash'
+- file: vllm_ascend/spec_decode/dspark_proposer.py:67
+  context: Passed to DynamicSpecScheduler when dynamic_spec_config.method == 'dspark'
+related_parameters:
+- name: additional_config.dynamic_spec_config.method
+  relation: Selects which method consumes method_params; must be 'dspark' or 'dflash' for method_params to take effect
+- name: speculative_config.num_speculative_tokens
+  relation: Upper bound on speculative tokens; the dynamic verify budget operates within this budget
+- name: speculative_config.method
+  relation: Speculative decoding must be enabled for the dynamic spec path to be active
+constraints:
+- method_params only takes effect when additional_config.dynamic_spec_config.method is set to 'dspark' or 'dflash'; otherwise
+  it is ignored.
+- The expected keys of method_params depend on the selected method; for dspark/dflash the recognized keys are initial_verify_budget_per_req,
+  budget_update_interval and budget_threshold.
+- An empty method_params dict is valid and causes each method to fall back to its built-in defaults.
+- The DSpark dynamic path runs eager only; Ascend cudagraph is not supported on this path.
+tuning_advice:
+  summary: Leave method_params empty to use built-in defaults, and only tune the verify-budget keys when profiling shows the
+    dynamic speculative path is mis-sized for your workload.
+  suggested_values:
+  - scenario: Initial deployment / unknown workload
+    value: {}
+    reason: Empty dict falls back to each method's built-in defaults, which are a safe starting point before profiling.
+  - scenario: Latency-sensitive decode with low acceptance rate
+    value:
+      initial_verify_budget_per_req: 2
+      budget_update_interval: 8
+      budget_threshold: 0.5
+    reason: Smaller starting verify budget reduces wasted verification compute on rejected tokens, lowering per-step latency.
+  - scenario: Throughput-oriented serving with high acceptance rate
+    value:
+      initial_verify_budget_per_req: 4
+      budget_update_interval: 16
+      budget_threshold: 0.7
+    reason: Larger verify budget exploits high acceptance to emit more tokens per step; longer update interval avoids oscillation.
+  caveats:
+  - Only applies to v1-ascend proposers (dflash_proposer.py / dspark_proposer.py); no v2 path is shown in the provided context.
+  - DSpark runs eager only, so budget changes have a larger latency impact than on a graph-captured path.
+  - method_params is not schema-validated per key; verify key names against the method's expected keys.
+  quick_guide: Start with {} (built-in defaults); tune initial_verify_budget_per_req and budget_threshold only after profiling
+    acceptance rate.
+analysis_date: '2026-10-27'

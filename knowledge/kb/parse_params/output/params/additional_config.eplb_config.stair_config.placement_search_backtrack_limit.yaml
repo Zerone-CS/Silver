@@ -1,0 +1,88 @@
+name: additional_config.eplb_config.stair_config.placement_search_backtrack_limit
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:214
+- vllm_ascend/ascend_config.py:227
+- vllm_ascend/ascend_config.py:260
+value_type: int
+default: 32
+valid_choices: integer in range [0, 64]; 0 disables backtracking
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+impact_detail: 'This parameter controls the STAIR (MRv2) EPLB placement policy in vllm-ascend
+
+  (vllm_ascend/ascend_config.py:214-227). It sets the maximum number of
+
+  feasible-branch reversals (backtracking steps) performed while the constrained
+
+  LPT (Longest Processing Time) algorithm places one candidate expert replica
+
+  during EPLB rebalancing. It does NOT affect the steady-state inference hot path
+
+  (token generation latency or per-token throughput); it only affects the
+
+  expert-placement computation that runs during EPLB rebalance events.
+
+  A higher value lets the LPT placement search explore more alternative
+
+  assignments when a greedy placement hits a constraint (e.g. rank_transfer_limit
+
+  or cross_node_transfer_limit), potentially yielding a better-balanced expert
+
+  distribution, which indirectly improves throughput by reducing rank-level load
+
+  imbalance (stragglers). A value of 0 disables backtracking entirely, making
+
+  placement purely greedy and faster to compute but potentially less balanced.
+
+  The impact is bounded and secondary: "it only matters when STAIR is the active"
+
+  EPLB policy and rebalancing occurs, and the search space is already constrained
+
+  by replica_search_* parameters. Hence low performance impact.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:227
+  context: StairConfig field definition with default 32
+- file: vllm_ascend/ascend_config.py:260
+  context: model_validator range check 0 <= value <= 64
+related_parameters:
+- name: additional_config.eplb_config.stair_config.rank_transfer_limit
+  relation: Backtracking is triggered when greedy LPT placement violates per-rank transfer limits; tighter limits make backtracking
+    more relevant.
+- name: additional_config.eplb_config.stair_config.cross_node_transfer_limit
+  relation: Cross-node transfer constraints can force backtracking during placement; zero disables cross-node transfers.
+- name: additional_config.eplb_config.stair_config.replica_search_beam_size
+  relation: Determines how many replica-count candidates are evaluated; each candidate placement uses this backtrack limit.
+- name: additional_config.eplb_config.stair_config.replica_search_radius
+  relation: Bounds the replica search space that feeds candidates into constrained LPT placement.
+constraints:
+- placement_search_backtrack_limit must be between 0 and 64 inclusive, otherwise a ValueError is raised.
+- The value must not be a boolean; STAIR numeric fields reject booleans.
+tuning_advice:
+  summary: Keep the default 32 for balanced placement; lower it only if EPLB rebalance computation is a bottleneck, raise
+    toward 64 only when tight transfer limits cause poor balance.
+  suggested_values:
+  - scenario: Default / general use with STAIR policy
+    value: 32
+    reason: Default provides a reasonable balance between placement quality and rebalance compute cost.
+  - scenario: Rebalance computation latency is a concern and transfer limits are loose
+    value: 0
+    reason: Disabling backtracking makes constrained LPT placement purely greedy and fastest, acceptable when constraints
+      rarely bind.
+  - scenario: Tight rank_transfer_limit or cross_node_transfer_limit causing imbalanced placement
+    value: 64
+    reason: Maximum allowed backtracking explores more feasible branches to satisfy constraints and improve balance.
+  caveats:
+  - Only applies to the MRv2 STAIR EPLB policy in vllm-ascend; no effect otherwise.
+  - Does not change steady-state token latency; only affects EPLB rebalance placement quality and compute.
+  - Pair with replica_search_beam_size and transfer limits; raising this alone without binding constraints yields little benefit.
+  quick_guide: Leave at 32; raise to 64 only if tight transfer limits hurt balance, drop to 0 if rebalance compute is too
+    slow.
+analysis_date: '2026-10-27'

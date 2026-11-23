@@ -1,0 +1,76 @@
+name: additional_config.ascend_warmup_config.enable_early_nz_warmup
+type: nested
+category: hardware
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:274
+- vllm_ascend/model_executor/warmup/nz_warmup.py:9
+- vllm_ascend/model_executor/warmup/nz_warmup.py:47
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+impact_detail: 'On Ascend NPU, the first npu_format_cast to NZ format on a rank incurs a one-time
+
+  lazy initialization cost of roughly 15-19 s; subsequent casts are free
+
+  (see nz_warmup.py docstring). When enable_early_nz_warmup is true, vllm-ascend
+
+  spawns a background thread (via _nz_enabled() reading
+
+  get_ascend_config().ascend_warmup_config.enable_early_nz_warmup) that calls
+
+  warm_nz_format_cast(), which runs maybe_trans_nz() on a tiny 256x256 int8 scratch
+
+  tensor and synchronizes the NPU. This pays the one-time NZ format-cast init while
+
+  weight I/O is on the critical path, overlapping it with weight loading instead of
+
+  serializing it later. The worker joins this thread at the end of
+
+  NPUModelRunner.load_model, before memory profiling and KV cache allocation, so it
+
+  does not affect the KV cache budget. Net effect: reduces startup latency by hiding
+
+  the ~15-19 s NZ cast init behind weight loading; it does not change steady-state
+
+  throughput or memory usage. The warmup is independent of the quantization scheme,
+
+  so any model that casts weights to NZ benefits.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:274
+  context: Field definition in AscendWarmupConfig dataclass, default False.
+- file: vllm_ascend/model_executor/warmup/nz_warmup.py:47
+  context: _nz_enabled() reads the flag to decide whether to start the NZ warmup thread.
+- file: vllm_ascend/model_executor/warmup/nz_warmup.py:9
+  context: Docstring documents enabling via ascend_warmup_config.enable_early_nz_warmup.
+related_parameters:
+- name: additional_config.ascend_warmup_config.enable_early_kernel_warmup
+  relation: Sibling warmup flag; both run on background threads during weight loading and are joined before memory profiling.
+constraints:
+- The warmup thread is joined at the end of load_model before memory profiling, so it must complete within the join timeout
+  of 600 seconds (_NZ_JOIN_TIMEOUT_S).
+- The flag only takes effect when the Ascend config is initialized; if get_ascend_config() raises RuntimeError, _nz_enabled()
+  returns False and warmup is skipped.
+tuning_advice:
+  summary: Enable to hide the one-time ~15-19 s NZ format-cast lazy init behind weight loading and reduce startup latency.
+  suggested_values:
+  - scenario: Any model that casts weights to NZ format, prioritizing fast cold-start / startup latency
+    value: true
+    reason: Overlaps the ~15-19 s first npu_format_cast init with weight I/O, cutting startup time without affecting KV cache
+      budget or steady-state performance.
+  - scenario: Debugging startup issues or when startup latency is not a concern
+    value: false
+    reason: Default; avoids the background warmup thread and its join at end of load_model.
+  caveats:
+  - Only reduces startup latency; no effect on tokens/sec throughput or memory usage.
+  - Warmup thread is joined before memory profiling with a 600 s timeout; ensure it completes to avoid delaying load.
+  quick_guide: 'Set enable_early_nz_warmup: true under ascend_warmup_config to shave ~15-19 s off startup by overlapping NZ
+    format-cast init with weight loading.'
+analysis_date: '2026-10-27'

@@ -1,0 +1,138 @@
+name: --media-io-kwargs
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1376
+- vllm/engine/arg_utils.py:592
+- vllm/engine/arg_utils.py:1859
+- vllm/config/model.py:398
+- vllm/config/model.py:458
+- vllm/config/multimodal.py:124
+- vllm/config/multimodal.py:512
+- vllm/config/vllm.py:2780
+- vllm/entrypoints/chat_utils.py:598
+value_type: dict
+default: {}
+valid_choices: Free-form dict keyed by modality (e.g. 'image', 'video'); each value is a dict of loader/processor kwargs such
+  as num_frames, video_backend, backend, device, width, height
+cli_example: '--media-io-kwargs ''{"video": {"num_frames": 16}}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--media-io-kwargs is a MultiModalConfig field (vllm/config/multimodal.py:124) that is
+
+  forwarded verbatim into the multimodal input pipeline. It is NOT overridden or patched by
+
+  vllm-ascend; the value flows through EngineArgs (arg_utils.py:592) into ModelConfig
+
+  (arg_utils.py:1859) and is consumed by the chat/renderer item tracker
+
+  (entrypoints/chat_utils.py:598) and by MultiModalConfig.use_gpu_video_backend()
+
+  (multimodal.py:512), which reads media_io_kwargs["video"]["video_backend"] / ["backend"]
+
+  to decide whether the video loader/codec requires the accelerator.
+
+
+  The dominant performance lever is video frame sampling. The number of frames decoded per
+
+  video directly determines how many visual tokens the vision encoder (ViT) must process
+
+  during prefill. On Ascend NPU, ViT prefill is compute-bound on the AI cores, so a larger
+
+  num_frames multiplies encoder FLOPs, prefill latency, and the KV/activation memory footprint
+
+  of the multimodal tokens. The vllm-ascend MiniMax-M3 doc explicitly notes that a 32-frame
+
+  default "significantly increases prefill computation" and that reducing num_frames to 8 or
+
+  16 mitigates slow/timed-out video requests. This is a direct latency/throughput/memory
+
+  effect on the NPU.
+
+
+  Secondary levers: "video_backend/backend select the decoder (e.g. torchcodec vs CPU"
+
+  decoders); use_gpu_video_backend() gates whether decoding runs on the accelerator, which
+
+  shifts CPU vs NPU load. width/height control the resolution fed to the image/video
+
+  processor, scaling the number of visual patches and thus ViT compute and token count.
+
+  Because media_io_kwargs is part of the ModelConfig hash factors (model.py:458), changing it
+
+  alters the config hash and can invalidate compiled graphs / prefix-cache keys, so it should
+
+  be fixed at serve time rather than varied per request.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:124
+  context: 'Field definition; docstring shows --media-io-kwargs ''{"video": {"num_frames": 40}}'''
+- file: vllm/config/multimodal.py:512
+  context: use_gpu_video_backend() reads media_io_kwargs['video'] video_backend/backend to decide accelerator decoding
+- file: vllm/config/vllm.py:2780
+  context: EPD encode-only path may setdefault media_io_kwargs['video'] backend/device (CUDA-only branch)
+- file: vllm/entrypoints/chat_utils.py:598
+  context: BaseMultiModalItemTracker stores media_io_kwargs and applies them when loading media items
+- file: vllm/config/model.py:458
+  context: media_io_kwargs is a ModelConfig hash factor, affecting config hash / graph reuse
+related_parameters:
+- name: --limit-mm-per-prompt
+  relation: Controls how many media items per prompt; combined with num_frames determines total visual tokens and prefill
+    cost
+- name: --mm-processor-kwargs
+  relation: Sibling processor override dict; media_io_kwargs targets the media loader (frames/resolution), mm_processor_kwargs
+    targets the HF processor
+- name: --mm-encoder-tp-mode
+  relation: Determines how the vision encoder is parallelized; interacts with ViT prefill cost driven by num_frames
+- name: --video-pruning-rate
+  relation: Alternative/complementary way to reduce video token count after sampling
+- name: --mm-processor-cache-gb
+  relation: Caches processed media; larger num_frames increases per-item cache footprint
+constraints:
+- The value must be a JSON object keyed by modality name (e.g. 'image', 'video'), with each value being a dict of kwargs;
+  malformed JSON or wrong nesting causes argument parsing to fail.
+- Keys inside each modality dict must be recognized by the corresponding media loader/processor (e.g. num_frames, video_backend,
+  backend, device, width, height); unknown keys may be ignored or raise depending on the loader.
+- The EPD encode-only auto-configuration of video backend/device in vllm/config/vllm.py only applies when the platform device
+  type is 'cuda'; on Ascend NPU this branch returns early and does not auto-set a GPU video backend.
+tuning_advice:
+  summary: 'Use --media-io-kwargs primarily to cap video frame count (num_frames) and optionally
+
+    resolution on Ascend NPU, since visual-token count drives ViT prefill latency, throughput,
+
+    and memory; fix it at serve time because it is part of the config hash.
+
+    '
+  suggested_values:
+  - scenario: Video QA / Video-MME style evaluation on Ascend NPU where default 32 frames is slow or times out
+    value: '{"video": {"num_frames": 8}}'
+    reason: vllm-ascend MiniMax-M3 doc recommends 8 or 16 frames to cut ViT prefill compute when 32-frame default causes slow/timed-out
+      requests.
+  - scenario: Balanced accuracy vs latency for video workloads
+    value: '{"video": {"num_frames": 16}}'
+    reason: Halves visual tokens vs the 32-frame default, reducing prefill FLOPs and memory while retaining more temporal
+      context than 8 frames.
+  - scenario: Accuracy-critical video evaluation where latency is acceptable
+    value: '{}'
+    reason: Leaving it unset uses vLLM's default 32 sampled frames, matching the documented Video-MME evaluation setup.
+  - scenario: High-resolution image workloads needing reduced patch count
+    value: '{"image": {"width": 512, "height": 512}}'
+    reason: Lowering resolution reduces visual patches and ViT compute/token count on the NPU.
+  caveats:
+  - vllm-ascend does not override this parameter; behavior is inherited from upstream vLLM, but the performance effect is
+    amplified on Ascend because ViT prefill is compute-bound on AI cores.
+  - The EPD encode-only auto GPU video backend logic in vllm/config/vllm.py is CUDA-only and returns early on Ascend, so video
+    decoding stays on CPU unless you explicitly set a backend.
+  - media_io_kwargs is a ModelConfig hash factor; changing it between runs invalidates compiled graphs and prefix-cache keys,
+    so set it once at serve time.
+  - Reducing num_frames trades temporal information for speed; validate accuracy (e.g. Video-MME) after lowering it.
+  - Larger num_frames increases per-item multimodal processor cache usage; watch --mm-processor-cache-gb.
+  quick_guide: 'On Ascend, set --media-io-kwargs ''{"video": {"num_frames": 8}}'' (or 16) to cut ViT prefill cost for slow
+    video requests; leave unset for 32-frame default.'
+analysis_date: '2026-10-27'

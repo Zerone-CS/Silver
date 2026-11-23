@@ -1,0 +1,122 @@
+name: compilation.custom_ops
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:1589
+- vllm/config/vllm.py:1608
+- vllm/model_executor/custom_op.py:187
+- vllm/model_executor/custom_op.py:275
+- vllm/model_executor/hw_agnostic/custom_op.py:240
+- vllm_ascend/platform.py:1368
+value_type: list[str]
+default: <computed>
+valid_choices: list of 'all', 'none', '+<op_name>', '-<op_name>' directives
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'compilation.custom_ops controls whether each registered CustomOp dispatches to its
+
+  device-specific (Ascend) kernel or falls back to the PyTorch-native implementation.
+
+  In vllm/model_executor/custom_op.py:275 (CustomOp.enabled) and
+
+  vllm/model_executor/hw_agnostic/custom_op.py:240, the enabled() classmethod scans
+
+  compilation_config.custom_ops for ''+<name>'' / ''-<name>'' directives and combines them
+
+  with CustomOp.default_on(). dispatch_forward() (custom_op.py:187) then records the op
+
+  into enabled_custom_ops / disabled_custom_ops and routes to forward_oot (Ascend kernel)
+
+  when enabled, or to maybe_compile(forward_native) when disabled. On Ascend, forward_oot
+
+  is the fused NPU kernel path (e.g. npu_rms_norm, fused MoE, attention), so enabling
+
+  custom ops directly reduces latency and improves throughput versus eager native torch
+
+  ops; disabling them forces slower native fallbacks and can increase memory traffic.
+
+  Crucially, vllm-ascend overrides this parameter: in vllm_ascend/platform.py:1368,
+
+  check_and_update_config() unconditionally sets
+
+  vllm_config.compilation_config.custom_ops = ["all"] whenever the current hardware
+
+  profile supports HardwareCapability.AUTO_ENABLE_CUSTOM_OPS. This means on standard
+
+  Ascend profiles any user-supplied custom_ops list is silently replaced with ["all"],
+
+  so per-op enable/disable directives are effectively ignored. On profiles that do not
+
+  support AUTO_ENABLE_CUSTOM_OPS (e.g. 310P), the upstream default logic in
+
+  vllm/config/vllm.py:1608 applies: if neither ''all'' nor ''none'' is present, ''none'' is
+
+  appended when backend is inductor with compilation enabled, otherwise ''all'' is
+
+  appended. Upstream also auto-appends ''+quant_fp8'' when blocked (FP8) weights are
+
+  detected (vllm/config/vllm.py:1589), which is a CUDA-specific optimization.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:1368
+  context: Ascend platform check_and_update_config force-sets custom_ops = ['all'] when hardware profile supports AUTO_ENABLE_CUSTOM_OPS,
+    overriding user config.
+- file: vllm/config/vllm.py:1608
+  context: 'Upstream default resolution: appends ''none'' (inductor+compile) or ''all'' if neither directive present.'
+- file: vllm/config/vllm.py:1589
+  context: Upstream auto-appends '+quant_fp8' when blocked FP8 weights are detected.
+- file: vllm/model_executor/custom_op.py:275
+  context: CustomOp.enabled() reads custom_ops to decide per-op enable/disable; raises ValueError if both '+' and '-' given
+    for same op.
+- file: vllm/model_executor/custom_op.py:187
+  context: dispatch_forward() populates enabled_custom_ops/disabled_custom_ops and selects forward_oot vs forward_native.
+- file: vllm/model_executor/hw_agnostic/custom_op.py:240
+  context: HW-agnostic CustomOp.enabled() same directive parsing; asserts not both enabled and disabled.
+related_parameters:
+- name: compilation.mode
+  relation: When mode is NONE or backend is not inductor, upstream defaults custom_ops to 'all'; with inductor+compile it
+    defaults to 'none'.
+- name: compilation.backend
+  relation: Backend 'inductor' with compilation enabled causes upstream to append 'none' by default.
+- name: compilation.cudagraph_mode
+  relation: Custom ops are typically required for graph capture paths; disabling them may force eager fallbacks.
+- name: quant_config.weight_block_size
+  relation: Blocked FP8 weights trigger upstream auto-append of '+quant_fp8'.
+constraints:
+- A single custom op cannot be both enabled ('+name') and disabled ('-name') at the same time; doing so raises a ValueError.
+- On Ascend hardware profiles that support AUTO_ENABLE_CUSTOM_OPS, any user-provided custom_ops value is overwritten with
+  ['all'] and per-op directives have no effect.
+- If neither 'all' nor 'none' is present in the list, upstream appends a default directive ('none' for inductor+compile, otherwise
+  'all').
+tuning_advice:
+  summary: Leave custom_ops at its default; on standard Ascend profiles vllm-ascend forces ['all'] to use fused NPU kernels,
+    and only on non-standard profiles (e.g. 310P) should you consider explicit directives.
+  suggested_values:
+  - scenario: Standard Ascend NPU profiles (A2/A3) with AUTO_ENABLE_CUSTOM_OPS support
+    value:
+    - all
+    reason: vllm-ascend forces this value anyway; keeping 'all' ensures fused NPU kernels are used for best latency/throughput.
+  - scenario: 310P or profiles without AUTO_ENABLE_CUSTOM_OPS, debugging accuracy issues
+    value:
+    - none
+    reason: Falls back to PyTorch-native implementations to isolate kernel-level accuracy problems, at the cost of performance.
+  - scenario: Selectively disabling a problematic op while keeping others fused
+    value:
+    - all
+    - -<op_name>
+    reason: Keeps most fused kernels enabled while disabling a single op that causes accuracy or stability issues (only effective
+      on profiles that do not force 'all').
+  caveats:
+  - On standard Ascend profiles the value is overwritten to ['all'], so explicit '-op' directives are ignored.
+  - Disabling custom ops trades performance for debuggability; re-enable after resolving issues.
+  - Do not specify both '+op' and '-op' for the same op; it raises a ValueError.
+  quick_guide: Keep default (vllm-ascend forces ['all'] on standard Ascend); only use 'none' or '-op' directives for debugging
+    on non-standard profiles.
+analysis_date: '2026-10-27'

@@ -1,0 +1,63 @@
+name: compilation.pass_config.fuse_rope_kvcache_cat_mla
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/passes/pass_manager.py:218
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag is defined only in upstream vLLM (vllm/compilation/passes/pass_manager.py:218).
+
+  When true, PassManager appends MLARoPEKVCacheCatFusionPass(config) to the pass list.
+
+  That pass fuses the RoPE application with the MLA KV-cache concatenation into a single
+
+  fused kernel, reducing kernel launches and intermediate memory traffic for MLA models
+
+  (e.g. DeepSeek-style attention). No definition or usage of this parameter was found in
+
+  vllm-ascend, so on Ascend NPU it is not wired into any Ascend-specific pass pipeline and
+
+  has no direct effect on the Ascend runtime path. Its impact is therefore limited to the
+
+  upstream compilation path (torch.compile / inductor passes), which on Ascend is largely
+
+  bypassed or handled by vllm-ascend''s own graph/compilation handling.
+
+  '
+usage_locations:
+- file: vllm/compilation/passes/pass_manager.py:218
+  context: Conditionally appends MLARoPEKVCacheCatFusionPass to the inductor pass list when enabled.
+related_parameters:
+- name: compilation.pass_config.fuse_rope_kvcache
+  relation: Sibling RoPE+KV-cache fusion pass for non-MLA attention; mutually distinct code paths.
+- name: compilation.pass_config.fuse_mla_dual_rms_norm
+  relation: Another MLA-specific fusion pass; both target MLA attention optimization.
+- name: compilation.pass_config.enable_qk_norm_rope_fusion
+  relation: Related RoPE fusion pass; overlapping optimization goals.
+constraints:
+- Only meaningful for MLA-based models; for non-MLA models the pass has no applicable pattern to fuse.
+- Requires the upstream vLLM compilation/inductor pass pipeline to be active; it is not referenced by vllm-ascend.
+tuning_advice:
+  summary: Leave at default on Ascend; it only affects the upstream MLA fusion pass and is not wired into vllm-ascend.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: Parameter is not referenced in vllm-ascend; enabling it provides no Ascend runtime benefit and only affects the
+      upstream pass pipeline.
+  - scenario: Upstream GPU reference / MLA model with torch.compile enabled
+    value: true
+    reason: Fuses RoPE with MLA KV-cache concat, reducing kernel launches and memory traffic for MLA attention.
+  caveats:
+  - Do not expect throughput or latency gains on Ascend from this flag; Ascend fusion is handled by vllm-ascend's own passes.
+  quick_guide: Keep default (false) on Ascend; only relevant to upstream MLA compilation path.
+analysis_date: '2026-10-27'

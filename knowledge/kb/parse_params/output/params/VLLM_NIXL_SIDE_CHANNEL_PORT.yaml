@@ -1,0 +1,90 @@
+name: VLLM_NIXL_SIDE_CHANNEL_PORT
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1655
+- vllm/envs.py:227
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:77
+value_type: int
+default: 5600
+valid_choices: Any valid TCP port number (1-65535); must not collide with other services on the same host
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only configures the TCP port used for the NIXL side-channel
+
+  handshake between remote KV-transfer agents (disaggregated prefill/decode).
+
+  In vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:77 the
+
+  value is read once at scheduler construction time and combined with
+
+  data_parallel_index (side_channel_port = VLLM_NIXL_SIDE_CHANNEL_PORT +
+
+  data_parallel_index) to derive the per-DP-rank listening port. It is used only
+
+  for connection setup / metadata exchange, not in the per-token data path, so it
+
+  does not affect steady-state throughput or NPU compute. Its only performance
+
+  relevance is indirect: "a wrong or colliding port causes handshake failures or"
+
+  retries that delay KV transfer startup (latency), and in multi-DP deployments
+
+  the port must be offset per DP rank, which is handled automatically. No
+
+  vllm-ascend override of this parameter was found in the provided context; the
+
+  NIXL connector path is upstream vLLM code and is not Ascend-specific (Ascend
+
+  KV transfer typically uses HCCL/other connectors rather than NIXL).
+
+  '
+usage_locations:
+- file: vllm/envs.py:1655
+  context: Definition of the env var with default 5600, parsed as int
+- file: vllm/envs.py:227
+  context: 'Type annotation VLLM_NIXL_SIDE_CHANNEL_PORT: int = 5600'
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:77
+  context: Read at scheduler init; added to data_parallel_index to form per-rank side channel port
+- file: examples/disaggregated/disaggregated_serving/disagg_proxy_pushconnector_demo.py:428
+  context: Example proxy CLI documents the default 5600 for the prefill side channel port
+related_parameters:
+- name: VLLM_NIXL_SIDE_CHANNEL_HOST
+  relation: Companion host/IP for the same NIXL handshake; must be reachable from remote peers
+- name: VLLM_P2P_SIDE_CHANNEL_PORT
+  relation: Separate side-channel port for P2P KV-offload (default 5710); must not collide
+- name: VLLM_EC_SIDE_CHANNEL_PORT
+  relation: Separate EC connector ZMQ side-channel port (default 5601); must not collide
+- name: data_parallel_index
+  relation: Port is offset by DP rank, so each DP rank listens on base_port + dp_index
+constraints:
+- The value must be a valid TCP port number in the range 1-65535.
+- In multi-DP deployments each DP rank uses base_port + data_parallel_index, so the base port plus the maximum DP index must
+  remain within the valid port range and must not collide with other services.
+- The port must not collide with VLLM_P2P_SIDE_CHANNEL_PORT (5710), VLLM_EC_SIDE_CHANNEL_PORT (5601), or other listeners on
+  the same host.
+tuning_advice:
+  summary: Only relevant for NIXL-based disaggregated KV transfer; set a free, non-colliding port and leave the default otherwise.
+  suggested_values:
+  - scenario: Single DP rank NIXL disaggregated prefill/decode deployment
+    value: 5600
+    reason: Default port; fine when no other service uses it on the host.
+  - scenario: Multi-DP deployment where base port + dp_index would collide with other services
+    value: 6000
+    reason: Choose a higher base port so base_port + data_parallel_index stays clear of other listeners.
+  - scenario: Non-NIXL / standard Ascend deployment (no disaggregated KV transfer)
+    value: 5600
+    reason: Parameter is unused when the NIXL connector is not configured; leave default.
+  caveats:
+  - This parameter only affects NIXL handshake setup, not per-token throughput; do not expect performance gains from tuning
+    it.
+  - vllm-ascend does not override this parameter in the provided context; Ascend disaggregated deployments typically use HCCL-based
+    connectors rather than NIXL, so this env var may be irrelevant on Ascend.
+  - Port collisions cause handshake failures and KV-transfer startup delays, which manifest as increased TTFT/latency in disaggregated
+    serving.
+  quick_guide: Set only for NIXL disaggregated KV transfer; pick a free port that does not collide with P2P/EC side channels.
+analysis_date: '2026-10-27'

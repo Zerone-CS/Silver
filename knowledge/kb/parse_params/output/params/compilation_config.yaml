@@ -1,0 +1,97 @@
+name: --compilation-config
+type: cli
+category: compilation
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1723
+- vllm/engine/arg_utils.py:701
+- vllm/engine/arg_utils.py:796
+- vllm/config/vllm.py:159
+- vllm_ascend/platform.py:361
+- vllm_ascend/platform.py:933
+- vllm_ascend/ascend_config.py:96
+- vllm_ascend/ascend_config.py:453
+value_type: dict
+default: <computed>
+valid_choices: JSON object of CompilationConfig fields (e.g. mode, cudagraph_mode, cudagraph_capture_sizes, max_cudagraph_capture_size,
+  use_inductor_graph_partition, custom_ops); shorthand -cc.<field>=<value>
+cli_example: '--compilation-config ''{"cudagraph_mode": "PIECEWISE"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--compilation-config (alias -cc) is the CLI entry point for vLLM's CompilationConfig, which\ncontrols torch.compile\
+  \ mode and ACL/CUDA graph capture behavior. On Ascend it is one of the most\nperformance-relevant knobs because graph capture\
+  \ (cudagraph_mode) determines whether decode steps\nrun as captured ACL graphs (low per-step launch overhead, high throughput)\
+  \ or eager (higher\noverhead). The parsed dict is converted to a CompilationConfig object in EngineArgs.__post_init__\n\
+  (vllm/engine/arg_utils.py:796-800), and the resulting config is consumed throughout the engine.\nvllm-ascend modifies this\
+  \ config in several places:\n1. platform.py:354-362 (apply_config_platform_defaults) overrides\n   compilation_config.max_cudagraph_capture_size\
+  \ with a reduced capture-size cap\n   (_get_reduced_cg_cap) to save memory while MC2 is used, and stores reduced_cg_cap.\
+  \ This\n   directly changes graph capture memory footprint and the set of captured batch sizes.\n2. platform.py:933-939\
+  \ resets use_inductor_graph_partition to False with a warning, because\n   use_inductor is False on Ascend NPU (no Inductor\
+  \ graph partition support). So that sub-field\n   is silently neutralized.\n3. ascend_config.py:96 (KVPP validate) requires\
+  \ cudagraph_mode == CUDAGraphMode.PIECEWISE\n   when KVPP is enabled and not eager; otherwise it raises ValueError.\n4.\
+  \ ascend_config.py:453 defines a separate Ascend-native \"ascend_compilation_config\" under\n   additional_config (enable_npugraph_ex,\
+  \ enable_static_kernel, fuse_norm_quant, fuse_qknorm_rope,\n   fuse_muls_add) — this is distinct from --compilation-config\
+  \ but also affects compilation/fusion.\nDocs confirm cudagraph_mode choices matter: \"context_parallel.md recommends FULL_DECODE_ONLY,\"\
+  \nflash_attention.md requires PIECEWISE when using FA3 (ACL graph capture unsupported for FA3 tiling).\nNet effect: \"this\
+  \ parameter strongly influences decode latency, throughput, and NPU memory usage.\"\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1723
+  context: Registers --compilation-config / -cc CLI argument from VllmConfig.compilation_config
+- file: vllm/engine/arg_utils.py:796
+  context: Converts dict form of compilation_config into CompilationConfig object in __post_init__
+- file: vllm/config/vllm.py:159
+  context: is_custom_op_enabled('rms_norm'/'quant_fp8') gates norm fusion based on compilation_config
+- file: vllm_ascend/platform.py:361
+  context: Overrides max_cudagraph_capture_size with reduced capture cap to save memory (MC2)
+- file: vllm_ascend/platform.py:933
+  context: Resets use_inductor_graph_partition to False (unsupported on Ascend)
+- file: vllm_ascend/ascend_config.py:96
+  context: KVPP validation requires cudagraph_mode == PIECEWISE when not eager
+- file: vllm_ascend/ascend_config.py:453
+  context: Ascend-native ascend_compilation_config defaults (npugraph_ex, fusions) under additional_config
+related_parameters:
+- name: --enforce-eager
+  relation: When enforce_eager is True, graph capture is skipped; KVPP validation only checks cudagraph_mode when not eager
+- name: --max-cudagraph-capture-size
+  relation: Directly overridden by vllm-ascend reduced capture cap; also a CompilationConfig field settable via -cc
+- name: --cudagraph-capture-sizes
+  relation: CompilationConfig field controlling which batch sizes are captured; affects memory and latency
+- name: --additional-config
+  relation: Holds ascend_compilation_config (enable_npugraph_ex, fusions) which is a separate Ascend compilation knob
+- name: --kv-transfer-config
+  relation: KVPP PD disaggregation requires cudagraph_mode PIECEWISE (or eager)
+constraints:
+- When KVPP is enabled and enforce_eager is False, cudagraph_mode must be PIECEWISE or a ValueError is raised.
+- use_inductor_graph_partition is not supported on Ascend NPU (use_inductor is False) and is forcibly reset to False with
+  a warning.
+- When using FA3 (flash_attn_with_kvcache), ACL graph capture is unsupported, so compilation_config cudagraph_mode must be
+  PIECEWISE.
+- The dict passed to --compilation-config must contain valid CompilationConfig field names; unknown fields cause construction
+  errors.
+tuning_advice:
+  summary: Use --compilation-config to select an appropriate cudagraph_mode (and capture sizes) for your workload; on Ascend
+    prefer PIECEWISE or FULL_DECODE_ONLY and be aware vllm-ascend caps capture size and disables Inductor graph partition.
+  suggested_values:
+  - scenario: General decode-heavy serving on Ascend (default graph capture)
+    value: '{"cudagraph_mode": "FULL_DECODE_ONLY"}'
+    reason: Captures decode steps as ACL graphs for low per-step launch overhead; recommended in context_parallel docs.
+  - scenario: Using FA3 (flash_attn_with_kvcache) or KVPP PD disaggregation
+    value: '{"cudagraph_mode": "PIECEWISE"}'
+    reason: FA3 tiling cannot be ACL-graph captured and KVPP validation requires PIECEWISE; PIECEWISE is the compatible mode.
+  - scenario: Memory-constrained NPU where graph buffers are too large
+    value: '{"cudagraph_mode": "PIECEWISE", "max_cudagraph_capture_size": 32}'
+    reason: Smaller capture size reduces graph buffer memory; note vllm-ascend may further reduce it via reduced_cg_cap.
+  - scenario: Debugging / correctness validation
+    value: --enforce-eager (skip graph capture)
+    reason: Eager mode avoids graph capture issues; use when diagnosing compilation problems, at cost of higher latency.
+  caveats:
+  - Explicit max_cudagraph_capture_size may be overridden by vllm-ascend's reduced capture cap.
+  - use_inductor_graph_partition is ignored on Ascend.
+  - Combine with additional_config.ascend_compilation_config (enable_npugraph_ex, fusions) for full Ascend compilation tuning.
+  quick_guide: 'Set -cc ''{"cudagraph_mode": "FULL_DECODE_ONLY"}'' for decode throughput, or PIECEWISE when using FA3/KVPP;
+    expect vllm-ascend to cap capture size and disable Inductor graph partition.'
+analysis_date: '2026-10-27'

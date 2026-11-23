@@ -1,0 +1,85 @@
+name: --reasoning-parser-plugin
+type: cli
+category: other
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1042
+- vllm/engine/arg_utils.py:663
+- vllm/config/structured_outputs.py:38
+- vllm/v1/structured_output/__init__.py:82
+- vllm/entrypoints/cli/serve.py:183
+- vllm/entrypoints/launchers/api_server/entry.py:187
+- vllm/entrypoints/launchers/launcher.py:264
+value_type: str
+default: ''
+valid_choices: Any filesystem path to a Python module containing a reasoning parser plugin; empty string disables plugin loading
+cli_example: --reasoning-parser-plugin /path/to/custom_reasoning_parser.py
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only controls one-time plugin import/registration at startup.
+
+  In vllm/v1/structured_output/__init__.py:82-86, if reasoning_parser_plugin is
+
+  non-empty and longer than 3 characters, ReasoningParserManager.import_reasoning_parser()
+
+  is called once during StructuredOutputManager construction. The same import is also
+
+  performed in the API server launcher paths (launcher.py:264, api_server/entry.py:187)
+
+  and headless serve path (serve.py:183) before engine config creation. This is a
+
+  module import (Python import machinery + class registration into a registry dict),
+
+  not a per-request or per-token operation. It does not touch the NPU, HCCL, CANN,
+
+  KV cache, or the model computation graph. StructuredOutputsConfig.compute_hash()
+
+  explicitly notes "no factors to consider. this config will not affect the computation
+
+  graph." Therefore the only runtime effect is a negligible one-time startup cost
+
+  (importing the plugin module) and enabling the custom reasoning parser to be
+
+  selectable via --reasoning-parser. No vllm-ascend override of this parameter was
+
+  found in the provided context; it is a pure upstream vLLM parameter.
+
+  '
+usage_locations:
+- file: vllm/v1/structured_output/__init__.py:82
+  context: Imports the plugin module once during StructuredOutputManager init if path length > 3
+- file: vllm/entrypoints/launchers/launcher.py:264
+  context: Imports plugin before server socket setup in API server launcher
+- file: vllm/entrypoints/launchers/api_server/entry.py:187
+  context: Imports plugin in each API server worker process
+- file: vllm/entrypoints/cli/serve.py:183
+  context: Imports plugin in headless mode before engine config creation
+- file: vllm/config/structured_outputs.py:38
+  context: Config field definition; excluded from compute_hash (no graph impact)
+related_parameters:
+- name: --reasoning-parser
+  relation: The plugin registers a parser name that must then be selected via --reasoning-parser; the plugin alone does nothing
+    without a matching parser name
+- name: --tool-call-parser-plugin
+  relation: Analogous plugin-loading mechanism for tool parsers, imported alongside in the same launcher paths
+constraints:
+- The plugin path must point to a valid importable Python module; an invalid path causes import failure at startup.
+- The plugin is only loaded when the path string is longer than 3 characters; shorter or empty values are silently ignored.
+- The plugin must register its parser under a name that is then passed to --reasoning-parser for it to take effect.
+tuning_advice:
+  summary: Set only when using a custom reasoning parser; it has negligible performance impact and is purely a startup-time
+    plugin registration.
+  suggested_values:
+  - scenario: Using a built-in reasoning parser (e.g. deepseek_r1)
+    value: unset
+    reason: No plugin needed; leave empty to avoid unnecessary import overhead.
+  - scenario: Using a custom reasoning parser implementation
+    value: /path/to/custom_reasoning_parser.py
+    reason: Registers the custom parser so it can be selected via --reasoning-parser; cost is a one-time import.
+  caveats:
+  - Ensure the plugin module is importable in every worker process (correct PYTHONPATH/permissions).
+  - Do not expect any throughput or latency benefit from this flag; it only enables parser selection.
+  quick_guide: Only set --reasoning-parser-plugin when you have a custom reasoning parser; otherwise leave it empty.
+analysis_date: '2026-10-27'

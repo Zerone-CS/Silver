@@ -1,0 +1,106 @@
+name: --mamba-backend
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1017
+- vllm_ascend/patch/platform/__init__.py:30
+- vllm_ascend/patch/platform/patch_mamba_config.py:160
+value_type: str
+default: <computed>
+valid_choices: Backend names registered in vLLM's Mamba SSU backend registry (e.g. 'triton', 'cuda', 'cpu', 'none'); on Ascend
+  the available set is constrained by what vllm-ascend registers.
+cli_example: --mamba-backend <backend-name>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: '--mamba-backend selects the Mamba SSU (state-space update) kernel backend used by hybrid
+
+  Mamba/attention models (e.g. Mamba-2, Nemotron-H, GLM-Next style hybrid models). It is
+
+  parsed in vllm/engine/arg_utils.py:1017 from MambaConfig.backend and stored in the
+
+  VllmConfig; the backend is then resolved at model/layer construction time to pick the
+
+  concrete SSU implementation. The choice affects the per-token recurrent-state update
+
+  kernel, so it can influence decode latency and the recurrent-state cache layout, but it
+
+  does not change scheduling, batching, or KV-cache sizing for pure-attention models.
+
+  On Ascend, vllm-ascend does not expose a dedicated Mamba SSU backend of its own in the
+
+  provided context; instead it patches the Mamba configuration path
+
+  (vllm_ascend/patch/platform/__init__.py:30-33 conditionally imports patch_mamba_config
+
+  or patch_mamba_config_310 based on HardwareCapability.STANDARD_MAMBA_PATCH) and patches
+
+  the scheduler''s mamba block-aligned split (patch_mamba_block_aligned_split). These
+
+  patches adjust block/page alignment and prefill chunk boundaries for hybrid models
+
+  (patch_mamba_config.py:145-176) rather than the SSU kernel selection itself. Because the
+
+  Ascend Triton backend cannot compile vLLM''s fused GPU postprocess Triton kernel
+
+  (patch_mamba_config.py:155-161), the effective Mamba path on Ascend is constrained, and
+
+  the backend choice mostly determines whether a compatible kernel is found at all rather
+
+  than delivering large throughput differences. Net effect on Ascend: low — it mainly
+
+  gates correctness/compatibility of hybrid Mamba models and has only a secondary effect
+
+  on decode latency and recurrent-state memory layout.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1017
+  context: CLI flag --mamba-backend registered from MambaConfig.backend into the Mamba argument group.
+- file: vllm_ascend/patch/platform/__init__.py:30
+  context: Conditionally imports patch_mamba_config or patch_mamba_config_310 based on STANDARD_MAMBA_PATCH hardware capability.
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:160
+  context: Patches HybridAttentionMambaModelConfig.verify_and_update_config; adjusts mamba page size / block alignment and
+    mamba_cache_mode for hybrid models on Ascend.
+related_parameters:
+- name: --mamba-ssu-algorithm
+  relation: Selects the SSU algorithm within the chosen Mamba backend; must be compatible with the backend.
+- name: --enable-mamba-cache-stochastic-rounding
+  relation: Affects recurrent-state cache precision/rounding; interacts with the Mamba cache layout managed alongside the
+    backend.
+- name: --mamba-cache-philox-rounds
+  relation: Number of Philox rounds for stochastic rounding of the Mamba cache; only meaningful when stochastic rounding is
+    enabled.
+- name: --attention-backend
+  relation: Sibling backend selector for attention layers; hybrid models use both attention and Mamba backends.
+constraints:
+- The value must name a Mamba SSU backend that is registered and available on the current platform; an unknown or unavailable
+  backend will fail at model/layer initialization.
+- On Ascend, the Mamba configuration path is patched (patch_mamba_config or patch_mamba_config_310 depending on hardware capability),
+  so only backends compatible with the Ascend Triton backend and the patched block/page alignment are usable.
+- When KV transfer is enabled with hybrid models, mamba_cache_mode must be 'align' (patch_mamba_config.py:170-172 asserts
+  this), which constrains how the Mamba backend's cache is laid out.
+tuning_advice:
+  summary: Leave --mamba-backend at its default unless running a hybrid Mamba model on Ascend, in which case pick the backend
+    that vllm-ascend's patched Mamba config supports; it has only a low performance impact.
+  suggested_values:
+  - scenario: Pure-attention transformer models (no Mamba layers)
+    value: <default>
+    reason: The parameter is unused for models without Mamba/SSU layers, so changing it has no effect.
+  - scenario: Hybrid Mamba/attention model on Ascend NPU
+    value: <default / platform-supported backend>
+    reason: vllm-ascend patches the Mamba config path and the Ascend Triton backend cannot compile vLLM's fused GPU postprocess
+      kernel, so the safest choice is the backend the patched config resolves to; explicit overrides risk incompatibility.
+  caveats:
+  - vllm-ascend patches HybridAttentionMambaModelConfig.verify_and_update_config and the scheduler's mamba block-aligned split,
+    so the effective Mamba behavior on Ascend differs from upstream vLLM even when the backend name is the same.
+  - The Ascend Triton backend cannot compile vLLM's fused GPU postprocess Triton kernel (patch_mamba_config.py:155-161), which
+    limits which Mamba code paths are usable.
+  - With KV transfer enabled on hybrid models, mamba_cache_mode is forced to 'align', which changes recurrent-state cache
+    layout and memory usage.
+  quick_guide: Keep the default --mamba-backend; only relevant for hybrid Mamba models, and on Ascend the patched config decides
+    the usable backend.
+analysis_date: '2026-10-27'

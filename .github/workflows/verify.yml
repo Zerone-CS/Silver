@@ -1,0 +1,19 @@
+name: Verify release
+on:
+  push:
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          sed -E 's/[[:space:]]+--hash=.*//' knowledge/resources/requirements.lock > "$RUNNER_TEMP/requirements.txt"
+          python -m pip install -r "$RUNNER_TEMP/requirements.txt"
+      - run: python -B scripts/verify_suite.py
+      - run: python -B scripts/run_tests.py
+      - run: python -B scripts/build_release.py --output "$RUNNER_TEMP/inferopt-release"

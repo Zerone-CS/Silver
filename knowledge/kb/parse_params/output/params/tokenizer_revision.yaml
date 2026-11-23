@@ -1,0 +1,95 @@
+name: --tokenizer-revision
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:211
+- vllm/engine/arg_utils.py:575
+- vllm/engine/arg_utils.py:897
+- vllm/engine/arg_utils.py:857
+- vllm/config/model.py:440
+- vllm/config/speculative.py:1285
+- vllm/model_executor/models/adapters.py:564
+value_type: str
+default: null
+valid_choices: Any Hugging Face Hub branch name, tag name, or commit id; null means the default version
+cli_example: --tokenizer-revision <branch-or-tag-or-commit-id>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--tokenizer-revision only selects which revision of the tokenizer artifact is
+
+  fetched/loaded from the Hugging Face Hub (vllm/config/model.py:211). It is
+
+  consumed at tokenizer construction time (vllm/model_executor/models/adapters.py:564
+
+  passes it as `revision` to get_tokenizer) and, when HF_HUB_OFFLINE is set, is
+
+  used to resolve a local path via get_model_path (vllm/engine/arg_utils.py:857).
+
+  It is explicitly listed in ModelConfig.compute_hash''s ignored_factors set
+
+  (vllm/config/model.py:440), meaning it does NOT affect the computation graph,
+
+  CUDA/HCCL graph capture, or any NPU kernel compilation. It is also propagated
+
+  to the speculative draft ModelConfig (vllm/config/speculative.py:1285) so the
+
+  draft model uses the same tokenizer revision. On Ascend NPU there is no
+
+  vllm-ascend override of this parameter; it has no effect on NPU kernels,
+
+  HCCL communication, or KV cache. Its only runtime effect is a one-time
+
+  tokenizer download/load cost at startup (latency), and potentially different
+
+  tokenization results if a different revision changes the vocab/token mapping.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:211
+  context: ModelConfig field definition and docstring for tokenizer_revision
+- file: vllm/engine/arg_utils.py:575
+  context: EngineArgs field mirroring ModelConfig.tokenizer_revision
+- file: vllm/engine/arg_utils.py:897
+  context: CLI argument registration --tokenizer-revision
+- file: vllm/engine/arg_utils.py:857
+  context: HF_HUB_OFFLINE path resolution using tokenizer_revision
+- file: vllm/config/model.py:440
+  context: Listed in compute_hash ignored_factors (no graph impact)
+- file: vllm/config/speculative.py:1285
+  context: Propagated to draft model config for speculative decoding
+- file: vllm/model_executor/models/adapters.py:564
+  context: Passed as revision to get_tokenizer during adapter/pooling model load
+related_parameters:
+- name: --tokenizer
+  relation: Selects the tokenizer repo; --tokenizer-revision selects which revision of it to load
+- name: --revision
+  relation: Analogous revision selector for the model weights (independent of tokenizer revision)
+- name: --tokenizer-mode
+  relation: Determines tokenizer implementation; revision applies to whichever tokenizer is loaded
+- name: --skip-tokenizer-init
+  relation: If set, tokenizer is not loaded, making --tokenizer-revision irrelevant
+constraints:
+- The value must be a valid Hugging Face Hub branch name, tag name, or commit id for the tokenizer repo, otherwise tokenizer
+  loading fails.
+- When HF_HUB_OFFLINE is enabled, the revision is used to resolve a local path; an invalid revision may fail to resolve.
+- If --skip-tokenizer-init is set, the tokenizer is not loaded and --tokenizer-revision has no effect.
+tuning_advice:
+  summary: Pin --tokenizer-revision to a specific commit id for reproducibility; it has negligible runtime performance impact
+    on Ascend NPU.
+  suggested_values:
+  - scenario: Production deployment requiring reproducible tokenization
+    value: <commit-id>
+    reason: Pinning to a commit id guarantees the exact tokenizer artifact is loaded across restarts, avoiding silent tokenization
+      drift.
+  - scenario: Default / development use
+    value: unset
+    reason: Leaving it unset uses the default (main) revision, which is fine when reproducibility is not required.
+  caveats:
+  - Do not expect any throughput or memory benefit from tuning this parameter; it only affects startup tokenizer loading and
+    tokenization correctness.
+  - Ensure the chosen revision is compatible with the model's expected vocabulary to avoid token id mismatches.
+  quick_guide: Pin to a commit id for reproducibility; otherwise leave default — no Ascend performance tuning value here.
+analysis_date: '2026-10-27'

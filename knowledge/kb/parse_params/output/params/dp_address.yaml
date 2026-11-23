@@ -1,0 +1,90 @@
+name: --dp-address
+type: cli
+category: parallelism
+scope: vllm-ascend
+source_file:
+- examples/external_online_dp/launch_online_dp.py:14
+- examples/external_online_dp/launch_online_dp.py:27
+- examples/external_online_dp/launch_online_dp.py:40
+- tools/docs_codegen/converters.py:350
+- tests/e2e/common/multi_node/external_dp/external_dp_config.py:54
+value_type: str
+default: <required, no default>
+valid_choices: Any valid IPv4 address or hostname of the data-parallel master node (node 0)
+cli_example: --dp-address <master-node-ip>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--dp-address is a launcher-script argument defined only in the vllm-ascend
+
+  example/helper scripts (examples/external_online_dp/launch_online_dp.py), not in
+
+  vLLM core or vllm-ascend runtime code. It is parsed at line 14 (required=True),
+
+  read at line 27, and forwarded as positional argument $5 to run_dp_template.sh
+
+  (line 40). The shell template then passes it to the vLLM engine as the
+
+  data-parallel master address (used to build the DP RPC/ZMQ endpoint that DP
+
+  ranks connect to for coordination). It does not itself change kernel selection,
+
+  memory allocation, or batching. Its only performance relevance is indirect:
+
+  it determines the network endpoint all DP ranks rendezvous with, so an
+
+  incorrect or slow-to-resolve address causes DP rank startup delays or
+
+  connection failures (hang), and cross-node DP coordination traffic flows over
+
+  this address. Once ranks are connected, steady-state throughput is unaffected
+
+  by the value itself. The docs_codegen converter (converters.py:350) and the
+
+  external_dp test config (external_dp_config.py:54) simply map this field to the
+
+  DP_ADDRESS template variable / --dp-address flag.
+
+  '
+usage_locations:
+- file: examples/external_online_dp/launch_online_dp.py:14
+  context: 'argparse definition: --dp-address required str, IP of DP master node'
+- file: examples/external_online_dp/launch_online_dp.py:27
+  context: Reads args.dp_address into dp_address variable
+- file: examples/external_online_dp/launch_online_dp.py:40
+  context: Forwarded as positional $5 to run_dp_template.sh for each DP rank
+- file: tools/docs_codegen/converters.py:350
+  context: Maps config field dp_address to --dp-address CLI flag in generated docs
+- file: tests/e2e/common/multi_node/external_dp/external_dp_config.py:54
+  context: NodeInfo.dp_address field; rendered into DP_ADDRESS template variable (runtime.py:372)
+related_parameters:
+- name: --dp-size
+  relation: Total number of DP ranks; all ranks connect to the --dp-address master
+- name: --dp-rpc-port
+  relation: Port on the --dp-address master used for DP RPC communication
+- name: --dp-rank-start
+  relation: Rank offset on each node; combined with dp-address to form the DP topology
+- name: --dp-size-local
+  relation: Number of local DP ranks per node that connect to the master address
+constraints:
+- --dp-address is a required argument; omitting it causes argparse to error out.
+- The address must be reachable from every node running a DP rank, otherwise DP ranks fail to rendezvous and startup hangs.
+- All DP ranks in one deployment must be given the same master address (node 0) to form a single DP group.
+tuning_advice:
+  summary: Set --dp-address to the stable, high-bandwidth IP of the DP master node (node 0), identical across all nodes.
+  suggested_values:
+  - scenario: Single-node external DP deployment
+    value: 127.0.0.1 or the node's own IP
+    reason: All DP ranks are local; loopback or local IP avoids external network dependency.
+  - scenario: Multi-node external DP (e.g. DeepSeek-V3.1 2P1D)
+    value: 192.xx.xx.1 (node 0 IP on the RoCE/data network)
+    reason: Docs use the master node's data-network IP so all DP ranks across nodes can reach the rendezvous endpoint over
+      the high-bandwidth link.
+  caveats:
+  - Use the same --dp-address on every node's launch_online_dp.py invocation; mismatched addresses split the DP group.
+  - Prefer the RoCE/high-bandwidth NIC IP over a management-network IP to avoid slow DP coordination.
+  - Verify the address is pingable from all nodes before launch to avoid startup hangs.
+  quick_guide: Point --dp-address at node 0's data-network IP, identical on all nodes.
+analysis_date: '2026-10-27'

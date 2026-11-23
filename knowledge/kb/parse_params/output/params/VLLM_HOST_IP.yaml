@@ -1,0 +1,95 @@
+name: VLLM_HOST_IP
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:705
+- vllm/envs.py:2281
+- vllm/utils/network_utils.py:35
+- vllm/v1/executor/ray_utils.py:34
+- vllm/v1/executor/ray_executor.py:317
+value_type: str
+default: ''
+valid_choices: Any valid IPv4 or IPv6 address string; empty string means auto-detect via socket
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_HOST_IP is read by vllm.utils.network_utils.get_ip() (vllm/utils/network_utils.py:35).
+
+  When set, get_ip() returns the configured address directly; when empty, it falls back to
+
+  probing a UDP socket to 8.8.8.8 (IPv4) then 2001:4860:4860::8888 (IPv6), and finally
+
+  "0.0.0.0" with a warning. get_ip() is the address advertised for inter-process/inter-node
+
+  communication (distributed init, KV transfer endpoints, Ray driver/worker IP matching).
+
+  On Ascend, this IP is what peers use to reach an engine for KV transfer (see GLM5.3-Flash
+
+  doc: "\"VLLM_HOST_IP advertises the IP that peers use to reach each engine for KV transfer\")."
+
+  The performance effect is indirect: "if the auto-detected IP resolves to a wrong/unroutable"
+
+  interface (common on multi-NIC NPU nodes), HCCL/distributed setup and KV transfer can fail
+
+  or fall back to a slow path, adding startup latency or degrading cross-node throughput.
+
+  In Ray multi-node mode, ray_executor.py:317 raises a RuntimeError if node IPs are not unique,
+
+  and ray_utils.py:479 warns that Ray cluster IPs must match VLLM_HOST_IP. The parameter itself
+
+  does not change kernel execution, memory layout, or per-token compute; it only affects
+
+  network endpoint selection. It is explicitly excluded from torch.compile cache-key factors
+
+  (envs.py:2281), so changing it does not invalidate compilation caches.
+
+  '
+usage_locations:
+- file: vllm/utils/network_utils.py:35
+  context: get_ip() returns VLLM_HOST_IP if set, else auto-detects via socket probe
+- file: vllm/v1/executor/ray_utils.py:34
+  context: Listed in WORKER_SPECIFIC_ENV_VARS so it is not copied from driver to Ray workers
+- file: vllm/v1/executor/ray_executor.py:317
+  context: Error message when node IPs are not unique, referencing VLLM_HOST_IP
+- file: vllm/envs.py:2281
+  context: Excluded from compile_factors() cache key hashing
+related_parameters:
+- name: VLLM_PORT
+  relation: Companion env var; VLLM_HOST_IP sets the address while VLLM_PORT sets the communication port
+- name: VLLM_NIXL_SIDE_CHANNEL_HOST
+  relation: Also a worker-specific network env var in WORKER_SPECIFIC_ENV_VARS; used for KV transfer side channel
+- name: VLLM_DP_MASTER_IP
+  relation: Data-parallel master address; related network endpoint configuration
+- name: HOST_IP
+  relation: Deprecated alias; ignored with a warning if VLLM_HOST_IP is not set
+constraints:
+- In Ray multi-node deployments, each node must have a unique IP address; otherwise a RuntimeError is raised.
+- The IP addresses used by the Ray cluster must match the VLLM_HOST_IP set on each node when running multi-node.
+- HOST_IP is deprecated and ignored; use VLLM_HOST_IP instead.
+- VLLM_HOST_IP is worker-specific and is not propagated from the driver to Ray workers.
+tuning_advice:
+  summary: Set VLLM_HOST_IP explicitly to the routable node IP on multi-node or multi-NIC Ascend deployments to ensure correct
+    and fast HCCL/KV-transfer connectivity.
+  suggested_values:
+  - scenario: Single-node deployment with a single NIC
+    value: unset
+    reason: Auto-detection via socket probe is reliable and avoids manual configuration.
+  - scenario: Multi-node Ascend deployment (Ray or native distributed)
+    value: <node-specific routable IP>
+    reason: Each node must advertise a unique, routable IP so peers can reach it for HCCL and KV transfer; matches Ray cluster
+      IPs.
+  - scenario: Multi-NIC node where auto-detection picks the wrong interface
+    value: <NPU-network interface IP>
+    reason: Explicitly binding to the NPU-network address prevents fallback to unroutable interfaces and avoids slow/failed
+      KV transfer.
+  caveats:
+  - Must be set differently on each node in multi-node inference.
+  - Ensure the value matches the IP Ray uses for the node when running under Ray.
+  - Do not rely on the deprecated HOST_IP variable.
+  quick_guide: Set VLLM_HOST_IP to each node's routable IP for multi-node/multi-NIC Ascend runs; leave empty for simple single-node
+    setups.
+analysis_date: '2026-10-27'

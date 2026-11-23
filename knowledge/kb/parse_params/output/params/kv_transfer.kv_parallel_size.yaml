@@ -1,0 +1,91 @@
+name: kv_transfer.kv_parallel_size
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- 'vllm/config/kv_transfer.py: (KVTransferConfig field kv_parallel_size, defined upstream in vLLM; not present in provided
+  context)'
+- vllm_ascend/distributed/kv_transfer/ (MooncakeConnectorV1 reads kv_parallel_size; not present in provided context)
+value_type: int
+default: 1
+valid_choices: positive integer; must be consistent across all prefill/decode instances participating in the same KV transfer
+  group
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'kv_parallel_size is a field of the KVTransferConfig passed via --kv-transfer-config
+
+  (JSON). It controls how many parallel KV-cache transfer instances/workers the
+
+  connector (e.g. MooncakeConnectorV1 on Ascend) spawns for moving KV blocks between
+
+  prefill (kv_producer) and decode (kv_consumer) instances. On Ascend the KV buffer
+
+  lives on NPU (kv_buffer_device: "npu"), so the transfer path is NPU->host/network->NPU
+
+  via the Mooncake connector rather than HCCL collective communication.
+
+  The parameter does not change model compute; it changes the concurrency of the
+
+  disaggregated-prefill KV transfer pipeline. A larger kv_parallel_size increases the
+
+  number of concurrent transfer streams, which can raise effective KV-transfer
+
+  throughput and reduce decode-side stall waiting for KV blocks (lower TTFT/ITL under
+
+  load), at the cost of more host memory/threads and more network connections. A value
+
+  that is too small serializes transfers and becomes the bottleneck in PD-disaggregation
+
+  deployments. No vllm-ascend override of the default was found in the provided context;
+
+  the docs example uses kv_parallel_size: "1 for a 2x2 (dp_size x tp_size) prefill/decode"
+
+  layout.
+
+  '
+usage_locations:
+- file: 'vllm_ascend docs: user_guide/deployment_guide/using_volcano_kthena.md:140'
+  context: kv_producer instance sets kv_parallel_size:1 inside --kv-transfer-config JSON for MooncakeConnectorV1 with kv_buffer_device
+    npu
+- file: 'vllm_ascend docs: user_guide/deployment_guide/using_volcano_kthena.md:243'
+  context: kv_consumer instance sets kv_parallel_size:1 inside --kv-transfer-config JSON for MooncakeConnectorV1
+related_parameters:
+- name: kv_transfer.kv_connector
+  relation: Selects the connector implementation (MooncakeConnectorV1) that consumes kv_parallel_size
+- name: kv_transfer.kv_role
+  relation: kv_producer (prefill) vs kv_consumer (decode); both sides must agree on kv_parallel_size
+- name: kv_transfer.kv_buffer_device
+  relation: On Ascend set to npu so KV buffers are allocated on NPU
+- name: kv_transfer.kv_connector_extra_config
+  relation: Contains prefill/decode dp_size and tp_size that determine the total number of transfer endpoints
+- name: tensor_parallel_size
+  relation: Combined with dp_size defines the number of KV transfer endpoints; kv_parallel_size should be sized relative to
+    this
+constraints:
+- kv_parallel_size must be a positive integer.
+- All prefill (kv_producer) and decode (kv_consumer) instances in the same KV transfer group must use a consistent kv_parallel_size,
+  otherwise transfer endpoints will not match.
+- kv_parallel_size is only meaningful when a KV connector is configured via --kv-transfer-config; it has no effect without
+  a connector.
+tuning_advice:
+  summary: Keep kv_parallel_size at 1 for small PD-disaggregation setups; raise it only when KV transfer is the measured bottleneck
+    between prefill and decode.
+  suggested_values:
+  - scenario: Small deployment (e.g. 2x2 dp/tp prefill and decode) as in vllm-ascend docs
+    value: 1
+    reason: Matches the documented MooncakeConnectorV1 example and avoids unnecessary host memory/connection overhead.
+  - scenario: Large PD-disaggregation with many decode instances and KV transfer saturating a single stream
+    value: 2
+    reason: Increases concurrent transfer streams to raise KV-transfer throughput and reduce decode-side stalls, provided
+      network and host resources allow.
+  caveats:
+  - Must be identical on producer and consumer sides.
+  - Raising it increases host memory and network connections; monitor NPU and host utilization.
+  - No benefit if the bottleneck is model compute rather than KV transfer.
+  quick_guide: Start at 1; increase only if KV transfer between prefill and decode is the bottleneck, keeping producer and
+    consumer values equal.
+analysis_date: '2026-10-27'

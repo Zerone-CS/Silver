@@ -1,0 +1,77 @@
+name: kernel.ir_op_priority.fused_add_rms_norm
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/vllm.py:234
+- tests/compile/passes/ir/test_inplace_functionalization.py:190
+value_type: list[str]
+default:
+- native
+valid_choices:
+- native
+- vllm_c
+- aiter
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a priority list selecting which implementation of the fused_add_rms_norm IR op
+
+  is used during torch.compile / vLLM IR lowering. The list is consumed by the IR lowering
+
+  pass (VllmIRLoweringPass) and by enable_norm_pad_fusion() in vllm/config/vllm.py:234,
+
+  which checks whether the first entry is "aiter" to enable a norm-pad fusion path for
+
+  hidden size 2880 (gpt-oss models). On Ascend NPU, the "aiter" backend is a ROCm/AMD-specific
+
+  kernel and is not available; the "vllm_c" backend is a CUDA C++ kernel path. Neither is
+
+  provided by vllm-ascend, so on Ascend the effective selection falls back to "native"
+
+  (torch-native ops). The parameter therefore has only a marginal effect on Ascend: it can
+
+  influence whether the norm-pad fusion optimization is enabled (only when "aiter" is first,
+
+  which is not applicable on Ascend) and which lowering path is chosen. There is no
+
+  Ascend-specific override of this parameter found in vllm-ascend source.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:234
+  context: enable_norm_pad_fusion() checks ir_op_priority.fused_add_rms_norm[0] == 'aiter' to enable norm-pad fusion for hidden
+    size 2880
+- file: tests/compile/passes/ir/test_inplace_functionalization.py:190
+  context: Test sets priority to ['vllm_c', 'native'] to trigger the inplace functionalization path
+related_parameters:
+- name: compilation_config
+  relation: The IR op priority is applied during torch.compile lowering; only relevant when compilation is enabled
+- name: kernel_config
+  relation: Parent config object holding ir_op_priority
+constraints:
+- The list must be non-empty because enable_norm_pad_fusion indexes element [0] directly.
+- The 'aiter' backend is only meaningful on ROCm/AMD hardware and is not available on Ascend NPU.
+- The 'vllm_c' backend is a CUDA C++ kernel path and is not provided by vllm-ascend.
+tuning_advice:
+  summary: On Ascend NPU, leave this at the default 'native' priority; the aiter/vllm_c backends are not available and provide
+    no benefit.
+  suggested_values:
+  - scenario: Ascend NPU deployment (default)
+    value:
+    - native
+    reason: Only the torch-native implementation is available on Ascend; aiter (ROCm) and vllm_c (CUDA) kernels are not provided
+      by vllm-ascend.
+  - scenario: GPU (ROCm) with gpt-oss hidden size 2880
+    value:
+    - aiter
+    - native
+    reason: Enables norm-pad fusion via enable_norm_pad_fusion() on ROCm; not applicable to Ascend.
+  caveats:
+  - Do not expect performance gains from changing this on Ascend; the selected backends are not compiled for NPU.
+  - Ensure the list is never empty to avoid an IndexError in enable_norm_pad_fusion().
+  quick_guide: Keep default 'native' on Ascend; this parameter only matters for ROCm/CUDA kernel selection.
+analysis_date: '2026-10-27'

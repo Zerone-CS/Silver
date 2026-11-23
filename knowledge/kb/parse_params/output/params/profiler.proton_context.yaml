@@ -1,0 +1,75 @@
+name: profiler.proton_context
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:394
+value_type: str
+default: shadow
+valid_choices:
+- shadow
+- python
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter selects the Proton (triton.profiler) context source used by the
+
+  ProtonWorkerProfiler in vllm/profiler/wrapper.py. It is read at line 394
+
+  (self._context = profiler_config.proton_context) and passed to the Proton
+
+  profiling session. It only takes effect when the Proton profiler backend is
+
+  explicitly enabled (profiler=proton); it has no effect on normal inference
+
+  execution. When active, ``shadow`` records only explicit user-annotated scopes
+
+  with low overhead, while ``python`` records full Python call stacks, which adds
+
+  per-call stack-unwinding overhead and produces much larger trace output. This
+
+  affects profiling-run latency and trace size, not steady-state inference
+
+  throughput or memory. No vllm-ascend override or usage of this parameter was
+
+  found; it is an upstream-only, profiling-only knob.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:394
+  context: ProtonWorkerProfiler reads profiler_config.proton_context into self._context to configure the Proton profiling
+    context source.
+related_parameters:
+- name: profiler
+  relation: Proton context only applies when the profiler backend is set to proton.
+- name: profiler.proton_mode
+  relation: Companion Proton setting controlling the profiling mode; context source works alongside it.
+- name: profiler.proton_data
+  relation: Companion Proton setting selecting which data to collect.
+- name: profiler.proton_backend
+  relation: Companion Proton setting selecting the Proton backend.
+- name: profiler.proton_hook
+  relation: Companion Proton setting controlling the hook used for scope capture.
+constraints:
+- The Proton profiler requires a Triton installation with triton.profiler support, otherwise a RuntimeError is raised at profiler
+  construction.
+- This setting only has an effect when the Proton profiler backend is enabled; it is ignored during normal inference.
+tuning_advice:
+  summary: Use shadow for low-overhead scope profiling; only switch to python when full Python call-stack attribution is required.
+  suggested_values:
+  - scenario: Routine performance profiling of annotated scopes with minimal perturbation
+    value: shadow
+    reason: Records only explicit scopes with low overhead, keeping profiling-run latency close to normal execution.
+  - scenario: Deep debugging needing full Python call-stack attribution
+    value: python
+    reason: Captures Python call stacks for detailed attribution, at the cost of higher overhead and larger traces.
+  caveats:
+  - python context adds per-call stack-unwinding overhead and produces much larger trace files; avoid it for long or production-like
+    profiling runs.
+  - This parameter is upstream-only and has no vllm-ascend override; it does not affect steady-state Ascend NPU inference
+    throughput or memory.
+  - Requires a Triton build with triton.profiler support; otherwise profiler construction fails.
+  quick_guide: Keep the default shadow unless you specifically need Python call-stack traces.
+analysis_date: '2026-10-27'

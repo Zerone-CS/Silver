@@ -1,0 +1,161 @@
+name: --moe-backend
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/kernel.py:248
+- vllm/engine/arg_utils.py:1675
+- vllm/engine/arg_utils.py:1677
+- vllm/config/speculative.py:407
+- vllm/v1/spec_decode/llm_base_proposer.py:1280
+- vllm/v1/worker/gpu/spec_decode/eagle/utils.py:79
+- vllm/v1/worker/gpu_worker.py:1529
+- vllm_ascend/tests/ut/worker/test_mtp_pcp_speculator_v2.py:378
+- vllm_ascend/tests/ut/_310p/quantization/test_modelslim_config_310.py:97
+value_type: str
+default: auto
+valid_choices:
+- auto
+- triton
+- batched_triton
+- deep_gemm
+- deep_gemm_mega_moe
+- cutlass
+- flashinfer_trtllm
+- flashinfer_cutlass
+- flashinfer_cutedsl
+- flashinfer_b12x
+- b12x
+- flashinfer_moe_ep_mega_deep_gemm
+cli_example: --moe-backend auto
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--moe-backend selects the kernel implementation used for MoE expert computation
+
+  (FusedMoE forward). It is defined in vllm/config/kernel.py as KernelConfig.moe_backend
+
+  (default "auto") and exposed via the CLI in vllm/engine/arg_utils.py:1675-1677, where the
+
+  value is normalized with `s.lower().replace("-", "_")`. The choice of backend directly
+
+  determines which fused-MoE kernel runs per layer per token, so it affects decode/prefill
+
+  latency, overall throughput, and (for quantized backends) memory footprint of expert
+
+  weights and intermediate buffers.
+
+
+  On Ascend NPU, the upstream backend names (triton, cutlass, deep_gemm, flashinfer_*)
+
+  are GPU-specific and are NOT the kernels that execute on the Da Vinci architecture.
+
+  vllm-ascend provides its own Ascend-native fused-MoE implementations (e.g. the
+
+  AscendUnquantizedFusedMoEMethod / AscendFusedMoE paths referenced in
+
+  vllm_ascend/_310p/quantization/modelslim_config.py and the quantization configs). The
+
+  moe_backend value is read by the Ascend quantization/config layer to decide which
+
+  quantized MoE method to instantiate (see test_modelslim_config_310.py:97 where
+
+  moe_config.moe_backend = "auto" drives get_quant_method for a RoutedExperts layer).
+
+  Thus on Ascend the practical effect of --moe-backend is to steer selection among
+
+  Ascend fused-MoE kernels and their quantization schemes, which is a first-order
+
+  performance decision for MoE models (DeepSeek, Qwen-MoE, etc.).
+
+
+  Additionally, --moe-backend interacts with speculative decoding: SpeculativeConfig.moe_backend
+
+  (vllm/config/speculative.py:407) lets the draft model use a different MoE backend than the
+
+  target. In vllm/v1/spec_decode/llm_base_proposer.py:1280 and
+
+  vllm/v1/worker/gpu/spec_decode/eagle/utils.py:79, when spec_cfg.moe_backend is set the
+
+  draft VllmConfig''s kernel_config.moe_backend is replaced, so the drafter can run an
+
+  unquantized MoE kernel while the generator runs a quantized one. On Ascend the v2 MTP
+
+  speculator path (test_mtp_pcp_speculator_v2.py:378) exercises the same override, meaning
+
+  the draft model''s MoE backend is independently configurable and affects draft-model
+
+  latency and memory.
+
+  '
+usage_locations:
+- file: vllm/config/kernel.py:248
+  context: KernelConfig.moe_backend field definition with docstring listing all backend options; default 'auto'.
+- file: vllm/engine/arg_utils.py:1675
+  context: 'CLI registration: moe_backend_kwargs pulled from KernelConfig, type normalized to lower/snake_case, added as --moe-backend.'
+- file: vllm/config/speculative.py:407
+  context: SpeculativeConfig.moe_backend allows the draft model to override the target's MoE backend.
+- file: vllm/v1/spec_decode/llm_base_proposer.py:1280
+  context: Draft VllmConfig rebuilt with kernel_config.moe_backend = spec_cfg.moe_backend when set.
+- file: vllm/v1/worker/gpu/spec_decode/eagle/utils.py:79
+  context: EAGLE draft model load replaces kernel_config.moe_backend so unquantized drafter does not inherit a quantized backend.
+- file: vllm/v1/worker/gpu_worker.py:1529
+  context: override_envs_for_eplb reads kernel_config.moe_backend to set EPLB-related env vars.
+- file: vllm_ascend/_310p/quantization/modelslim_config.py:97
+  context: Ascend 310P quantization config reads moe_config.moe_backend to select the fused-MoE quant method for RoutedExperts
+    layers.
+- file: vllm_ascend/tests/ut/worker/test_mtp_pcp_speculator_v2.py:378
+  context: Ascend v2 MTP speculator propagates spec_config.moe_backend into the draft model's kernel_config.
+related_parameters:
+- name: --linear-backend
+  relation: Sibling KernelConfig field selecting linear-layer kernels; together they define the full compute backend stack.
+- name: --quantization
+  relation: Quantized MoE backends (deep_gemm, modelslim INT8/W8A8) require a matching quantization scheme; backend and quant
+    method must be compatible.
+- name: --speculative-config / --spec-method
+  relation: SpeculativeConfig.moe_backend lets the draft model override the target's --moe-backend; relevant for MTP/EAGLE
+    drafters.
+- name: --enable-expert-parallel
+  relation: Some backends (e.g. flashinfer_moe_ep_mega_deep_gemm) require expert parallel; EP changes which MoE kernels are
+    valid.
+- name: --enable-eplb
+  relation: EPLB env override reads moe_backend (gpu_worker.py:1529); backend choice can affect EPLB behavior.
+constraints:
+- flashinfer_moe_ep_mega_deep_gemm is only supported for DeepSeek-V4 models and requires expert parallel; using it with other
+  architectures raises a ValueError.
+- deep_gemm and deep_gemm_mega_moe require FP8 block-quantized checkpoints; they cannot be used with unquantized or non-FP8-block
+  models.
+- flashinfer_cutedsl is FP4-only and flashinfer_b12x / b12x are restricted to SM12x hardware (RTX Pro 6000 / DGX Spark), which
+  do not exist on Ascend NPU.
+- The value is normalized to lowercase with hyphens replaced by underscores, so 'deep-gemm' and 'deep_gemm' are equivalent.
+- When SpeculativeConfig.moe_backend is None, the draft model inherits the target model's --moe-backend; if the drafter is
+  unquantized and the inherited backend is quantized, model loading fails.
+tuning_advice:
+  summary: Leave --moe-backend at 'auto' on Ascend so vllm-ascend selects the Ascend-native fused-MoE kernel matching the
+    model's quantization; only override for speculative drafters or when benchmarking a specific Ascend MoE kernel.
+  suggested_values:
+  - scenario: Default MoE model deployment on Ascend NPU (DeepSeek/Qwen-MoE, quantized or not)
+    value: auto
+    reason: Lets vllm-ascend pick the Ascend-native fused-MoE kernel and matching quant method; avoids selecting GPU-only
+      backends that do not exist on Da Vinci.
+  - scenario: Speculative decoding with quantized target and unquantized draft model
+    value: auto
+    reason: Set SpeculativeConfig.moe_backend (via --speculative-config) to 'auto' so the drafter does not inherit the target's
+      quantized backend and fail to load.
+  - scenario: Benchmarking a specific Ascend fused-MoE kernel
+    value: auto
+    reason: Start from 'auto' as the baseline, then compare against explicitly named Ascend kernels if exposed; upstream GPU
+      names are not valid Ascend kernels.
+  caveats:
+  - Do not set GPU-specific backends (cutlass, flashinfer_*, deep_gemm) on Ascend; they are not implemented for the Da Vinci
+    architecture.
+  - Ensure the chosen backend is compatible with the model's quantization scheme; mismatches can cause load failures or silent
+    fallback to slower paths.
+  - For MTP/EAGLE drafters, configure SpeculativeConfig.moe_backend separately when the drafter's quantization differs from
+    the target.
+  quick_guide: Keep --moe-backend auto on Ascend; override only the speculative draft's moe_backend when its quantization
+    differs from the target.
+analysis_date: '2026-10-27'

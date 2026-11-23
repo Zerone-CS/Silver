@@ -1,0 +1,128 @@
+name: --quantization-config
+type: cli
+category: quantization
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:902
+- vllm/engine/arg_utils.py:577
+- vllm/engine/arg_utils.py:830
+- vllm/config/model.py:235
+- vllm/config/quantization.py:32
+- vllm/config/quantization.py:177
+- vllm_ascend/quantization/configs/compressed_tensors_config.py:45
+- vllm_ascend/_310p/quantization/modelslim_config.py:75
+- vllm_ascend/model_loader/rfork/identity.py:193
+value_type: dict
+default: null
+valid_choices: dict with keys linear, moe, targets, ignore; quant key names include fp8_per_tensor_static, fp8_per_tensor_dynamic,
+  fp8_per_token, fp8_per_channel_static, fp8_per_block_static, fp8_per_block_dynamic, mxfp8, mxfp4, int8_per_channel_static
+cli_example: '--quantization-config ''{"linear": "fp8_per_tensor_dynamic"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: '--quantization-config is the user-facing knob that selects the numeric precision
+
+  (and thus the compute/memory cost) of linear and MoE layers. In upstream vLLM it is
+
+  resolved in EngineArgs.create_engine_config via resolve_quantization_config()
+
+  (vllm/engine/arg_utils.py:830-834), which turns the dict/QuantizationConfigArgs into
+
+  a concrete QuantizationConfig. The chosen QuantKey (e.g. fp8_per_tensor_dynamic,
+
+  mxfp8, int8_per_channel_static) determines which quantized GEMM kernels are dispatched
+
+  per layer, directly changing matmul throughput, weight/activation memory footprint,
+
+  and whether dequant overhead is paid at runtime.
+
+  On Ascend, the resolved config is consumed by vllm-ascend''s registered quantization
+
+  configs: "AscendModelSlimConfig (registered under ASCEND_QUANTIZATION_METHOD, with a"
+
+  310P override at vllm_ascend/_310p/quantization/modelslim_config.py:75) and
+
+  AscendCompressedTensorsConfig (registered under COMPRESSED_TENSORS_METHOD at
+
+  vllm_ascend/quantization/configs/compressed_tensors_config.py:45). These map the
+
+  per-layer quant type to Ascend-native schemes (W8A8, W4A8, etc.) that run on the
+
+  Da Vinci Cube units, so the config choice governs whether the fast quantized NPU
+
+  kernels are used versus a slower unquantized fallback. The config also feeds the
+
+  rfork fingerprint digest (vllm_ascend/model_loader/rfork/identity.py:193), so changing
+
+  it re-keys weight-loading caches. Because it selects the actual compute precision of
+
+  the dominant GEMM/MoE ops, its impact on Ascend throughput and memory is high.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:902
+  context: CLI argument registration for --quantization-config in ModelConfig group
+- file: vllm/engine/arg_utils.py:830
+  context: resolve_quantization_config() converts the user dict into a QuantizationConfig at engine init
+- file: vllm/config/model.py:235
+  context: ModelConfig field carrying per-layer-kind QuantSpecs and ignore patterns
+- file: vllm/config/quantization.py:32
+  context: QUANT_KEY_NAMES maps user-facing quant key names to QuantKey kernel selectors
+- file: vllm/config/quantization.py:177
+  context: 'Validation: targets is mutually exclusive with linear/moe'
+- file: vllm_ascend/quantization/configs/compressed_tensors_config.py:45
+  context: AscendCompressedTensorsConfig registered for compressed_tensors method, consumes resolved config
+- file: vllm_ascend/_310p/quantization/modelslim_config.py:75
+  context: AscendModelSlimConfig310 registered for ASCEND_QUANTIZATION_METHOD, maps quant_type to 310P schemes
+- file: vllm_ascend/model_loader/rfork/identity.py:193
+  context: Quantization config digested into rfork fingerprint, re-keys weight loading
+related_parameters:
+- name: --quantization
+  relation: quantization_config is auto-populated from the matching online shorthand when --quantization is in ONLINE_QUANT_SHORTHAND_NAMES;
+    the two must be consistent
+- name: --allow-deprecated-quantization
+  relation: Gates whether deprecated quantization methods are permitted
+- name: --dtype
+  relation: When no quantization is applied, dtype determines weight data type; quantization_config overrides this for quantized
+    layers
+- name: --model
+  relation: HF model config's quantization_config attribute is used when --quantization is None
+constraints:
+- quantization_config.targets is mutually exclusive with quantization_config.linear and quantization_config.moe; specifying
+  both raises a ValueError.
+- Each targets key must be a valid online shorthand name or a regex prefixed with 're:'; invalid names or malformed regexes
+  raise a ValueError.
+- When --quantization is one of the ONLINE_QUANT_SHORTHAND_NAMES, quantization_config is auto-populated from that shorthand
+  and should not conflict with a manually supplied config.
+- On Ascend, the resolved quant type must be supported by the registered Ascend scheme registry; unsupported quant_type/layer_type
+  combinations raise NotImplementedError.
+tuning_advice:
+  summary: Use --quantization-config to select the fastest Ascend-supported quant scheme (e.g. W8A8/FP8) for linear and MoE
+    layers to maximize NPU Cube throughput and cut memory.
+  suggested_values:
+  - scenario: Throughput-oriented dense/MoE serving on Ascend 910B/910C with a W8A8 checkpoint
+    value: '{"linear": "int8_per_channel_static", "moe": "int8_per_channel_static"}'
+    reason: Selects Ascend-native W8A8 quantized GEMM/MoE kernels, the primary fast path on Da Vinci Cube units.
+  - scenario: FP8-capable hardware wanting dynamic activation scaling
+    value: '{"linear": "fp8_per_tensor_dynamic"}'
+    reason: Dynamic per-tensor FP8 avoids static calibration while keeping quantized matmul throughput.
+  - scenario: Mixed precision where only MoE layers are quantized (e.g. Kimi-K2-Thinking)
+    value: '{"targets": {"MoE": "int8_per_channel_static"}}'
+    reason: Docs instruct setting targets to MoE for the quantized Kimi-K2-Thinking checkpoint; targets is mutually exclusive
+      with linear/moe.
+  - scenario: Memory-constrained deployment needing weight compression
+    value: '{"linear": "mxfp4"}'
+    reason: Lower-bit weight quantization reduces NPU HBM footprint at some accuracy cost, if the Ascend scheme registry supports
+      it.
+  caveats:
+  - Verify the chosen quant key is supported by the Ascend scheme registry; unsupported combos raise NotImplementedError at
+    model build.
+  - Do not combine targets with linear/moe — it raises a ValueError.
+  - On 310P ensure packed_modules_mapping consistency to avoid fused-module fallback and NZ/transpose issues.
+  - Changing this value re-keys the rfork fingerprint and forces weight reload.
+  quick_guide: Set --quantization-config to the Ascend-supported W8A8/FP8 scheme matching your checkpoint to unlock quantized
+    NPU kernels; keep it consistent with --quantization.
+analysis_date: '2026-10-27'

@@ -1,0 +1,121 @@
+name: --enable-mamba-fine-grained-prefix-cache
+type: cli
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/config/cache.py:187
+- vllm/engine/arg_utils.py:741
+- vllm/engine/arg_utils.py:1315
+- vllm/v1/core/kv_cache_manager.py:151
+- vllm/v1/core/kv_cache_manager.py:190
+- vllm/v1/core/sched/scheduler.py:314
+- vllm/v1/core/single_type_kv_cache_manager.py:143
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --enable-mamba-fine-grained-prefix-cache
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag is a vLLM-upstream-only feature (no vllm-ascend override found in the
+
+  provided context). It is a prefix-caching implementation detail for hybrid
+
+  Mamba/attention models (e.g. Mamba2 + attention hybrids) running with EAGLE/MTP
+
+  speculative decoding.
+
+
+  Mechanism: "In vllm/v1/core/kv_cache_manager.py:189-198, the effective flag is"
+
+  narrowed to `enable_mamba_fine_grained_prefix_cache AND bool(coordinator.eagle_group_ids)
+
+  AND coordinator.enable_partial_hash_hits AND coordinator.num_reprefillable_tokens == 0`.
+
+  Only when all hold does it set `manager.fine_grained_prefix_cache = True` on the
+
+  MambaManager. The docstring (cache.py:188-192) states it registers an extra Mamba
+
+  "align" checkpoint at the shared-prefix junction where an EAGLE/MTP sibling resumes,
+
+  instead of only at the prompt tail. This lets a prefix-cache hit resume closer to the
+
+  true shared prefix rather than flooring back a whole Mamba block, reducing recomputed
+
+  prefill tokens (latency/throughput win on prefix-heavy workloads).
+
+
+  It is explicitly listed in the ignored_factors set of the cache config hash
+
+  (cache.py:271), so it does NOT change the compiled graph shape — no recompilation
+
+  or graph-cache invalidation. It only affects scheduler/KV-manager bookkeeping
+
+  (partial-hit copy-on-write, boundary-state offload records in
+
+  single_type_kv_cache_manager.py:143-159). The performance effect is therefore
+
+  workload-dependent and modest: "it only helps when there are EAGLE/MTP siblings"
+
+  sharing a prefix and a prefix match unit smaller than the Mamba block size.
+
+  On Ascend NPU this is a pure host-side scheduling/cache-management optimization;
+
+  it does not touch HCCL/CANN kernels, so the Ascend-specific impact is limited to
+
+  the same reduced-prefill-recompute benefit, and only for Mamba-hybrid models with
+
+  EAGLE/MTP enabled.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:187
+  context: Field definition and docstring describing the align-checkpoint behavior and gating conditions.
+- file: vllm/engine/arg_utils.py:741
+  context: EngineArgs field mapping to CacheConfig.enable_mamba_fine_grained_prefix_cache.
+- file: vllm/engine/arg_utils.py:1315
+  context: CLI argument registration under the CacheConfig argument group.
+- file: vllm/v1/core/kv_cache_manager.py:190
+  context: 'Narrowing predicate: requires eagle_group_ids, partial hash hits, and zero repreffillable tokens.'
+- file: vllm/v1/core/sched/scheduler.py:314
+  context: Scheduler passes cache_config.enable_mamba_fine_grained_prefix_cache into KVCacheManager.
+- file: vllm/v1/core/single_type_kv_cache_manager.py:143
+  context: Per-manager fine_grained_prefix_cache flag, only set on EAGLE Mamba align groups.
+related_parameters:
+- name: --mamba-cache-mode
+  relation: Only takes effect when set to 'align'.
+- name: --enable-prefix-caching
+  relation: Requires prefix caching to be enabled (mamba align mode is the prefix-caching default).
+- name: --prefix-match-unit
+  relation: Only effective when the prefix match unit is smaller than the Mamba block size.
+- name: --mamba-block-size
+  relation: The Mamba block grid the fine-grained checkpoint refines; must be larger than prefix match unit.
+- name: --speculative-config
+  relation: Requires EAGLE/MTP speculative decoding on the Mamba group (eagle_group_ids non-empty).
+constraints:
+- Only takes effect when --mamba-cache-mode is 'align'.
+- Requires EAGLE/MTP speculative decoding to be active on the Mamba group.
+- Requires a prefix match unit smaller than the Mamba block size.
+- Requires partial hash hits to be enabled and zero repreffillable tokens (multi-module MTP is excluded).
+- Has no effect when prefix caching is disabled.
+tuning_advice:
+  summary: Enable only for Mamba-hybrid models with EAGLE/MTP speculative decoding and prefix-heavy traffic to reduce prefill
+    recompute at shared-prefix junctions.
+  suggested_values:
+  - scenario: Mamba-hybrid model + EAGLE/MTP + prefix caching with mamba-cache-mode align and prefix-match-unit < mamba-block-size,
+      prefix-heavy workload
+    value: true
+    reason: Registers an extra align checkpoint at the EAGLE sibling resume point, letting prefix hits resume closer to the
+      true shared prefix and reducing recomputed prefill tokens.
+  - scenario: Pure-attention model, or no speculative decoding, or prefix caching disabled
+    value: false
+    reason: The feature is gated off by the narrowing predicate and provides no benefit; leaving it off avoids unnecessary
+      bookkeeping.
+  caveats:
+  - Verify --mamba-cache-mode is 'align' and EAGLE/MTP is configured, otherwise the flag is silently a no-op.
+  - On Ascend NPU this is a host-side scheduling optimization only; it does not change NPU kernels or HCCL behavior.
+  - Measure end-to-end prefill latency/throughput before and after; gains appear only with shared-prefix EAGLE siblings.
+  quick_guide: Enable for Mamba-hybrid + EAGLE/MTP + prefix-heavy workloads; otherwise leave default false.
+analysis_date: '2026-10-27'

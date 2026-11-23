@@ -1,0 +1,83 @@
+name: additional_config.enable_sp_by_pass
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:640
+- vllm_ascend/ascend_config.py:556
+value_type: bool
+default: false
+valid_choices: bool (true/false); derived field, not user-settable
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'enable_sp_by_pass is declared in the AscendConfig pydantic model as a derived
+
+  field (vllm_ascend/ascend_config.py:640) with a sentinel default of False. The
+
+  class docstring explicitly lists it among "Pure-derived fields computed
+
+  automatically and not user-settable" (vllm_ascend/ascend_config.py:555-557),
+
+  alongside pd_tp_ratio, pd_head_ratio and num_head_replica. Because the model
+
+  uses ConfigDict(extra="forbid"), a user cannot meaningfully set this key via
+
+  additional_config — it is overwritten by the derivation logic during
+
+  init_ascend_config / derive_and_validate. The name suggests a sequence-parallel
+
+  (SP) bypass path, i.e. skipping an SP all-gather/reduce-scatter communication
+
+  step when the SP layout permits, which would reduce communication overhead and
+
+  latency in SP-enabled deployments. However, no usage site for this field was
+
+  found in the provided context (the "Additional usage locations" section is
+
+  empty), so the actual runtime effect cannot be confirmed from source. Its
+
+  performance impact is therefore assessed as low and indirect: "it is a"
+
+  derived internal switch whose value is determined by other configuration
+
+  (SP/TP layout, model, hardware), not a knob users tune directly.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:640
+  context: Field declaration in AscendConfig; sentinel default False, overwritten by derivation.
+- file: vllm_ascend/ascend_config.py:556
+  context: Docstring lists enable_sp_by_pass as a pure-derived, non-user-settable field.
+related_parameters:
+- name: enable_shared_expert_dp
+  relation: Sibling derived field in the same 'derived fields' block; both computed from parallel/model config.
+- name: pd_tp_ratio
+  relation: Another pure-derived field listed alongside enable_sp_by_pass as non-user-settable.
+- name: pd_head_ratio
+  relation: Another pure-derived field listed alongside enable_sp_by_pass as non-user-settable.
+- name: num_head_replica
+  relation: Another pure-derived field listed alongside enable_sp_by_pass as non-user-settable.
+- name: tensor_parallel_size
+  relation: SP/TP layout is the likely input from which the SP bypass decision is derived.
+constraints:
+- enable_sp_by_pass is a pure-derived field and is not user-settable; setting it in additional_config has no effect because
+  it is overwritten during config derivation.
+- AscendConfig uses extra='forbid', so unknown or misspelled keys in additional_config raise a validation error at startup.
+tuning_advice:
+  summary: Do not set enable_sp_by_pass manually; it is a derived internal switch whose value follows from the SP/TP layout
+    and model configuration.
+  suggested_values:
+  - scenario: Any deployment — leave unset and let derivation compute it
+    value: false
+    reason: The field is documented as pure-derived and not user-settable; the sentinel default False is overwritten by init_ascend_config
+      based on parallel/model config.
+  caveats:
+  - Setting this key in additional_config has no effect and may be confusing; rely on the derivation logic.
+  - If SP-related communication overhead is a concern, tune the actual parallel configuration (tensor-parallel-size, prefill-context-parallel-size)
+    rather than this derived flag.
+  quick_guide: Leave enable_sp_by_pass unset — it is derived automatically and not a user-tunable knob.
+analysis_date: '2026-10-27'

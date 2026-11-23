@@ -1,0 +1,61 @@
+name: attention.tq_max_kv_splits_for_cuda_graph
+type: nested
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/v1/attention/backends/turboquant_attn.py:240
+- vllm/v1/attention/backends/turboquant_attn.py:358
+value_type: int
+default: <computed>
+valid_choices: positive integer; must be large enough to cover the maximum number of KV splits needed for the configured max_model_len
+  and block_size
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: "This parameter is only read by the TurboQuant attention backend\n(vllm/v1/attention/backends/turboquant_attn.py),\
+  \ which is a GPU-oriented\nbackend (references flash-attn FA2/3/4, FlyDSL, gfx950). It is NOT referenced\nanywhere in vllm-ascend,\
+  \ and there is no Ascend TurboQuant backend, so on\nAscend NPU this parameter has no runtime effect.\n\nIn the upstream\
+  \ code path it serves two purposes:\n1. At line 240 (_reserve_workspace) it sizes a workspace buffer of shape\n   (max_num_reqs,\
+  \ num_heads, max_num_splits, head_size + 1) in float32 via\n   the workspace manager. A larger value inflates the pre-allocated\
+  \ workspace\n   and thus the memory estimate.\n2. At line 358 it fixes self.max_num_kv_splits so that the decode kernel\
+  \ grid\n   dimension is constant across CUDA graph captures (required for cudagraph\n   correctness) and, per the code comment,\
+  \ benchmarks show no regression vs a\n   dynamic split count in eager mode.\n\nBecause the value is fixed rather than computed\
+  \ dynamically, it trades a small\namount of extra workspace memory for cudagraph-compatible constant grid\ndimensions. On\
+  \ Ascend this whole mechanism is absent.\n"
+usage_locations:
+- file: vllm/v1/attention/backends/turboquant_attn.py:240
+  context: Read in _reserve_workspace to size the float32 split workspace buffer (max_num_reqs, num_heads, max_num_splits,
+    head_size+1).
+- file: vllm/v1/attention/backends/turboquant_attn.py:358
+  context: Read in backend __init__ to set self.max_num_kv_splits, fixing the decode kernel grid dimension for cudagraph capture.
+related_parameters:
+- name: scheduler_config.max_num_seqs
+  relation: Multiplies the workspace buffer size (max_num_reqs dimension).
+- name: model_config.max_model_len
+  relation: Determines the number of KV splits actually needed; the fixed split count must be large enough to cover it.
+- name: kv_cache_spec.block_size
+  relation: Together with max_model_len determines the required number of KV splits.
+- name: compilation_config.cudagraph_mode
+  relation: The fixed split count exists to keep grid dimensions constant for CUDA graph capture.
+constraints:
+- Only used by the TurboQuant attention backend; it has no effect with any other attention backend.
+- The value must be large enough to cover the maximum number of KV splits required by the configured max_model_len and block_size,
+  otherwise decode results may be incorrect.
+- The value must be a positive integer.
+tuning_advice:
+  summary: No tuning needed on Ascend NPU; this parameter only affects the GPU-only TurboQuant backend.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any attention backend)
+    value: leave at default
+    reason: vllm-ascend does not implement the TurboQuant backend, so this parameter is never read and has no effect.
+  - scenario: Upstream GPU with TurboQuant backend and cudagraph enabled
+    value: default (computed to cover max_model_len/block_size)
+    reason: The default is sized to cover the required split count while keeping grid dimensions constant for cudagraph capture.
+  caveats:
+  - Do not lower this value below the number of KV splits required by max_model_len, or decode correctness may suffer.
+  - Raising it increases workspace memory usage on the GPU path.
+  quick_guide: Ignore on Ascend; only relevant to the GPU TurboQuant backend.
+analysis_date: '2026-10-27'

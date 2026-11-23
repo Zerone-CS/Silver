@@ -1,0 +1,87 @@
+name: --convert
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:879
+- vllm/engine/arg_utils.py:443
+- vllm/config/model.py:138
+value_type: str
+default: auto
+valid_choices: ConvertOption literal (e.g. 'auto', 'embedding', 'classify', 'reward', 'score', or adapter names defined in
+  vllm.model_executor.models.adapters)
+cli_example: --convert <adapter>
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- throughput
+impact_detail: '--convert selects a model adapter (from vllm.model_executor.models.adapters) that
+
+  re-targets a text-generation checkpoint for pooling/embedding/classification tasks.
+
+  It is a ModelConfig field (vllm/config/model.py:138, default "auto") surfaced as a CLI
+
+  flag in EngineArgs.add_cli_args (vllm/engine/arg_utils.py:879) and stored on EngineArgs
+
+  (arg_utils.py:443). The value influences which model class/architecture is instantiated
+
+  and therefore the model''s forward path (e.g. dropping the LM head and running a pooler
+
+  instead of autoregressive decode). This changes the compute graph and memory footprint
+
+  (no KV-cache-heavy decode loop for pooling tasks, different output head), which can
+
+  indirectly affect throughput and memory, but the flag itself does not tune any runtime
+
+  kernel, scheduling, or communication parameter. On Ascend, vllm-ascend does not override
+
+  or patch this parameter; the only related Ascend code is the model-architecture config
+
+  convertor registration (vllm_ascend/patch/platform/patch_deepseek_v4_vision.py) which is
+
+  a separate mechanism (MODEL_ARCH_CONFIG_CONVERTORS) unrelated to --convert. Hence the
+
+  performance impact is low and indirect.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:138
+  context: ModelConfig.convert field definition with docstring describing adapter-based conversion
+- file: vllm/engine/arg_utils.py:443
+  context: EngineArgs.convert field sourced from ModelConfig.convert
+- file: vllm/engine/arg_utils.py:879
+  context: CLI argument registration for --convert in the ModelConfig argument group
+related_parameters:
+- name: --runner
+  relation: Both select the model runner/task type; convert adapts a generation model for pooling while runner picks the runner
+    class
+- name: --task
+  relation: Pooling/embedding task selection interacts with the adapter chosen by --convert
+- name: --model
+  relation: The adapter is applied to the checkpoint specified by --model
+constraints:
+- The value must be a valid ConvertOption / adapter name recognized by vllm.model_executor.models.adapters, otherwise model
+  loading fails.
+- The chosen adapter must be compatible with the model architecture of --model; incompatible combinations raise errors during
+  model construction.
+tuning_advice:
+  summary: Leave --convert at its default 'auto' for standard generation serving; only set it when intentionally repurposing
+    a generation checkpoint for pooling/embedding/classification tasks.
+  suggested_values:
+  - scenario: Standard text-generation serving on Ascend NPU
+    value: auto
+    reason: Default lets vLLM infer the correct model class; no adapter overhead and no change to the decode path.
+  - scenario: Serving a generation checkpoint as an embedding/pooling model
+    value: embedding
+    reason: Selects the pooling adapter so the model runs a pooler instead of autoregressive decode, avoiding KV-cache decode
+      overhead.
+  caveats:
+  - vllm-ascend does not override --convert; behavior follows upstream vLLM, so Ascend-specific tuning does not apply to this
+    flag.
+  - Changing the adapter alters the model forward graph and memory footprint; re-validate max-model-len and KV-cache sizing
+    after switching tasks.
+  - Do not confuse --convert with the Ascend MODEL_ARCH_CONFIG_CONVERTORS registration in vllm_ascend/patch/platform/patch_deepseek_v4_vision.py,
+    which is an internal architecture-routing mechanism, not this CLI flag.
+  quick_guide: Keep --convert auto unless you are deliberately converting a generation model into a pooling/embedding model.
+analysis_date: '2026-10-27'

@@ -1,0 +1,113 @@
+name: ASCEND_TRANSFER_TIMEOUT
+type: env
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/utils/utils.py:88
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:88
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2122
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1651
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:1198
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/worker.py:615
+value_type: int
+default: <computed>
+valid_choices: Any positive integer (milliseconds); if unset, derived from HCCL_RDMA_TIMEOUT and HCCL_RDMA_RETRY_CNT
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ASCEND_TRANSFER_TIMEOUT is a vllm-ascend-only environment variable (no upstream vLLM
+
+  equivalent) that sets the transfer-engine timeout, in milliseconds, for KV-cache
+
+  P2P transfers in the Mooncake / MemFabric KV connectors. It is read by
+
+  get_transfer_timeout_value() in vllm_ascend/distributed/kv_transfer/utils/utils.py:88.
+
+  If the env var is set (non-empty), its integer value is returned directly. If unset,
+
+  the value is computed from the HCCL RDMA settings as
+
+  int((4.096 * (2**HCCL_RDMA_TIMEOUT)) * HCCL_RDMA_RETRY_CNT // 1000 + 3000), with
+
+  HCCL_RDMA_TIMEOUT defaulting to 20 and HCCL_RDMA_RETRY_CNT defaulting to 7.
+
+  Every Mooncake-family worker constructor (base_worker.py:88, mooncake_connector.py:2122,
+
+  mooncake_hybrid_connector.py:1651, mooncake_layerwise_connector.py:1198) and the
+
+  SFA PD RD2H producer worker (sfa_pd_rd2h/worker.py:615) writes
+
+  os.environ["ASCEND_TRANSFER_TIMEOUT"] = str(get_transfer_timeout_value()) before
+
+  constructing the transfer engine, so the value is consumed by the underlying
+
+  Mooncake/MemFabric transfer engine at engine construction time.
+
+  Performance mechanism: "the timeout bounds how long a KV transfer (put/get/read)"
+
+  may block before failing. A too-small timeout causes premature transfer failures
+
+  and retries under network jitter or large-batch KV transfers, hurting effective
+
+  throughput and tail latency in P/D-disaggregated deployments. A too-large timeout
+
+  means a genuinely stalled transfer blocks the request pipeline for longer before
+
+  failing over, increasing worst-case latency. It does not affect steady-state
+
+  per-token compute, so impact is medium (indirect, only on the KV-transfer path).
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:88
+  context: get_transfer_timeout_value() reads ASCEND_TRANSFER_TIMEOUT; falls back to HCCL_RDMA_TIMEOUT/HCCL_RDMA_RETRY_CNT-derived
+    value
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:88
+  context: MooncakeBaseConnectorWorker.__init__ writes env var before transfer engine construction
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2122
+  context: MooncakeConnectorWorker.__init__ writes env var before transfer engine construction
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1651
+  context: MooncakeConnectorWorker (hybrid) writes env var before transfer engine construction
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:1198
+  context: MooncakeLayerwiseConnectorWorker.__init__ writes env var before transfer engine construction
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/worker.py:615
+  context: SFAPDRD2HProducerWorker.__init__ writes env var; memfabric engine reads it during construction
+related_parameters:
+- name: ASCEND_CONNECT_TIMEOUT
+  relation: Sibling timeout; mooncake_master default_kv_lease_ttl must be larger than both
+- name: HCCL_RDMA_TIMEOUT
+  relation: Used to compute the default ASCEND_TRANSFER_TIMEOUT when the env var is unset
+- name: HCCL_RDMA_RETRY_CNT
+  relation: Used to compute the default ASCEND_TRANSFER_TIMEOUT when the env var is unset
+- name: default_kv_lease_ttl
+  relation: mooncake_master lease TTL must be larger than ASCEND_TRANSFER_TIMEOUT
+constraints:
+- The value must be a valid integer string; a non-numeric value causes int() to raise ValueError in get_transfer_timeout_value().
+- mooncake_master's default_kv_lease_ttl must be larger than ASCEND_TRANSFER_TIMEOUT (and ASCEND_CONNECT_TIMEOUT), otherwise
+  KV get operations can fail.
+tuning_advice:
+  summary: Set ASCEND_TRANSFER_TIMEOUT explicitly to a value comfortably above expected KV transfer latency but below the
+    mooncake_master lease TTL, especially in P/D-disaggregated Mooncake deployments.
+  suggested_values:
+  - scenario: Stable high-bandwidth RDMA fabric, small-to-medium KV batches
+    value: 10000
+    reason: 10s gives ample headroom over normal transfer latency while still failing over reasonably fast; matches the e2e
+      test configuration.
+  - scenario: Large KV batches or congested/jittery network
+    value: 30000
+    reason: Larger timeout avoids spurious transfer failures and retries that would otherwise reduce throughput.
+  - scenario: Leave unset to inherit HCCL-derived default
+    value: <unset>
+    reason: When unset, the value is computed from HCCL_RDMA_TIMEOUT and HCCL_RDMA_RETRY_CNT, keeping it consistent with the
+      HCCL RDMA retry budget.
+  caveats:
+  - Ensure mooncake_master --default_kv_lease_ttl is larger than ASCEND_TRANSFER_TIMEOUT to avoid KV get failures.
+  - This env var only affects the KV-transfer path; it does not change per-token compute performance.
+  - The worker constructors overwrite the env var with get_transfer_timeout_value(), so setting it externally is only meaningful
+    if it is read before the worker is constructed (it is, since get_transfer_timeout_value reads the env var).
+  quick_guide: For Mooncake P/D disaggregation, set ASCEND_TRANSFER_TIMEOUT to ~10000-30000 ms and keep mooncake_master default_kv_lease_ttl
+    larger than it.
+analysis_date: '2026-10-27'

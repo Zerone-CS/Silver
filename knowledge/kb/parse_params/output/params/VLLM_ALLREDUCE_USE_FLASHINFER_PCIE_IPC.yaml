@@ -1,0 +1,65 @@
+name: VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1866
+- vllm/envs.py:268
+- vllm/distributed/device_communicators/cuda_communicator.py:68
+- vllm/model_executor/warmup/kernel_warmup.py:243
+value_type: bool
+default: false
+valid_choices: 0 or 1 (boolean via int parsing)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This env var gates FlashInfer's single-node PCIe CUDA-IPC all-reduce backend in\nupstream vLLM. It is read\
+  \ in two places:\n1. vllm/distributed/device_communicators/cuda_communicator.py:68 — when the\n   process group is a TP\
+  \ group (unique_name split on ':' equals 'tp') and\n   VLLM_BATCH_INVARIANT is off, use_flashinfer_pcie_ipc_allreduce is\
+  \ set to the\n   env value. This selects the FlashInfer PCIe IPC all-reduce implementation for\n   tensor-parallel collectives.\n\
+  2. vllm/model_executor/warmup/kernel_warmup.py:243 — if enabled, it imports\n   flashinfer_pcie_ipc_all_reduce and runs\
+  \ warmup_flashinfer_pcie_ipc_allreduce\n   to allocate the decode-sized workspace, autotune cache misses, and resolve\n\
+  \   CUDA Graph buckets before capture.\nThe mechanism is entirely CUDA-specific: \"it relies on FlashInfer's CUDA-IPC\"\n\
+  (PCIe peer-to-peer) transport and CUDA Graph capture. On Ascend NPU, collectives\nare handled by HCCL (via vllm-ascend's\
+  \ Ascend communicator / HCCL all-reduce),\nnot by FlashInfer CUDA-IPC. There is no vllm-ascend code path that reads this\n\
+  env var, and the CUDA communicator path is not used on NPU. Therefore on Ascend\nthis parameter has no runtime effect on\
+  \ latency, throughput, or memory — it is\neffectively a no-op. Its performance impact is only meaningful on NVIDIA GPUs\n\
+  with PCIe-connected devices.\n"
+usage_locations:
+- file: vllm/distributed/device_communicators/cuda_communicator.py:68
+  context: Selects FlashInfer PCIe IPC all-reduce for TP groups when enabled and batch-invariant is off
+- file: vllm/model_executor/warmup/kernel_warmup.py:243
+  context: Runs FlashInfer PCIe IPC all-reduce warmup (workspace alloc, autotune, CUDA Graph bucket resolution)
+- file: vllm/envs.py:1866
+  context: Environment variable definition and default (0)
+related_parameters:
+- name: VLLM_ALLREDUCE_USE_FLASHINFER
+  relation: Sibling FlashInfer all-reduce toggle; both are disabled when VLLM_BATCH_INVARIANT is set
+- name: VLLM_ALLREDUCE_USE_SYMM_MEM
+  relation: Alternative symmetric-memory all-reduce backend; mutually exclusive selection among all-reduce backends
+- name: VLLM_BATCH_INVARIANT
+  relation: When enabled, forces use_flashinfer_pcie_ipc_allreduce to False regardless of this env var
+constraints:
+- Only takes effect for tensor-parallel (tp) process groups; for non-tp groups the flag is forced to False.
+- Has no effect when VLLM_BATCH_INVARIANT is enabled, because the flag is ANDed with not VLLM_BATCH_INVARIANT.
+- Requires FlashInfer with CUDA-IPC support and PCIe-connected devices; it is a CUDA-only backend and is not used on Ascend
+  NPU.
+tuning_advice:
+  summary: Leave at default (0) on Ascend NPU; this CUDA-IPC all-reduce backend is not applicable to HCCL-based Ascend collectives.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: 0
+    reason: vllm-ascend uses HCCL for all-reduce and never reads this env var; enabling it has no effect and only risks confusion.
+  - scenario: NVIDIA GPU single-node PCIe deployment (upstream reference, not Ascend)
+    value: 0
+    reason: Upstream default is 0 because the backend is still being qualified and has a strict single-stream contract; only
+      enable after validating correctness.
+  caveats:
+  - Do not expect any throughput or latency change on Ascend from toggling this variable.
+  - For Ascend communication tuning, focus on HCCL-related settings and vllm-ascend communication env vars instead.
+  quick_guide: Keep VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=0 on Ascend; it is a CUDA-only FlashInfer backend with no effect
+    on NPU.
+analysis_date: '2026-10-27'

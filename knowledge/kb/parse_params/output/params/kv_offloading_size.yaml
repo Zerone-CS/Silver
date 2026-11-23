@@ -1,0 +1,109 @@
+name: --kv-offloading-size
+type: cli
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/config/cache.py:237
+- vllm/engine/arg_utils.py:1323
+- vllm/engine/arg_utils.py:777
+- vllm/engine/arg_utils.py:2121
+- vllm/config/vllm.py:1038
+- vllm/config/vllm.py:1055
+value_type: float
+default: null
+valid_choices: Any positive float (GiB); None disables KV offloading
+cli_example: --kv-offloading-size 4.0
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This is an upstream vLLM parameter (vllm/config/cache.py:237, CacheConfig.kv_offloading_size).
+
+  No vllm-ascend override or reference was found in the provided context, so on Ascend it flows
+
+  through the same upstream path: "EngineArgs -> CacheConfig -> VllmConfig._post_init_kv_transfer_config"
+
+  (vllm/config/vllm.py:1038-1066). When set to a non-None value, vLLM enables KV cache offloading
+
+  to CPU by auto-configuring KVTransferConfig: "for the \"native\" backend it selects"
+
+  "OffloadingConnector" (or "SimpleCPUOffloadConnector" when VLLM_USE_SIMPLE_KV_OFFLOAD is set) and
+
+  writes cpu_bytes_to_use = kv_offloading_size * (1 << 30) into kv_connector_extra_config
+
+  (vllm/config/vllm.py:1055). For the "lmcache" backend it selects "LMCacheMPConnector" and does
+
+  NOT propagate the size (capacity owned by the standalone LMCache server).
+
+  Performance mechanism: "enabling offloading adds a CPU-side KV cache tier. This can increase"
+
+  effective KV cache capacity (allowing larger batches / higher concurrency and thus higher
+
+  throughput when NPU HBM KV cache is the bottleneck), but every offload/reload of KV blocks
+
+  moves data over PCIe/host interconnect between NPU HBM and CPU DRAM, adding latency and
+
+  consuming host memory and PCIe bandwidth. On Ascend NPU, HBM is typically the scarce resource,
+
+  so offloading can help long-context / high-concurrency serving, but the NPU<->CPU copy path
+
+  (via host memory, not HCCL) becomes a new bottleneck. The parameter itself does not change
+
+  compute kernels or graph capture; it changes the KV cache tiering and connector selection.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:237
+  context: CacheConfig field definition and docstring; None disables offloading
+- file: vllm/engine/arg_utils.py:1323
+  context: CLI flag --kv-offloading-size registered in CacheConfig argument group
+- file: vllm/engine/arg_utils.py:777
+  context: EngineArgs field mirroring CacheConfig.kv_offloading_size
+- file: vllm/engine/arg_utils.py:2121
+  context: Passed into CacheConfig construction in create_engine_config
+- file: vllm/config/vllm.py:1038
+  context: Early return when kv_offloading_size is None (offloading disabled)
+- file: vllm/config/vllm.py:1055
+  context: Sets cpu_bytes_to_use = kv_offloading_size * (1 << 30) for native backend
+related_parameters:
+- name: --kv-offloading-backend
+  relation: Selects the offloading backend (native/lmcache); offloading only activates when --kv-offloading-size is set. For
+    lmcache the size is not propagated.
+- name: --gpu-memory-utilization
+  relation: Determines NPU HBM KV cache size; offloading supplements it with CPU memory when HBM is exhausted.
+- name: --kv-cache-memory-bytes
+  relation: Alternative explicit control of NPU KV cache size; offloading adds a CPU tier on top.
+- name: --enable-prefix-caching
+  relation: Offloaded KV blocks can be reused across requests; prefix caching interacts with offload hit behavior.
+- name: VLLM_USE_SIMPLE_KV_OFFLOAD
+  relation: Env var that switches native backend connector from OffloadingConnector to SimpleCPUOffloadConnector.
+constraints:
+- KV offloading is only activated when --kv-offloading-size is set; if it is None the backend setting is ignored and no offloading
+  occurs.
+- When --kv-offloading-backend is lmcache, --kv-offloading-size is not propagated to the connector; capacity is managed by
+  the standalone LMCache server.
+- The value is interpreted in GiB and converted to bytes via kv_offloading_size * (1 << 30) for the native backend.
+- When TP > 1, the value is the total buffer size summed across all TP ranks, not per-rank.
+tuning_advice:
+  summary: Enable KV offloading with a modest CPU buffer only when NPU HBM KV cache is the throughput bottleneck (long context
+    / high concurrency); otherwise leave it unset to avoid host-copy latency.
+  suggested_values:
+  - scenario: Default / latency-sensitive serving where HBM KV cache is sufficient
+    value: unset
+    reason: Leaving --kv-offloading-size unset disables offloading entirely, avoiding NPU<->CPU KV copy overhead and host
+      memory usage.
+  - scenario: Long-context or high-concurrency serving where NPU HBM KV cache limits batch size
+    value: 4.0
+    reason: A small CPU buffer (a few GiB) can hold evicted KV blocks and raise effective concurrency/throughput; start small
+      and measure latency impact.
+  - scenario: Multi-rank TP deployment
+    value: 8.0
+    reason: When TP > 1 the value is the total across all TP ranks, so size it as the aggregate CPU buffer you can afford
+      on the host.
+  caveats:
+  - Measure end-to-end latency after enabling; offload/reload copies can dominate for short requests.
+  - Ensure host DRAM has room for the configured buffer plus other host processes.
+  - Verify the chosen --kv-offloading-backend is supported by your vllm-ascend version before relying on it.
+  quick_guide: Leave unset unless HBM KV cache is the bottleneck; then set a few GiB and watch latency.
+analysis_date: '2026-10-27'

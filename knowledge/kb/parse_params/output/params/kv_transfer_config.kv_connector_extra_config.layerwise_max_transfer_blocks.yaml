@@ -1,0 +1,84 @@
+name: kv_transfer_config.kv_connector_extra_config.layerwise_max_transfer_blocks
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:198
+value_type: int
+default: 0
+valid_choices: non-negative integer; 0 means no explicit block-row limit (unbounded batching)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is an Ascend-specific knob read only in vllm-ascend''s AscendStore KV pool scheduler
+
+  (vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:198). It is
+
+  parsed from kv_transfer_config.kv_connector_extra_config via
+
+  .get("layerwise_max_transfer_blocks", 0) and cast to int. Per the Mooncake layerwise
+
+  adaptation doc (section 4.3), it limits the number of key/block rows included in a single
+
+  range API call for layerwise KV transfer. PutStart, GetStart, GetEnd, and scheduler
+
+  `exists` queries are batched according to this block limit. The mechanism: without a cap,
+
+  a long prompt produces a very large contiguous range, which creates oversized Python/C++
+
+  argument lists and transient metadata spikes (memory) and can stall the transfer thread
+
+  (latency). Capping the rows per call bounds per-call argument-list size and metadata
+
+  footprint, trading a few extra round-trips for lower peak memory and more predictable
+
+  latency. It only affects the layerwise KV-transfer path (Mooncake layerwise connector),
+
+  not the core model forward/attention compute, so its impact is indirect (medium) and
+
+  scoped to KV-cache transfer latency and transient memory rather than steady-state
+
+  throughput.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:198
+  context: Reads kv_connector_extra_config.get('layerwise_max_transfer_blocks', 0) and stores as self.layerwise_max_transfer_blocks
+    for batching range API calls in the AscendStore pool scheduler.
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.layerwise_max_transfer_bytes
+  relation: Companion throttle that splits an oversized contiguous segment into smaller byte ranges; used together with the
+    block-row limit.
+- name: kv_transfer_config.kv_connector
+  relation: Only meaningful when a layerwise-capable KV connector (e.g. Mooncake layerwise) is selected; ignored otherwise.
+- name: kv_transfer_config.kv_role
+  relation: Layerwise transfer batching applies on both producer (PutStart) and consumer (GetStart/GetEnd/exists) sides.
+constraints:
+- The value must be parseable as an integer; a non-integer string raises ValueError at scheduler construction.
+- The parameter only takes effect when a layerwise KV connector (Mooncake layerwise) is configured; with other connectors
+  it is never read.
+- A value of 0 means no explicit block-row cap is applied to range API calls.
+tuning_advice:
+  summary: Set a moderate block-row cap for layerwise Mooncake KV transfer to bound per-call metadata and argument-list size
+    on long prompts, tuning alongside layerwise_max_transfer_bytes.
+  suggested_values:
+  - scenario: Long-prompt workloads with layerwise Mooncake KV transfer where metadata spikes are observed
+    value: 256
+    reason: Caps key/block rows per range API call, avoiding oversized argument lists and transient metadata spikes while
+      keeping round-trip count reasonable.
+  - scenario: Short-prompt / low-latency workloads where transfer overhead dominates
+    value: 0
+    reason: Leaving unbounded avoids extra round-trips when ranges are already small, minimizing per-request latency.
+  - scenario: Memory-constrained deployments with very large KV pools
+    value: 128
+    reason: Tighter cap further reduces transient metadata footprint at the cost of more range calls.
+  caveats:
+  - Tune together with layerwise_max_transfer_bytes; the two throttles jointly bound range call size.
+  - Too-small values increase round-trips and latency; too-large values reintroduce metadata spikes.
+  - Only relevant when a layerwise KV connector is configured; no effect otherwise.
+  quick_guide: For layerwise Mooncake KV transfer, set layerwise_max_transfer_blocks to ~128-256 to bound per-call metadata;
+    use 0 only for short prompts.
+analysis_date: '2026-10-27'

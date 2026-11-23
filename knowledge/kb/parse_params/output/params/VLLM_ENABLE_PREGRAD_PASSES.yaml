@@ -1,0 +1,76 @@
+name: VLLM_ENABLE_PREGRAD_PASSES
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:755
+- vllm/envs.py:177
+- vllm/compilation/compiler_interface.py:335
+value_type: bool
+default: true
+valid_choices: 0 or 1 (string parsed as == '1')
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag controls whether Inductor''s pre-grad passes run during torch.compile
+
+  compilation in vLLM. In vllm/compilation/compiler_interface.py:335, the code
+
+  checks `if is_torch_equal_or_newer("2.12.0.dev") or envs.VLLM_ENABLE_PREGRAD_PASSES:`.
+
+  When the flag is enabled (default "1"), a nullcontext is used and pre-grad passes
+
+  run normally. When disabled ("0") AND torch < 2.12, the code patches
+
+  `torch._inductor.compile_fx._recursive_pre_grad_passes` to a no-op lambda, skipping
+
+  the passes entirely. Per the code comments, these pre-grad passes "don''t do anything
+
+  for vLLM" but "get run even on cache-hit and negatively impact vllm cold compile
+
+  times by O(1s)". So disabling this flag can shave roughly ~1 second off cold compile
+
+  time. This is a compile-time (startup/warmup) latency effect only — it does NOT
+
+  affect steady-state token throughput or memory. On Ascend NPU, torch.compile is
+
+  used by vllm-ascend for graph capture/compilation paths, so the same cold-compile
+
+  savings apply, but there is no Ascend-specific override of this env var found in
+
+  the provided context. The effect is minor and only on first-time compilation.
+
+  '
+usage_locations:
+- file: vllm/envs.py:755
+  context: Env var definition; parsed as os.environ.get('VLLM_ENABLE_PREGRAD_PASSES', '1') == '1'
+- file: vllm/envs.py:177
+  context: 'Type annotation VLLM_ENABLE_PREGRAD_PASSES: bool = True'
+- file: vllm/compilation/compiler_interface.py:335
+  context: Gates whether pre-grad passes are patched out during standalone compile; skipped automatically on torch >= 2.12
+related_parameters:
+- name: VLLM_USE_STANDALONE_COMPILE
+  relation: Both are torch.compile feature flags; pregrad pass skipping only matters when compilation is active
+- name: VLLM_USE_MEGA_AOT_ARTIFACT
+  relation: Related AOT/standalone compile path in the same compiler_interface code block
+constraints:
+- The value is parsed as a string compared to '1'; any value other than '1' (including 'true') is treated as disabled.
+- On PyTorch 2.12.0.dev or newer the flag has no effect because pre-grad passes are already fixed upstream and the nullcontext
+  branch is always taken.
+tuning_advice:
+  summary: Leave at default (1) unless you want to shave ~1s off cold compile time on torch < 2.12; it has no steady-state
+    performance effect.
+  suggested_values:
+  - scenario: Default / production serving where correctness is paramount
+    value: '1'
+    reason: Keeps pre-grad passes enabled, matching upstream default and avoiding any risk of altered compiled graph behavior.
+  - scenario: Fast iteration / repeated cold compiles on torch < 2.12 where ~1s startup savings matter
+    value: '0'
+    reason: Patches out pre-grad passes that do nothing for vLLM, reducing cold compile time by O(1s).
+  caveats:
+  - No effect on torch >= 2.12.0.dev.
+  - Only impacts compile/startup latency, not token throughput or NPU memory.
+  quick_guide: Keep default 1; set to 0 only to trim ~1s cold compile time on older torch.
+analysis_date: '2026-10-27'

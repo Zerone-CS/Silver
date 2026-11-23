@@ -1,0 +1,95 @@
+name: speculative.use_heterogeneous_vocab
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/v1/spec_decode/draft_model.py:34
+- vllm/v1/spec_decode/llm_base_proposer.py:138
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter is only read in the upstream vLLM v1 draft-model proposer path
+
+  (vllm/v1/spec_decode/draft_model.py:34 and llm_base_proposer.py:138). It is NOT
+
+  defined or referenced anywhere in vllm-ascend, so on Ascend it retains upstream
+
+  behavior with no Ascend-specific override.
+
+
+  When enabled (draft_model.py:37-55), the proposer builds a VocabMapping at init
+
+  time by loading BOTH the target and draft tokenizers (get_tokenizer calls) and
+
+  computing a token-level intersection of the two vocabularies. This is a one-time
+
+  init cost (tokenizer loading + intersection computation), not a per-step cost.
+
+  The VocabMapping is then used to translate token IDs between the two tokenizers
+
+  and to constrain draft logits to the shared-token intersection (TLI algorithm)
+
+  so rejection sampling stays lossless.
+
+
+  Runtime effect: "constraining draft logits to the intersection adds a masking/"
+
+  gather step over the draft logits each speculative step, which is a small
+
+  per-step overhead relative to the draft forward pass. The main benefit is
+
+  enabling speculative decoding when draft and target models have different
+
+  vocabularies — without it, the code path calls _raise_if_vocab_size_mismatch()
+
+  (draft_model.py:57) and would error out. So the parameter is primarily a
+
+  correctness/enablement switch rather than a throughput lever; its performance
+
+  footprint is a modest init-time tokenizer load plus a small per-step logit
+
+  masking cost.
+
+  '
+usage_locations:
+- file: vllm/v1/spec_decode/draft_model.py:34
+  context: DraftModelProposer reads use_heterogeneous_vocab; if true builds VocabMapping from both tokenizers, else calls
+    _raise_if_vocab_size_mismatch()
+- file: vllm/v1/spec_decode/llm_base_proposer.py:138
+  context: SpecDecodeBaseProposer stores use_heterogeneous_vocab and initializes vocab_mapping to None
+related_parameters:
+- name: speculative.method
+  relation: Requires method='draft_model'; only the draft-model proposer path reads this flag
+- name: speculative.model
+  relation: Draft model whose tokenizer/vocab is intersected with the target model's
+- name: speculative.num_speculative_tokens
+  relation: Per-step logit-masking overhead scales with number of speculative steps
+constraints:
+- Only valid when speculative method is 'draft_model'; other speculative methods do not read this flag.
+- When disabled, the draft and target model vocab sizes must match or _raise_if_vocab_size_mismatch() raises an error.
+- Enabling requires both the target and draft model tokenizers to be loadable (get_tokenizer is called for each).
+tuning_advice:
+  summary: Enable only when the draft model's vocabulary differs from the target model's; otherwise leave disabled to avoid
+    extra init and per-step masking cost.
+  suggested_values:
+  - scenario: Draft and target models share the same tokenizer/vocabulary
+    value: false
+    reason: No intersection needed; avoids loading two tokenizers and per-step logit masking overhead.
+  - scenario: Draft model uses a different vocabulary than the target (e.g. cross-family draft)
+    value: true
+    reason: Required to enable draft-model speculative decoding without a vocab-size mismatch error; constrains draft logits
+      to the shared-token intersection for lossless rejection sampling.
+  caveats:
+  - Applies to the upstream vLLM v1 draft_model proposer path; vllm-ascend does not override it, so verify the draft-model
+    speculative path is actually supported on your Ascend build before relying on it.
+  - The tokenizer-loading and intersection cost is paid once at proposer init, so it does not scale with request count.
+  quick_guide: Set true only for draft-model speculation with mismatched vocabularies; otherwise false.
+analysis_date: '2026-10-27'

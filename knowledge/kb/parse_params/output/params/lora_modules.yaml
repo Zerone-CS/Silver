@@ -1,0 +1,110 @@
+name: --lora-modules
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/entrypoints/launchers/cli_args.py:75
+- vllm/entrypoints/launchers/cli_args.py:219
+- vllm/entrypoints/launchers/api_server/app_state.py:73
+- vllm/entrypoints/serve/utils/api_utils.py:304
+- vllm/entrypoints/openai/models/serving.py:97
+- vllm/entrypoints/openai/models/serving.py:127
+value_type: list[str]
+default: null
+valid_choices: Each entry is either 'name=path' or a JSON object with fields name, path, base_model_name (and optionally is_3d_lora_weight
+  for MoE adapters)
+cli_example: --lora-modules name=path
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: '--lora-modules registers static LoRA adapters that are loaded at server startup.
+
+  In vllm upstream, the value is parsed by LoRAParserAction (cli_args.py:219-220) into
+
+  a list of LoRAModulePath, then merged with default_mm_loras in process_lora_modules
+
+  (api_utils.py:304-322) and passed to OpenAIServingModels (serving.py:97). At startup,
+
+  init_static_loras (serving.py:124-139) iterates every registered adapter and calls
+
+  load_lora_adapter; if any load fails it raises ValueError, aborting server startup.
+
+  Each registered adapter consumes additional NPU memory for its LoRA weights (and for
+
+  the LoRA-enabled kernels'' workspace), which reduces the KV-cache budget available for
+
+  the base model and therefore indirectly affects throughput. At runtime, requests that
+
+  select an adapter via the `model` field trigger LoRA-augmented matmuls; the number of
+
+  adapters active in a single batch is bounded by --max-loras, and adapter rank is
+
+  bounded by --max-lora-rank. On Ascend, vllm-ascend implements LoRA through its own
+
+  Ascend-native LoRA kernels (per the vllm-ascend LoRA feature guide), so the per-adapter
+
+  memory footprint and the batched-LoRA compute cost are governed by the Ascend
+
+  implementation rather than the GPU path. The parameter itself does not change the
+
+  dispatch logic; it only determines how many adapters are resident and thus how much
+
+  NPU memory is reserved for adapters versus KV cache.
+
+  '
+usage_locations:
+- file: vllm/entrypoints/launchers/cli_args.py:75
+  context: Declares lora_modules field on BaseFrontendArgs with 'name=path' or JSON format docstring
+- file: vllm/entrypoints/launchers/cli_args.py:219
+  context: Registers custom LoRAParserAction and optional_type(str) for the CLI flag
+- file: vllm/entrypoints/launchers/api_server/app_state.py:73
+  context: Merges default_mm_loras into static lora_modules and builds OpenAIServingModels
+- file: vllm/entrypoints/serve/utils/api_utils.py:304
+  context: process_lora_modules appends default multimodal LoRA paths to the user list
+- file: vllm/entrypoints/openai/models/serving.py:127
+  context: init_static_loras loads every registered adapter at startup, raising on failure
+- file: vllm/benchmarks/serve.py:915
+  context: Benchmark client assigns a LoRA module per request (random or round-robin)
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for --lora-modules adapters to be loaded and served
+- name: --max-loras
+  relation: Caps how many registered adapters can be active in one batch; must be >= number of concurrently used adapters
+- name: --max-lora-rank
+  relation: Upper bound on adapter rank r; must be >= the rank of every adapter registered via --lora-modules
+- name: --fully-sharded-loras
+  relation: Changes how LoRA computation is sharded across tensor-parallel ranks, affecting per-adapter memory and compute
+- name: --tensor-parallel-size
+  relation: Interacts with LoRA sharding; adapter weights are partitioned across TP ranks
+constraints:
+- --enable-lora must be set for adapters registered via --lora-modules to be loaded and served.
+- Each --lora-modules entry must be either 'name=path' or a JSON object containing name, path, and base_model_name.
+- If any registered adapter fails to load at startup, the server raises an error and aborts startup.
+- The rank r of every adapter registered via --lora-modules must be less than or equal to --max-lora-rank, and --max-lora-rank
+  must be one of 8, 16, 32, or 64.
+- The number of adapters active in a single batch cannot exceed --max-loras.
+tuning_advice:
+  summary: Register only the adapters you actually serve, keep --max-loras and --max-lora-rank tight, and prefer dynamic loading
+    when the adapter set is large or sparse.
+  suggested_values:
+  - scenario: Single adapter, dedicated deployment
+    value: --lora-modules my_adapter=/path/to/adapter --enable-lora --max-loras 1 --max-lora-rank 16
+    reason: Minimizes reserved adapter memory and keeps batched-LoRA kernel cost low; matches the default max-loras of 1.
+  - scenario: Multiple adapters served concurrently
+    value: --lora-modules a=/path/a b=/path/b --enable-lora --max-loras 2 --max-lora-rank 32
+    reason: Set --max-loras to the peak number of adapters expected in one batch and --max-lora-rank to the largest adapter
+      rank to avoid over-allocating NPU memory.
+  - scenario: Large or sparsely used adapter catalog
+    value: Omit --lora-modules and load adapters on demand via /v1/load_lora_adapter
+    reason: Avoids reserving NPU memory for adapters that are rarely used and shortens startup time.
+  caveats:
+  - On memory-constrained Ascend devices, each resident adapter reduces KV-cache capacity; monitor NPU memory when registering
+    several adapters.
+  - A single failing adapter path aborts server startup, so validate adapter paths before deployment.
+  - Keep --max-lora-rank at the smallest supported value (8/16/32/64) that covers your adapters to limit LoRA kernel workspace.
+  quick_guide: Register only needed adapters, set --max-loras to peak concurrent adapters and --max-lora-rank to the largest
+    adapter rank.
+analysis_date: '2026-10-27'

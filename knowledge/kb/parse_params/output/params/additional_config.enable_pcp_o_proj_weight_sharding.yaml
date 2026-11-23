@@ -1,0 +1,80 @@
+name: additional_config.enable_pcp_o_proj_weight_sharding
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:584
+- vllm_ascend/ascend_config.py:435
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch (defined in AscendConfig, read from --additional-config JSON).
+
+  When PCP (Prefill Context Parallel) size > 1, it controls whether O-projection weights are
+
+  sharded across the PCP group. It applies to SFA-PCP o_proj and DSA-PCP two-stage O-projection
+
+  (wo_a/wo_b). Sharding the O-projection weights across PCP ranks reduces per-rank NPU weight
+
+  memory footprint (each rank holds only its PCP shard instead of the full weight), which frees
+
+  device memory for KV cache and can improve throughput under memory pressure. The tradeoff is
+
+  that the O-projection output must be reduced/gathered across the PCP group, adding communication
+
+  in the attention output path. If the weight method or PCP partition does not support sharding,
+
+  the option is auto-disabled with a warning (no effect). Other attention backends do not use
+
+  this option at all, so it is a no-op for them.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:584
+  context: Field definition in AscendConfig pydantic dataclass, default True
+- file: vllm_ascend/ascend_config.py:435
+  context: Documented in the AscendConfig docstring example JSON for --additional-config
+related_parameters:
+- name: enable_pcp_embedding_lmhead_weight_sharding
+  relation: Sibling PCP weight-sharding switch for embedding and LM Head weights; both are enabled by default when PCP size
+    > 1
+- name: finegrained_tp_config.oproj_tensor_parallel_size
+  relation: O-projection sharding is incompatible with fine-grained TP for the same modules
+- name: enable_dsa_cp
+  relation: DSA-CP is the v1 alternative to PCP; PCP is the recommended path on Model Runner V2
+constraints:
+- This option only takes effect when PCP size is greater than 1; with PCP size 1 it has no effect.
+- It only applies to SFA-PCP o_proj and DSA-PCP two-stage O-projection (wo_a/wo_b); other attention backends do not use this
+  option.
+- If the weight method or PCP partition does not support sharding, the option is automatically disabled with a warning.
+- O-projection weight sharding is incompatible with fine-grained TP for the same modules.
+- Unknown keys in --additional-config are rejected (extra=forbid), so the key name must be spelled exactly.
+tuning_advice:
+  summary: Keep enabled by default when running PCP (PCP size > 1) to save per-rank O-projection weight memory; disable only
+    if you hit incompatibility with fine-grained TP or observe added communication cost outweighing memory savings.
+  suggested_values:
+  - scenario: PCP enabled (PCP size > 1) with SFA-PCP or DSA-PCP attention backend, memory-constrained deployment
+    value: true
+    reason: Shards O-projection weights across the PCP group, reducing per-rank NPU weight memory and freeing memory for KV
+      cache.
+  - scenario: Using fine-grained TP on the O-projection module
+    value: false
+    reason: O-projection sharding is incompatible with fine-grained TP for the same modules; disable to avoid conflict.
+  - scenario: Non-PCP deployment or non-SFA/DSA attention backend
+    value: true
+    reason: No-op in these cases; leaving default true is harmless.
+  caveats:
+  - Sharding adds a cross-PCP reduction/gather in the attention output path, which can add communication overhead; verify
+    net benefit on your topology.
+  - If the weight method or PCP partition does not support sharding, the option is silently disabled with a warning — check
+    logs to confirm it actually took effect.
+  - Only relevant on vllm-ascend with PCP; it has no effect on standard TP-only or non-PCP deployments.
+  quick_guide: Leave true for PCP deployments to save O-projection weight memory; set false only when incompatible with fine-grained
+    TP or communication cost dominates.
+analysis_date: '2026-10-27'

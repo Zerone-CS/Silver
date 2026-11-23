@@ -1,0 +1,103 @@
+name: VLLM_USE_FASTOKENS
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:725
+- vllm/envs.py:19
+- vllm/tokenizers/fastokens.py:5
+- vllm/tokenizers/registry.py:213
+- vllm/config/model.py:165
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(os.getenv(...)))); any other value raises ValueError
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_USE_FASTOKENS is an upstream vLLM env flag (vllm/envs.py:725) that, when set to 1,
+
+  causes vllm/tokenizers/registry.py:213 (get_tokenizer) to call
+
+  apply_fastokens_patch() from vllm/tokenizers/fastokens.py before resolving the tokenizer.
+
+  The patch calls fastokens.patch_transformers(), which swaps the inner Rust tokenizer of
+
+  every HF fast tokenizer loaded afterwards with the fastokens shim and rebinds
+
+  tokenizers.decoders.DecodeStream so the streaming detokenizer accepts the shim. The patch
+
+  is process-global and idempotent, so it applies to any tokenizer mode that loads an HF fast
+
+  tokenizer (hf, deepseek_v32, deepseek_v4, ...).
+
+  Performance effect is confined to the CPU-side tokenization/detokenization path: faster
+
+  input tokenization (prompt encoding) and faster output detokenization (streaming decode).
+
+  It does NOT touch the NPU model forward pass, KV cache, HCCL communication, or graph
+
+  capture, so it does not change per-token NPU compute or memory. On Ascend, where the
+
+  tokenizer runs on the host CPU alongside the NPU engine, this can reduce frontend latency
+
+  and improve end-to-end throughput when tokenization is a bottleneck (e.g. long prompts,
+
+  high request rates, many API server processes). The vllm-ascend docs (GLM5.2.md:750,
+
+  GLM5.3.md:442) explicitly recommend it for accelerating input tokenization and output
+
+  detokenization, confirming it is a supported, beneficial host-side optimization on Ascend.
+
+  No vllm-ascend source override of this env var was found in the provided context; it is
+
+  read directly from upstream vllm.envs.
+
+  '
+usage_locations:
+- file: vllm/envs.py:725
+  context: Defines VLLM_USE_FASTOKENS as bool(int(os.getenv("VLLM_USE_FASTOKENS", "0"))), default off.
+- file: vllm/tokenizers/registry.py:213
+  context: get_tokenizer checks envs.VLLM_USE_FASTOKENS and calls apply_fastokens_patch() before resolving tokenizer args.
+- file: vllm/tokenizers/fastokens.py:5
+  context: apply_fastokens_patch imports fastokens, validates version >= 0.2.0, and calls fastokens.patch_transformers() to
+    swap the Rust BPE backend.
+- file: vllm/config/model.py:165
+  context: ModelConfig.tokenizer_mode docstring documents VLLM_USE_FASTOKENS=1 as the way to swap the Rust BPE backend for
+    fastokens across HF fast tokenizer modes.
+related_parameters:
+- name: --tokenizer-mode
+  relation: Applies to any tokenizer mode that loads an HF fast tokenizer (hf, deepseek_v32, deepseek_v4, ...); no-op for
+    non-HF modes such as slow or mistral.
+- name: --api-server-count
+  relation: Docs pair VLLM_USE_FASTOKENS=1 with multiple API server processes to improve frontend concurrency; tokenization
+    speedup benefits each API server process.
+constraints:
+- The fastokens Python package must be installed; otherwise apply_fastokens_patch raises ImportError.
+- The installed fastokens version must be >= 0.2.0, otherwise an ImportError is raised.
+- The value must be parseable as an integer (0 or 1); bool(int(...)) raises ValueError for non-integer strings.
+- The patch only affects tokenizer modes that load an HF fast tokenizer; it is a no-op for non-HF modes.
+tuning_advice:
+  summary: Enable VLLM_USE_FASTOKENS=1 on Ascend deployments where host-side tokenization/detokenization is a bottleneck,
+    after installing fastokens >= 0.2.0.
+  suggested_values:
+  - scenario: High request rate or long-prompt serving where CPU tokenization competes with NPU execution (e.g. GLM5.2/GLM5.3
+      multi-node prefill/decode)
+    value: 1
+    reason: Swaps the Rust BPE backend for the faster fastokens shim, reducing prompt-encoding and streaming-detokenization
+      latency on the host CPU; vllm-ascend docs recommend it for these models.
+  - scenario: Default / minimal-dependency deployment or when fastokens is not installed
+    value: 0
+    reason: Default off; avoids the hard ImportError requirement and keeps the standard HF fast tokenizer backend.
+  caveats:
+  - Requires the fastokens package (>= 0.2.0) installed in the environment; missing or outdated versions raise ImportError
+    at tokenizer load time.
+  - Only accelerates the CPU-side tokenizer; it does not change NPU compute, KV cache, or HCCL behavior, so gains are limited
+    to tokenization-bound workloads.
+  - The patch is process-global and idempotent; it affects every HF fast tokenizer loaded afterwards in the process.
+  - No-op for non-HF tokenizer modes (e.g. slow, mistral), so enabling it there yields no benefit.
+  quick_guide: Set VLLM_USE_FASTOKENS=1 (with fastokens>=0.2.0 installed) to speed up host-side tokenization/detokenization
+    on Ascend; leave 0 otherwise.
+analysis_date: '2026-10-27'

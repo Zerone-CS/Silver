@@ -1,0 +1,61 @@
+name: VLLM_LLMDD_RPC_PORT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2000
+value_type: int
+default: <computed>
+valid_choices: any valid TCP port number (0-65535)
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_LLMDD_RPC_PORT was an environment variable used by vllm-ascend''s LLM data-distributed
+
+  (LLMDD) mechanism to configure the RPC port for inter-process/inter-node communication
+
+  coordination. Per the vllm-ascend release notes (PR #2450), this variable has been renamed
+
+  to VLLM_ASCEND_LLMDD_RPC_PORT. The old name is no longer read by current vllm-ascend code
+
+  (no definition or usage site was found in either vllm or vllm-ascend source). Because it only
+
+  controlled a communication port binding, its performance effect was indirect: an incorrect or
+
+  conflicting port could cause connection retries or startup failures, but the port value itself
+
+  does not change steady-state throughput or memory usage. Since the variable is deprecated and
+
+  no longer consumed, it has effectively no runtime performance impact on current builds.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2000
+  context: 'Release note stating VLLM_LLMDD_RPC_PORT is renamed to VLLM_ASCEND_LLMDD_RPC_PORT (PR #2450)'
+related_parameters:
+- name: VLLM_ASCEND_LLMDD_RPC_PORT
+  relation: Replacement variable that supersedes VLLM_LLMDD_RPC_PORT
+- name: LLMDATADIST_COMM_PORT
+  relation: 'Related LLMDD communication port variable, also removed (PR #2448)'
+constraints:
+- VLLM_LLMDD_RPC_PORT is deprecated and no longer read; setting it has no effect on current vllm-ascend versions.
+- Use VLLM_ASCEND_LLMDD_RPC_PORT instead to configure the LLMDD RPC port.
+tuning_advice:
+  summary: Do not use this deprecated variable; migrate to VLLM_ASCEND_LLMDD_RPC_PORT if LLMDD RPC port configuration is needed.
+  suggested_values:
+  - scenario: Running any current vllm-ascend version
+    value: unset
+    reason: The variable is deprecated and ignored; setting it has no effect. Use VLLM_ASCEND_LLMDD_RPC_PORT instead.
+  - scenario: Migrating legacy deployment scripts that set VLLM_LLMDD_RPC_PORT
+    value: VLLM_ASCEND_LLMDD_RPC_PORT=<port>
+    reason: Rename the variable to the new name to preserve intended LLMDD RPC port configuration.
+  caveats:
+  - 'This variable was renamed in PR #2450; older scripts relying on it will silently fall back to default port behavior on
+    newer vllm-ascend.'
+  - Port conflicts with other services can cause connection retries or startup failures, but the port value does not affect
+    steady-state throughput.
+  quick_guide: Deprecated — use VLLM_ASCEND_LLMDD_RPC_PORT instead.
+analysis_date: '2026-10-27'

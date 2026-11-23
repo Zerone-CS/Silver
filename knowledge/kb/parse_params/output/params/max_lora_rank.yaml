@@ -1,0 +1,119 @@
+name: --max-lora-rank
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/lora.py:35
+- vllm/engine/arg_utils.py:1485
+- vllm/engine/arg_utils.py:2460
+- vllm/lora/layers/base_linear.py:112
+- vllm/lora/layers/column_parallel_linear.py:220
+- vllm/v1/worker/lora_model_runner_mixin.py:117
+- vllm_ascend/lora/punica_npu.py:33
+- vllm_ascend/lora/punica_npu.py:488
+value_type: int
+default: 16
+valid_choices: One of 8, 16, 32, 64 (per vllm-ascend docs); must be >= the adapter rank r in adapter_config.json
+cli_example: --max-lora-rank 16
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: '--max-lora-rank sets the upper bound on the LoRA adapter rank r and directly sizes the
+
+  per-layer LoRA weight buffers allocated on the NPU. In vllm/lora/layers/base_linear.py:112-142
+
+  and column_parallel_linear.py:220-246, lora_a_stacked / lora_b_stacked tensors are allocated
+
+  with shape [max_loras, 1, max_lora_rank, input_size] (and [max_loras, 1, output_size,
+
+  max_lora_rank] for B). So NPU memory for LoRA weights scales linearly with max_lora_rank
+
+  (and with max_loras). A larger rank also increases the K-dimension of the bgmv_shrink /
+
+  bgmv_expand matmuls executed per LoRA layer, raising per-token LoRA compute latency and
+
+  lowering throughput for LoRA-served requests.
+
+  On Ascend specifically, vllm_ascend/lora/punica_npu.py:33 selects the kernel implementation
+
+  based on this value: "if the hardware does NOT support LORA_CUSTOM_OPS, OR if"
+
+  lora_config.max_lora_rank >= 128, the wrapper falls back to the generic
+
+  vllm.lora.ops.torch_ops (bgmv/sgmv) instead of the Ascend-native AscendC kernels in
+
+  vllm_ascend/lora/lora_ops. This is a hard performance cliff: ranks >= 128 lose the
+
+  Ascend-optimized LoRA path. The Ascend-native fused MoE LoRA path
+
+  (punica_npu.py:488 add_lora_fused_moe) also takes max_lora_rank as a static-shape parameter
+
+  so that ACL Graph capture works (shapes depend only on input shapes, not values), meaning
+
+  the value is baked into captured graphs and must be fixed before graph capture.
+
+  max_lora_rank is also part of LoRAConfig.compute_hash (vllm/config/lora.py:101), so changing
+
+  it invalidates compilation/graph caches and forces recompilation.
+
+  '
+usage_locations:
+- file: vllm/config/lora.py:35
+  context: 'Field definition max_lora_rank: MaxLoRARanks = 16'
+- file: vllm/engine/arg_utils.py:1485
+  context: CLI flag --max-lora-rank registered in LoRAConfig argument group
+- file: vllm/engine/arg_utils.py:2460
+  context: Passed into LoRAConfig construction when --enable-lora is set
+- file: vllm/lora/layers/base_linear.py:112
+  context: Sizes lora_a_stacked/lora_b_stacked buffers (ReplicatedLinear/ColumnParallel/RowParallel)
+- file: vllm/lora/layers/column_parallel_linear.py:220
+  context: Sizes per-partition lora_a/lora_b stacked buffers; divided by tp_size when fully_sharded_loras
+- file: vllm/v1/worker/lora_model_runner_mixin.py:117
+  context: Warmup dummy LoRA rank = min(max_lora_rank, 8) during graph capture warmup
+- file: vllm_ascend/lora/punica_npu.py:33
+  context: 'Ascend kernel selection: falls back to torch_ops when max_lora_rank >= 128 or LORA_CUSTOM_OPS unsupported'
+- file: vllm_ascend/lora/punica_npu.py:488
+  context: add_lora_fused_moe takes max_lora_rank as static-shape arg for ACL Graph capture
+related_parameters:
+- name: --enable-lora
+  relation: max_lora_rank only takes effect when LoRA is enabled; LoRAConfig is None otherwise
+- name: --max-loras
+  relation: 'Multiplies LoRA buffer memory: buffers are [max_loras, 1, max_lora_rank, ...]'
+- name: --fully-sharded-loras
+  relation: When enabled, lora_a/lora_b output dims are divided by tp_size, reducing per-rank memory
+- name: --lora-dtype
+  relation: Together with max_lora_rank determines LoRA buffer byte size
+- name: --max-cpu-loras
+  relation: CPU-side adapter cache size; must be >= max_loras
+constraints:
+- --max-lora-rank must be one of 8, 16, 32, or 64 according to vllm-ascend documentation.
+- --max-lora-rank must be greater than or equal to the rank r declared in the adapter's adapter_config.json.
+- When --fully-sharded-loras is enabled, max_lora_rank must be divisible by the tensor parallel size (divide() is applied
+  to max_lora_rank).
+- If max_lora_rank is >= 128, vllm-ascend falls back to the generic torch LoRA ops instead of the Ascend-native kernels.
+tuning_advice:
+  summary: Set --max-lora-rank to the smallest documented value (8/16/32/64) that is >= the largest adapter rank you serve,
+    and never exceed 64 to keep the Ascend-native LoRA kernels.
+  suggested_values:
+  - scenario: Serving adapters with rank r <= 8 (most common PEFT adapters)
+    value: 8
+    reason: Smallest buffer footprint and fastest bgmv matmuls; keeps Ascend-native kernels active.
+  - scenario: Serving adapters with rank r in (8, 16] (vLLM default)
+    value: 16
+    reason: Default value; covers typical rank-16 adapters while staying well below the 128 fallback threshold.
+  - scenario: Serving adapters with rank r in (16, 32]
+    value: 32
+    reason: Covers rank-32 adapters; still uses Ascend-native kernels and remains within documented choices.
+  - scenario: Serving adapters with rank r in (32, 64]
+    value: 64
+    reason: Largest documented value that still keeps the Ascend-native LoRA path; higher ranks trigger the torch_ops fallback.
+  caveats:
+  - Do not set max_lora_rank >= 128 on Ascend — it silently switches to the slower generic torch LoRA ops.
+  - Pair with --max-loras to control total LoRA memory; both multiply the buffer size.
+  - If using --fully-sharded-loras, ensure max_lora_rank is divisible by --tensor-parallel-size.
+  - Changing this value invalidates the compilation cache (it is in LoRAConfig.compute_hash).
+  quick_guide: Use the smallest of 8/16/32/64 that is >= your adapter rank; never exceed 64 on Ascend.
+analysis_date: '2026-10-27'

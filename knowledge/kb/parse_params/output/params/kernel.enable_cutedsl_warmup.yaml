@@ -1,0 +1,66 @@
+name: kernel.enable_cutedsl_warmup
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/model_executor/warmup/kernel_warmup.py:214
+value_type: bool
+default: true
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only gates the legacy CuTeDSL warmup provider call (`cutedsl_warmup()`) inside
+
+  vllm/model_executor/warmup/kernel_warmup.py:214. CuTeDSL is NVIDIA''s CUDA-based DSL for
+
+  kernel authoring; the warmup providers it triggers compile/register CuTeDSL kernels ahead
+
+  of the first request to avoid JIT stalls during serving. On Ascend NPU there is no CUDA
+
+  device and no CuTeDSL runtime, so this code path is never exercised by vllm-ascend — the
+
+  Ascend worker uses its own warmup flow (ACL/CANN kernel init, HCCL setup) and does not
+
+  invoke `cutedsl_warmup()`. Consequently toggling this flag has no measurable effect on
+
+  Ascend latency, throughput, or memory. It is marked deprecated upstream (TODO comment
+
+  references migration to the shared JIT warmup infrastructure), so it is a transitional
+
+  knob only relevant to NVIDIA GPU deployments.
+
+  '
+usage_locations:
+- file: vllm/model_executor/warmup/kernel_warmup.py:214
+  context: Conditional guard that runs the legacy CuTeDSL warmup providers when enabled; deprecated pending migration to shared
+    JIT warmup.
+related_parameters:
+- name: kernel.enable_jit_warmup
+  relation: Sibling warmup toggle in the same kernel_warmup flow; controls the newer shared JIT warmup path that will replace
+    this legacy CuTeDSL warmup.
+- name: compilation_config.cudagraph_capture_sizes
+  relation: Read in the same warmup function to size warmup work; unrelated to CuTeDSL but part of the same warmup orchestration.
+constraints:
+- This parameter only affects NVIDIA CUDA/CuTeDSL warmup and has no effect on Ascend NPU, where the CuTeDSL runtime is absent.
+- The parameter is deprecated; upstream intends to remove it once registered CuTeDSL warmups migrate to the shared JIT warmup
+  infrastructure.
+tuning_advice:
+  summary: No Ascend tuning needed — this is a deprecated NVIDIA-only CuTeDSL warmup toggle with no effect on NPU.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: CuTeDSL warmup is never invoked on Ascend, so leaving it at default or disabling it makes no runtime difference;
+      disabling avoids confusion in configs.
+  - scenario: NVIDIA GPU deployment wanting to avoid first-request JIT stalls
+    value: true
+    reason: Keeps legacy CuTeDSL warmup providers active so CuTeDSL kernels are compiled before serving begins.
+  caveats:
+  - Do not use this flag to tune Ascend performance; it has no effect on NPU.
+  - Deprecated upstream — expect removal; migrate to shared JIT warmup settings.
+  quick_guide: Ignore on Ascend; it is a deprecated NVIDIA-only CuTeDSL warmup switch.
+analysis_date: '2026-10-27'

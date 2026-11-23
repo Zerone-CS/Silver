@@ -1,0 +1,78 @@
+name: additional_config.xlite_graph_config.full_mode
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1455
+- vllm_ascend/xlite/xlite.py:363
+- vllm_ascend/xlite/xlite.py:706
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "full_mode controls the token budget that the xlite runtime preallocates, which in turn\ndetermines which batches\
+  \ are executed by the xlite C++ runtime versus falling back to the\nnative runnable under ACLGraph.\n\nIn vllm_ascend/xlite/xlite.py:363-367\
+  \ (StandardXliteModel._build_config), when full_mode is\nFalse the budget is clamped to a decode-sized value:\n  max_m =\
+  \ min(max_num_batched_tokens, max_num_seqs * (num_speculative_tokens + 1))\nand then rounded up to a multiple of tp_size.\
+  \ When full_mode is True, max_m stays at\nmax_num_batched_tokens, so the xlite runtime must preallocate a much larger hidden-state\n\
+  workspace (self.hidden_states in XliteModelRunner.__init__, xlite.py:706-724) and can drive\nprefill, decode, and mixed\
+  \ batches alike.\n\nPerformance consequences:\n- \"full_mode=False (decode-only): small workspace, decode steps (including\
+  \ MTP) run on xlite;\"\n  prefill and large mixed batches fall back to ACLGraph-captured native runnable. Lower\n  memory\
+  \ footprint, more robust, and per docs the recommended default.\n- \"full_mode=True (full): xlite handles prefill too, so\
+  \ ACLGraph capture is not used for those\"\n  batches; docs recommend disabling ACLGraph (--enforce-eager) to avoid memory\
+  \ pressure and\n  get higher concurrency. Larger workspace increases NPU memory usage; latency/throughput\n  tradeoff depends\
+  \ on whether xlite's prefill path beats ACLGraph for the workload.\nThe parameter only takes effect when xlite_graph_config.enabled\
+  \ is True.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1455
+  context: Field definition of full_mode in XliteGraphConfig (default False).
+- file: vllm_ascend/xlite/xlite.py:363
+  context: 'Sizes xlite_config.max_m: decode-sized budget when False, max_num_batched_tokens when True.'
+- file: vllm_ascend/xlite/xlite.py:706
+  context: XliteModelRunner reads full_mode and uses xlite_config.max_m as self.max_tokens routing budget.
+- file: tests/e2e/pull_request/two_card/test_xlite.py:97
+  context: E2E test exercising full_mode=True path.
+related_parameters:
+- name: additional_config.xlite_graph_config.enabled
+  relation: full_mode has no effect unless enabled is True.
+- name: max_num_batched_tokens
+  relation: Upper bound of the token budget when full_mode is True.
+- name: max_num_seqs
+  relation: Multiplied by (1 + num_speculative_tokens) to form the decode-sized budget when full_mode is False.
+- name: speculative_config.num_speculative_tokens
+  relation: Included in the decode-sized budget formula.
+- name: compilation_config.cudagraph_mode
+  relation: Docs recommend disabling ACLGraph (enforce-eager) when full_mode is True.
+- name: cache_config.block_size
+  relation: block_size 128 is recommended for xlite graph mode.
+constraints:
+- full_mode only takes effect when xlite_graph_config.enabled is True.
+- xlite graph mode is not compatible with pipeline parallelism; pipeline_parallel_size must be 1.
+- xlite graph only supports speculative decoding methods with a sequential causal chain (mtp, draft_model, extract_hidden_states);
+  other methods raise RuntimeError.
+- xlite graph does not support speculative methods with intermediate hidden states (eagle3, extract_hidden_states, dflash,
+  dspark).
+tuning_advice:
+  summary: Keep full_mode=False (decode-only) for most workloads; enable full_mode=True only when you want xlite to drive
+    prefill and can afford the larger workspace and disabled ACLGraph.
+  suggested_values:
+  - scenario: Default / most serving workloads, decode-heavy, memory-constrained
+    value: false
+    reason: Decode-sized budget keeps the xlite hidden-state workspace small and is documented as more performant and robust;
+      prefill falls back to ACLGraph.
+  - scenario: Workloads where xlite prefill path is desired and memory is ample
+    value: true
+    reason: Budget becomes max_num_batched_tokens so xlite handles prefill and decode alike; pair with --enforce-eager to
+      avoid ACLGraph memory pressure.
+  caveats:
+  - Enabling full_mode=True substantially increases preallocated workspace memory; verify NPU HBM headroom.
+  - When full_mode=True, disable ACLGraph (--enforce-eager) unless speculative decoding is configured, per docs.
+  - Ensure block_size=128 and pipeline_parallel_size=1 for best xlite behavior.
+  quick_guide: Leave full_mode=False unless you specifically need xlite to run prefill; then set True and use --enforce-eager.
+analysis_date: '2026-10-27'

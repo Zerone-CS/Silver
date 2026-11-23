@@ -1,0 +1,94 @@
+name: kv_transfer_config.kv_connector_extra_config.consumer_is_to_put
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:895
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1536
+- docs/source/tutorials/models/GLM5.3-Flash.md:1017
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'consumer_is_to_put is a nested field inside kv_transfer_config.kv_connector_extra_config
+
+  used by the AscendStoreConnector (KV Cache Pool / Ascend Store) in vllm-ascend. It is not
+
+  defined in upstream vLLM; it is an Ascend-specific connector option documented in the
+
+  vllm-ascend KV Cache Pool guide. When set to true, the Decode node is allowed to write
+
+  (put) its KV cache blocks into the shared KV Pool backend (Mooncake / Memcache / Yuanrong).
+
+  This changes the runtime data path: "instead of only loading KV from the pool, the Decode"
+
+  worker also performs store-side transfers over the pool communication protocol (e.g.
+
+  RoCE/HCCS via the Mooncake transfer engine), consuming NPU-side DMA/communication
+
+  bandwidth and pool memory. Enabling it increases pool memory footprint and adds
+
+  put-path traffic, which can reduce decode throughput if the pool link is saturated, but
+
+  it enables cross-instance prefix reuse (later Prefill/Decode requests can hit the pooled
+
+  KV), improving effective throughput for workloads with repeated prefixes. When disabled
+
+  (default), the Decode node contributes no pool memory and performs no put traffic, as
+
+  described in the GLM5.3-Flash tutorial where Decode keeps consumer_is_to_load and
+
+  consumer_is_to_put disabled.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:895
+  context: Documents that consumer_is_to_put can be configured via kv_connector_extra_config alongside consumer_is_to_load
+    and use_layerwise.
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1536
+  context: 'Reference table entry: bool, default false, controls whether Decode node puts KV Cache into KV Pool.'
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:1017
+  context: PD disaggregation example keeps consumer_is_to_load and consumer_is_to_put disabled on Decode so it contributes
+    no pool memory.
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.consumer_is_to_load
+  relation: Companion flag controlling whether the Decode node loads KV from the pool; typically configured together.
+- name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+  relation: Per-layer KV access option; only supported on the Prefill node, interacts with pool put/load granularity.
+- name: kv_transfer_config.kv_connector_extra_config.prefill_pp_size
+  relation: Required when PP is combined with consumer_is_to_put.
+- name: kv_transfer_config.kv_connector_extra_config.prefill_pp_layer_partition
+  relation: Layer partition for Prefill PP, relevant when consumer_is_to_put is enabled with PP.
+- name: kv_transfer_config.kv_connector_extra_config.backend
+  relation: Selects the KV Pool storage backend (mooncake/memcache/yuanrong) that the put path writes to.
+constraints:
+- consumer_is_to_put must be a boolean (true/false); it is read from kv_connector_extra_config of the KV transfer config.
+- When Prefill pipeline parallelism is used together with consumer_is_to_put, prefill_pp_size must be configured.
+- use_layerwise is only supported on the Prefill node and cannot be used to enable per-layer put behavior on the Decode node.
+tuning_advice:
+  summary: Keep consumer_is_to_put disabled on Decode unless you specifically need Decode-side KV to be written back into
+    the shared pool for cross-instance prefix reuse.
+  suggested_values:
+  - scenario: Standard PD disaggregation where Decode only receives KV from Prefill via the P→D connector
+    value: false
+    reason: Matches the documented GLM5.3-Flash topology; Decode contributes no pool memory and avoids extra put traffic,
+      preserving decode throughput.
+  - scenario: Workloads with highly repeated prefixes across Decode instances where pooled KV reuse is beneficial and pool
+      bandwidth is not a bottleneck
+    value: true
+    reason: Allows Decode to write KV into the pool so later requests can hit pooled prefixes, improving effective throughput
+      at the cost of extra pool memory and put traffic.
+  caveats:
+  - Benchmark decode throughput with the flag on and off; put traffic shares the pool network with P→D transfer.
+  - Ensure the pool backend (mooncake/memcache/yuanrong) and its protocol_desc are configured correctly before enabling put.
+  - Do not expect TP8 pool entries to load into TP1 Decode engines; layout must match for reuse.
+  quick_guide: Leave consumer_is_to_put false on Decode for standard PD setups; enable only when Decode-side pool write-back
+    is required and pool bandwidth allows.
+analysis_date: '2026-10-27'

@@ -1,0 +1,83 @@
+name: additional_config.multistream_dsv4_dsa_overlap
+type: nested
+category: model
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:569
+- vllm_ascend/ascend_config.py:426
+value_type: bool
+default: true
+valid_choices: true, false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch defined in AscendConfig (vllm_ascend/ascend_config.py:569)
+
+  as a plain bool field with default True. It is passed to vllm-ascend via
+
+  --additional-config ''{"multistream_dsv4_dsa_overlap": true}''. Per the docs
+
+  (user_guide/configuration/additional_config.md:81) it controls whether "dsa multi-stream
+
+  overlap" is enabled for DeepSeek V4 (DSA = DeepSeek Sparse Attention). The mechanism is
+
+  multi-stream execution: "DSA-related work (e.g. sparse attention indexer/top-k selection and"
+
+  associated compute/communication) is dispatched onto an auxiliary NPU stream so it can overlap
+
+  with the main compute stream, hiding latency behind other work. Enabling it can reduce
+
+  end-to-end latency and improve throughput for DeepSeek V4 models by overlapping DSA ops with
+
+  the rest of the forward pass. Disabling it serializes that work onto the main stream, which is
+
+  simpler/safer but loses the overlap benefit. The parameter only has an effect for DeepSeek V4
+
+  (and same-architecture) models that use DSA; for other models it is inert. No usage sites were
+
+  found in the provided extraction, so the exact dispatch path is not visible here, but the
+
+  field is a user-input switch consumed by the Ascend config factory and read by the model
+
+  runner / attention backend for DSA models.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:569
+  context: 'Field definition: multistream_dsv4_dsa_overlap: bool = True in AscendConfig'
+- file: vllm_ascend/ascend_config.py:426
+  context: Documented in the AscendConfig example dict passed via --additional-config
+related_parameters:
+- name: multistream_engram_overlap
+  relation: Sibling multi-stream overlap switch; defaults to True only on A5 (FP8_OPTIMIZED) hardware, whereas multistream_dsv4_dsa_overlap
+    defaults to True unconditionally
+- name: multistream_overlap_shared_expert
+  relation: Another multi-stream overlap switch (shared expert overlap), default False
+- name: enable_dsa_cp
+  relation: DSA context-parallel switch for DeepSeek V3.2/V4; both relate to DSA execution but control different optimizations
+constraints:
+- Only meaningful for DeepSeek V4 (and same-architecture DSA) models; it has no effect on models that do not use DSA.
+- Unknown keys in --additional-config are rejected (extra=forbid), so the key name must be spelled exactly as multistream_dsv4_dsa_overlap.
+tuning_advice:
+  summary: Keep enabled (default) for DeepSeek V4 to overlap DSA work across streams; disable only if you hit stability/precision
+    issues.
+  suggested_values:
+  - scenario: DeepSeek V4 inference on Ascend NPU, default deployment
+    value: true
+    reason: Default True enables DSA multi-stream overlap, hiding DSA op latency behind main-stream compute for lower latency
+      and higher throughput.
+  - scenario: Debugging precision issues or stream-sync instability with DeepSeek V4
+    value: false
+    reason: Disabling serializes DSA work onto the main stream, simplifying execution and ruling out overlap-related races
+      at the cost of some performance.
+  - scenario: Non-DSA models (e.g. standard dense or non-DeepSeek-V4 MoE)
+    value: true
+    reason: The switch is inert for models without DSA, so leaving the default has no effect.
+  caveats:
+  - Only applies to DeepSeek V4 / DSA architectures; no benefit for other models.
+  - Enabled by default regardless of hardware family, unlike multistream_engram_overlap which is A5-gated.
+  quick_guide: Leave at default true for DeepSeek V4; set false only to debug overlap-related instability.
+analysis_date: '2026-10-27'

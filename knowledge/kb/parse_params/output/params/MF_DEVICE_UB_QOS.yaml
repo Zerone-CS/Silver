@@ -1,0 +1,79 @@
+name: MF_DEVICE_UB_QOS
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:50
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:172
+value_type: int
+default: <computed>
+valid_choices: integer in [QOS_VALUE_MIN, QOS_VALUE_MAX] (tests exercise 0-4)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'MF_DEVICE_UB_QOS is an environment variable consumed by the MemCache store
+
+  library (external to vllm-ascend) that sets the Unified Bus (UB) Quality-of-Service
+
+  priority for KV-cache transfer traffic in the AscendStore KV connector path.
+
+  vllm-ascend does not itself implement the QoS scheduling; it only (1) validates
+
+  the value in _validate_device_ub_qos() and (2) injects it from
+
+  kv_connector_extra_config via _inject_device_ub_qos() before validation runs
+
+  (see test_init_injects_qos_before_validation). The actual performance effect
+
+  comes from the MemCache backend: "a higher QoS priority can give KV-transfer"
+
+  traffic preferential treatment on the UB fabric, reducing transfer latency and
+
+  jitter for KV cache put/get operations, which indirectly affects decode
+
+  throughput when KV offloading is on the critical path. Because the parameter
+
+  only influences the priority of KV-transfer traffic (not compute, not HCCL
+
+  collective scheduling), its impact on overall inference performance is modest
+
+  and only materializes when the AscendStore/MemCache KV connector is in use.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:50
+  context: Reads MF_DEVICE_UB_QOS and validates it is an integer within [QOS_VALUE_MIN, QOS_VALUE_MAX], raising ValueError
+    otherwise.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py:172
+  context: Injects QoS parsed from kv_connector_extra_config into MF_DEVICE_UB_QOS, overriding any pre-existing env value
+    (with a warning).
+related_parameters:
+- name: kv_connector_extra_config (qos_priority)
+  relation: An explicit qos_priority in kv_connector_extra_config overrides MF_DEVICE_UB_QOS via _inject_device_ub_qos().
+- name: kv_transfer_config / kv_role
+  relation: MF_DEVICE_UB_QOS only takes effect when the AscendStore MemCache KV connector is enabled.
+constraints:
+- MF_DEVICE_UB_QOS must be an integer within [QOS_VALUE_MIN, QOS_VALUE_MAX]; non-integer or out-of-range values raise ValueError.
+- An empty or unset MF_DEVICE_UB_QOS is allowed and skips validation (MemCache uses its default QoS).
+- A qos_priority set in kv_connector_extra_config overrides any value already present in the environment.
+tuning_advice:
+  summary: Set MF_DEVICE_UB_QOS (or qos_priority in kv_connector_extra_config) to a modest priority when KV offloading latency
+    is on the critical path; otherwise leave unset.
+  suggested_values:
+  - scenario: AscendStore/MemCache KV connector enabled and KV transfer latency is a bottleneck
+    value: 2
+    reason: A moderate QoS priority gives KV-transfer traffic preferential UB treatment without starving other traffic; tests
+      use 2 as a representative valid value.
+  - scenario: No KV offloading or no UB contention
+    value: <unset>
+    reason: Leave unset so MemCache uses its default QoS; the parameter has no effect without the MemCache connector.
+  caveats:
+  - Prefer setting qos_priority in kv_connector_extra_config over the raw env var — it is injected and validated automatically
+    and overrides the env value.
+  - Values outside [QOS_VALUE_MIN, QOS_VALUE_MAX] cause a hard startup failure.
+  quick_guide: Only relevant with the AscendStore MemCache KV connector; set a modest QoS (e.g. 2) via kv_connector_extra_config
+    qos_priority when KV transfer latency matters.
+analysis_date: '2026-10-27'

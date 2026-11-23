@@ -1,0 +1,70 @@
+name: profiler.delay_iterations
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/config/profiler.py:173
+- vllm/profiler/wrapper.py:32
+value_type: int
+default: 0
+valid_choices: non-negative integer (>= 0)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only controls when the profiler actually begins collecting data
+
+  after a /start_profile request. In vllm/profiler/wrapper.py:32 the value is read
+
+  into WorkerProfiler._delay_iters, and the profiler stays "active but not running"
+
+  until that many engine steps have elapsed (see tests/v1/worker/test_gpu_profiler.py
+
+  test_delayed_start). It does NOT change the model execution path, memory allocation,
+
+  or scheduling on Ascend NPU. Its only performance relevance is indirect: profiling
+
+  itself (torch profiler / NPU profiler) adds overhead while running, and delay_iterations
+
+  lets you skip warmup/compilation iterations so the captured trace reflects steady-state
+
+  behavior. No vllm-ascend override of this parameter was found in the provided context;
+
+  the profiler wrapper is upstream vLLM code shared across backends.
+
+  '
+usage_locations:
+- file: vllm/config/profiler.py:173
+  context: 'Validation: warns when torch profiler is used with delay_iterations/max_iterations and ignore_frontend is False
+    (high overhead).'
+- file: vllm/profiler/wrapper.py:32
+  context: WorkerProfiler reads delay_iterations into _delay_iters and gates profiler start until that many steps pass.
+- file: tests/v1/worker/test_gpu_profiler.py:72
+  context: Test verifying profiler waits N steps before actually starting.
+related_parameters:
+- name: profiler.max_iterations
+  relation: Companion parameter; together they bound the profiling window (delay then run for max_iterations).
+- name: profiler.ignore_frontend
+  relation: When profiler is 'torch' and delay/max iterations are set, ignore_frontend=False triggers a high-overhead warning.
+- name: profiler.profiler
+  relation: Selects profiler backend; delay_iterations only matters when a profiler is active.
+constraints:
+- delay_iterations must be a non-negative integer; a value of 0 means profiling starts immediately after /start_profile.
+- Using the 'torch' profiler with delay_iterations or max_iterations while ignore_frontend is False may cause high overhead
+  (warning emitted).
+tuning_advice:
+  summary: Set delay_iterations to skip warmup/compilation steps before capturing a steady-state profile; leave at 0 for immediate
+    capture.
+  suggested_values:
+  - scenario: Capturing steady-state performance after warmup/compilation
+    value: 5
+    reason: Skips initial warmup and graph-capture iterations so the trace reflects steady-state inference.
+  - scenario: Debugging startup behavior or immediate capture
+    value: 0
+    reason: Starts profiling immediately after /start_profile, useful for diagnosing initialization.
+  caveats:
+  - Profiling overhead is only incurred while the profiler is running; delay_iterations itself has no runtime cost.
+  - Pair with max_iterations to bound the profiling window and avoid long-running overhead.
+  quick_guide: Use a small positive delay_iterations (e.g. 5) to profile steady-state; 0 for immediate capture.
+analysis_date: '2026-10-27'

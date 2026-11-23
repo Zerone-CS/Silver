@@ -1,0 +1,95 @@
+name: --numa-bind-cpus
+type: cli
+category: hardware
+scope: both
+source_file:
+- vllm/config/parallel.py:309
+- vllm/engine/arg_utils.py:1078
+- vllm/utils/numa_utils.py:330
+- vllm_ascend/platform.py:910
+value_type: list[str]
+default: null
+valid_choices: Each entry must match numactl --physcpubind CPU-list syntax, e.g. '0-3' or '0,2,4-7'; one entry per visible
+  GPU
+cli_example: --numa-bind-cpus 0-3 4-7 8-11 12-15
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'On upstream vLLM (GPU), --numa-bind-cpus provides per-worker CPU lists that are
+
+  passed to `numactl --physcpubind` when spawning each GPU worker subprocess
+
+  (vllm/utils/numa_utils.py:_get_cpu_binding returns cpu_bindings[gpu_index]).
+
+  This pins worker processes to specific physical cores, which can improve
+
+  cache locality and reduce cross-NUMA memory traffic, indirectly affecting
+
+  latency/throughput. The EngineCore subprocess deliberately ignores this list
+
+  and falls back to `--cpunodebind` over the shard NUMA nodes (numa_utils.py:426)
+
+  to keep a strict-superset cpus_allowed for the workers'' physcpubind spawns.
+
+
+  On Ascend NPU, however, vllm-ascend explicitly neutralizes this parameter:
+
+  vllm_ascend/platform.py:910 detects a non-None numa_bind_cpus, logs that it is
+
+  ignored, and resets it to None. The Ascend-native CPU binding mechanism
+
+  (enabled via additional_config={"enable_cpu_binding": true}, which --numa-bind
+
+  is auto-converted to) computes CPU pools from NPU topology / global logical NPU
+
+  IDs instead. Therefore on Ascend this flag has NO runtime effect — the actual
+
+  CPU-core binding is governed by the Ascend-native binding logic, not by the
+
+  user-supplied CPU lists. Any performance benefit on Ascend comes from the
+
+  Ascend-native binding, not from this flag.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:910
+  context: 'Ascend override: detects numa_bind_cpus, logs it is ignored, resets to None'
+- file: vllm/config/parallel.py:309
+  context: ParallelConfig field definition and docstring
+- file: vllm/utils/numa_utils.py:330
+  context: _get_cpu_binding returns per-GPU CPU list for worker physcpubind (upstream GPU path)
+- file: vllm/utils/numa_utils.py:426
+  context: EngineCore subprocess ignores numa_bind_cpus, uses cpunodebind fallback
+related_parameters:
+- name: --numa-bind
+  relation: On Ascend, --numa-bind is auto-converted to additional_config enable_cpu_binding=true; --numa-bind-cpus is only
+    meaningful in the upstream GPU path
+- name: --numa-bind-nodes
+  relation: Sibling NUMA binding flag; also ignored on Ascend (platform.py:902)
+- name: additional_config.enable_cpu_binding
+  relation: Ascend-native CPU binding switch that actually controls CPU-core binding on NPU
+constraints:
+- numa_bind_cpus must not be an empty list; an empty list raises ValueError.
+- Each entry in numa_bind_cpus must be non-empty and use numactl CPU-list syntax such as '0-3' or '0,2,4-7', otherwise a ValueError
+  is raised.
+- The number of CPU-list entries must cover every visible GPU; if a GPU index exceeds the list size, a ValueError is raised
+  (upstream GPU path).
+- On Ascend NPU, --numa-bind-cpus is ignored and reset to None; it has no effect on CPU binding.
+tuning_advice:
+  summary: On Ascend NPU, do not use --numa-bind-cpus (it is ignored); instead enable Ascend-native CPU binding via additional_config
+    enable_cpu_binding=true.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: 'omit --numa-bind-cpus; use --additional-config ''{"enable_cpu_binding": true}'''
+    reason: vllm-ascend resets numa_bind_cpus to None and computes CPU pools from NPU topology; the Ascend-native binding
+      is the effective mechanism.
+  - scenario: Upstream GPU deployment with custom PCT/high-frequency core policy
+    value: '["0-3", "4-7", "8-11", "12-15"]'
+    reason: One CPU list per visible GPU, passed to numactl --physcpubind for worker pinning to high-frequency cores.
+  caveats:
+  - Passing this flag on Ascend produces only an informational log and no binding change.
+  - Ensure the number of entries matches the number of visible GPUs to avoid ValueError on the upstream path.
+  quick_guide: On Ascend, skip --numa-bind-cpus and use additional_config enable_cpu_binding=true for CPU affinity.
+analysis_date: '2026-10-27'

@@ -1,0 +1,84 @@
+name: kv_transfer_config.kv_connector_extra_config.prefill_pp_size
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1539
+value_type: int
+default: 1
+valid_choices: Positive integer (>= 1)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'prefill_pp_size is a nested field under kv_transfer_config.kv_connector_extra_config
+
+  used by the Ascend KV cache pool / AscendStore connector path (documented in
+
+  kv_cache_pool_ascend_store.md). It declares the pipeline-parallel (PP) size of the
+
+  Prefill node so that the KV store connector can correctly map and partition KV cache
+
+  layers across PP stages when the Prefill node writes KV blocks into the pool
+
+  (consumer_is_to_put). It works together with prefill_pp_layer_partition: if the layer
+
+  partition is not given explicitly, layers are evenly divided by prefill_pp_size.
+
+  The value itself does not change compute kernels; it affects how KV cache is laid out
+
+  and transferred between Prefill and Decode nodes. A wrong value causes incorrect layer
+
+  partitioning of the KV blocks, which can lead to failed loads, recomputation, or
+
+  incorrect KV reuse — indirectly hurting throughput and effective KV cache utilization.
+
+  No direct definition was found in the vllm or vllm-ascend source context provided; the
+
+  behavior is documented only in the vllm-ascend KV cache pool feature guide.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1539
+  context: Documents prefill_pp_size as the Prefill PP size, required when PP is used together with consumer_is_to_put.
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1540
+  context: prefill_pp_layer_partition falls back to even division by prefill_pp_size when not configured.
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.prefill_pp_layer_partition
+  relation: Explicit layer partition; if unset, layers are evenly divided by prefill_pp_size.
+- name: kv_transfer_config.kv_connector_extra_config.consumer_is_to_put
+  relation: prefill_pp_size is required when PP is combined with consumer_is_to_put (Decode node puts KV into pool).
+- name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+  relation: Layer-wise KV save/load on the Prefill node interacts with how PP layers are partitioned.
+- name: tensor-parallel-size / pipeline-parallel-size
+  relation: prefill_pp_size should match the actual pipeline-parallel size of the Prefill instance.
+constraints:
+- prefill_pp_size must be a positive integer (>= 1).
+- prefill_pp_size is required when pipeline parallelism is used together with consumer_is_to_put on the Prefill node.
+- prefill_pp_size must match the actual pipeline-parallel size of the Prefill deployment, otherwise KV layer partitioning
+  will be incorrect.
+- If prefill_pp_layer_partition is provided, its comma-separated layer counts must be consistent with prefill_pp_size.
+tuning_advice:
+  summary: Set prefill_pp_size to the actual PP size of the Prefill node when using the Ascend KV cache pool with PP + consumer_is_to_put;
+    otherwise leave at default 1.
+  suggested_values:
+  - scenario: Prefill node runs without pipeline parallelism (PP=1)
+    value: 1
+    reason: Default value; no PP layer partitioning needed, KV blocks map directly.
+  - scenario: Prefill node uses pipeline parallelism and writes KV to the pool (consumer_is_to_put=true)
+    value: <actual PP size>
+    reason: Must equal the real PP size so the connector partitions KV layers correctly across PP stages.
+  - scenario: Non-uniform layer distribution across PP stages
+    value: <actual PP size> with prefill_pp_layer_partition set
+    reason: Provide explicit layer partition (e.g. '30,31') alongside prefill_pp_size when layers are not evenly divided.
+  caveats:
+  - A mismatch between prefill_pp_size and the real PP size causes incorrect KV layer partitioning, leading to failed KV loads
+    or recomputation and reduced throughput.
+  - This parameter only matters on the Prefill node in the KV cache pool / AscendStore connector path; it has no effect on
+    standard non-disaggregated serving.
+  - When prefill_pp_layer_partition is omitted, layers are evenly divided by prefill_pp_size — uneven models may need an explicit
+    partition.
+  quick_guide: Set prefill_pp_size to your Prefill node's PP size (default 1); required only when PP is combined with consumer_is_to_put.
+analysis_date: '2026-10-27'

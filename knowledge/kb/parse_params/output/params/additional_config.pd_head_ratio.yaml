@@ -1,0 +1,81 @@
+name: additional_config.pd_head_ratio
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:648
+- vllm_ascend/ascend_config.py:556
+value_type: int
+default: 1
+valid_choices: positive integer; derived automatically at runtime, not user-settable
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'pd_head_ratio is a pure-derived field in vllm-ascend''s AscendConfig (vllm_ascend/ascend_config.py:648).
+
+  The class docstring explicitly lists it among "Pure-derived fields computed automatically and not
+
+  user-settable" (line 556), alongside enable_sp_by_pass, pd_tp_ratio, and num_head_replica. It is
+
+  initialized to a sentinel default of 1 and is intended to be overwritten by the derive_and_validate
+
+  logic (line 684 onward) based on the actual parallel configuration (PD disaggregation / prefill-decode
+
+  split, tensor-parallel size, and attention head count). Because it is derived rather than user-input,
+
+  setting it directly in additional_config has no meaningful effect on the runtime code path — the
+
+  derivation overwrites it. Its downstream role is to express the ratio between attention heads across
+
+  the prefill/decode (P/D) split so that head-level work can be partitioned/replicated correctly; an
+
+  incorrect value would affect how attention heads are distributed across P and D instances, which
+
+  indirectly influences per-instance compute balance and KV-cache memory footprint. However, since the
+
+  value is computed from the parallel config rather than tuned by the user, its direct performance
+
+  impact is low — the real performance levers are the parallel sizes (tensor-parallel-size,
+
+  prefill/decode instance counts) from which it is derived.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:648
+  context: 'Field declaration pd_head_ratio: int = 1 as a derived field with sentinel default.'
+- file: vllm_ascend/ascend_config.py:556
+  context: Docstring lists pd_head_ratio among pure-derived, non-user-settable fields.
+- file: vllm_ascend/ascend_config.py:684
+  context: derive_and_validate() computes derived fields from vllm_config parallel settings.
+related_parameters:
+- name: additional_config.pd_tp_ratio
+  relation: Sibling derived field; both computed together from the P/D parallel layout.
+- name: additional_config.num_head_replica
+  relation: Sibling derived field describing head replication, derived from the same head/parallel computation.
+- name: additional_config.enable_sp_by_pass
+  relation: Another pure-derived field in the same derived-fields group.
+- name: tensor-parallel-size
+  relation: Primary input from which pd_head_ratio is derived.
+constraints:
+- pd_head_ratio is a pure-derived field and is not user-settable; providing it in additional_config is overwritten by derive_and_validate.
+- additional_config uses extra='forbid', so unknown keys fail fast, but pd_head_ratio is a recognized (derived) key rather
+  than an unknown one.
+tuning_advice:
+  summary: Do not set pd_head_ratio manually — it is derived from the P/D parallel layout; tune tensor-parallel-size and P/D
+    instance counts instead.
+  suggested_values:
+  - scenario: Any deployment (default behavior)
+    value: 1
+    reason: Leave at the sentinel default; derive_and_validate overwrites it based on the actual parallel configuration.
+  - scenario: PD-disaggregated deployment needing head-level balance
+    value: <computed>
+    reason: Adjust tensor-parallel-size and prefill/decode instance counts so the derived head ratio yields balanced per-instance
+      head counts.
+  caveats:
+  - Setting this field explicitly has no effect because it is recomputed at config derivation time.
+  - Focus tuning effort on the parallel sizes that feed the derivation rather than on this derived output.
+  quick_guide: Leave pd_head_ratio alone; it is auto-derived from your P/D and tensor-parallel configuration.
+analysis_date: '2026-10-27'

@@ -1,0 +1,115 @@
+name: engram.cpu_offload
+type: nested
+category: memory
+scope: both
+source_file:
+- vllm_ascend/models/deepseek_v41/engram/npu.py:30
+- vllm_ascend/models/deepseek_v41/model.py:1022
+- vllm_ascend/worker/worker.py:951
+- vllm/models/deepseek_v41/nvidia/engram.py:364
+- vllm/models/qwen4_exp/nvidia/ngram_embedding.py:705
+value_type: bool
+default: true
+valid_choices: true | false
+cli_example: '--engram-config ''{"cpu_offload": true}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'Engram (DeepSeek V4.1 / Qwen4-Exp n-gram embedding) tables are very large
+
+  (per-rank 24-51 GiB per the comment in vllm_ascend/models/deepseek_v41/model.py:1030-1033).
+
+  When cpu_offload is true, the embedding weights are placed in pinned host memory
+
+  and looked up via UVA instead of living in NPU HBM. On Ascend this is read through
+
+  vllm_ascend/models/deepseek_v41/engram/npu.py:engram_cpu_offload(), which returns
+
+  bool(engram_config is not None and engram_config.cpu_offload); the value is consumed
+
+  at model.py:1022 to decide host vs device placement of the Engram tables.
+
+  Memory effect: "offloading frees tens of GiB of HBM per rank, which is the primary"
+
+  reason it is required on A3 (24 Engram heads cannot be evenly divided across 16
+
+  logical devices, per the DeepSeek-V4.1-Flash doc). It also enables dp_shared_memory
+
+  so local DP ranks share one host allocation, cutting duplicate host copies.
+
+  Latency/throughput effect: lookups now traverse the host interconnect (UVA) rather
+
+  than HBM, adding per-token gather latency; upstream mitigates this with an async
+
+  prefetch stream (vllm/models/deepseek_v41/nvidia/engram.py:368-389), but the Ascend
+
+  path relies on the NPU-side lookup implementation.
+
+  Secondary effect on Ascend: "in vllm_ascend/worker/worker.py:945-952, when"
+
+  enable_cpu_binding is set, bind_cpus() is called with migrate_memory=not cpu_offload.
+
+  So enabling cpu_offload disables process-wide memory migration, deliberately
+
+  protecting the pinned HOST_UVA backing (which may be shared across NUMA nodes)
+
+  from being migrated. This is a correctness/perf interaction with CPU binding.
+
+  '
+usage_locations:
+- file: vllm_ascend/models/deepseek_v41/engram/npu.py:30
+  context: engram_cpu_offload() reads engram_config.cpu_offload to decide host vs device table placement
+- file: vllm_ascend/models/deepseek_v41/model.py:1022
+  context: cpu_offload = engram_cpu_offload(vllm_config) drives Engram embedding allocation
+- file: vllm_ascend/worker/worker.py:951
+  context: bind_cpus(migrate_memory=not cpu_offload) — disables memory migration when offload is on
+- file: vllm/models/deepseek_v41/nvidia/engram.py:364
+  context: Upstream passes cpu_offload into ParallelEngramEmbedding and sets up a prefetch stream
+- file: vllm/models/qwen4_exp/nvidia/ngram_embedding.py:705
+  context: Upstream selects PinnedHost vs Device embedding class based on cpu_offload
+related_parameters:
+- name: engram.dp_shared_memory
+  relation: Requires cpu_offload=true; EngramConfig raises ValueError if dp_shared_memory=true with cpu_offload=false
+- name: enable_cpu_binding
+  relation: When cpu_offload is true, bind_cpus() skips memory migration to protect pinned HOST_UVA tables
+- name: VLLM_PLE_CPU_OFFLOAD
+  relation: Environment variable that provides the default for cpu_offload; explicit config value takes precedence
+- name: engram_config
+  relation: Parent config object; cpu_offload only takes effect when --engram-config is provided
+constraints:
+- dp_shared_memory cannot be true unless cpu_offload is also true; EngramConfig raises ValueError otherwise.
+- cpu_offload only has effect when --engram-config is provided; without it the Engram tables stay on device.
+- An explicit cpu_offload value takes precedence over the VLLM_PLE_CPU_OFFLOAD environment variable.
+tuning_advice:
+  summary: 'Enable cpu_offload (with dp_shared_memory) on Ascend A3 for DeepSeek-V4.1-Flash to
+
+    fit the large Engram tables in host memory and share them across local DP ranks;
+
+    disable it only when HBM is plentiful and lowest lookup latency is required.
+
+    '
+  suggested_values:
+  - scenario: A3 deployment of DeepSeek-V4.1-Flash where 24 Engram heads cannot divide evenly across 16 logical devices
+    value: true
+    reason: Required on A3 per docs; frees tens of GiB HBM per rank and enables dp_shared_memory to share host allocation
+      across local DP ranks.
+  - scenario: Single-node with ample HBM and latency-sensitive decode
+    value: false
+    reason: Keeps tables in HBM, avoiding UVA host-interconnect lookup latency; only viable when HBM budget allows the 24-51
+      GiB per-rank tables.
+  - scenario: Multi-node DP with --ipc=host containers
+    value: true
+    reason: Lets local DP ranks share the pinned host allocation, reducing duplicate host-memory copies; requires --ipc=host.
+  caveats:
+  - Host UVA lookups add per-token gather latency versus HBM; measure decode latency impact before enabling on latency-critical
+    paths.
+  - When enable_cpu_binding is also set, cpu_offload=true disables process-wide memory migration in bind_cpus() to protect
+    pinned HOST_UVA tables shared across NUMA nodes.
+  - dp_shared_memory requires cpu_offload=true and containers must use --ipc=host so local DP ranks share the host IPC namespace.
+  - The default comes from VLLM_PLE_CPU_OFFLOAD (enabled by default); set an explicit value to override.
+  quick_guide: On A3 DeepSeek-V4.1-Flash set --engram-config '{"cpu_offload":true,"dp_shared_memory":true}'; otherwise leave
+    default unless HBM is tight.
+analysis_date: '2026-10-27'

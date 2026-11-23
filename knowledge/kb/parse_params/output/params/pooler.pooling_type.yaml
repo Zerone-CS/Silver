@@ -1,0 +1,116 @@
+name: pooler.pooling_type
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:742
+- vllm/config/model.py:2067
+- vllm/model_executor/layers/pooler/seqwise/poolers.py:99
+- vllm/model_executor/layers/pooler/tokwise/poolers.py:104
+value_type: str
+default: null
+valid_choices: 'Sequence pooling: MEAN, CLS, LAST, FIRST, ALL; token pooling: MEAN, CLS, LAST, FIRST, ALL, STEP (enum values
+  from SequencePoolingMethod / TokenPoolingMethod)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '`pooler.pooling_type` is a convenience field on PoolerConfig that, when set, populates
+
+  both `seq_pooling_type` and `tok_pooling_type`. It is only meaningful for pooling/embedding
+
+  models (runner_type == "pooling"). The actual runtime effect comes from the resolved
+
+  `seq_pooling_type` / `tok_pooling_type` values, which are read at pooler construction time
+
+  (pooler_for_embed, pooler_for_classify, pooler_for_token_embed, pooler_for_token_classify)
+
+  to select the reduction kernel (MEAN/CLS/LAST/FIRST/ALL/STEP). The choice of reduction
+
+  changes the amount of post-model compute (e.g. MEAN averages over all tokens vs LAST/CLS
+
+  which select a single token), but this is a tiny fraction of total inference cost relative
+
+  to the transformer forward pass, so the direct performance impact is low.
+
+  Indirectly, the resolved pooling type affects `is_chunked_prefill_supported` in
+
+  vllm/config/model.py:2067 — for decoder-attention pooling models, MEAN/CLS seq pooling or
+
+  STEP token pooling disables chunked prefill, which can reduce throughput for long-context
+
+  workloads. This is a scheduling-level effect, not a kernel-level one.
+
+  No vllm-ascend override of this parameter was found; the pooling path is model-level and
+
+  runs on the same NPU kernels regardless of pooling type. The only Ascend-side reference is
+
+  in a unit test (tests/ut/model_loader/rfork/test_identity_validation.py) confirming that
+
+  pooling_type does not partition weight seeds — i.e. it is a runtime-only field with no
+
+  effect on weight loading or memory layout.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:742
+  context: Resolves seq_pooling_type/tok_pooling_type defaults for pooling runner models
+- file: vllm/config/model.py:2067
+  context: is_chunked_prefill_supported checks seq_pooling_type in (MEAN, CLS) or tok_pooling_type == STEP to disable chunked
+    prefill
+- file: vllm/model_executor/layers/pooler/seqwise/poolers.py:99
+  context: pooler_for_embed selects sequence pooling method from config
+- file: vllm/model_executor/layers/pooler/tokwise/poolers.py:104
+  context: pooler_for_token_embed selects token pooling method from config
+- file: vllm/model_executor/models/bert.py:101
+  context: BertPooler asserts seq_pooling_type is not None and builds pooling from it
+- file: vllm/model_executor/models/clip.py:177
+  context: CLIP uses seq_pooling_type to derive vision feature select strategy
+related_parameters:
+- name: pooler.seq_pooling_type
+  relation: pooling_type populates this field when set; explicit seq_pooling_type takes precedence
+- name: pooler.tok_pooling_type
+  relation: pooling_type populates this field when set; explicit tok_pooling_type takes precedence
+- name: runner
+  relation: pooler_config is only populated when runner_type == 'pooling'
+- name: enable_chunked_prefill
+  relation: MEAN/CLS seq pooling or STEP token pooling disables chunked prefill for decoder-attention pooling models
+constraints:
+- pooler.pooling_type only takes effect when the model runs with the pooling runner (runner_type == 'pooling'); it is ignored
+  for generation models.
+- If seq_pooling_type or tok_pooling_type is set explicitly, it overrides the value propagated from pooling_type.
+- For decoder-attention pooling models, seq_pooling_type of MEAN or CLS, or tok_pooling_type of STEP, forces chunked prefill
+  to be disabled.
+- BertPooler and CLIP require seq_pooling_type to be non-None (asserted), so a valid pooling type must resolve before model
+  construction.
+tuning_advice:
+  summary: 'Leave pooling_type unset and let the model''s default_seq_pooling_type/default_tok_pooling_type
+
+    resolve automatically; only override when you need a specific reduction, and prefer LAST/CLS
+
+    over MEAN on decoder-attention pooling models to keep chunked prefill enabled.
+
+    '
+  suggested_values:
+  - scenario: Embedding model where the checkpoint's sentence-transformers config already specifies pooling
+    value: <unset>
+    reason: get_pooling_config() auto-populates from the model's sentence_transformers config; overriding risks mismatching
+      the trained head.
+  - scenario: Decoder-attention pooling model with long-context inputs where chunked prefill matters
+    value: LAST
+    reason: LAST seq pooling does not disable chunked prefill (only MEAN/CLS do), preserving throughput on long sequences.
+  - scenario: Encoder-only (bidirectional) pooling model
+    value: MEAN
+    reason: Encoder-only models do not support chunked prefill regardless, so MEAN is safe and matches typical sentence-embedding
+      training.
+  caveats:
+  - Setting pooling_type to MEAN or CLS on a decoder-attention pooling model silently disables chunked prefill, which can
+    hurt throughput for long prompts.
+  - pooling_type is a convenience alias; if you also set seq_pooling_type/tok_pooling_type explicitly, the explicit values
+    win and pooling_type may be partially ignored.
+  - No vllm-ascend-specific override exists; behavior is identical to upstream vLLM on NPU, and pooling_type does not affect
+    weight loading or memory partitioning.
+  quick_guide: Leave unset to inherit model defaults; use LAST for decoder pooling models to keep chunked prefill enabled.
+analysis_date: '2026-10-27'

@@ -1,0 +1,98 @@
+name: VLLM_DP_RANK_LOCAL
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:1437
+- vllm/envs.py:174
+- vllm/config/parallel.py:938
+- examples/offline_data_parallel.py:121
+- tests/e2e/conftest.py:907
+value_type: int
+default: VLLM_DP_RANK (falls back to the global DP rank when unset)
+valid_choices: integer in range [0, data_parallel_size); typically equals the node-local DP rank index
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+impact_detail: 'VLLM_DP_RANK_LOCAL is the node-local data-parallel rank index used in offline SPMD
+
+  data-parallel deployments. In vllm/config/parallel.py:938 it is read into
+
+  ParallelConfig.data_parallel_rank_local only in the offline SPMD branch (when
+
+  data_parallel_rank is not set via CLI), alongside VLLM_DP_SIZE, VLLM_DP_RANK,
+
+  VLLM_DP_MASTER_IP and VLLM_DP_MASTER_PORT. It is a bookkeeping/identity value: it
+
+  tells the engine which local DP slot this process occupies so that device assignment
+
+  and per-rank prompt sharding are correct. It does not itself change kernel selection,
+
+  memory allocation, or communication algorithms. Its performance relevance is indirect:
+
+  a correct local rank ensures each DP rank binds to a distinct set of NPUs (via
+
+  ASCEND_RT_VISIBLE_DEVICES / device_ids in the vllm-ascend examples and tests), so that
+
+  DP replicas do not contend for the same device and aggregate throughput scales with
+
+  dp_size. A wrong value can cause device collisions or mis-sharded workloads, degrading
+
+  effective throughput, but the parameter has no direct latency or memory effect.
+
+  vllm-ascend does not override this env var; it is consumed through the same upstream
+
+  ParallelConfig path. The vllm-ascend examples (examples/offline_data_parallel.py:121)
+
+  and e2e tests set it explicitly per worker process to drive offline DP on Ascend NPUs.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1437
+  context: Defines VLLM_DP_RANK_LOCAL, defaulting to VLLM_DP_RANK when unset.
+- file: vllm/config/parallel.py:938
+  context: Read into ParallelConfig.data_parallel_rank_local in the offline SPMD DP branch.
+- file: examples/offline_data_parallel.py:121
+  context: vllm-ascend offline DP example sets VLLM_DP_RANK_LOCAL per worker process.
+- file: tests/e2e/conftest.py:907
+  context: vllm-ascend e2e DP worker sets VLLM_DP_RANK_LOCAL equal to dp_rank.
+related_parameters:
+- name: VLLM_DP_RANK
+  relation: Global DP rank; VLLM_DP_RANK_LOCAL defaults to this value when unset.
+- name: VLLM_DP_SIZE
+  relation: Total number of DP ranks; local rank must be within [0, dp_size).
+- name: VLLM_DP_MASTER_IP
+  relation: Master node IP for the DP group; set together with local rank in offline DP.
+- name: VLLM_DP_MASTER_PORT
+  relation: Master node port for the DP group; set together with local rank in offline DP.
+- name: data_parallel_size_local
+  relation: CLI-level local DP size; related to how many local ranks a node hosts.
+constraints:
+- VLLM_DP_RANK_LOCAL is only consulted in the offline SPMD data-parallel path; when data_parallel_rank is set via CLI it is
+  ignored.
+- Offline data parallel mode (VLLM_DP_SIZE > 1) is only supported for MoE models; dense models raise a ValueError.
+- The local DP rank must be a valid index within the data-parallel group (0 <= rank < data_parallel_size).
+tuning_advice:
+  summary: Set VLLM_DP_RANK_LOCAL to the node-local DP rank index for offline SPMD data parallel on Ascend, keeping it consistent
+    with VLLM_DP_RANK and VLLM_DP_SIZE.
+  suggested_values:
+  - scenario: Single-node offline DP with N NPUs, one DP rank per NPU
+    value: 0..N-1 (one distinct value per worker process)
+    reason: Each DP rank must occupy a distinct local slot so device assignment maps each rank to a separate NPU, maximizing
+      aggregate throughput.
+  - scenario: Multi-node offline DP where each node hosts multiple DP ranks
+    value: node-local index starting at 0 on each node
+    reason: Local rank is node-scoped; reusing 0..k-1 per node lets each node's ranks bind to its own NPUs while VLLM_DP_RANK
+      carries the global rank.
+  - scenario: Single DP rank (no data parallelism)
+    value: '0'
+    reason: With VLLM_DP_SIZE=1 the local rank is trivially 0; leaving it unset falls back to VLLM_DP_RANK which is also 0.
+  caveats:
+  - Only effective in the offline SPMD DP path; if data_parallel_rank is passed via CLI this env var is ignored.
+  - Offline DP with VLLM_DP_SIZE > 1 requires an MoE model; dense models raise an error.
+  - Ensure ASCEND_RT_VISIBLE_DEVICES / device_ids are partitioned per rank so local ranks do not collide on the same NPU.
+  quick_guide: Set VLLM_DP_RANK_LOCAL to each worker's node-local DP index (0..dp_size-1) alongside VLLM_DP_RANK, VLLM_DP_SIZE
+    and the DP master IP/port.
+analysis_date: '2026-10-27'

@@ -1,0 +1,89 @@
+name: VLLM_USE_FUSED_MOE_GROUPED_TOPK
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1573
+- vllm/envs.py:209
+- vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py:92
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via int() then bool())
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag gates the fused grouped_topk CUDA/XPU kernel used for MoE expert
+
+  selection in vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py:92.
+
+  The fused path is only taken when ALL of the following hold: "the env var is"
+
+  truthy, the platform is CUDA or XPU (current_platform.is_cuda() or
+
+  current_platform.is_xpu()), num_expert_group <= 32, topk <= 32, and
+
+  e_score_correction_bias is not None. On Ascend NPU, current_platform.is_cuda()
+
+  and is_xpu() both return False, so this branch is never entered regardless of
+
+  the env var value — the code always falls through to the generic PyTorch
+
+  implementation (softmax/sigmoid + topk + group masking). Therefore on Ascend
+
+  this parameter has no runtime effect on the upstream router path. vllm-ascend
+
+  does not reference this env var in the provided context; Ascend MoE routing is
+
+  handled by Ascend-native fused MoE ops (e.g. torch_npu / CANN grouped topk
+
+  kernels) rather than this upstream fused kernel. The only residual impact is
+
+  that the generic fallback path is slightly slower than a fused kernel would be,
+
+  but that is not controlled by this flag on NPU.
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py:92
+  context: Conditional gate selecting fused_grouped_topk vs generic PyTorch grouped_topk; requires CUDA/XPU platform.
+- file: vllm/envs.py:1573
+  context: Environment variable definition, default enabled (1).
+- file: vllm/envs.py:209
+  context: Type annotation declaration in the envs module.
+- file: tests/kernels/moe/test_grouped_topk.py:118
+  context: Test disables the flag to compare fused vs baseline grouped_topk numerics.
+related_parameters:
+- name: VLLM_MOE_SKIP_PADDING
+  relation: Sibling MoE-path env flag defined adjacent in envs.py; both affect MoE dispatch behavior but are independent.
+- name: e_score_correction_bias
+  relation: Fused path requires this tensor to be non-None; without it the fused kernel is skipped even on CUDA.
+constraints:
+- The fused grouped_topk kernel is only used when the platform is CUDA or XPU; on Ascend NPU the flag has no effect and the
+  generic PyTorch path is always used.
+- Even on CUDA/XPU, the fused path requires num_expert_group <= 32, topk <= 32, and a non-None e_score_correction_bias; otherwise
+  the generic path is used.
+- The value is parsed as int() then bool(), so only integer-like strings such as 0 or 1 are valid; non-integer strings raise
+  a ValueError at startup.
+tuning_advice:
+  summary: On Ascend NPU this flag is inert — leave it at the default; do not rely on it to enable or disable any Ascend MoE
+    routing optimization.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: 1
+    reason: Keep the default; the flag is gated by is_cuda()/is_xpu() and never activates on NPU, so changing it has no runtime
+      effect and only risks confusion.
+  - scenario: Debugging MoE routing numerics on Ascend
+    value: 0
+    reason: Setting to 0 is harmless on NPU (path already inactive) and makes intent explicit when comparing against CUDA
+      reference behavior.
+  caveats:
+  - Do not expect any latency or throughput change on Ascend from toggling this variable; the fused kernel branch is unreachable
+    on NPU.
+  - Ascend MoE expert-selection performance is governed by vllm-ascend's native fused MoE ops and CANN kernels, not by this
+    upstream flag.
+  - The flag only matters for CUDA/XPU deployments with DeepSeek-style grouped routing (num_expert_group/topk_group with e_score_correction_bias).
+  quick_guide: Leave VLLM_USE_FUSED_MOE_GROUPED_TOPK at its default on Ascend; it has no effect on NPU.
+analysis_date: '2026-10-27'

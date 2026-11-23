@@ -1,0 +1,79 @@
+name: --jit-monitor-verbose
+type: cli
+category: observability
+scope: vllm
+source_file:
+- vllm/config/observability.py:94
+- vllm/engine/arg_utils.py:695
+- vllm/engine/arg_utils.py:1570
+- vllm/v1/worker/gpu_worker.py:934
+value_type: bool
+default: false
+valid_choices: boolean (true/false)
+cli_example: --jit-monitor-verbose
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only controls the verbosity of the JIT compilation monitor that is
+
+  activated after warmup in the v1 GPU worker path
+
+  (vllm/v1/worker/gpu_worker.py:934, activate_jit_monitor(mode=..., verbose=...)).
+
+  When enabled, every monitored post-warmup JIT compile event is logged with
+
+  runtime details. The docstring in vllm/config/observability.py:94-96 explicitly
+
+  states it "can emit many logs and add overhead, so it is intended for
+
+  debugging." The overhead is limited to logging/formatting work triggered only
+
+  when an unexpected JIT compile actually occurs; it does not change the
+
+  compilation itself, kernel selection, memory allocation, or scheduling.
+
+  On Ascend, this monitor is part of the upstream v1 worker path; vllm-ascend
+
+  does not define or override this parameter (no occurrences in vllm-ascend
+
+  source), and Ascend uses CANN/graph compilation rather than the inductor JIT
+
+  path this monitor targets, so its practical effect on Ascend NPU runtime is
+
+  negligible. It is a debugging aid, not a tuning knob.
+
+  '
+usage_locations:
+- file: vllm/config/observability.py:94
+  context: ObservabilityConfig field definition with docstring describing log overhead
+- file: vllm/engine/arg_utils.py:695
+  context: EngineArgs field mapping to ObservabilityConfig.jit_monitor_verbose
+- file: vllm/engine/arg_utils.py:1570
+  context: CLI argument registration in the ObservabilityConfig argument group
+- file: vllm/v1/worker/gpu_worker.py:934
+  context: Passed to activate_jit_monitor(verbose=...) after warmup in v1 worker
+related_parameters:
+- name: --jit-monitor-mode
+  relation: Companion parameter controlling how post-warmup JIT events are handled (warn/error); verbose only affects logging
+    detail
+- name: --enforce-eager
+  relation: Disabling compilation/graphs reduces JIT compile events, making the monitor largely moot
+constraints:
+- This is a boolean flag; it takes no value argument (use --jit-monitor-verbose to enable, --no-jit-monitor-verbose to disable).
+- The monitor only activates after warmup completes in the v1 worker path; it has no effect during startup compilation.
+tuning_advice:
+  summary: Leave disabled in production; enable only temporarily to diagnose unexpected runtime JIT recompilation latency
+    spikes.
+  suggested_values:
+  - scenario: Production serving (v1 worker, Ascend NPU)
+    value: false
+    reason: Avoids extra logging overhead and log spam; the monitor targets inductor JIT which is rarely triggered on Ascend.
+  - scenario: Debugging latency spikes suspected from runtime recompilation
+    value: true
+    reason: Logs each monitored JIT compile with runtime details to pinpoint recompilation events causing latency spikes.
+  caveats:
+  - Pair with --jit-monitor-mode error to fail fast on unexpected post-warmup compiles during debugging.
+  - Disable again after diagnosis to prevent log volume growth and overhead.
+  quick_guide: Keep off in production; turn on briefly only to debug runtime JIT recompilation latency.
+analysis_date: '2026-10-27'

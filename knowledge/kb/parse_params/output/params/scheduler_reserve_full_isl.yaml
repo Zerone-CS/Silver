@@ -1,0 +1,145 @@
+name: --scheduler-reserve-full-isl
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:172
+- vllm/engine/arg_utils.py:650
+- vllm/engine/arg_utils.py:1631
+- vllm/v1/core/sched/scheduler.py:331
+- vllm/v1/core/sched/scheduler.py:1168
+- vllm_ascend/patch/platform/patch_balance_schedule.py:623
+- vllm_ascend/core/dyntra_lb_scheduler.py:214
+- vllm_ascend/core/dyntra_lb_scheduler.py:937
+- vllm_ascend/core/recompute_scheduler.py:749
+- vllm_ascend/core/scheduler_profiling_chunk.py:953
+value_type: bool
+default: true
+valid_choices:
+- true
+- false
+cli_example: --scheduler-reserve-full-isl
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'This flag is defined upstream in vllm/config/scheduler.py:172 (default True) and
+
+  plumbed through arg_utils.py into SchedulerConfig. The v1 scheduler reads it into
+
+  self.scheduler_reserve_full_isl (vllm/v1/core/sched/scheduler.py:331) and passes it
+
+  as full_sequence_must_fit to kv_cache_manager.allocate_slots() at scheduler.py:1168.
+
+  When True, the KV cache manager must reserve enough blocks for the ENTIRE input
+
+  sequence length (prompt) before a request is admitted, not just the first chunk
+
+  scheduled this step. When False, only the current chunk''s blocks are checked, so a
+
+  long prompt can be admitted even if the full prompt won''t fit, relying on later
+
+  chunks to allocate more blocks.
+
+
+  vllm-ascend does NOT override the default; it consumes the same SchedulerConfig
+
+  field. The Ascend-specific schedulers all forward it identically:
+
+  - "vllm_ascend/patch/platform/patch_balance_schedule.py:623 (BalanceScheduler)"
+
+  - "vllm_ascend/core/dyntra_lb_scheduler.py:214 (async KV load admission) and :937"
+
+  - "vllm_ascend/core/recompute_scheduler.py:749 (RecomputeScheduler)"
+
+  - "vllm_ascend/core/scheduler_profiling_chunk.py:953"
+
+  Each passes full_sequence_must_fit=self.scheduler_reserve_full_isl into
+
+  allocate_slots(). So the behavior is uniform across Ascend scheduler variants.
+
+
+  Performance mechanism: "With chunked prefill enabled (common on Ascend to bound"
+
+  per-step compute and keep NPU utilization high), setting this True prevents
+
+  over-admission — the scheduler won''t start a request whose full prompt cannot fit
+
+  in KV cache, avoiding mid-prefill preemption and KV cache thrashing (repeated
+
+  eviction/recompute of blocks). This trades a bit of admission aggressiveness
+
+  (some requests wait longer) for stable throughput and fewer wasted prefill
+
+  recomputations. Setting it False can improve short-term admission/batching
+
+  (higher instantaneous occupancy) but risks preemption storms and recompute under
+
+  memory pressure, hurting steady-state throughput and tail latency. On Ascend NPU,
+
+  where prefill compute is expensive and recompute wastes NPU cycles, the True
+
+  default generally yields better sustained throughput.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:172
+  context: Field definition with docstring; default True
+- file: vllm/engine/arg_utils.py:650
+  context: EngineArgs field mirroring SchedulerConfig default
+- file: vllm/engine/arg_utils.py:1631
+  context: CLI argument registration in SchedulerConfig group
+- file: vllm/v1/core/sched/scheduler.py:331
+  context: Scheduler stores scheduler_reserve_full_isl from config
+- file: vllm/v1/core/sched/scheduler.py:1168
+  context: Passed as full_sequence_must_fit to allocate_slots during prefill scheduling
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:623
+  context: BalanceScheduler passes full_sequence_must_fit to allocate_slots
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:214
+  context: Async KV load admission path passes full_sequence_must_fit
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:937
+  context: Dyntra LB scheduler prefill scheduling passes full_sequence_must_fit
+- file: vllm_ascend/core/recompute_scheduler.py:749
+  context: RecomputeScheduler passes full_sequence_must_fit to allocate_slots
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:953
+  context: Profiling chunk scheduler passes full_sequence_must_fit
+related_parameters:
+- name: --enable-chunked-prefill
+  relation: Only meaningful with chunked prefill; without chunking the full prompt is scheduled in one step anyway
+- name: --max-num-batched-tokens
+  relation: Chunk size for prefill; interacts with how much of the prompt is scheduled per step
+- name: --watermark
+  relation: Both control KV cache admission headroom to avoid preemption/thrashing
+- name: --gpu-memory-utilization
+  relation: Determines total KV cache blocks available, affecting whether full ISL fits
+- name: --max-model-len
+  relation: Upper bound on input sequence length that must fit when this flag is True
+constraints:
+- This flag only has an effect when chunked prefill is enabled; with chunked prefill disabled the full prompt is scheduled
+  in a single step regardless.
+- When True, a request whose full input sequence length cannot fit in the available KV cache blocks will not be admitted,
+  so max-model-len must be compatible with the KV cache capacity.
+tuning_advice:
+  summary: Keep the default True for stable throughput under chunked prefill; only disable when KV cache is abundant and you
+    need maximum admission aggressiveness.
+  suggested_values:
+  - scenario: Default production serving with chunked prefill and moderate KV cache pressure
+    value: true
+    reason: Prevents over-admission and KV cache thrashing, avoiding expensive prefill recompute on the NPU and stabilizing
+      throughput.
+  - scenario: Long-prompt workloads where prompts approach max-model-len and KV cache is tight
+    value: true
+    reason: Ensures only requests whose full prompt fits are admitted, avoiding mid-prefill preemption and recompute.
+  - scenario: Short-prompt, high-concurrency workloads with abundant KV cache headroom
+    value: false
+    reason: Allows more aggressive admission/batching to raise instantaneous occupancy when preemption risk is low.
+  caveats:
+  - Disabling this flag with tight KV cache can trigger preemption storms and repeated prefill recompute, degrading steady-state
+    throughput on Ascend NPU.
+  - Combine with --watermark to add KV cache headroom when running near memory limits.
+  - Applies uniformly across vllm-ascend v1 scheduler variants; no Ascend-specific override of the default exists.
+  quick_guide: Leave --scheduler-reserve-full-isl at its default True unless KV cache is abundant and you need more aggressive
+    admission.
+analysis_date: '2026-10-27'

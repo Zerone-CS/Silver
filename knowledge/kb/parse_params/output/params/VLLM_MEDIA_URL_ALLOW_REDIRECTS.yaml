@@ -1,0 +1,89 @@
+name: VLLM_MEDIA_URL_ALLOW_REDIRECTS
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:984
+- vllm/envs.py:79
+- vllm/envs.py:2315
+- vllm/multimodal/media/connector.py:391
+- vllm/multimodal/media/connector.py:444
+- vllm/entrypoints/launchers/run_batch.py:528
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only controls whether the HTTP client follows redirects when
+
+  fetching remote media (images/video/audio) from URLs. It is read in
+
+  vllm/multimodal/media/connector.py (both sync load_from_url at line 391 and
+
+  async load_from_url_async at line 444) and in
+
+  vllm/entrypoints/launchers/run_batch.py:528 for audio URL fetching, and passed
+
+  as allow_redirects to the underlying connection''s get_bytes/async_get_bytes.
+
+  It does not touch any NPU compute path, HCCL communication, KV cache, or
+
+  scheduling logic. Its only runtime effect is on the media-fetch I/O path:
+
+  when True, a redirecting URL incurs an extra HTTP round-trip (added latency
+
+  before the multimodal input is available for preprocessing); when False, a
+
+  redirecting URL fails outright. There is no vllm-ascend override — the
+
+  parameter is not referenced in vllm-ascend, so it behaves identically on
+
+  Ascend as on GPU. Because media fetching happens off the critical NPU compute
+
+  path and is typically amortized/cached (see VLLM_MEDIA_CACHE), the impact on
+
+  end-to-end throughput/latency is minor.
+
+  '
+usage_locations:
+- file: vllm/multimodal/media/connector.py:391
+  context: Sync load_from_url passes allow_redirects=envs.VLLM_MEDIA_URL_ALLOW_REDIRECTS to connection.get_bytes for http(s)
+    media.
+- file: vllm/multimodal/media/connector.py:444
+  context: Async load_from_url_async passes allow_redirects to connection.async_get_bytes for http(s) media.
+- file: vllm/entrypoints/launchers/run_batch.py:528
+  context: Audio URL fetch passes allow_redirects to global_http_connection.async_get_bytes.
+- file: vllm/envs.py:79
+  context: 'Type declaration VLLM_MEDIA_URL_ALLOW_REDIRECTS: bool = True.'
+related_parameters:
+- name: VLLM_MEDIA_CACHE
+  relation: Cached media bytes skip the fetch entirely, so redirect handling only matters on cache misses.
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retries apply to failed fetches; a redirect failure (when redirects disabled) may be retried.
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Size limit enforced while streaming the (possibly redirected) response body.
+- name: VLLM_MEDIA_CONNECTOR
+  relation: Selects the media connector implementation that consumes this redirect flag.
+constraints:
+- The value is parsed as bool(int(...)), so only integer strings like 0 or 1 are valid; other strings raise a ValueError at
+  env access time.
+- When set to 0, any media URL that responds with an HTTP redirect will fail to load rather than following the redirect.
+tuning_advice:
+  summary: Leave at default (1) unless you have a strict security policy requiring redirects to be blocked; it has negligible
+    impact on Ascend NPU performance.
+  suggested_values:
+  - scenario: General multimodal serving with CDN-backed media URLs
+    value: 1
+    reason: Default allows following redirects so CDN/HTTP-to-HTTPS media URLs resolve correctly; extra round-trip is minor
+      and off the NPU path.
+  - scenario: Security-hardened deployment that must prevent redirect-based SSRF
+    value: 0
+    reason: Blocks redirect following; only use when all media URLs are direct and you accept that redirecting URLs will fail.
+  caveats:
+  - Setting 0 will cause media URLs that redirect to fail; verify all media sources are direct URLs first.
+  - This flag does not affect NPU compute, HCCL, or KV cache; do not expect throughput changes from tuning it.
+  quick_guide: Keep default 1; only set 0 for strict SSRF-hardening when all media URLs are direct.
+analysis_date: '2026-10-27'

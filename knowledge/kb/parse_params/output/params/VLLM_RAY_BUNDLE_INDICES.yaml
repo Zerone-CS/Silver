@@ -1,0 +1,109 @@
+name: VLLM_RAY_BUNDLE_INDICES
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:1429
+- vllm/envs.py:171
+- vllm/v1/executor/ray_executor.py:186
+- vllm/v1/executor/ray_executor_v2.py:305
+- vllm/v1/executor/ray_utils.py:368
+value_type: str
+default: ''
+valid_choices: comma-separated list of non-negative integers, e.g. "0,1,2,3"; length must equal world_size; no duplicates
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'VLLM_RAY_BUNDLE_INDICES only takes effect when the distributed executor backend is
+
+  Ray (distributed_executor_backend="ray"). It is read in the Ray executor to decide
+
+  which placement-group bundles (i.e. which physical NPU/GPU slots) are assigned to
+
+  each worker rank. In vllm/v1/executor/ray_executor.py:186-204, if the env var is set
+
+  the code parses it into a list of bundle indices and asserts that its length equals
+
+  parallel_config.world_size and that there are no duplicates; otherwise it falls back
+
+  to picking the first N bundles that expose the platform ray device key
+
+  (current_platform.ray_device_key). In the v2 executor (ray_executor_v2.py:305-313)
+
+  the same env var is passed to get_bundles_for_indices() (ray_utils.py:361-388) to
+
+  build bundle->node->IP assignments, again with the same length/uniqueness asserts.
+
+  The parameter does NOT change any compute kernel, memory allocation, or communication
+
+  primitive. Its performance relevance is purely topological: by pinning specific
+
+  bundles you control which physical devices/nodes each rank lands on, which can affect
+
+  NUMA locality, HCCL/Ascend inter-node vs intra-node communication paths, and whether
+
+  ranks are co-located on the same node. On Ascend NPU this matters because HCCL
+
+  collective performance depends heavily on whether ranks are on the same node (HCCS
+
+  links) or across nodes (RoCE), so a poor bundle assignment can degrade collective
+
+  throughput. However, the parameter itself is a placement hint, not a tuning knob for
+
+  compute; the actual performance effect is indirect and only realized through the
+
+  resulting rank-to-device mapping. No vllm-ascend override of this env var was found
+
+  in the provided context; it is an upstream vLLM Ray-executor parameter.
+
+  '
+usage_locations:
+- file: vllm/v1/executor/ray_executor.py:186
+  context: Parses env var into bundle_indices, asserts length == world_size and no duplicates; else auto-selects first N GPU
+    bundles
+- file: vllm/v1/executor/ray_executor_v2.py:305
+  context: Passes parsed indices to get_bundles_for_indices() to build rank->bundle->node assignments
+- file: vllm/v1/executor/ray_utils.py:368
+  context: get_bundles_for_indices() validates length/uniqueness and maps bundle ids to node ids and IPs
+- file: examples/rl/rlhf_sparse_nccl.py:56
+  context: Example sets VLLM_RAY_BUNDLE_INDICES to range(INFERENCE_TP_SIZE) to pin workers to specific bundles
+related_parameters:
+- name: VLLM_RAY_PER_WORKER_GPUS
+  relation: Controls GPUs per Ray worker; together with bundle indices determines device placement and colocation
+- name: VLLM_RAY_DP_PACK_STRATEGY
+  relation: DP rank packing strategy for Ray placement; interacts with how bundles are allocated across nodes
+- name: distributed_executor_backend
+  relation: VLLM_RAY_BUNDLE_INDICES is only honored when the backend is 'ray'
+- name: tensor_parallel_size
+  relation: world_size (tp*pp*pcp) must equal the number of bundle indices provided
+constraints:
+- The number of comma-separated bundle indices must exactly equal the parallel world size (tensor_parallel_size × pipeline_parallel_size
+  × prefill_context_parallel_size), otherwise an AssertionError is raised.
+- Bundle indices must not contain duplicate values, otherwise an AssertionError is raised.
+- The env var is only honored when the distributed executor backend is Ray; it has no effect with the mp backend.
+- Each provided bundle index must correspond to a valid bundle in the Ray placement group that has the platform device resource,
+  otherwise placement fails.
+tuning_advice:
+  summary: Only set VLLM_RAY_BUNDLE_INDICES when using the Ray backend and you need deterministic rank-to-device placement;
+    otherwise leave it empty to let vLLM auto-select GPU bundles.
+  suggested_values:
+  - scenario: Default Ray deployment, no special placement requirement
+    value: unset
+    reason: Leaving it empty lets the executor pick the first N bundles with device resources, which is the simplest and least
+      error-prone configuration.
+  - scenario: Multi-node Ascend deployment where you want TP ranks co-located on the same node to maximize HCCS bandwidth
+    value: 0,1,2,3,4,5,6,7
+    reason: Explicitly pinning consecutive bundle indices keeps ranks on the same node, favoring intra-node HCCS collectives
+      over cross-node RoCE.
+  - scenario: RL/colocated workloads needing workers pinned to specific bundles (as in examples/rl/rlhf_sparse_nccl.py)
+    value: 0,1,2,3
+    reason: Matches the example pattern of setting indices to range(INFERENCE_TP_SIZE) so inference workers occupy known bundles.
+  caveats:
+  - The list length must equal world_size and contain no duplicates, or startup asserts.
+  - Only effective with distributed_executor_backend='ray'; ignored for mp backend.
+  - On Ascend, verify the resulting mapping keeps latency-sensitive collectives intra-node where possible.
+  quick_guide: Leave empty unless you need deterministic Ray bundle placement; if set, provide exactly world_size unique indices.
+analysis_date: '2026-10-27'

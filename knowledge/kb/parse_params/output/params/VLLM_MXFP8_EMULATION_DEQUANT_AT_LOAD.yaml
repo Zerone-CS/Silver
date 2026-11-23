@@ -1,0 +1,77 @@
+name: VLLM_MXFP8_EMULATION_DEQUANT_AT_LOAD
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1227
+- vllm/envs.py:133
+- vllm/model_executor/kernels/linear/mxfp8/emulation.py:41
+- vllm/model_executor/layers/quantization/modelopt.py:1422
+- vllm/model_executor/layers/quantization/modelopt.py:2258
+value_type: bool
+default: true
+valid_choices: 'boolean: True/False (parsed from ''true''/''1'' vs anything else)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: "This flag only takes effect on the MXFP8 emulation path, which is used when the\ndevice has no native MXFP8\
+  \ kernel (the upstream comment explicitly names ROCm\ngfx942 / MI300). On Ascend NPU, vllm-ascend does not reference this\
+  \ env var\nanywhere in the provided context, and Ascend quantization goes through its own\nquant backends (e.g. Ascend-native\
+  \ W8A8/W4A8 paths) rather than the upstream\nEmulationMxfp8LinearKernel / Fp8MoeBackend.EMULATION code. Therefore on Ascend\n\
+  this parameter is effectively inert unless an MXFP8 checkpoint is loaded through\nthe upstream emulation kernel.\nWhere\
+  \ it does apply (upstream emulation path):\n- \"When True (default), EmulationMxfp8LinearKernel.process_weights_after_loading\"\
+  \n  (emulation.py:45-47) dequantizes MXFP8->BF16 once at load, replacing the 1-byte\n  weight with a 2-byte BF16 weight.\
+  \ apply_weights then runs a plain BF16 linear\n  with no per-step dequant (emulation.py:59-60), and modelopt.py:1424-1428\n\
+  \  similarly converts MoE expert weights to BF16 once. This trades ~2x weight\n  memory for eliminating per-forward-step\
+  \ dequantization, giving much lower\n  latency.\n- \"When False, weights stay 1-byte MXFP8 (~half the weight memory) but\
+  \ every\"\n  forward step must dequantize, which the comments describe as \"much slower\".\nNet effect: \"memory vs. latency\
+  \ tradeoff on the emulation path only.\"\n"
+usage_locations:
+- file: vllm/model_executor/kernels/linear/mxfp8/emulation.py:45
+  context: process_weights_after_loading dequantizes MXFP8 weight to BF16 at load when enabled
+- file: vllm/model_executor/layers/quantization/modelopt.py:1424
+  context: MoE emulation path converts expert weights to BF16 once at load when enabled
+- file: vllm/model_executor/layers/quantization/modelopt.py:2258
+  context: Idempotency check skips fp8 asserts when weight already >=2-byte after load-time dequant
+- file: vllm/envs.py:1227
+  context: Environment variable definition and default parsing
+related_parameters:
+- name: VLLM_ROCM_USE_AITER
+  relation: Sibling ROCm/AITER-related env var in the same block; MXFP8 emulation is a ROCm-oriented path
+- name: VLLM_ROCM_USE_AITER_MOE
+  relation: Related MoE kernel selection; emulation MoE path interacts with fp8 MoE backend selection
+constraints:
+- The flag only affects the MXFP8 emulation path; it has no effect when a native MXFP8 kernel is available or when the model
+  is not MXFP8-quantized.
+- Setting it to 0 keeps 1-byte MXFP8 weights and requires per-step dequantization in apply_weights, which is only valid on
+  the emulation kernel path.
+tuning_advice:
+  summary: 'Leave at the default (True) on the upstream MXFP8 emulation path for best latency;
+
+    on Ascend NPU this flag has no practical effect since vllm-ascend does not use the
+
+    emulation kernel.
+
+    '
+  suggested_values:
+  - scenario: Running an MXFP8 checkpoint on hardware without a native MXFP8 kernel (upstream emulation path), latency-sensitive
+    value: true
+    reason: Dequantizes weights to BF16 once at load, eliminating per-step dequant and giving much lower latency at the cost
+      of ~2x weight memory.
+  - scenario: Memory-constrained deployment on the emulation path where weight memory dominates
+    value: false
+    reason: Keeps 1-byte MXFP8 weights (~half the weight memory) at the cost of dequantizing every forward step, which is
+      much slower.
+  - scenario: Ascend NPU deployment
+    value: true
+    reason: vllm-ascend does not reference this env var and uses its own quantization backends, so the value is inert; keep
+      the default to avoid confusion.
+  caveats:
+  - This flag is only meaningful for the upstream MXFP8 emulation kernel; it does not change Ascend-native quantized kernel
+    behavior.
+  - Load-time dequant increases resident weight memory; verify NPU HBM headroom before relying on it for large MoE models.
+  quick_guide: Keep default True for latency on the MXFP8 emulation path; irrelevant on Ascend NPU.
+analysis_date: '2026-10-27'

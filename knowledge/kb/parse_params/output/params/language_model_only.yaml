@@ -1,0 +1,133 @@
+name: --language-model-only
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1367
+- vllm/engine/arg_utils.py:586
+- vllm/engine/arg_utils.py:1855
+- vllm/config/model.py:395
+- vllm/config/model.py:477
+- vllm/config/multimodal.py:91
+- vllm/config/multimodal.py:483
+- vllm/config/vllm.py:1314
+- vllm/lora/model_manager.py:233
+- vllm/model_executor/models/config.py:886
+- tests/e2e/pull_request/one_card/test_vlm.py:86
+- tests/e2e/pull_request/two_card/test_qwen3_6_27b_fia.py:45
+- tests/e2e/pull_request/four_card/test_minimax_m3.py:130
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: --language-model-only
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This flag is defined upstream in vllm/config/multimodal.py (MultiModalConfig.language_model_only)
+
+  and plumbed through EngineArgs -> VllmConfig -> ModelConfig. Its runtime effect is implemented in
+
+  MultiModalConfig.get_limit_per_prompt() (vllm/config/multimodal.py:483): when language_model_only
+
+  is True, the method returns 0 for every modality regardless of --limit-mm-per-prompt. A per-modality
+
+  limit of 0 causes the multimodal registry/budget to skip loading the vision/audio encoder modules
+
+  and skip multimodal memory profiling, so the encoder weights never occupy NPU HBM and the encoder
+
+  forward pass is never executed. On Ascend this is a large memory win: the vllm-ascend Dots3-Note
+
+  doc quantifies the image form as ~48.8 GB per worker vs 36.26 GB for text-only (+12.5 GB of encoder
+
+  weights), and the audio form as +1.62 GB. Freeing that HBM lets the KV cache grow (the doc''s
+
+  text-only profile uses --gpu-memory-utilization 0.92 with 32768 context and MTP3 enabled, whereas
+
+  the image form must cap KV with --kv-cache-memory-bytes and cannot use MTP). It also removes the
+
+  encoder prefill latency from the critical path, so TTFT for text prompts drops. Additionally,
+
+  vllm/config/model.py:477 folds language_model_only into the model config hash because for models
+
+  like Qwen3-VL the MM code path changes the language-model computation graph; on Ascend this means
+
+  the flag changes which graph is compiled/captured (ACL graph / torch.compile), so it must be fixed
+
+  at startup and cannot be toggled per request. vllm/config/vllm.py:1314 raises if it is combined with
+
+  cudagraph_mm_encoder=True, and vllm/lora/model_manager.py:233 disables tower-connector LoRA when it
+
+  is set. vllm-ascend does not override the flag itself; it consumes it through the upstream config
+
+  and exercises it in e2e tests (test_vlm.py, test_minimax_m3.py, test_qwen3_6_27b_fia.py).
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:483
+  context: get_limit_per_prompt() returns 0 for every modality when language_model_only is True, disabling encoder loading
+    and MM profiling.
+- file: vllm/config/model.py:477
+  context: language_model_only is added to the model config hash factors because it changes the LM computation graph for models
+    like Qwen3-VL.
+- file: vllm/config/vllm.py:1314
+  context: Raises ValueError when combined with compilation_config.cudagraph_mm_encoder=True.
+- file: vllm/lora/model_manager.py:233
+  context: Disables enable_tower_connector_lora with a warning when the model is language-model-only.
+- file: vllm/model_executor/models/config.py:886
+  context: Qwen4Exp strips mrope from the model config when language_model_only is set.
+- file: tests/e2e/pull_request/one_card/test_vlm.py:86
+  context: vllm-ascend e2e test runs Qwen3-VL-8B-Instruct with language_model_only=True on a single NPU.
+- file: tests/e2e/pull_request/four_card/test_minimax_m3.py:130
+  context: vllm-ascend e2e test uses language_model_only=True with TP4, ascend quantization, FULL_DECODE_ONLY ACL graph and
+    MTP-style config.
+related_parameters:
+- name: --limit-mm-per-prompt
+  relation: 'Overridden: when --language-model-only is set, all per-modality limits are forced to 0 regardless of this value.'
+- name: --gpu-memory-utilization
+  relation: Freeing encoder HBM allows a higher KV cache budget; the Dots3-Note doc pairs text-only with 0.92.
+- name: --kv-cache-memory-bytes
+  relation: Alternative KV cap used by the image/audio forms; text-only can rely on gpu-memory-utilization instead.
+- name: compilation_config.cudagraph_mm_encoder
+  relation: 'Mutually exclusive: setting both raises ValueError.'
+- name: --enable-tower-connector-lora
+  relation: Silently disabled (with warning) when --language-model-only is set.
+- name: --speculative-config
+  relation: Dots3-Note doc enables MTP3 for text-only/audio but not for the image form, so text-only frees memory for speculation.
+- name: --skip-mm-profiling
+  relation: Related MM memory-profiling control; language_model_only already removes MM profiling work.
+constraints:
+- --language-model-only cannot be combined with compilation_config.cudagraph_mm_encoder=True; vLLM raises a ValueError because
+  the multimodal encoder is never run.
+- The modality form (text-only vs image vs audio) cannot be switched dynamically within the same process; the service must
+  be restarted when switching, per the vllm-ascend Dots3-Note doc.
+- When --language-model-only is set, any --limit-mm-per-prompt values are ignored and treated as 0 for every modality.
+- Enabling --language-model-only disables tower-connector LoRA (enable_tower_connector_lora) with a warning.
+tuning_advice:
+  summary: Enable --language-model-only whenever you only serve text on a multimodal checkpoint; it drops encoder weights
+    from HBM and lets you raise KV cache / enable MTP.
+  suggested_values:
+  - scenario: Text-only serving of a multimodal checkpoint (e.g. Dots3-Note, Qwen3-VL) on Ascend
+    value: true
+    reason: Skips loading vision/audio encoders, freeing ~12.5 GB per worker for Dots3-Note and allowing --gpu-memory-utilization
+      0.92 with 32768 context plus MTP3.
+  - scenario: Serving image or audio inputs
+    value: false
+    reason: Encoders must be loaded; instead use --limit-mm-per-prompt to enable only the required modality and cap KV with
+      --kv-cache-memory-bytes.
+  - scenario: Basic pipeline validation on a new Ascend deployment
+    value: true
+    reason: Dots3-Note doc recommends starting text-only first to validate the basic pipeline before switching to image/audio
+      forms.
+  caveats:
+  - Do not combine with compilation_config.cudagraph_mm_encoder=True; it raises ValueError.
+  - The modality form is fixed per process; restart the service to switch between text-only and image/audio.
+  - Tower-connector LoRA is silently disabled when this flag is set.
+  - Changing the flag invalidates the model config hash and forces graph recompilation.
+  quick_guide: Set --language-model-only for text-only workloads on multimodal checkpoints to reclaim encoder HBM and enable
+    larger KV cache or MTP.
+analysis_date: '2026-10-27'

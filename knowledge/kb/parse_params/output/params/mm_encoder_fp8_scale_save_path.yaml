@@ -1,0 +1,97 @@
+name: --mm-encoder-fp8-scale-save-path
+type: cli
+category: quantization
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:196
+- vllm/config/multimodal.py:312
+- vllm/engine/arg_utils.py:1413
+- vllm/model_executor/layers/attention/mm_encoder_attention.py:110
+value_type: str
+default: null
+valid_choices: Any writable filesystem path (JSON output file); must be null when --mm-encoder-fp8-scale-path is set
+cli_example: --mm-encoder-fp8-scale-save-path /path/to/scales.json
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only affects the ViT encoder FP8 attention path in upstream vLLM
+
+  (vllm/model_executor/layers/attention/mm_encoder_attention.py). It is a calibration
+
+  output mechanism, not a runtime compute knob. When set together with
+
+  mm_encoder_attn_dtype="fp8" and no mm_encoder_fp8_scale_path, dynamic scaling is used
+
+  and _maybe_save_fp8_scales() stashes per-layer q/k/v scale tensor references on every
+
+  forward call (no device->host sync), then on the first amax history buffer wrap it
+
+  materializes the scales via .item() * margin and writes them to the JSON file once
+
+  (the module-level _fp8_scale_save_path is cleared after the save, making it one-shot).
+
+  The only runtime cost is a single .item() sync + file write at the wrap point, which
+
+  is negligible. The real performance benefit is indirect: the saved file can be fed
+
+  back as --mm-encoder-fp8-scale-path on subsequent runs to switch from dynamic to
+
+  static scaling, avoiding per-forward amax reduction overhead in the encoder attention.
+
+  On Ascend, this path is gated behind the FlashInfer cuDNN FP8 prefill attention
+
+  backend (is_flashinfer_cudnn_fp8_prefill_attn_supported), which is a CUDA-specific
+
+  backend; no vllm-ascend override or usage of this parameter was found in the provided
+
+  context, so on Ascend NPU the parameter is effectively inert unless an equivalent
+
+  FP8 ViT attention backend is wired up.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:196
+  context: MultiModalConfig field definition with docstring describing auto-save of calibrated scales
+- file: vllm/config/multimodal.py:312
+  context: _validate_multimodal_config rejects save_path unless attn dtype is fp8 and rejects combining with mm_encoder_fp8_scale_path
+- file: vllm/engine/arg_utils.py:1413
+  context: CLI argument registration in the MultiModalConfig argument group
+- file: vllm/model_executor/layers/attention/mm_encoder_attention.py:110
+  context: _maybe_save_fp8_scales accumulates scale refs and dumps JSON on first amax buffer wrap
+related_parameters:
+- name: --mm-encoder-attn-dtype
+  relation: Must be set to 'fp8' for this parameter to be accepted; otherwise validation raises ValueError
+- name: --mm-encoder-fp8-scale-path
+  relation: 'Mutually exclusive: save path requires dynamic scaling, so it cannot be combined with a static scale file path'
+- name: --mm-encoder-fp8-scale-save-margin
+  relation: Safety margin (default 1.5) multiplied onto scales when auto-saving
+- name: --mm-encoder-attn-backend
+  relation: FP8 ViT attention requires the FlashInfer cuDNN backend; without it FP8 attention is unavailable
+constraints:
+- --mm-encoder-fp8-scale-save-path requires --mm-encoder-attn-dtype to be 'fp8', otherwise a ValueError is raised.
+- --mm-encoder-fp8-scale-save-path cannot be used together with --mm-encoder-fp8-scale-path, because saving requires dynamic
+  scaling.
+- The save only fires once, after the amax history buffer has completed a full cycle; if the buffer never wraps, no file is
+  written.
+- The target path must be writable by the engine process at the time of the save.
+tuning_advice:
+  summary: Use this only as a one-time calibration step on a CUDA/FlashInfer-cuDNN deployment; on Ascend NPU it is currently
+    inert, so prefer other encoder optimizations.
+  suggested_values:
+  - scenario: One-time calibration run on a supported (FlashInfer cuDNN) backend to produce a static scale file
+    value: /path/to/scales.json
+    reason: Run with --mm-encoder-attn-dtype fp8 and this save path, feed representative multimodal inputs until the amax
+      buffer wraps, then reuse the file as --mm-encoder-fp8-scale-path.
+  - scenario: Ascend NPU deployment
+    value: unset
+    reason: No vllm-ascend support for the FP8 ViT attention path was found; leaving it unset avoids validation errors and
+      has no runtime effect.
+  caveats:
+  - Do not set this together with --mm-encoder-fp8-scale-path; validation will fail.
+  - Ensure the output directory exists and is writable before starting the engine.
+  - The calibration inputs should be representative of production traffic, since the saved scales are frozen for later static-scaling
+    runs.
+  quick_guide: Set once with --mm-encoder-attn-dtype fp8 to dump calibrated ViT FP8 scales, then reuse the file as --mm-encoder-fp8-scale-path;
+    no effect on Ascend NPU today.
+analysis_date: '2026-10-27'

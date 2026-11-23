@@ -1,0 +1,111 @@
+name: --kv-cache-dtype-skip-layers
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:155
+- vllm/engine/arg_utils.py:1294
+- vllm/engine/arg_utils.py:2109
+- vllm/model_executor/layers/attention/attention.py:297
+- vllm/model_executor/layers/attention/mla_attention.py:476
+- vllm/platforms/interface.py:650
+- vllm_ascend/platform.py:707
+- vllm_ascend/models/minimax_m3/minimax_m3.py:140
+- vllm_ascend/utils.py:1400
+value_type: list[str]
+default: []
+valid_choices: List of layer index strings (e.g. '0', '2', '4') or attention type names (e.g. 'sliding_window')
+cli_example: --kv-cache-dtype-skip-layers 0 2 4
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: "This parameter selects which attention layers keep an unquantized (higher-precision,\ntypically model dtype\
+  \ / \"auto\") KV cache while the rest of the model uses the\nquantized dtype set by --kv-cache-dtype.\n\nUpstream vLLM mechanism:\n\
+  - \"In vllm/model_executor/layers/attention/attention.py:297 and mla_attention.py:476,\"\n  when a layer's index (via extract_layer_index(prefix))\
+  \ or its attention type\n  (\"sliding_window\") matches an entry in kv_cache_dtype_skip_layers, the layer's\n  kv_cache_dtype\
+  \ is forced to \"auto\" instead of the configured quantized dtype.\n  This changes the per-layer KV cache element size (e.g.\
+  \ fp8 = 1 byte vs bf16 = 2 bytes),\n  directly affecting KV cache memory footprint and the attention kernel selected.\n\
+  - \"In vllm/platforms/interface.py:650, if kv_cache_dtype_skip_layers is non-empty,\"\n  _align_heterogeneous_kv_block_size\
+  \ is invoked. Because a higher-precision skip layer's\n  per-token page is larger than the quantized primary's page and\
+  \ not an integer multiple,\n  the primary block_size is bumped (kernel-aligned) and skip layers are padded\n  (skip_page_size_padded)\
+  \ so both dtypes can share one block pool. This can override the\n  user's --block-size, changing memory layout and kernel\
+  \ block granularity.\n\nAscend-specific behavior (vllm-ascend):\n- \"vllm_ascend/platform.py:707 (MiniMax-M3 sparse models):\
+  \ vllm-ascend AUTO-APPENDS all\"\n  GQA (non-sparse) layer indices to kv_cache_dtype_skip_layers so those layers use BF16\n\
+  \  KV cache while sparse/MLA layers retain the configured fp8 policy. This is a silent\n  override — the user's list is\
+  \ extended, not replaced.\n- \"vllm_ascend/models/minimax_m3/minimax_m3.py:140 resolves per-layer dtype using the same\"\
+  \n  skip-layer semantics (returns \"auto\" for skipped layers).\n- \"vllm_ascend/utils.py:1400 is_minimax_m3_fp8_kv_cache\
+  \ requires kv_cache_dtype_skip_layers\"\n  to be non-empty for the MiniMax-M3 fp8 KV cache path to activate on FP8-capable\
+  \ hardware\n  (A5). So on Ascend this parameter can gate an entire optimized fp8 attention path.\n- \"The block-size alignment\
+  \ path (interface.py:650) also runs on Ascend, so a non-empty\"\n  skip list can change the effective block size and page\
+  \ padding, affecting NPU KV cache\n  allocation and attention kernel tiling.\n"
+usage_locations:
+- file: vllm/model_executor/layers/attention/attention.py:297
+  context: 'Per-layer skip check: forces kv_cache_dtype=''auto'' for matching layer index or ''sliding_window'' attention
+    type'
+- file: vllm/model_executor/layers/attention/mla_attention.py:476
+  context: MLA attention per-layer skip check by layer index
+- file: vllm/platforms/interface.py:650
+  context: Triggers heterogeneous KV block-size alignment when skip layers present; may override --block-size
+- file: vllm/engine/arg_utils.py:2109
+  context: Passed into CacheConfig construction
+- file: vllm_ascend/platform.py:707
+  context: 'Ascend MiniMax-M3: auto-appends GQA layer indices to skip list (BF16 KV for GQA layers)'
+- file: vllm_ascend/models/minimax_m3/minimax_m3.py:140
+  context: Resolves per-layer KV dtype using skip-layer semantics
+- file: vllm_ascend/utils.py:1400
+  context: Gates MiniMax-M3 fp8 KV cache path on non-empty skip list + FP8-capable hardware
+related_parameters:
+- name: --kv-cache-dtype
+  relation: Skip layers use 'auto' (model dtype) instead of this quantized dtype; only meaningful when kv-cache-dtype is a
+    quantized type (fp8, nvfp4, etc.)
+- name: --block-size
+  relation: Non-empty skip list triggers block-size alignment that may override the user-specified block size
+- name: --gpu-memory-utilization
+  relation: Higher-precision skip layers consume more KV memory per token, reducing available blocks under a fixed memory
+    budget
+- name: --enable-prefix-caching
+  relation: Skip layers share the block pool; page padding (skip_page_size_padded) interacts with prefix caching block geometry
+constraints:
+- Entries must be layer index strings (e.g. '0', '2') or the attention type name 'sliding_window'; other strings will not
+  match any layer and are silently ignored.
+- A higher-precision skip layer's per-token page must not be smaller than the quantized primary page, otherwise an assertion
+  fails during block-size alignment.
+- The parameter only has an effect when --kv-cache-dtype is set to a quantized dtype; with 'auto' all layers already use model
+  dtype.
+- On Ascend MiniMax-M3 sparse models, GQA layer indices are automatically appended to the skip list regardless of user input.
+tuning_advice:
+  summary: Use skip layers to protect numerically sensitive layers (e.g. first/last or sliding-window layers) from KV quantization
+    while keeping the memory savings of fp8 elsewhere; on Ascend MiniMax-M3 the GQA layers are auto-skipped.
+  suggested_values:
+  - scenario: Accuracy-sensitive layers need higher precision while rest of model uses fp8 KV cache
+    value:
+    - '0'
+    - '1'
+    reason: Skipping the first few layers keeps their KV cache in model dtype (bf16), mitigating quantization error at modest
+      memory cost.
+  - scenario: Model with sliding-window attention layers where quantized KV causes accuracy loss
+    value:
+    - sliding_window
+    reason: The 'sliding_window' token matches all sliding-window attention layers, forcing them to unquantized KV cache.
+  - scenario: Ascend A5 running MiniMax-M3 sparse model with fp8 KV cache
+    value:
+    - '0'
+    - '1'
+    - '2'
+    reason: A non-empty skip list is required to activate the MiniMax-M3 fp8 KV cache path; vllm-ascend additionally auto-appends
+      GQA layer indices for BF16 KV.
+  - scenario: Maximum KV cache memory savings, accuracy not a concern
+    value: []
+    reason: Empty list quantizes all layers, maximizing KV cache capacity but may reduce accuracy on sensitive layers.
+  caveats:
+  - On Ascend MiniMax-M3, the skip list is auto-extended with GQA layers — do not assume your explicit list is the final one.
+  - Adding skip layers increases per-token KV memory; verify --gpu-memory-utilization still yields enough blocks for target
+    concurrency.
+  - Non-empty skip list may change effective --block-size via alignment; re-benchmark after enabling.
+  - Only effective with a quantized --kv-cache-dtype; no-op with 'auto'.
+  quick_guide: Set --kv-cache-dtype fp8 and list sensitive layer indices (or 'sliding_window') to keep them in bf16 KV cache;
+    on Ascend MiniMax-M3 a non-empty list is required to enable the fp8 fast path.
+analysis_date: '2026-10-27'

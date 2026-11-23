@@ -1,0 +1,100 @@
+name: VLLM_ASCEND_ENABLE_FLASHCOMM
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:756
+- tests/ut/test_ascend_config.py:1697
+value_type: bool
+default: '0'
+valid_choices: 'boolean-like string: ''1''/''true'' (case-insensitive) enables; anything else disables'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This env var is read in vllm_ascend/ascend_config.py (init_ascend_config) as one of two
+
+  ways to explicitly enable FlashComm1 (the other being additional_config.enable_flashcomm1).
+
+  The value is parsed via os.getenv("VLLM_ASCEND_ENABLE_FLASHCOMM1", "0").strip().lower() in
+
+  ("1", "true"). Note the code reads VLLM_ASCEND_ENABLE_FLASHCOMM1 (with a trailing "1"),
+
+  while the documented/analyzed name is VLLM_ASCEND_ENABLE_FLASHCOMM — the "1" suffix is the
+
+  actual env var consumed by the code path shown.
+
+  FlashComm1 is the Sequence-Parallel (SP) MoE switch on Ascend. When effective_flashcomm is
+
+  False (neither the env var nor additional_config.enable_flashcomm1 set, and DSA-CP off), the
+
+  code forces vllm_config.parallel_config.all2all_backend = "flashinfer_all2allv" to disable
+
+  SP MoE, logging "FlashComm1 is disabled. Using flashinfer_all2allv as the all2all backend."
+
+  When effective_flashcomm is True and use_sequence_parallel_moe is set, SP MoE stays enabled
+
+  and all2all_backend remains (e.g. allgather_reducescatter), enabling the FlashComm
+
+  communication optimization that reduces all-to-all/all-gather overhead for MoE layers.
+
+  This directly changes the collective communication strategy for MoE dispatch/combine, which
+
+  is a dominant cost in MoE inference on Ascend NPU — hence high throughput/latency impact.
+
+  Per release notes, enabling FlashComm1 (together with VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE=1)
+
+  improves Qwen3 dense model performance.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:756
+  context: Reads VLLM_ASCEND_ENABLE_FLASHCOMM1 to compute flashcomm_explicitly_enabled, which combined with enable_dsa_cp
+    yields effective_flashcomm controlling SP MoE and all2all_backend.
+- file: vllm_ascend/ascend_config.py:764
+  context: If not effective_flashcomm, forces all2all_backend to flashinfer_all2allv (disables SP MoE).
+- file: vllm_ascend/ascend_config.py:769
+  context: If effective_flashcomm but use_sequence_parallel_moe is False, warns and disables SP MoE.
+- file: tests/ut/test_ascend_config.py:1697
+  context: Unit tests pop VLLM_ASCEND_ENABLE_FLASHCOMM1 to verify SP on/off behavior based on additional_config.enable_flashcomm1
+    and enable_dsa_cp.
+related_parameters:
+- name: additional_config.enable_flashcomm1
+  relation: Alternative explicit switch; either this or the env var enables FlashComm1.
+- name: enable_dsa_cp
+  relation: When enabled, auto-enables FlashComm1 even if the env var is unset.
+- name: parallel_config.use_sequence_parallel_moe
+  relation: FlashComm1 only keeps SP MoE active if this is True; otherwise it is disabled with a warning.
+- name: parallel_config.all2all_backend
+  relation: Forced to flashinfer_all2allv when FlashComm1 is not effective.
+- name: VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE
+  relation: Documented to be used together with FlashComm for Qwen3 dense model speedup.
+constraints:
+- The env var actually consumed by the code is VLLM_ASCEND_ENABLE_FLASHCOMM1 (with trailing '1'); setting VLLM_ASCEND_ENABLE_FLASHCOMM
+  without the '1' will not be read by this code path.
+- FlashComm1 only takes effect when sequence-parallel MoE is supported (use_sequence_parallel_moe True, typically EP + TP>1
+  + DP>1); otherwise it is disabled with a warning.
+- Only the values '1' or 'true' (case-insensitive, whitespace-trimmed) enable the feature; any other value disables it.
+tuning_advice:
+  summary: Enable FlashComm1 (via VLLM_ASCEND_ENABLE_FLASHCOMM1=1 or additional_config.enable_flashcomm1) for MoE models with
+    EP + TP>1 + DP>1 to reduce all-to-all overhead; pair with VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE=1 for Qwen3 dense models.
+  suggested_values:
+  - scenario: MoE model with expert parallel, TP>1 and DP>1 (SP MoE supported)
+    value: '1'
+    reason: Keeps SP MoE enabled and avoids forcing flashinfer_all2allv, enabling the FlashComm communication optimization
+      for MoE dispatch/combine.
+  - scenario: Qwen3 dense model
+    value: '1'
+    reason: Release notes state Qwen3 dense performance improves with flashcomm_v1 when combined with VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE=1.
+  - scenario: Config where SP MoE conditions are not met
+    value: '0'
+    reason: Enabling has no effect (warns and disables SP MoE); leaving off avoids confusion and uses flashinfer_all2allv.
+  caveats:
+  - Ensure EP + TP>1 + DP>1 so use_sequence_parallel_moe is True, otherwise the flag is a no-op with a warning.
+  - Use the exact env var name VLLM_ASCEND_ENABLE_FLASHCOMM1 as read by the code, or set additional_config.enable_flashcomm1.
+  - Benchmark with and without the flag on your specific model/parallel layout; gains are workload-dependent.
+  quick_guide: Set VLLM_ASCEND_ENABLE_FLASHCOMM1=1 (or additional_config.enable_flashcomm1=true) for MoE models with EP+TP>1+DP>1
+    to enable FlashComm SP MoE.
+analysis_date: '2026-10-27'

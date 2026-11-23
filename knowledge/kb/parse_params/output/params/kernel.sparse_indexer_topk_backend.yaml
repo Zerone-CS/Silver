@@ -1,0 +1,92 @@
+name: kernel.sparse_indexer_topk_backend
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1681
+- vllm/engine/arg_utils.py:2565
+- vllm/model_executor/layers/indexer_topk.py:140
+- vllm/model_executor/layers/sparse_attn_indexer.py:884
+value_type: str
+default: auto
+valid_choices:
+- auto
+- cooperative
+- persistent
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter selects the kernel implementation for the DSA (DeepSeek Sparse Attention)
+
+  sparse indexer decode top-k stage. It is defined in vLLM upstream KernelConfig and exposed
+
+  via the top-level --sparse-indexer-topk-backend flag (arg_utils.py:1681-1685), which is
+
+  copied into kernel_config.sparse_indexer_topk_backend when not "auto" (arg_utils.py:2565).
+
+  The value is read in SparseIndexerTopk.__init__ (indexer_topk.py:143-158) and in
+
+  SparseAttentionIndexer (sparse_attn_indexer.py:884) to pick among top-k kernels.
+
+  Crucially, the backend selection logic is entirely CUDA-centric: SparseIndexerTopk sets
+
+  self._is_cuda = current_platform.is_cuda(), self._has_deep_select requires CUDA device
+
+  capability family 100, self._cooperative_capable requires CUDA capability >= 90, and the
+
+  "persistent" backend explicitly fails with "requires a CUDA platform" when not on CUDA
+
+  (indexer_topk.py:173-174). On Ascend NPU, current_platform.is_cuda() is False, so all
+
+  CUDA-specific kernels are unavailable and the "auto" resolution falls back to the generic
+
+  path. There is no definition or override of this parameter in vllm-ascend, and no
+
+  Ascend-specific top-k kernel dispatch is wired to it. Therefore on Ascend this parameter
+
+  has essentially no effect on the actual kernel executed — the sparse indexer top-k path
+
+  is not a hot path that vllm-ascend tunes via this knob. Impact on Ascend runtime is
+
+  negligible/low; it only matters on CUDA GPUs where it can change decode top-k latency.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1681
+  context: Registers --sparse-indexer-topk-backend CLI flag from KernelConfig.
+- file: vllm/engine/arg_utils.py:2565
+  context: Copies top-level value into kernel_config when not 'auto'.
+- file: vllm/model_executor/layers/indexer_topk.py:140
+  context: SparseIndexerTopk reads backend and resolves kernel (CUDA-gated).
+- file: vllm/model_executor/layers/sparse_attn_indexer.py:884
+  context: SparseAttentionIndexer stores topk_backend from kernel_config.
+related_parameters:
+- name: kernel_config.enable_jit_warmup
+  relation: Both are KernelConfig fields affecting sparse indexer kernel setup; JIT warmup registers the pack/unpack Triton
+    kernels used by the indexer.
+- name: kernel_config.moe_backend
+  relation: Sibling KernelConfig backend selector with the same 'auto' override pattern in arg_utils.py.
+- name: kernel_config.linear_backend
+  relation: Sibling KernelConfig backend selector with the same 'auto' override pattern in arg_utils.py.
+constraints:
+- The 'persistent' backend requires a CUDA platform and will fail on Ascend NPU.
+- The 'cooperative' backend requires CUDA device capability >= 90 and is not available on Ascend NPU.
+- The DeepSelect path requires CUDA device capability family 100 and is not available on Ascend NPU.
+- The top-level --sparse-indexer-topk-backend only overrides kernel_config when its value is not 'auto'.
+tuning_advice:
+  summary: Leave at 'auto' on Ascend NPU; this knob only selects CUDA-specific top-k kernels and has no Ascend effect.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: auto
+    reason: CUDA-gated kernel selection is inert on NPU; 'auto' avoids triggering CUDA-only failure paths.
+  - scenario: CUDA GPU with DeepSeek Sparse Attention decode
+    value: auto
+    reason: Auto resolution picks the best available CUDA kernel (cooperative/persistent/DeepSelect) based on device capability.
+  caveats:
+  - Do not set 'persistent' or 'cooperative' on Ascend — they require CUDA and will fail.
+  - This parameter is not part of vllm-ascend tuning surface; focus Ascend tuning on HCCL, graph mode, and quantization knobs
+    instead.
+  quick_guide: Keep 'auto' on Ascend; it has no runtime effect on NPU.
+analysis_date: '2026-10-27'

@@ -1,0 +1,117 @@
+name: --distributed-executor-backend
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:254
+- vllm/engine/arg_utils.py:1053
+- vllm/v1/executor/abstract.py:52
+- vllm_ascend/worker/worker.py:391
+- vllm_ascend/worker/worker.py:418
+- vllm_ascend/_310p/worker_310p.py:192
+- vllm_ascend/worker/model_runner_v1.py:2325
+value_type: str
+default: null
+valid_choices:
+- ray
+- mp
+- uni
+- external_launcher
+cli_example: --distributed-executor-backend mp
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter selects the executor class that orchestrates distributed workers, which\ndirectly determines\
+  \ process topology, IPC/communication path, and startup behavior on\nAscend NPU.\n\nUpstream (vllm/v1/executor/abstract.py:52):\
+  \ Executor.get_class() maps the value to a\nconcrete executor — \"ray\" -> RayDistributedExecutor (or RayExecutorV2 when\n\
+  VLLM_USE_RAY_V2_EXECUTOR_BACKEND is set), \"mp\" -> MultiprocExecutor, \"uni\" ->\nUniProcExecutor. The chosen executor\
+  \ governs how worker processes are spawned and how\ncollective RPCs (execute_model, sample, etc.) are dispatched. \"mp\"\
+  \ keeps everything on a\nsingle host using multiprocessing shared-memory IPC, avoiding Ray's actor/scheduling\noverhead\
+  \ and its serialization cost — this lowers per-step dispatch latency and reduces\nCPU/memory overhead. \"ray\" adds a Ray\
+  \ cluster layer (placement groups, actor scheduling,\nobject store) which is required for multi-node or when DP/TP spans\
+  \ hosts, but adds\nlatency and memory overhead per step.\n\nvllm-ascend overrides/reads this parameter in several places:\n\
+  - \"vllm_ascend/worker/worker.py:391 (_init_device): when the backend is NOT \\\"ray\\\" and NOT\"\n  \"external_launcher\"\
+  \ (and data_parallel_backend != \"ray\" and nnodes_within_dp == 1 and\n  no --device-ids pre-sharding), the worker shifts\
+  \ self.local_rank by\n  dp_local_rank * tp_pp_world_size so each DP group binds to a distinct set of NPUs. With\n  \"ray\"\
+  /\"external_launcher\" this shift is skipped because Ray/launcher handles device\n  assignment. This directly affects which\
+  \ NPU each worker binds to — a wrong backend\n  choice can cause device-binding asserts or incorrect NPU placement.\n- \"\
+  vllm_ascend/worker/worker.py:418: when --device-ids is used, the same backend check\"\n  gates the local_world_size <= len(assigned_physical_gpu_ids)\
+  \ assertion.\n- \"vllm_ascend/_310p/worker_310p.py:192: on 310P, the backend check gates the\"\n  local_world_size <= visible_device_count\
+  \ assertion for DP.\n- \"vllm_ascend/worker/model_runner_v1.py:2325: when backend == \\\"external_launcher\\\" and\"\n \
+  \ data_parallel_size > 1, a dummy run is issued on empty batches to keep\n  coordinate_batch_across_dp in sync — a correctness/latency\
+  \ tradeoff specific to the\n  external_launcher path.\n\nNet effect on Ascend: \"\\\"mp\\\" is the low-overhead single-host\
+  \ path (recommended for\"\nsingle-node TP/DP), \"ray\" is needed for multi-node or Ray-managed DP and adds overhead,\n\"\
+  external_launcher\" is for torchrun-style launches (used in vllm-ascend examples) and\nrequires special DP sync handling.\
+  \ The choice affects startup time, per-step dispatch\nlatency, and NPU device binding correctness.\n"
+usage_locations:
+- file: vllm/v1/executor/abstract.py:52
+  context: Executor.get_class() selects Ray/Multiproc/UniProc executor based on the backend value
+- file: vllm/config/vllm.py:1398
+  context: Reads executor_backend to determine async-scheduling support and compatibility checks
+- file: vllm/v1/engine/llm_engine.py:73
+  context: Determines external_launcher_dp and whether to init dp_group before engine core
+- file: vllm_ascend/worker/worker.py:391
+  context: Gates DP local_rank shift for NPU device binding (skipped for ray/external_launcher)
+- file: vllm_ascend/worker/worker.py:418
+  context: Gates local_world_size vs assigned_physical_gpu_ids assertion when --device-ids is set
+- file: vllm_ascend/_310p/worker_310p.py:192
+  context: '310P: gates local_world_size vs visible_device_count assertion for DP'
+- file: vllm_ascend/worker/model_runner_v1.py:2325
+  context: external_launcher + DP>1 triggers dummy run to keep coordinate_batch_across_dp in sync
+related_parameters:
+- name: --tensor-parallel-size
+  relation: TP*PP world size determines whether mp can run on a single host; mp requires world size <= available NPUs
+- name: --pipeline-parallel-size
+  relation: PP*TP product must fit on one host for mp; multi-node PP requires mp with --nnodes or ray
+- name: --data-parallel-size
+  relation: DP>1 with external_launcher triggers dummy-run sync path; DP device binding depends on backend
+- name: --nnodes
+  relation: Required for multi-node mp; ray handles multi-node automatically
+- name: --master-addr
+  relation: Used for multi-node mp distributed init
+- name: --master-port
+  relation: Used for multi-node mp distributed init
+- name: --device-ids
+  relation: When set, backend check gates the assigned_physical_gpu_ids assertion in worker.py
+- name: --data-parallel-backend
+  relation: data_parallel_backend == 'ray' also skips the DP local_rank shift
+constraints:
+- If the product of --pipeline-parallel-size and --tensor-parallel-size exceeds the number of available NPUs, mp cannot be
+  used and an error is raised; use ray or external_launcher for multi-node.
+- To use mp for multi-node inference you must also set --nnodes (and --master-addr/--master-port/--node-rank).
+- To use ray you must explicitly set --distributed-executor-backend ray; it is not auto-selected.
+- When --device-ids is set and the backend is not ray/external_launcher, local_world_size must not exceed the number of assigned
+  physical device IDs or an assertion fails.
+- On 310P with DP>1 and backend not ray/external_launcher, local_world_size must be <= the number of visible NPU devices.
+- external_launcher with pipeline_parallel_size > 1 is unsupported by the V2 model runner (pipeline parallelism with external_launcher).
+tuning_advice:
+  summary: Use mp for single-host (and multi-node via --nnodes) deployments to minimize dispatch overhead; use ray only when
+    Ray-managed multi-node/DP orchestration is required; use external_launcher for torchrun-style launches.
+  suggested_values:
+  - scenario: Single-node TP/DP deployment where TP*PP <= available NPUs (v1 and v2)
+    value: mp
+    reason: MultiprocExecutor keeps workers on one host with shared-memory IPC, avoiding Ray scheduling/serialization overhead
+      and lowering per-step latency and memory.
+  - scenario: Multi-node pipeline-parallel prefill (e.g. GLM5.2 PP2 over two nodes) without Ray
+    value: mp
+    reason: vllm-ascend docs show PP runs over two nodes with the mp executor using --nnodes/--master-addr/--master-port,
+      avoiding a Ray cluster.
+  - scenario: Multi-node or Ray-managed DP where placement groups and cross-host scheduling are needed
+    value: ray
+    reason: Ray handles cross-host worker placement and DP orchestration; required when world size spans hosts beyond mp's
+      single-host constraint.
+  - scenario: torchrun-style external launch (vllm-ascend examples offline_external_launcher.py)
+    value: external_launcher
+    reason: Matches the torchrun launch model; vllm-ascend handles DP sync via dummy runs and skips the local_rank shift.
+  caveats:
+  - Do not use mp when TP*PP exceeds available NPUs on a single host — it raises an error; switch to ray or external_launcher.
+  - When using --device-ids, ensure local_world_size <= number of assigned device IDs or the worker assertion fails.
+  - external_launcher with PP>1 is unsupported by the V2 model runner.
+  - On Ascend, verify NPU binding after switching backends — ray/external_launcher skip the DP local_rank shift, which can
+    change device assignment.
+  quick_guide: Default to mp for single-host and multi-node-via-nnodes; use ray only for Ray-managed multi-node/DP; use external_launcher
+    for torchrun launches.
+analysis_date: '2026-10-27'

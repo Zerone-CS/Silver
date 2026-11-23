@@ -1,0 +1,85 @@
+name: VLLM_GC_DEBUG
+type: env
+category: observability
+scope: vllm
+source_file:
+- vllm/envs.py:1995
+- vllm/envs.py:293
+- vllm/utils/gc_utils.py:39
+- vllm/utils/gc_utils.py:141
+value_type: str
+default: ''
+valid_choices: 0 (disabled), 1 (elapsed-time logging), or a JSON string like {"top_objects":5} (log top-N collected objects)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_GC_DEBUG is a pure debugging/diagnostic switch for Python''s garbage
+
+  collector. It is read only in vllm/utils/gc_utils.py via
+
+  maybe_attach_gc_debug_callback(), which parses the value into a GCDebugConfig
+
+  and, if enabled, appends a gc_callback to gc.callbacks. When enabled, every
+
+  Python GC cycle invokes GCDebugger.handle(), which measures gc.collect elapsed
+
+  time (mode "1") or inspects the top-N collected objects (JSON mode). This adds
+
+  Python-level overhead on every GC pass and, in top_objects mode, walks the
+
+  collected object graph — measurable CPU overhead that can slightly increase
+
+  request latency and reduce throughput, especially under high request rates
+
+  where GC runs frequently. It does NOT change NPU kernels, HCCL communication,
+
+  memory allocation on device, or scheduling. There is no vllm-ascend override
+
+  of this variable in the provided context; it is an upstream-only diagnostic
+
+  knob that behaves identically on Ascend NPU as on GPU (it only touches the
+
+  Python interpreter''s GC, not device runtime). Impact is therefore low and only
+
+  relevant when explicitly enabled for debugging.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1995
+  context: Defines VLLM_GC_DEBUG env var, default empty string, read via os.getenv
+- file: vllm/envs.py:293
+  context: 'Type annotation VLLM_GC_DEBUG: str = "" in envs module'
+- file: vllm/utils/gc_utils.py:39
+  context: GCDebugConfig parses the value; logs error if JSON parse fails
+- file: vllm/utils/gc_utils.py:141
+  context: maybe_attach_gc_debug_callback attaches gc.callbacks handler when enabled
+related_parameters:
+- name: VLLM_DEBUG_WORKSPACE
+  relation: Sibling debug env var; both are diagnostic-only and should be left off in production
+- name: VLLM_PATTERN_MATCH_DEBUG
+  relation: Another debug/diagnostic env var in the same envs.py block
+constraints:
+- The value must be either "0", "1", or a valid JSON object string; any other non-empty value that fails JSON parsing disables
+  the debugger and logs an error.
+- When using JSON mode, the recognized key is "top_objects" (an integer); other keys are ignored.
+tuning_advice:
+  summary: Leave VLLM_GC_DEBUG unset (empty) in production; enable only temporarily to diagnose GC pauses.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU
+    value: unset
+    reason: Default empty disables the GC debugger entirely, avoiding any Python GC callback overhead.
+  - scenario: Diagnosing GC-induced latency spikes
+    value: '1'
+    reason: Logs gc.collect elapsed times with minimal overhead, useful to confirm whether GC pauses contribute to tail latency.
+  - scenario: Investigating memory growth / leaked objects
+    value: '{"top_objects":5}'
+    reason: Logs the top 5 collected objects to identify what is being retained; use only for short diagnostic runs due to
+      higher overhead.
+  caveats:
+  - Do not leave top_objects mode enabled during benchmarking — it distorts latency/throughput measurements.
+  - Invalid JSON silently disables the debugger and logs an error; verify the value format.
+  quick_guide: Keep unset for production; set to 1 or a top_objects JSON only for temporary GC diagnostics.
+analysis_date: '2026-10-27'

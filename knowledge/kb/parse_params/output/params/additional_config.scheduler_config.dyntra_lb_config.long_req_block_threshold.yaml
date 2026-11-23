@@ -1,0 +1,94 @@
+name: additional_config.scheduler_config.dyntra_lb_config.long_req_block_threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1592
+- vllm_ascend/ascend_config.py:1612
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:334
+value_type: int
+default: 700
+valid_choices: integer > 0 (KV-cache block count)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is a vllm-ascend-only parameter (defined in vllm_ascend/ascend_config.py DyntraLBConfig,
+
+  not present in upstream vLLM). It is read in
+
+  vllm_ascend/patch/platform/patch_dyntra_lb_core.py:334 into self._lb_long_req_threshold
+
+  during DyntraLBDPEngineCoreProc._init_data_parallel. In dynamic mode, DyntraLB stays
+
+  inactive until a newly added request exceeds this many KV-cache blocks; once triggered,
+
+  the load-balancing planner evaluates rank load and may pause/admit requests to rebalance
+
+  decode work across data-parallel ranks. The threshold therefore controls the sensitivity
+
+  of the dynamic balancing trigger: "a lower value makes balancing activate on smaller"
+
+  requests (more frequent rebalancing, potentially more request pausing and admission
+
+  churn), while a higher value restricts balancing to genuinely long requests (fewer
+
+  interventions, but imbalance from medium requests goes uncorrected). Because DyntraLB
+
+  rebalances decode load across DP ranks, it affects per-rank bubble time and thus overall
+
+  decode throughput and tail latency. The parameter has no effect when dyntra_lb_config.enabled
+
+  is false or when mode is "static" (static mode does not use the long-request trigger).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1592
+  context: Field definition with default 700 in DyntraLBConfig.
+- file: vllm_ascend/ascend_config.py:1612
+  context: Model validator rejects values <= 0.
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:334
+  context: Read into self._lb_long_req_threshold during DP engine core init; used as the dynamic-mode long-request trigger.
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:368
+  context: Logged when enable_diagnostics is on.
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Master switch; long_req_block_threshold has no effect unless enabled is true.
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: Only used in dynamic mode; static mode ignores this trigger.
+- name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+  relation: After triggering, balancing stays active for this many steps without another long request.
+- name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+  relation: Imbalance magnitude required to actually modify scheduling once triggered.
+- name: additional_config.scheduler_config.recompute_scheduler_enable
+  relation: Sibling setting; enabling both selects the combined DyntraLB recompute scheduler.
+constraints:
+- long_req_block_threshold must be greater than 0; a value <= 0 raises a ValueError at config validation.
+- The value is expressed in KV-cache blocks, not tokens; its token equivalent depends on block_size (default 700 blocks is
+  roughly 89,600 tokens at block_size=128).
+- The parameter only takes effect when dyntra_lb_config.enabled is true and mode is "dynamic".
+tuning_advice:
+  summary: 'Tune long_req_block_threshold to the block-count distribution of your long requests so
+
+    dynamic DyntraLB activates only when genuinely long requests create rank imbalance.
+
+    '
+  suggested_values:
+  - scenario: Default / unknown workload distribution
+    value: 700
+    reason: Default corresponds to ~89,600 tokens at block_size=128; a reasonable starting point before profiling.
+  - scenario: Workload with many medium-length requests causing imbalance
+    value: 350
+    reason: Lower threshold lets balancing trigger on shorter requests so medium-request imbalance is corrected.
+  - scenario: Workload dominated by very long requests; avoid over-triggering
+    value: 1000
+    reason: Higher threshold restricts balancing to truly long requests, reducing admission churn and pausing.
+  caveats:
+  - Only relevant when dyntra_lb_config.enabled=true and mode="dynamic".
+  - Value is in KV-cache blocks; convert from tokens using block_size.
+  - Very small values cause frequent pausing/admission changes; very large values leave imbalance uncorrected.
+  quick_guide: Set to the block count above which requests are considered 'long' for your workload; start at 700 and tune
+    from observed block-count distribution.
+analysis_date: '2026-10-27'

@@ -1,0 +1,76 @@
+name: ec_transfer.ec_parallel_size
+type: nested
+category: communication
+scope: vllm
+source_file:
+- 'vllm/config/ec_transfer.py: <unknown>'
+value_type: int
+default: 1
+valid_choices: positive integer; for PyNcclConnector this should be 2
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'ec_transfer.ec_parallel_size controls the number of parallel instances used for
+
+  EC (expert-parallel / elastic cache) cache transfer in vLLM''s disaggregated
+
+  prefill/decode (PD) KV-cache transfer path. It is a nested config field under
+
+  the ec_transfer section and is consumed by the EC transfer connector (e.g.
+
+  PyNcclConnector) to size the parallel transfer workers/channels.
+
+
+  No definition or usage of this parameter was found in either the vLLM or
+
+  vllm-ascend source context provided, and no vllm-ascend documentation covers
+
+  it. Therefore no Ascend-specific override or monkey-patch could be confirmed.
+
+  On Ascend NPU, KV-cache transfer between PD instances is typically handled by
+
+  Ascend-native connectors (e.g. Mooncake / NPU-based transfer backends) rather
+
+  than PyNcclConnector, so this parameter is unlikely to be exercised on the
+
+  Ascend path. Its performance effect is limited to the transfer-connector
+
+  parallelism (more parallel transfer instances can improve transfer throughput
+
+  and reduce transfer latency) and does not affect model compute, memory
+
+  allocation of the KV cache itself, or scheduling.
+
+  '
+usage_locations:
+- file: vllm/config/ec_transfer.py
+  context: Nested EC transfer config field defining the number of parallel EC cache transfer instances (definition not present
+    in provided context).
+related_parameters:
+- name: kv_transfer_config
+  relation: EC transfer is a sub-configuration of the KV cache transfer setup used in disaggregated PD serving.
+- name: ec_transfer.connector
+  relation: The connector type (e.g. PyNcclConnector) determines the expected value of ec_parallel_size.
+constraints:
+- For PyNcclConnector the value should be 2; other connectors may expect different values.
+- Must be a positive integer (number of parallel transfer instances).
+tuning_advice:
+  summary: Only relevant for EC/PyNccl-based KV transfer; on Ascend it is generally not exercised, so leave at default unless
+    using a PyNcclConnector-based PD setup.
+  suggested_values:
+  - scenario: Using PyNcclConnector for EC cache transfer
+    value: 2
+    reason: The parameter hint states that for PyNcclConnector this should be 2 to match the connector's expected parallel
+      transfer degree.
+  - scenario: Ascend NPU deployment with Ascend-native PD transfer connectors
+    value: 1
+    reason: The parameter is not used by Ascend-native transfer paths, so the default value is sufficient and avoids unnecessary
+      resource allocation.
+  caveats:
+  - Verify the connector type before tuning; mismatched values may cause transfer setup errors.
+  - Higher parallelism increases communication resource usage and can contend with HCCL bandwidth on Ascend.
+  quick_guide: Leave at default unless using PyNcclConnector, in which case set to 2.
+analysis_date: '2026-10-27'

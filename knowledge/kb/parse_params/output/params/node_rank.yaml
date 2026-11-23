@@ -1,0 +1,118 @@
+name: --node-rank
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:287
+- vllm/engine/arg_utils.py:1064
+- vllm/engine/arg_utils.py:2197
+- vllm/config/parallel.py:753
+- vllm/v1/executor/multiproc_executor.py:148
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:51
+value_type: int
+default: 0
+valid_choices: integer in range [0, nnodes - 1]
+cli_example: --node-rank 1
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: '--node-rank identifies which node this process is within a multi-node deployment
+
+  (used with --nnodes and --distributed-executor-backend mp). It does not change
+
+  per-token compute, but it drives the topology of the distributed executor and
+
+  therefore affects communication and correctness of the whole cluster.
+
+
+  Upstream (vllm/config/parallel.py:753) derives node_rank_within_dp = node_rank %
+
+  nnodes_within_dp. In the multiproc executor (vllm/v1/executor/multiproc_executor.py:148
+
+  and the Ascend-patched vllm_ascend/patch/platform/patch_multiproc_executor.py:51),
+
+  only the node whose node_rank_within_dp == 0 creates the rpc_broadcast_mq and
+
+  exports the scheduler-output handle; other nodes act as headless workers that
+
+  connect to the leader''s MessageQueue. The global_start_rank for local workers is
+
+  computed as local_world_size * node_rank_within_dp (multiproc_executor.py:178 /
+
+  patch_multiproc_executor.py:68), so node_rank directly determines the global rank
+
+  assignment of every worker process on that node.
+
+
+  On Ascend, worker ranks map to HCCL ranks; a wrong node_rank produces overlapping
+
+  or gapped global ranks, which either fails HCCL communicator creation or causes
+
+  incorrect collective routing (all-reduce/all-gather across TP/PP/DP groups),
+
+  degrading or breaking throughput. When node_rank is set correctly, the parameter
+
+  itself adds no runtime overhead — it only selects the leader/headless role and
+
+  rank offset. In arg_utils.py:2197 node_rank is also used to infer
+
+  data_parallel_rank and data_parallel_size_local for multi-node DP, which affects
+
+  load balancing across DP replicas and thus aggregate throughput.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:287
+  context: 'Field definition node_rank: int = Field(default=0, ge=0) with docstring for multi-node mp inference'
+- file: vllm/config/parallel.py:753
+  context: node_rank_within_dp property = node_rank % nnodes_within_dp, used to pick DP-group leader
+- file: vllm/engine/arg_utils.py:2197
+  context: Validation 0 <= node_rank < nnodes and inference of data_parallel_rank / data_parallel_size_local
+- file: vllm/v1/executor/multiproc_executor.py:148
+  context: Leader node (node_rank_within_dp == 0) creates rpc_broadcast_mq; global_start_rank = local_world_size * node_rank_within_dp
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:51
+  context: Ascend-patched multiproc executor uses node_rank_within_dp to gate MessageQueue creation and compute global_start_rank
+- file: vllm/entrypoints/cli/serve.py:215
+  context: node_rank_within_dp > 0 launches headless multiproc executor instead of API server
+related_parameters:
+- name: --nnodes
+  relation: node_rank must be in [0, nnodes-1]; together they define multi-node topology
+- name: --master-addr
+  relation: Non-leader nodes connect to the leader's MessageQueue at master_addr
+- name: --master-port
+  relation: Port used for the distributed init / MessageQueue connection
+- name: --distributed-executor-backend
+  relation: node_rank is only meaningful for multi-node mp executor; Ray handles placement differently
+- name: --data-parallel-size
+  relation: Used with node_rank to infer data_parallel_rank and data_parallel_size_local
+- name: --data-parallel-rank
+  relation: Inferred from node_rank when external LB is used
+constraints:
+- --node-rank must be between 0 and --nnodes - 1 (zero-based index of this node).
+- Multi-node deployment with --nnodes > 1 requires --data-parallel-backend mp.
+- --nnodes must evenly divide the total world size (data_parallel_size × pipeline_parallel_size × tensor_parallel_size × prefill_context_parallel_size).
+- All nodes must use identical model, TP, PP, --nnodes, --master-addr, and --master-port values; only --node-rank differs
+  per node.
+- Only the head node (node_rank 0) starts the API server; non-head nodes run headless.
+tuning_advice:
+  summary: Set --node-rank to each node's unique zero-based index (0..nnodes-1) for multi-node mp deployments; it is a correctness/topology
+    parameter, not a per-token tuning knob.
+  suggested_values:
+  - scenario: Head/leader node of a multi-node mp deployment (v1 and v2 Ascend)
+    value: 0
+    reason: node_rank 0 becomes the DP-group leader (node_rank_within_dp == 0) that creates the rpc_broadcast_mq and starts
+      the API server.
+  - scenario: Second node in a 2-node PP/TP deployment (v1 and v2 Ascend)
+    value: 1
+    reason: Must be unique and within [0, nnodes-1]; runs headless and connects to the leader's MessageQueue at master_addr.
+  - scenario: Single-node deployment
+    value: 0
+    reason: Default; with --nnodes 1 node_rank is effectively unused.
+  caveats:
+  - Never assign the same --node-rank to two nodes — global ranks will collide and HCCL collectives will fail or misroute.
+  - Keep --nnodes, --master-addr, --master-port, TP, and PP identical across nodes; only --node-rank varies.
+  - Set HCCL/communication env vars consistently on all nodes before launch.
+  quick_guide: Give each node a unique --node-rank from 0 to --nnodes-1; node 0 is the leader/API server, others run headless.
+analysis_date: '2026-10-27'

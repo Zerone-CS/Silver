@@ -1,0 +1,82 @@
+name: MOONCAKE_PREFERRED_SEGMENT
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1699
+- vllm/envs.py:236
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/rdma_utils.py:39
+value_type: str
+default: null
+valid_choices: Any non-empty string in the form 'host:port' identifying a Mooncake owner segment; unset means no preference
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'MOONCAKE_PREFERRED_SEGMENT is read only by the upstream Mooncake KV connector
+
+  (vllm/distributed/kv_transfer/kv_connector/v1/mooncake/rdma_utils.py). In
+
+  get_configured_preferred_segment(), an explicit extra_config["preferred_segment"]
+
+  takes precedence; otherwise the env var is normalized and returned. The value
+
+  pins this rank''s KV-cache GET requests to a specific Mooncake owner segment
+
+  ("host:port"), which influences which remote store/owner the RDMA transfer is
+
+  routed to. This is a routing/affinity hint, not a compute or memory knob: it does
+
+  not change KV-cache allocation, HCCL communication, or NPU kernel selection.
+
+  Its only runtime effect is on KV-transfer latency/throughput when the Mooncake
+
+  connector is used for disaggregated prefill/decode or KV offloading — pinning to
+
+  a nearby/less-loaded owner can reduce transfer latency, while a bad pin can
+
+  serialize load onto one segment. No vllm-ascend override or reference to this
+
+  variable was found in the provided context; it is an upstream-only, connector-
+
+  specific parameter with no Ascend-specific mechanism.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1699
+  context: Env var definition; returns os.getenv('MOONCAKE_PREFERRED_SEGMENT') (default None).
+- file: vllm/envs.py:236
+  context: 'Type stub declaration MOONCAKE_PREFERRED_SEGMENT: str | None = None.'
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/rdma_utils.py:39
+  context: get_configured_preferred_segment() reads env var as fallback after extra_config preferred_segment.
+related_parameters:
+- name: preferred_segment
+  relation: extra_config['preferred_segment'] takes precedence over this env var; env is only used as fallback.
+- name: MOONCAKE_REQUESTER_LOCAL_HOSTNAME
+  relation: Companion Mooncake env var controlling the hostname this rank registers as a requester.
+- name: VLLM_MOONCAKE_LOAD_RECV_THREADS
+  relation: Related Mooncake KV-load tuning knob affecting transfer parallelism.
+constraints:
+- If extra_config['preferred_segment'] is set to a non-string or empty value, a ValueError is raised; the env var is only
+  consulted when that override is absent.
+- The value must be a non-empty string in 'host:port' form; empty strings are treated as unset by normalize_string_override.
+- This parameter only has effect when the Mooncake KV connector is in use; it is ignored by other KV connectors.
+tuning_advice:
+  summary: Leave unset unless using the Mooncake KV connector and you need to pin a rank to a specific owner segment for locality
+    or load balancing.
+  suggested_values:
+  - scenario: Default / not using Mooncake connector
+    value: unset
+    reason: The variable is only read by the Mooncake connector; leaving it unset avoids unintended routing pinning.
+  - scenario: Disaggregated prefill/decode with Mooncake, pinning a rank to a nearby owner
+    value: 10.0.0.8:50053
+    reason: Pinning to a low-latency owner segment reduces KV GET transfer latency; format is 'host:port' as shown in upstream
+      tests.
+  caveats:
+  - Prefer setting extra_config['preferred_segment'] over the env var when per-connector control is needed, since it takes
+    precedence.
+  - Avoid pinning many ranks to one segment; distribute across owners to prevent transfer-engine contention.
+  quick_guide: Set to 'host:port' only for Mooncake KV connector locality tuning; otherwise leave unset.
+analysis_date: '2026-10-27'

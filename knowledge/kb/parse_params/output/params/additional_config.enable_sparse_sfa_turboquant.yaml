@@ -1,0 +1,95 @@
+name: additional_config.enable_sparse_sfa_turboquant
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:641
+- vllm_ascend/ascend_config.py:919
+- vllm_ascend/ascend_config.py:974
+- vllm_ascend/ascend_config.py:1013
+value_type: bool
+default: false
+valid_choices: true or false (derived field; not user-settable)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This is a derived (computed) field, not a user-input switch. In
+
+  AscendConfig.derive_and_validate (vllm_ascend/ascend_config.py:919) it is set to
+
+  `cache_config.cache_dtype == "turboquant_4bit_nc" and use_sparse_sfa`, where
+
+  use_sparse_sfa = model_uses_sfa_sparse(model_config) or
+
+  model_uses_kpool_indexer(model_config). So the flag is true only when the user
+
+  selects the TurboQuant 4-bit non-coherent KV cache dtype on an SFA-sparse /
+
+  kpool-indexer model (e.g. DeepSeek-style sparse attention / GLM-5.3-Flash).
+
+  When true, the property `uses_packed_sfa_main_cache` (line 974-979) returns True,
+
+  meaning SFA stores its main KV cache in a single packed tensor. This is the
+
+  Ascend-specific packed-KV-cache path: "it changes the KV cache memory layout and"
+
+  the attention kernel dispatch, reducing KV cache memory footprint (4-bit vs
+
+  fp8/int8) and enabling a dedicated packed SFA attention kernel, which affects
+
+  decode latency and throughput as well as NPU memory usage. Because it is derived
+
+  from cache_dtype, the actual tuning knob is --kv-cache-dtype turboquant_4bit_nc.
+
+  The flag also gates compatibility: "it makes the packed SFA main cache active,"
+
+  which is mutually exclusive with sparse KV offload (line 1013-1018).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:919
+  context: 'Derived assignment: enable_sparse_sfa_turboquant = (cache_dtype == ''turboquant_4bit_nc'') and use_sparse_sfa'
+- file: vllm_ascend/ascend_config.py:974
+  context: uses_packed_sfa_main_cache property returns True if enable_sparse_sfa_c8 or enable_sparse_sfa_turboquant
+- file: vllm_ascend/ascend_config.py:1013
+  context: _validate_sparse_packed_kv_offload_compatibility raises NotImplementedError when sparse_kv_offload_config.enabled
+    and uses_packed_sfa_main_cache
+related_parameters:
+- name: --kv-cache-dtype
+  relation: 'Drives this flag: it becomes true only when cache_dtype is ''turboquant_4bit_nc'''
+- name: additional_config.enable_sparse_sfa_c8
+  relation: Sibling packed-SFA flag (fp8/int8 cache); both feed uses_packed_sfa_main_cache
+- name: additional_config.sparse_kv_offload_config.enabled
+  relation: Mutually exclusive with packed SFA main cache (TQ4 or C8); enabling both raises NotImplementedError
+- name: additional_config.enable_sparse_li_c8
+  relation: Related sparse indexer cache flag; LI C8 remains compatible with sparse KV offload while TQ4 does not
+constraints:
+- This field is derived and not user-settable; setting it directly in additional_config has no effect because derive_and_validate
+  overwrites it.
+- It can only become true when --kv-cache-dtype is set to turboquant_4bit_nc and the model uses SFA sparse attention or a
+  kpool indexer.
+- Sparse KV offload (sparse_kv_offload_config.enabled) cannot be combined with the packed SFA main cache (TQ4 or C8); doing
+  so raises NotImplementedError.
+tuning_advice:
+  summary: Do not set this flag directly; enable it by choosing --kv-cache-dtype turboquant_4bit_nc on an SFA-sparse/kpool-indexer
+    model to get the packed 4-bit KV cache path.
+  suggested_values:
+  - scenario: SFA-sparse or kpool-indexer model (e.g. DeepSeek-style sparse attention, GLM-5.3-Flash) with tight NPU KV memory
+      and need for higher decode throughput
+    value: true
+    reason: Set --kv-cache-dtype turboquant_4bit_nc; the derived flag turns on the packed 4-bit SFA main cache, cutting KV
+      memory and enabling the packed attention kernel.
+  - scenario: Dense MLA model or when KV offload to host is required
+    value: false
+    reason: The flag only activates for SFA-sparse/kpool-indexer models, and the packed cache is incompatible with sparse
+      KV offload.
+  caveats:
+  - Tune --kv-cache-dtype, not this derived field; direct assignment is overwritten by derive_and_validate.
+  - Verify accuracy when moving from fp8/int8 to turboquant_4bit_nc, as 4-bit KV quantization may degrade quality.
+  - You cannot combine this packed cache with sparse_kv_offload_config.enabled.
+  quick_guide: Enable via --kv-cache-dtype turboquant_4bit_nc on SFA-sparse models; never set the flag directly.
+analysis_date: '2026-10-27'

@@ -1,0 +1,69 @@
+name: VLLM_PREFIX_CACHE_RETENTION_INTERVAL
+type: env
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:138
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:113
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:882
+value_type: int
+default: null
+valid_choices: non-negative integer that is a multiple of --block-size (e.g. 4096 with block-size 32, 16384 with block-size
+  128)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: "This env var controls the retention interval (in tokens) for prefix-cache checkpoints of\nhybrid attention\
+  \ layers (e.g. DeepSeek-V4). It is read in three Ascend sites:\n1. AscendHybridKVCacheCoordinator.__init__ (patch_kv_cache_coordinator.py:138)\
+  \ reads it via\n   getattr(envs_vllm, \"VLLM_PREFIX_CACHE_RETENTION_INTERVAL\", None) and, if set, validates it\n   against\
+  \ scheduler_block_size and the kv_cache_config via the upstream\n   _validate_prefix_cache_retention_interval helper. The\
+  \ value is stored as\n   self.retention_interval and used by the coordinator's cache-hit lookup to decide which\n   checkpointed\
+  \ blocks are retained/matched.\n2. AscendStoreCoordinator path in pool_scheduler.py:113 and pool_worker.py:882 read the\
+  \ same\n   env var and pass it into AscendStoreCoordinator(retention_interval=...) for the KV-pool\n   (disaggregated /\
+  \ hybrid) coordinator.\nMechanism: \"with prefix caching enabled, the coordinator only keeps/considers prefix-cache\"\n\
+  checkpoints at multiples of the retention interval. A larger interval means fewer retained\ncheckpoints, reducing block-pool\
+  \ bookkeeping and memory pressure but potentially lowering the\neffective prefix-cache hit rate for long reusable prefixes;\
+  \ a smaller interval retains more\ncheckpoints, improving hit rate under KV-cache pressure at the cost of more retained\
+  \ blocks.\nNet effect on Ascend NPU is indirect: \"it changes prefix-cache hit rate (affecting prefill\"\ncompute and TTFT/throughput)\
+  \ and block-pool memory occupancy, not a direct kernel-level cost.\n"
+usage_locations:
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:138
+  context: AscendHybridKVCacheCoordinator reads env var, validates it, stores as self.retention_interval for hybrid prefix-cache
+    lookup
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:113
+  context: AscendStore pool scheduler reads env var (int only) into self.retention_interval for KV-pool coordinator
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:882
+  context: AscendStore pool worker reads env var and passes retention_interval into AscendStoreCoordinator
+related_parameters:
+- name: --block-size
+  relation: Retention interval must be a non-negative multiple of block size; recommended 128x block size
+- name: --enable-prefix-caching
+  relation: Takes effect only when prefix caching is enabled
+- name: --no-disable-hybrid-kv-cache-manager
+  relation: Relevant for hybrid KV cache manager (DeepSeek-V4) deployments where this env var applies
+constraints:
+- The value must be a non-negative integer.
+- The value must be a multiple of --block-size.
+- The parameter takes effect only when prefix caching is enabled.
+- It is applicable to hybrid attention models such as DeepSeek-V4; on non-hybrid models it has no effect.
+tuning_advice:
+  summary: Set to 128x --block-size for DeepSeek-V4 hybrid prefix caching to balance hit rate and memory under KV-cache pressure.
+  suggested_values:
+  - scenario: DeepSeek-V4-Flash with --block-size 32
+    value: 4096
+    reason: Documented recommendation of 128x block size for hybrid prefix-cache checkpoints.
+  - scenario: DeepSeek-V4-Flash with --block-size 128
+    value: 16384
+    reason: Documented recommendation of 128x block size for hybrid prefix-cache checkpoints.
+  - scenario: Long reusable prefixes under KV-cache pressure
+    value: 4096
+    reason: Retains checkpoints at a granularity that improves effective prefix-cache hit rate for long shared prefixes.
+  caveats:
+  - Ensure the value is a multiple of --block-size or validation will fail.
+  - Only meaningful with prefix caching enabled and hybrid attention models.
+  quick_guide: For DeepSeek-V4 hybrid prefix caching, set VLLM_PREFIX_CACHE_RETENTION_INTERVAL to 128x --block-size (4096
+    for block-size 32, 16384 for block-size 128).
+analysis_date: '2026-10-27'

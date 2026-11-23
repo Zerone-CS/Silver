@@ -1,0 +1,93 @@
+name: compilation.cudagraph_specialize_lora
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/v1/cudagraph_dispatcher.py:122
+- vllm/v1/worker/gpu/lora_utils.py:32
+- vllm/v1/worker/gpu_model_runner.py:6220
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter only takes effect when LoRA is enabled (lora_config is not None).
+
+  In vllm/v1/cudagraph_dispatcher.py:122, _get_lora_cases() branches on
+
+  cudagraph_specialize_lora: "when True it captures separate CUDA graphs for the"
+
+  no-LoRA case ([0]) plus specialized LoRA counts (powers of 2 up to max_loras,
+
+  plus max_loras+1); when False it captures only the LoRA-active graph
+
+  ([max_loras + 1]) and reuses it for all requests, incurring LoRA op overhead
+
+  even when no adapters are active. In vllm/v1/worker/gpu/lora_utils.py:32 the
+
+  same branch determines the capture case list. In gpu_model_runner.py:6220,
+
+  when specialization is enabled and num_active_loras > 0, cudagraphs are
+
+  disabled for the drafter dummy run (mitigation for issue #28334).
+
+  On Ascend NPU, vllm-ascend does not define or override this parameter, and the
+
+  provided context shows no vllm-ascend usage sites. The Ascend graph capture
+
+  path (ACL graph / torch-npu graph) is driven by vllm-ascend''s own compilation
+
+  config handling; whether LoRA-specialized graph capture is honored depends on
+
+  the vllm-ascend graph runner, which is not evidenced here. Therefore the
+
+  runtime performance effect on Ascend is limited and conditional: "it only"
+
+  matters for LoRA deployments, and only if the Ascend graph capture path
+
+  consumes these capture cases. For non-LoRA workloads it has no effect.
+
+  '
+usage_locations:
+- file: vllm/v1/cudagraph_dispatcher.py:122
+  context: 'Selects LoRA capture cases: specialized graphs vs single LoRA-active graph'
+- file: vllm/v1/worker/gpu/lora_utils.py:32
+  context: Computes num_active_loras capture cases for graph capture
+- file: vllm/v1/worker/gpu_model_runner.py:6220
+  context: Disables cudagraphs for drafter dummy run when specialization active and LoRA in use
+related_parameters:
+- name: enable_lora
+  relation: Parameter has no effect unless LoRA is enabled
+- name: max_loras
+  relation: Determines the specialized LoRA capture counts (powers of 2 up to max_loras)
+- name: compilation_config.cudagraph_mode
+  relation: Graph capture mode that governs whether these LoRA cases are captured at all
+- name: lora_config.specialize_active_lora
+  relation: Further refines captured LoRA counts when specialization is enabled
+constraints:
+- This parameter only has an effect when LoRA is enabled; with no LoRA configured only the no-LoRA case is captured.
+- When set to False, the LoRA-enabled graph is used for all requests, so LoRA ops run even when no adapters are active.
+tuning_advice:
+  summary: For LoRA deployments where many requests have no active adapter, keep specialization enabled to avoid LoRA op overhead;
+    otherwise the default is fine.
+  suggested_values:
+  - scenario: LoRA serving with mixed traffic (many requests without active adapters)
+    value: true
+    reason: Captures a separate no-LoRA graph so non-LoRA requests skip LoRA op overhead, reducing latency.
+  - scenario: LoRA serving where nearly all requests use adapters, or memory-constrained graph capture
+    value: false
+    reason: Captures only the LoRA-active graph, reducing captured graph count and memory at the cost of LoRA overhead on
+      non-LoRA requests.
+  - scenario: No LoRA configured
+    value: true
+    reason: Parameter has no effect when LoRA is disabled; leave at default.
+  caveats:
+  - Verify on Ascend whether the vllm-ascend graph runner honors LoRA-specialized capture cases before relying on this setting.
+  - Specialization increases captured graph count and thus graph memory usage.
+  quick_guide: Leave default true for LoRA workloads with mixed adapter usage; set false only to save graph memory when adapters
+    are almost always active.
+analysis_date: '2026-10-27'

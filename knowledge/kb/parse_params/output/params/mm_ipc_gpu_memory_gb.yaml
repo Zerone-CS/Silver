@@ -1,0 +1,101 @@
+name: --mm-ipc-gpu-memory-gb
+type: cli
+category: memory
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1462
+- vllm/engine/arg_utils.py:626
+- vllm/config/model.py:416
+- vllm/config/multimodal.py:244
+- vllm/multimodal/gpu_ipc_memory.py:128
+- vllm/renderers/base.py:148
+value_type: float
+default: 0
+valid_choices: Any float >= 0 (Field(default=0, ge=0)); 0 disables frontend GPU multimodal memory gating
+cli_example: --mm-ipc-gpu-memory-gb 2.0
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This parameter is defined entirely in upstream vLLM (vllm/config/multimodal.py:244,
+
+  Field(default=0, ge=0)) and is not referenced anywhere in vllm-ascend source. It controls
+
+  a frontend (API-server process) byte-counting semaphore (MultiModalGPUMemoryPool) that gates
+
+  GPU-side multimodal decoding such as hardware video decoding. In vllm/renderers/base.py:148,
+
+  maybe_init_mm_gpu_ipc_pool() is called with mm_config.mm_ipc_gpu_memory_gb and
+
+  config.parallel_config._api_process_count; when the budget is 0 the pool is set to None and
+
+  gating is disabled (gpu_ipc_memory.py:137-139). When > 0, the total budget is divided equally
+
+  across API processes (total_bytes = int(gb * GiB_bytes) // api_process_count) and decode paths
+
+  must acquire bytes from the blocking semaphore before allocating on device, releasing after
+
+  free. The docstring states the budget is "carved out of the engine''s KV-cache memory so the
+
+  headroom physically exists" — i.e. it reduces available KV cache (memory impact) and, because
+
+  acquire() blocks, concurrent frontend GPU decodes serialize rather than oversubscribe the
+
+  device (latency impact under concurrency). On Ascend NPU, the frontend GPU-side decode path
+
+  (hardware video decoding on device) is not a typical vllm-ascend deployment pattern; the
+
+  parameter has no Ascend-specific override and its effect is limited to the frontend process,
+
+  not the NPU engine''s model execution. Hence low impact for Ascend runtime.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1462
+  context: CLI argument registration in the MultiModalConfig argument group
+- file: vllm/engine/arg_utils.py:626
+  context: EngineArgs field defaulting to MultiModalConfig.mm_ipc_gpu_memory_gb
+- file: vllm/config/model.py:416
+  context: ModelConfig InitVar forwarded into MultiModalConfig; listed in ignored_factors for compute_hash (line 466)
+- file: vllm/config/multimodal.py:244
+  context: Field definition with ge=0 validator and docstring describing KV-cache carve-out
+- file: vllm/multimodal/gpu_ipc_memory.py:128
+  context: maybe_init_mm_gpu_ipc_pool builds the byte-counting semaphore, splitting budget across API processes
+- file: vllm/renderers/base.py:148
+  context: Renderer installs the process-global pool from mm_config.mm_ipc_gpu_memory_gb at startup
+related_parameters:
+- name: --mm-tensor-ipc
+  relation: Related transport choice; torch_shm enables zero-copy device tensor IPC that pairs with frontend GPU decode paths
+- name: --mm-processor-device
+  relation: Controls whether HF processor runs transforms on accelerator; 'auto' only uses accelerator when mm-tensor-ipc=torch_shm
+- name: --gpu-memory-utilization
+  relation: The sequestered budget is carved out of engine KV-cache memory, interacting with overall memory utilization
+- name: --media-io-kwargs
+  relation: Configures video backend / hw_decoders that consume the frontend GPU memory budget
+constraints:
+- The value must be greater than or equal to 0 (Field(default=0, ge=0)); negative values are rejected.
+- Setting the value to 0 disables frontend GPU multimodal memory gating entirely.
+- When multiple API-server processes share one engine, the user-provided budget is divided equally among them, so each process
+  gets only a fraction of the total.
+tuning_advice:
+  summary: Leave at 0 unless you run GPU-side multimodal decoding in the frontend; if enabled, size it to the peak concurrent
+    decode working set and account for the KV-cache reduction.
+  suggested_values:
+  - scenario: Default / text-only or CPU-side multimodal processing (typical Ascend deployment)
+    value: 0
+    reason: Gating disabled; no KV-cache carve-out and no frontend GPU memory contention.
+  - scenario: Frontend hardware video decoding with a few concurrent requests
+    value: 2.0
+    reason: Provides headroom for a small number of concurrent device-side decode buffers while limiting KV-cache loss.
+  - scenario: High-concurrency frontend GPU decode workload
+    value: 4.0
+    reason: Larger budget avoids excessive serialization on the blocking semaphore, at the cost of reduced KV cache.
+  caveats:
+  - Increasing this value directly reduces KV-cache capacity; monitor KV-cache usage and throughput after changing it.
+  - With multiple API processes the effective per-process budget is the configured value divided by the process count.
+  - On Ascend NPU, frontend GPU-side video decoding is uncommon; verify the decode path actually runs on device before setting
+    a non-zero value.
+  quick_guide: Keep 0 unless doing frontend GPU multimodal decode; then set to peak concurrent decode bytes, remembering it
+    shrinks KV cache.
+analysis_date: '2026-10-27'

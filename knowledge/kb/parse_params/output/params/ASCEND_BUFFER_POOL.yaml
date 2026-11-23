@@ -1,0 +1,71 @@
+name: ASCEND_BUFFER_POOL
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:306
+- docs/source/user_guide/release_notes.md:470
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:439
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (enabled/disabled)
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'ASCEND_BUFFER_POOL was an environment variable used to enable an Ascend buffer pool
+
+  (HCCS one-sided communication / fabric memory) for the MooncakeStore KV cache pool
+
+  backend. When enabled, HCCS one-sided communication connections were created lazily
+
+  after instance launch, and full-mesh connections incurred a one-time overhead of
+
+  ~4 MB device memory per connection. This affected memory usage (device memory for
+
+  connections) and latency (lazy connection setup overhead requiring warm-up).
+
+  Per the vllm-ascend release notes, the variable has been deprecated (PR #13856) and
+
+  subsequently removed (PR #13834). It is replaced by ASCEND_ENABLE_USE_FABRIC_MEM=1
+
+  or HCCL_INTRA_ROCE_ENABLE=1 depending on hardware and deployment path. Since the
+
+  variable no longer exists in current source, it has no runtime effect on current
+
+  versions; only legacy deployments that still set it are affected.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:439
+  context: Warm-up recommendation for MooncakeStore with ASCEND_BUFFER_POOL enabled (legacy behavior)
+- file: docs/source/user_guide/release_notes.md:306
+  context: 'Deprecation notice: use ASCEND_ENABLE_USE_FABRIC_MEM=1 or HCCL_INTRA_ROCE_ENABLE=1 instead'
+- file: docs/source/user_guide/release_notes.md:470
+  context: 'Removal notice: ASCEND_BUFFER_POOL was removed'
+related_parameters:
+- name: ASCEND_ENABLE_USE_FABRIC_MEM
+  relation: Replacement env var for enabling fabric memory (recommended successor)
+- name: HCCL_INTRA_ROCE_ENABLE
+  relation: Alternative replacement env var depending on hardware/deployment path
+constraints:
+- ASCEND_BUFFER_POOL has been removed from vllm-ascend; setting it in current versions has no effect.
+- Only relevant to the MooncakeStore KV cache pool backend; it does not apply to other KV pool backends such as Memcache.
+tuning_advice:
+  summary: Do not use ASCEND_BUFFER_POOL on current vllm-ascend; migrate to ASCEND_ENABLE_USE_FABRIC_MEM=1 or HCCL_INTRA_ROCE_ENABLE=1.
+  suggested_values:
+  - scenario: Current vllm-ascend versions using MooncakeStore KV pool
+    value: ASCEND_ENABLE_USE_FABRIC_MEM=1
+    reason: Official replacement for the removed ASCEND_BUFFER_POOL to enable fabric memory.
+  - scenario: Deployments where fabric memory is not applicable but intra-node RoCE is used
+    value: HCCL_INTRA_ROCE_ENABLE=1
+    reason: Alternative replacement depending on hardware and deployment path per release notes.
+  caveats:
+  - Setting ASCEND_BUFFER_POOL on current versions is a no-op; verify you are not relying on stale configs.
+  - After enabling the replacement fabric-memory option, run a warm-up phase before benchmarking to amortize lazy HCCS connection
+    setup.
+  quick_guide: Replace ASCEND_BUFFER_POOL with ASCEND_ENABLE_USE_FABRIC_MEM=1 (or HCCL_INTRA_ROCE_ENABLE=1) and warm up before
+    benchmarking.
+analysis_date: '2026-10-27'

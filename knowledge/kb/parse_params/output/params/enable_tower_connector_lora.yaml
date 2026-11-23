@@ -1,0 +1,101 @@
+name: --enable-tower-connector-lora
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/lora.py:63
+- vllm/engine/arg_utils.py:637
+- vllm/engine/arg_utils.py:1491
+- vllm/lora/model_manager.py:209
+- vllm/v1/engine/input_processor.py:210
+- vllm/model_executor/models/interfaces.py:192
+- vllm/model_executor/models/gemma4_mm.py:1088
+- vllm/model_executor/models/ultravox.py:691
+- vllm_ascend/models/gemma4_mm.py:87
+value_type: bool
+default: false
+valid_choices: true / false (BooleanOptionalAction-style flag)
+cli_example: --enable-tower-connector-lora
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This flag toggles whether LoRA adapters are applied to the multimodal tower\n(vision/audio encoder) and connector\
+  \ modules, in addition to the language model.\nIt is read in several places:\n\n- \"vllm/lora/model_manager.py:209 — when\
+  \ False, `supports_tower_connector_lora`\"\n  is forced to False and the manager returns early, so no tower/connector LoRA\n\
+  \  layers are created. When True, the model must declare\n  `supports_tower_connector_lora = True` (vllm/model_executor/models/interfaces.py:192),\n\
+  \  otherwise a warning is logged and the feature is ignored.\n- \"vllm/v1/engine/input_processor.py:210 — when True, the\
+  \ multimodal cache key\"\n  (`mm_hash`) is prefixed with the LoRA name (`f\"{lora_request.lora_name}:{mm_hash}\"`),\n  so\
+  \ each LoRA gets its own MM embedding cache entry. This prevents incorrect\n  cache hits but reduces MM processor cache\
+  \ reuse across adapters, adding\n  preprocessing latency and memory pressure when many LoRAs share the same images.\n- \"\
+  vllm/model_executor/models/gemma4_mm.py:1088 and vllm_ascend/models/gemma4_mm.py:87\"\n  — set `self._enable_mm_lora`, which\
+  \ gates multimodal LoRA handling in\n  `_process_image_input`. The Ascend port mirrors upstream exactly here; the\n  Ascend-specific\
+  \ changes in that file are limited to tower quant_config\n  injection and an MXFP4 patch-embedder dtype workaround, not\
+  \ to this flag.\n- \"vllm/model_executor/models/ultravox.py:691 — enables `pad_audio_to_max_context`,\"\n  padding every\
+  \ audio chunk to the tower's full context length instead of the\n  batch max, which increases compute/memory for audio towers.\n\
+  \nOn Ascend NPU there is no vllm-ascend-specific override of this parameter: the\nvllm-ascend code only reads it to initialize\
+  \ `_enable_mm_lora` in the Gemma4\nmultimodal model, and the e2e test (tests/e2e/pull_request/one_card/lora/test_qwenvl_lora.py)\n\
+  defaults it to False. The performance effect is therefore indirect: enabling it\nadds LoRA compute on the tower/connector\
+  \ (extra matmuls on NPU), fragments the\nMM cache per adapter, and can increase padding for audio towers. It does not\n\
+  change the core LLM decode path, so the impact on steady-state token throughput\nis small; the main costs are extra tower\
+  \ compute and reduced MM cache hit rate.\n"
+usage_locations:
+- file: vllm/config/lora.py:63
+  context: Field definition and docstring; default False, experimental, only some MM models (Qwen VL series).
+- file: vllm/config/lora.py:105
+  context: Included in compute_hash factors, so toggling it changes the LoRA config hash / graph identity.
+- file: vllm/engine/arg_utils.py:1491
+  context: CLI argument registration in the LoRAConfig argument group.
+- file: vllm/lora/model_manager.py:209
+  context: Gates whether tower/connector LoRA layers are created; requires model support flag.
+- file: vllm/v1/engine/input_processor.py:210
+  context: Prefixes mm_hash with lora_name to avoid incorrect MM cache hits when enabled.
+- file: vllm/model_executor/models/interfaces.py:192
+  context: supports_tower_connector_lora ClassVar that models must set to True.
+- file: vllm/model_executor/models/gemma4_mm.py:1088
+  context: Sets _enable_mm_lora for multimodal LoRA handling in image input processing.
+- file: vllm/model_executor/models/ultravox.py:691
+  context: Enables pad_audio_to_max_context for predictable per-item token counts.
+- file: vllm_ascend/models/gemma4_mm.py:87
+  context: 'Ascend Gemma4 MM model mirrors upstream: _enable_mm_lora = lora_config is not None and enable_tower_connector_lora.'
+- file: tests/e2e/pull_request/one_card/lora/test_qwenvl_lora.py:34
+  context: Ascend e2e Qwen-VL LoRA test config defaults enable_tower_connector_lora to False.
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for this flag to have any effect; without LoRA there is no lora_config.
+- name: --max-loras
+  relation: Bounds the number of adapters; with tower/connector LoRA each adapter also needs tower LoRA weights resident.
+- name: --max-lora-rank
+  relation: Determines LoRA weight sizes for tower/connector layers as well.
+- name: --default-mm-loras
+  relation: Modality-to-LoRA mapping; interacts with per-adapter MM cache keying when tower connector LoRA is on.
+- name: --mm-processor-cache-gb
+  relation: Per-adapter MM cache keying reduces effective cache reuse, so cache size may need to grow.
+constraints:
+- --enable-lora must be set for --enable-tower-connector-lora to have any effect, since the flag is only read from lora_config.
+- The target multimodal model must declare supports_tower_connector_lora = True; otherwise the feature is enabled in config
+  but silently ignored with a warning.
+- This is an experimental feature that currently only supports some multimodal models such as the Qwen VL series.
+tuning_advice:
+  summary: Leave disabled unless you actually serve tower/connector LoRA adapters on a supported MM model; when enabled, budget
+    extra MM cache and tower compute.
+  suggested_values:
+  - scenario: Standard multimodal LoRA serving where only language-model adapters differ (v1 and v2 Ascend paths)
+    value: false
+    reason: Default keeps MM embeddings shared across adapters, maximizing MM processor cache reuse and avoiding extra tower
+      LoRA compute.
+  - scenario: Serving Qwen-VL (or other supported MM model) adapters that include vision tower/connector weights
+    value: true
+    reason: Required to actually apply tower/connector LoRA; without it the model manager returns early and tower LoRA weights
+      are ignored.
+  - scenario: Many adapters sharing the same images with tower connector LoRA enabled
+    value: true
+    reason: Increase --mm-processor-cache-gb alongside this flag, since per-adapter mm_hash keying fragments the cache.
+  caveats:
+  - Verify the model sets supports_tower_connector_lora; otherwise the flag is a no-op with only a warning.
+  - Expect higher prefill latency and memory from tower LoRA matmuls and reduced MM cache sharing on Ascend NPU.
+  - Toggling this flag changes the LoRA config hash and triggers recompilation/cache invalidation.
+  quick_guide: Keep False unless your adapters modify the vision/audio tower; if True, enlarge the MM processor cache and
+    expect extra tower compute.
+analysis_date: '2026-10-27'

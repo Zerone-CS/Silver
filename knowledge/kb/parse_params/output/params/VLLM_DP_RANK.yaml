@@ -1,0 +1,83 @@
+name: VLLM_DP_RANK
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:1434
+- vllm/config/parallel.py:937
+- examples/offline_data_parallel.py:120
+value_type: int
+default: 0
+valid_choices: integer in range [0, VLLM_DP_SIZE)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'VLLM_DP_RANK sets the global data-parallel rank of the current process. It is read in
+
+  vllm/config/parallel.py:937 (envs.VLLM_DP_RANK) only in the offline SPMD fallback path,
+
+  i.e. when data_parallel_rank is not explicitly provided via CLI/config. It is used together
+
+  with VLLM_DP_SIZE, VLLM_DP_RANK_LOCAL, VLLM_DP_MASTER_IP and VLLM_DP_MASTER_PORT to form the
+
+  data-parallel group. On Ascend, vllm-ascend does not override this env var; the Ascend examples
+
+  (examples/offline_data_parallel.py:120) and e2e tests set it directly to launch one process per
+
+  DP rank. The rank value itself does not change per-token compute, but it determines which slice
+
+  of the input dataset each process handles and how the DP group is formed. Correct rank assignment
+
+  is required for the DP group to initialize; a wrong/duplicate rank causes collective init failure
+
+  (HCCL group formation) or uneven work distribution, which indirectly affects aggregate throughput
+
+  and tail latency. Because DP replicates the model across ranks, it multiplies memory footprint
+
+  (each rank holds a full model copy) while scaling throughput linearly with the number of ranks.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1434
+  context: Defines VLLM_DP_RANK env var, default 0, parsed as int.
+- file: vllm/config/parallel.py:937
+  context: 'Offline SPMD fallback: data_parallel_rank = envs.VLLM_DP_RANK when not set via config.'
+- file: examples/offline_data_parallel.py:120
+  context: Ascend offline DP example sets VLLM_DP_RANK per worker process.
+- file: tests/e2e/conftest.py:906
+  context: Ascend e2e DP worker sets VLLM_DP_RANK to the process dp_rank.
+related_parameters:
+- name: VLLM_DP_SIZE
+  relation: Total number of data-parallel ranks; VLLM_DP_RANK must be in [0, VLLM_DP_SIZE).
+- name: VLLM_DP_RANK_LOCAL
+  relation: Local rank within a node; defaults to VLLM_DP_RANK when unset.
+- name: VLLM_DP_MASTER_IP
+  relation: Master node IP for the DP group rendezvous.
+- name: VLLM_DP_MASTER_PORT
+  relation: Master node port for the DP group rendezvous.
+- name: --data-parallel-rank
+  relation: CLI/config equivalent; when set, the env var fallback is not used.
+constraints:
+- VLLM_DP_RANK must be in the range [0, VLLM_DP_SIZE), otherwise a ValueError is raised.
+- Offline data parallel mode (env-var driven) is only supported for MoE models; dense models raise an error when VLLM_DP_SIZE
+  > 1.
+- VLLM_DP_RANK_LOCAL defaults to VLLM_DP_RANK when not explicitly set.
+tuning_advice:
+  summary: Assign a unique VLLM_DP_RANK in [0, VLLM_DP_SIZE) per process to scale throughput via data parallelism on Ascend
+    NPU.
+  suggested_values:
+  - scenario: Single-node offline DP launch with N processes
+    value: 0..N-1 (one unique rank per process)
+    reason: Each process must have a distinct global rank so the DP group forms correctly and work is evenly distributed.
+  - scenario: Multi-node DP where each node hosts multiple ranks
+    value: global rank = node_index * ranks_per_node + local_rank
+    reason: Global rank must be unique across nodes while VLLM_DP_RANK_LOCAL stays within the node.
+  caveats:
+  - Only use the env-var path for offline SPMD MoE deployments; dense models are rejected.
+  - Ensure VLLM_DP_SIZE matches the actual number of launched processes to avoid hangs in HCCL group init.
+  - Account for full-model replication per rank when sizing NPU memory.
+  quick_guide: Set VLLM_DP_RANK to a unique value in [0, VLLM_DP_SIZE) for each DP process; use CLI flags for online serving.
+analysis_date: '2026-10-27'

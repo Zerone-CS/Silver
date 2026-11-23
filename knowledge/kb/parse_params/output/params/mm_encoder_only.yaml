@@ -1,0 +1,122 @@
+name: --mm-encoder-only
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/multimodal.py:164
+- vllm/engine/arg_utils.py:1395
+- vllm/engine/arg_utils.py:606
+- vllm/config/model.py:404
+- vllm/config/vllm.py:580
+- vllm/config/vllm.py:1260
+- vllm/v1/core/sched/scheduler.py:111
+- vllm/v1/core/sched/scheduler.py:2043
+- vllm_ascend/worker/model_runner_v1.py:3943
+- vllm_ascend/worker/model_runner_v1.py:4318
+value_type: bool
+default: false
+valid_choices: true or false (BooleanOptionalAction-style flag)
+cli_example: --mm-encoder-only
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This flag switches the engine into an "encoder-only" mode where the language
+
+  model component is skipped. In upstream vLLM, `MultiModalConfig.mm_encoder_only`
+
+  (vllm/config/multimodal.py:164) is propagated through `EngineArgs` (arg_utils.py:606)
+
+  into `ModelConfig` (model.py:404) and resolved in `VllmConfig._resolve_mm_encoder_only`
+
+  (vllm/config/vllm.py:1260). The scheduler reads `vllm_config.is_mm_encoder_only`
+
+  (vllm/config/vllm.py:580) at construction (scheduler.py:111) and, in
+
+  `update_from_outputs` (scheduler.py:2043), finishes a request as soon as
+
+  `num_computed_tokens >= num_prompt_tokens` instead of sampling tokens. This means
+
+  the decode phase is entirely eliminated for encoder instances — no autoregressive
+
+  token generation, no sampler, no logits computation — which drastically reduces
+
+  per-request latency and frees the KV cache / compute that the LM would otherwise
+
+  consume. On Ascend, vllm-ascend''s v1 worker (`NPUModelRunner`) explicitly honors
+
+  this flag: "`_dummy_run` (model_runner_v1.py:3943) returns empty tensors immediately"
+
+  without running the LM forward pass, and `_dummy_sampler_run` (model_runner_v1.py:4318)
+
+  returns an empty tensor without invoking `compute_logits`. This skips the expensive
+
+  NPU profiling/dummy-forward and sampler warmup for the LM, reducing startup time
+
+  and NPU memory reserved for LM activations/KV cache. The net effect on Ascend is
+
+  that an encoder-only instance dedicates its NPU almost entirely to the vision/multimodal
+
+  encoder, improving encoder throughput and lowering memory pressure, at the cost of
+
+  not being able to serve generation requests on that instance.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:164
+  context: Definition of mm_encoder_only field with docstring noting it skips the language component and is usually only valid
+    in disaggregated Encoder process.
+- file: vllm/engine/arg_utils.py:1395
+  context: CLI argument registration for --mm-encoder-only in the MultiModalConfig argument group.
+- file: vllm/config/vllm.py:580
+  context: is_mm_encoder_only property derived from model_config.multimodal_config.mm_encoder_only.
+- file: vllm/config/vllm.py:1260
+  context: _resolve_mm_encoder_only called during VllmConfig.__post_init__ to resolve the flag.
+- file: vllm/v1/core/sched/scheduler.py:111
+  context: Scheduler caches is_mm_encoder_only from vllm_config.
+- file: vllm/v1/core/sched/scheduler.py:2043
+  context: Scheduler finishes request once full prompt is consumed instead of sampling, eliminating decode.
+- file: vllm_ascend/worker/model_runner_v1.py:3943
+  context: Ascend v1 NPUModelRunner._dummy_run early-returns empty tensors when mm_encoder_only, skipping LM dummy forward.
+- file: vllm_ascend/worker/model_runner_v1.py:4318
+  context: Ascend v1 NPUModelRunner._dummy_sampler_run early-returns empty tensor when mm_encoder_only, skipping sampler warmup.
+related_parameters:
+- name: --language-model-only
+  relation: 'Mutually exclusive intent: --language-model-only skips the multimodal encoder, while --mm-encoder-only skips
+    the language model. They target opposite components of a multimodal model.'
+- name: --mm-encoder-tp-mode
+  relation: Controls how the encoder is parallelized (weights vs data); relevant when running an encoder-only instance to
+    maximize encoder throughput.
+- name: --skip-mm-profiling
+  relation: Both reduce profiling/warmup work; mm_encoder_only already skips LM dummy run and sampler on Ascend.
+- name: --kv-cache-memory / gpu-memory-utilization
+  relation: Encoder-only instances allocate no KV cache for the LM, so memory freed can be redirected to encoder processing.
+constraints:
+- This flag is usually only valid in a disaggregated Encoder process; enabling it on a standard serving instance means the
+  instance cannot generate tokens.
+- When enabled, the scheduler finishes requests as soon as the full prompt is consumed, so no output tokens are produced by
+  that instance.
+- The Ascend v1 worker's _dummy_run and _dummy_sampler_run early-exit only cover LM execution; the multimodal encoder dummy
+  run is not yet implemented there.
+tuning_advice:
+  summary: Enable --mm-encoder-only only on dedicated encoder instances in a disaggregated encode/prefill/decode deployment
+    to skip LM compute and free NPU memory for the encoder.
+  suggested_values:
+  - scenario: Dedicated encoder instance in a disaggregated (EC/PD) deployment
+    value: true
+    reason: Skips the LM forward, sampler, and KV cache allocation, dedicating the NPU to the multimodal encoder and reducing
+      latency/memory for encoder processing.
+  - scenario: Standard single-instance serving or any instance that must generate tokens
+    value: false
+    reason: With the flag enabled the scheduler stops after the prompt is consumed and produces no output tokens, so generation
+      would fail.
+  caveats:
+  - Pair an encoder-only instance with a separate decode instance; the encoder-only instance cannot serve generation requests.
+  - On Ascend v1 worker the LM dummy run and sampler warmup are skipped, but the encoder dummy run is not yet implemented,
+    so encoder profiling may be incomplete.
+  - Combine with --mm-encoder-tp-mode to tune encoder parallelism for maximum encoder throughput.
+  quick_guide: Set --mm-encoder-only only on dedicated encoder nodes of a disaggregated deployment; leave it off everywhere
+    else.
+analysis_date: '2026-10-27'

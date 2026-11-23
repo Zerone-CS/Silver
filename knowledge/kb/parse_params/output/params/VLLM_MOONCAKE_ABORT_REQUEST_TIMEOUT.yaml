@@ -1,0 +1,77 @@
+name: VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT
+type: env
+category: kv_cache
+scope: both
+source_file:
+- vllm/envs.py:1803
+- vllm/envs.py:258
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:240
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:272
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_scheduler.py:390
+value_type: int
+default: 480
+valid_choices: positive integer (seconds); no upper bound enforced
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This env var sets a timeout (in seconds) used by the Mooncake KV-transfer connector in\nPD-disaggregated deployments.\
+  \ It is read in two distinct code paths:\n\n1. Upstream vLLM (v1 MooncakeConnector): used as the asyncio.wait timeout when\
+  \ the producer\n   waits for the decode side to become ready (mooncake_connector.py:1317), and as the expiry\n   threshold\
+  \ for send metadata that never got sent (mooncake_connector.py:1826). On timeout,\n   pending transfers are aborted and\
+  \ blocks are freed on the producer side.\n\n2. vllm-ascend (KVCacheTaskTracker in mooncake_connector.py:240, mooncake_hybrid_connector.py:272,\n\
+  \   and pull_scheduler.py:390): used to force-free \"delayed\" requests whose KV blocks are held\n   but not yet released.\
+  \ When a request exceeds the timeout, the tracker pops it from\n   delayed_free_requests, discards it from reqs_to_process,\
+  \ and marks it finished so the\n   scheduler can release its KV cache blocks.\n\nPerformance mechanism: \"the timeout governs\
+  \ how long KV cache blocks are held on the\"\nproducer/prefill side while waiting for the consumer to acknowledge. A too-large\
+  \ value means\nstale/abandoned requests keep KV blocks pinned longer, reducing effective KV cache capacity\nand potentially\
+  \ stalling new requests (throughput/memory pressure). A too-small value causes\npremature force-freeing of in-flight transfers,\
+  \ leading to aborted requests, retries, and\nwasted recompute (latency/throughput degradation). It does not affect the compute\
+  \ kernels\nthemselves, so impact is indirect (medium).\n"
+usage_locations:
+- file: vllm/envs.py:1803
+  context: Definition and default (480s) of the env var.
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py:1317
+  context: asyncio.wait timeout waiting for P-side ready; aborts pending transfers on expiry.
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/mooncake_connector.py:1826
+  context: Expiry threshold for send metadata never sent; frees producer blocks.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:240
+  context: KVCacheTaskTracker force-frees delayed requests exceeding timeout to prevent memory leak.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:272
+  context: Hybrid connector variant of the same delayed-request expiry logic.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_scheduler.py:390
+  context: Pull scheduler force-frees expired Mooncake requests after timeout.
+related_parameters:
+- name: VLLM_USE_V1
+  relation: Mooncake connector paths differ between v1 worker (upstream connector) and vllm-ascend native connectors; behavior
+    depends on which path is active.
+- name: kv_transfer_config
+  relation: Only relevant when a Mooncake KV connector is configured for PD disaggregation.
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Another timeout governing request execution; should be considered together when sizing end-to-end timeouts.
+constraints:
+- The value must be a positive integer number of seconds; a non-integer or non-numeric value will raise a ValueError when
+  the env var is parsed.
+- This parameter only has an effect when a Mooncake KV connector is used in a PD-disaggregated setup; it is ignored otherwise.
+tuning_advice:
+  summary: Tune the Mooncake abort timeout to exceed worst-case KV transfer latency while not pinning blocks too long; default
+    480s is safe for most PD setups.
+  suggested_values:
+  - scenario: Stable cluster, low-latency interconnect, typical PD disaggregation
+    value: 480
+    reason: Default value provides ample margin for KV transfer completion without excessive block pinning.
+  - scenario: High-load cluster with occasional slow transfers or network jitter
+    value: 600
+    reason: Larger timeout avoids premature force-freeing of in-flight transfers that would otherwise abort and require recompute.
+  - scenario: Memory-constrained deployment where stale requests must be reclaimed quickly
+    value: 240
+    reason: Shorter timeout frees KV blocks sooner to relieve memory pressure, at the cost of tolerating less transfer latency.
+  caveats:
+  - Monitor logs for 'Force freed expired request' warnings; frequent occurrences indicate the timeout is too low or transfers
+    are stalling.
+  - Ensure the value is larger than observed P99 KV transfer latency on the Ascend cluster.
+  quick_guide: Set VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT above your P99 KV transfer latency; raise it if you see premature aborts,
+    lower it if KV blocks are pinned too long.
+analysis_date: '2026-10-27'

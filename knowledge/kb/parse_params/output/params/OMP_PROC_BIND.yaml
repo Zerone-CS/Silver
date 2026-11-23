@@ -1,0 +1,109 @@
+name: OMP_PROC_BIND
+type: env
+category: hardware
+scope: both
+source_file:
+- vllm/utils/ompmultiprocessing.py:102
+- tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:83
+- tests/ut/_tools/test_docs_codegen.py:413
+value_type: str
+default: 'false'
+valid_choices: 'OpenMP boolean-like strings: true, false (also accepts other OpenMP affinity values such as master, close,
+  spread depending on the OpenMP runtime)'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'OMP_PROC_BIND controls whether OpenMP worker threads are bound to specific CPU
+
+  cores. On Ascend NPU deployments the heavy compute runs on the NPU (via CANN
+
+  kernels), so OpenMP threads are only used for host-side CPU work (tokenization,
+
+  scheduling, data preprocessing, some HCCL host-side helpers). Consequently the
+
+  parameter has only a minor effect on end-to-end latency/throughput compared to
+
+  NPU-side knobs.
+
+
+  In upstream vLLM, OMP_PROC_BIND is only set programmatically inside
+
+  vllm/utils/ompmultiprocessing.py (OMPProcessManager.configure_omp_envs), and
+
+  that whole class early-returns unless current_platform.is_cpu()
+
+  (line 27-28). So on Ascend NPU the upstream auto-binding path is a no-op and
+
+  the env var is only whatever the user exports.
+
+
+  In vllm-ascend, OMP_PROC_BIND is not read by any runtime code path; it appears
+
+  only in test/deployment configurations (e2e kv_pool test, docs codegen test,
+
+  multi-node test YAML) and in the model tutorials (Kimi-K2-Thinking, GLM5.3-Flash)
+
+  where it is set to "false" as a validated startup default. The docs explicitly
+
+  describe it as a "Performance" parameter whose purpose is to "avoid overly
+
+  strict OpenMP CPU binding", i.e. it prevents the OpenMP runtime from pinning
+
+  threads to a fixed core set, which can otherwise cause CPU contention with
+
+  HCCL host threads and scheduler processes on Ascend nodes. Setting it to
+
+  "false" is the validated baseline; other values require separate CPU affinity,
+
+  NPU health, and HCCL stability validation.
+
+  '
+usage_locations:
+- file: vllm/utils/ompmultiprocessing.py:102
+  context: Upstream sets OMP_PROC_BIND=true together with OMP_PLACES when auto-binding CPU cores; guarded by current_platform.is_cpu()
+    so it does not run on Ascend NPU.
+- file: tests/e2e/cases/features/kv_pool/test_qwen3_30b_acc.py:83
+  context: vllm-ascend e2e test sets OMP_PROC_BIND=false alongside OMP_NUM_THREADS=1 for a KV-pool / Mooncake deployment.
+- file: tests/ut/_tools/test_docs_codegen.py:413
+  context: vllm-ascend docs codegen test uses OMP_PROC_BIND=false in env_common for multi-node DP/TP templates.
+related_parameters:
+- name: OMP_NUM_THREADS
+  relation: Companion OpenMP setting; typically set to 1 on Ascend to avoid oversubscription of host CPU threads.
+- name: VLLM_CPU_OMP_THREADS_BIND
+  relation: Upstream CPU-only knob that drives the OMPProcessManager auto-binding path which sets OMP_PROC_BIND; irrelevant
+    on Ascend NPU.
+- name: HCCL_BUFFSIZE
+  relation: Frequently co-configured in the same Ascend env_common blocks; both are validated startup defaults in vllm-ascend
+    tutorials.
+constraints:
+- OMP_PROC_BIND is an OpenMP runtime variable; invalid values may be ignored or cause the OpenMP runtime to warn, but do not
+  raise a vLLM error.
+- The upstream auto-binding code that sets OMP_PROC_BIND only executes when the platform is CPU, so on Ascend NPU the value
+  is never set by vLLM itself and must be provided by the user/environment.
+tuning_advice:
+  summary: On Ascend NPU keep OMP_PROC_BIND=false (the validated vllm-ascend default) and pair it with OMP_NUM_THREADS=1 to
+    avoid host CPU contention with HCCL and scheduler threads.
+  suggested_values:
+  - scenario: Standard Ascend NPU serving (single or multi-node, DP/TP, KV transfer, MoE)
+    value: 'false'
+    reason: vllm-ascend tutorials (Kimi-K2-Thinking, GLM5.3-Flash) and e2e/multi-node test configs validate OMP_PROC_BIND=false
+      to avoid overly strict OpenMP CPU binding that can contend with HCCL host threads.
+  - scenario: Host CPU is heavily loaded and you observe thread migration / cache thrash on the scheduler process
+    value: 'true'
+    reason: Binding OpenMP threads to a fixed core set can reduce migration overhead, but on Ascend this must be validated
+      separately for CPU affinity, NPU health, and HCCL stability as the docs warn.
+  caveats:
+  - vllm-ascend does not read OMP_PROC_BIND in any runtime code path; it only appears in test/deployment configs and docs,
+    so its effect is entirely mediated by the OpenMP runtime.
+  - Upstream vLLM's OMPProcessManager (which would set OMP_PROC_BIND=true) is a no-op on Ascend because it early-returns unless
+    current_platform.is_cpu().
+  - Changing OMP_PROC_BIND away from the validated false value requires separate CPU affinity, NPU health, and HCCL stability
+    validation per the vllm-ascend docs.
+  - OMP_PROC_BIND has negligible effect on NPU-bound compute; do not expect throughput gains from tuning it — focus on HCCL_BUFFSIZE,
+    TASK_QUEUE_ENABLE, and NPU-side knobs instead.
+  quick_guide: Set OMP_PROC_BIND=false and OMP_NUM_THREADS=1 on Ascend NPU; leave it alone unless you have a validated host-CPU
+    contention issue.
+analysis_date: '2026-10-27'

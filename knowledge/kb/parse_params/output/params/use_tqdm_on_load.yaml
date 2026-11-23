@@ -1,0 +1,90 @@
+name: --use-tqdm-on-load
+type: cli
+category: observability
+scope: vllm
+source_file:
+- vllm/config/load.py:106
+- vllm/engine/arg_utils.py:996
+- vllm/engine/arg_utils.py:756
+- vllm/engine/arg_utils.py:1921
+- vllm/model_executor/model_loader/weight_utils.py:665
+- vllm/model_executor/model_loader/default_loader.py:264
+- vllm/v1/worker/gpu_model_runner.py:7004
+value_type: bool
+default: true
+valid_choices: true or false (boolean flag)
+cli_example: --use-tqdm-on-load
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only toggles tqdm progress-bar rendering during model weight loading and
+
+  CUDA-graph capture; it does not change any compute, memory allocation, or communication
+
+  path. In vllm/config/load.py:106 it is a plain bool field (default True) that is threaded
+
+  through create_load_config (arg_utils.py:1921) into LoadConfig. It is consumed by
+
+  weight_utils.enable_tqdm (weight_utils.py:665), which gates tqdm on rank 0 only
+
+  (`use_tqdm_on_load and (not torch.distributed.is_initialized() or get_rank() == 0)`),
+
+  and passed to the various weights iterators (default_loader.py:264/281, runai_streamer_loader.py:126).
+
+  It also disables the "Capturing CUDA graphs" progress bar in the v1 GPU model runner
+
+  (gpu_model_runner.py:7004). The only measurable effect is a small amount of host-side
+
+  I/O and terminal rendering overhead during startup; disabling it can marginally reduce
+
+  load time and avoid log spam in distributed/multi-rank launches, but steady-state
+
+  inference throughput and NPU memory are unaffected. No vllm-ascend override of this
+
+  parameter was found in the provided context; the Ascend weight-loading path inherits the
+
+  upstream LoadConfig behavior.
+
+  '
+usage_locations:
+- file: vllm/config/load.py:106
+  context: LoadConfig field definition, default True, docstring describes progress bar on weight load
+- file: vllm/engine/arg_utils.py:996
+  context: CLI argument registration in the LoadConfig argument group
+- file: vllm/engine/arg_utils.py:1921
+  context: Propagated into LoadConfig inside create_load_config
+- file: vllm/model_executor/model_loader/weight_utils.py:665
+  context: enable_tqdm gates tqdm to rank 0 only when distributed is initialized
+- file: vllm/model_executor/model_loader/default_loader.py:264
+  context: Passed to np_cache / safetensors / multithread weights iterators
+- file: vllm/v1/worker/gpu_model_runner.py:7004
+  context: Disables the CUDA graph capture progress bar (upstream GPU path)
+related_parameters:
+- name: --load-format
+  relation: Determines which weights iterator consumes use_tqdm_on_load (npcache, fastsafetensors, instanttensor, safetensors,
+    runai_streamer)
+- name: --safetensors-load-strategy
+  relation: Selects the safetensors iterator variant that receives the tqdm flag
+- name: --model-loader-extra-config
+  relation: enable_multithread_load path also forwards use_tqdm_on_load to the multithread iterator
+constraints:
+- The progress bar is only shown on global rank 0 when torch.distributed is initialized; other ranks never render it regardless
+  of this flag.
+- This flag has no effect on actual weight loading correctness or on which weights are loaded.
+tuning_advice:
+  summary: Leave at default for interactive single-node debugging; disable in production or multi-rank launches to cut startup
+    log noise and minor host overhead.
+  suggested_values:
+  - scenario: Interactive single-node debugging / first-time model load
+    value: true
+    reason: Progress bar helps confirm weight loading and graph capture are progressing and not stalled.
+  - scenario: Production serving or multi-node/multi-rank distributed launch
+    value: false
+    reason: Avoids terminal rendering overhead and log spam; only rank 0 would print anyway, and steady-state throughput is
+      unaffected.
+  caveats:
+  - Disabling this only affects startup-time logging; it will not change inference latency, throughput, or NPU memory usage.
+  - No vllm-ascend-specific override was found; the Ascend weight-loading path follows upstream LoadConfig semantics.
+  quick_guide: Keep default for debugging; set --use-tqdm-on-load false in production to reduce startup log noise.
+analysis_date: '2026-10-27'

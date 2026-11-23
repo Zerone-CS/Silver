@@ -1,0 +1,101 @@
+name: --shutdown-timeout
+type: cli
+category: other
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1769
+- vllm/engine/arg_utils.py:781
+- vllm/engine/arg_utils.py:2676
+- vllm/config/vllm.py:456
+- vllm/v1/engine/core.py:1361
+- vllm/v1/engine/core.py:1490
+- vllm/v1/engine/utils.py:46
+- vllm/v1/engine/utils.py:163
+- vllm/entrypoints/cli/serve.py:260
+- vllm/entrypoints/cli/serve.py:401
+value_type: int
+default: 0
+valid_choices: integer >= 0 (0 = abort in-flight requests immediately; >0 = drain for up to N seconds)
+cli_example: --shutdown-timeout 30
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only affects the shutdown/teardown path, not steady-state
+
+  inference. It is stored in VllmConfig.shutdown_timeout (vllm/config/vllm.py:456,
+
+  Field(default=0, ge=0)) and propagated from EngineArgs (arg_utils.py:781, 2676).
+
+  At runtime it is read in EngineCore._handle_shutdown (vllm/v1/engine/core.py:1490):
+
+  when shutdown_state == REQUESTED, a value of 0 selects "abort" mode (all
+
+  unfinished requests are finished with FINISHED_ABORTED immediately), while a
+
+  value >0 selects "drain" mode where the engine keeps running the busy loop for
+
+  up to shutdown_timeout seconds to let in-flight requests complete before
+
+  aborting the remainder. It also feeds CoreEngineProcManager._request_shutdown_timeout
+
+  (vllm/v1/engine/utils.py:163) and the CLI serve shutdown path
+
+  (vllm/entrypoints/cli/serve.py:260, 401) to bound how long the parent waits for
+
+  engine processes to exit. On Ascend NPU this does not change per-token latency or
+
+  throughput during normal serving; it only influences how long a graceful stop
+
+  takes and whether in-flight requests are allowed to finish. A larger value can
+
+  delay process exit (and thus NPU/HCCL resource release) during rolling restarts,
+
+  which indirectly affects deployment turnaround but not steady-state performance.
+
+  No vllm-ascend override of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/v1/engine/core.py:1490
+  context: _handle_shutdown reads shutdown_timeout to choose abort (0) vs drain (>0) mode for in-flight requests
+- file: vllm/v1/engine/core.py:1361
+  context: clean_shutdown determination requires shutdown_timeout == 0 in the SystemExit path
+- file: vllm/v1/engine/utils.py:163
+  context: CoreEngineProcManager stores shutdown_timeout as _request_shutdown_timeout for process-manager shutdown
+- file: vllm/v1/engine/utils.py:46
+  context: get_engine_process_shutdown_timeout uses request_timeout to compute process-manager grace window
+- file: vllm/entrypoints/cli/serve.py:260
+  context: CLI serve waits up to shutdown_timeout seconds for engine processes to exit
+- file: vllm/entrypoints/cli/serve.py:401
+  context: CLI serve computes shutdown deadline from shutdown_timeout for API server and engine managers
+related_parameters:
+- name: --disable-log-stats
+  relation: Both are top-level CLI args in the same argument group; unrelated functionally but co-located in arg_utils
+- name: VLLM_ENABLE_V1_MULTIPROCESSING
+  relation: Multiprocessing mode determines whether CoreEngineProcManager shutdown timeout path is exercised
+constraints:
+- The value must be a non-negative integer (Field(default=0, ge=0)); negative values are rejected by Pydantic validation.
+- A value of 0 means in-flight requests are aborted immediately on shutdown; a value greater than 0 enables a drain window
+  of that many seconds.
+tuning_advice:
+  summary: Leave at 0 for fast aborts; set a small positive value only when you need in-flight requests to drain gracefully
+    before stopping.
+  suggested_values:
+  - scenario: Development / quick iteration where fast teardown matters
+    value: 0
+    reason: Immediate abort of in-flight requests minimizes shutdown latency and frees NPU resources quickly.
+  - scenario: Production rolling restart where in-flight requests should complete
+    value: 30
+    reason: A modest drain window lets running requests finish before aborting, reducing client-visible failures without long
+      teardown delays.
+  - scenario: Long-running generation workloads needing graceful drain
+    value: 60
+    reason: Longer drain window accommodates long sequences, but keep it bounded to avoid stalling redeploys and NPU resource
+      release.
+  caveats:
+  - Do not set very large values in autoscaling environments; slow shutdown delays NPU release and can block new instance
+    startup.
+  - This is a shutdown-only knob; do not expect throughput or latency gains from tuning it.
+  quick_guide: Keep 0 for fast aborts; use a small positive value (e.g. 30) only when graceful request draining is required.
+analysis_date: '2026-10-27'

@@ -1,0 +1,99 @@
+name: VLLM_USE_PRECOMPILED
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:650
+- vllm/envs.py:97
+- setup.py:50
+- setup.py:939
+value_type: bool
+default: false
+valid_choices: 'boolean-like: ''1''/''true'' (case-insensitive) enable; anything else disables; also implicitly enabled when
+  VLLM_PRECOMPILED_WHEEL_LOCATION is set'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_USE_PRECOMPILED is a build/install-time flag, not a runtime inference knob.
+
+  In vllm/envs.py:650 it is parsed as a boolean (true when the env var is ''1''/''true''
+
+  or when VLLM_PRECOMPILED_WHEEL_LOCATION is set). It is consumed by setup.py:50
+
+  (USE_PRECOMPILED_EXTENSIONS = envs.VLLM_USE_PRECOMPILED) to decide whether to
+
+  download precompiled native binaries (*.so and the vllm-rs Rust frontend) instead
+
+  of compiling C/C++/CUDA extensions from source. It also implies the precompiled
+
+  Rust frontend (setup.py:52-54). Because it only affects how the package is built
+
+  and installed, it has no direct effect on the runtime execution path, kernel
+
+  dispatch, memory allocation, or scheduling during inference. Its only indirect
+
+  performance relevance is that precompiled binaries may be built with different
+
+  compiler flags/optimization levels than a local source build, and it drastically
+
+  reduces install/build time. On Ascend NPU, vllm-ascend is a separate plugin that
+
+  builds its own Ascend kernels via CANN; this upstream flag does not control
+
+  Ascend kernel compilation and is not referenced in vllm-ascend source. Therefore
+
+  runtime throughput/latency/memory on NPU are essentially unaffected.
+
+  '
+usage_locations:
+- file: vllm/envs.py:650
+  context: Parses VLLM_USE_PRECOMPILED (and VLLM_PRECOMPILED_WHEEL_LOCATION) into a boolean env accessor.
+- file: vllm/envs.py:97
+  context: 'Type annotation declaring VLLM_USE_PRECOMPILED: bool = False.'
+- file: setup.py:50
+  context: USE_PRECOMPILED_EXTENSIONS = envs.VLLM_USE_PRECOMPILED drives whether precompiled native extensions are used at
+    build time.
+- file: setup.py:939
+  context: Error message advising to disable VLLM_USE_PRECOMPILED to build from source when precompiled wheel metadata cannot
+    be fetched.
+related_parameters:
+- name: VLLM_PRECOMPILED_WHEEL_LOCATION
+  relation: Setting this env var implicitly enables VLLM_USE_PRECOMPILED (envs.py:652).
+- name: VLLM_USE_PRECOMPILED_RUST
+  relation: Orthogonal flag for the Rust frontend; VLLM_USE_PRECOMPILED implies the precompiled Rust frontend too (setup.py:52-54),
+    but the reverse is not true.
+- name: VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX
+  relation: Controls whether a +precompiled suffix is appended to the version string when precompiled binaries are used.
+- name: VLLM_DOCKER_BUILD_CONTEXT
+  relation: Marks a Docker build context to force use of precompiled binaries.
+constraints:
+- VLLM_USE_PRECOMPILED only takes effect at package build/install time; setting it at inference runtime has no effect on the
+  running engine.
+- If precompiled wheel metadata cannot be fetched for the selected variant, the build fails unless VLLM_USE_PRECOMPILED is
+  disabled to build from source.
+- Enabling VLLM_USE_PRECOMPILED also enables the precompiled Rust frontend, so a compatible precompiled Rust binary must be
+  available.
+tuning_advice:
+  summary: This is a build-time flag with negligible runtime impact on Ascend NPU; leave it at default for inference tuning
+    and only toggle it to speed up installation or to fall back to a source build.
+  suggested_values:
+  - scenario: Standard pip install of vLLM on Ascend using official prebuilt wheels
+    value: '1'
+    reason: Uses precompiled native binaries, avoiding a long source compilation and matching the shipped wheel's optimization
+      flags.
+  - scenario: Debugging or needing a source build with custom compiler flags / matching a specific commit
+    value: '0'
+    reason: Forces building extensions from source, useful when precompiled wheels are incompatible or when investigating
+      build issues.
+  caveats:
+  - This flag does not control vllm-ascend's Ascend/CANN kernel compilation; Ascend kernels are built separately by the vllm-ascend
+    plugin.
+  - Precompiled binaries may be built with different optimization flags than a local source build, which can cause minor performance
+    differences unrelated to inference configuration.
+  - Setting VLLM_PRECOMPILED_WHEEL_LOCATION implicitly enables this flag, which can be surprising during CI or custom wheel
+    installs.
+  quick_guide: 'Build-time only: set VLLM_USE_PRECOMPILED=1 to install prebuilt binaries faster; it does not affect Ascend
+    NPU inference performance.'
+analysis_date: '2026-10-27'

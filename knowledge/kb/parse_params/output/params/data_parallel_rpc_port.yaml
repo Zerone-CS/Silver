@@ -1,0 +1,102 @@
+name: --data-parallel-rpc-port
+type: cli
+category: communication
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1157
+- vllm/engine/arg_utils.py:501
+- vllm/engine/arg_utils.py:2332
+- vllm/config/parallel.py:143
+- vllm/v1/engine/utils.py:1205
+- vllm/entrypoints/cli/serve.py:233
+value_type: int
+default: 29550
+valid_choices: integer in range [1, 65535]
+cli_example: --data-parallel-rpc-port 29550
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter sets the fixed TCP port used for the ZeroMQ ROUTER handshake socket
+
+  between the data-parallel front-end and the DP engine processes. In vLLM v1
+
+  (vllm/v1/engine/utils.py:1205) the value is passed to get_engine_client_zmq_addr()
+
+  to build the handshake address; in headless mode (vllm/entrypoints/cli/serve.py:233)
+
+  it is combined with data_parallel_master_ip into a TCP URI for CoreEngineProcManager.
+
+  The port itself does not affect steady-state token throughput or NPU compute — it is
+
+  only used during engine startup/handshake and for the DP coordination channel. Its
+
+  performance relevance is therefore limited to startup latency and to whether the DP
+
+  cluster can establish its control plane at all. If the port is already occupied or
+
+  blocked by a firewall, DP ranks fail to handshake and the whole deployment stalls or
+
+  errors out, which manifests as a startup failure rather than a throughput regression.
+
+  Note that data_parallel_rpc_port is explicitly listed in the ignored_factors set of
+
+  the DP config hash (vllm/config/parallel.py:841), meaning it does not participate in
+
+  DP worker configuration validation — changing it does not alter collective
+
+  communication semantics. No vllm-ascend-specific override of this parameter was found
+
+  in the provided context; the vllm-ascend docs (DeepSeek-R1.md, DeepSeek-V3.1.md) only
+
+  restate the upstream requirement that the port must be identical across all nodes.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1157
+  context: CLI argument definition (--data-parallel-rpc-port / -dpp), type=int, help states all nodes must use the same port
+- file: vllm/engine/arg_utils.py:2332
+  context: EngineArgs resolves the port, falling back to ParallelConfig.data_parallel_rpc_port when unset
+- file: vllm/config/parallel.py:143
+  context: ParallelConfig field with default 29550 and validation ge=1, le=65535
+- file: vllm/v1/engine/utils.py:1205
+  context: Used to build the ZMQ handshake address for DP engine client
+- file: vllm/entrypoints/cli/serve.py:233
+  context: Headless DP mode builds TCP handshake URI from data_parallel_master_ip and this port
+related_parameters:
+- name: --data-parallel-address
+  relation: The RPC port is combined with the DP master address to form the handshake endpoint; both must be consistent across
+    nodes
+- name: --data-parallel-size
+  relation: DP must be enabled (data_parallel_size > 1) for this port to be used; with a single DP rank the local IPC transport
+    is used instead
+- name: --data-parallel-backend
+  relation: Affects how the DP address is derived (ray vs mp) but the RPC port is used in both cases for the handshake socket
+- name: --headless
+  relation: In headless mode the port is used directly to build the TCP handshake URI for non-master nodes
+constraints:
+- The value must be an integer between 1 and 65535 (Field(ge=1, le=65535) in ParallelConfig).
+- All nodes in a multi-node data-parallel deployment must use the same --data-parallel-rpc-port value.
+- The port is only used when there are remote data parallel engines; with purely local DP the local IPC transport is used
+  instead.
+tuning_advice:
+  summary: Pick a fixed, firewall-open port identical on all DP nodes; leave at default 29550 unless it conflicts with another
+    service.
+  suggested_values:
+  - scenario: Single DP cluster with no port conflicts (default)
+    value: 29550
+    reason: Upstream default; works out of the box and is validated by tests (test_data_parallel_rpc_port_has_fixed_default).
+  - scenario: Multiple DP clusters or other services occupying 29550 on the same host
+    value: 62300
+    reason: Example value used in upstream multi_instance_data_parallel.py; choose any free port in [1, 65535] and set it
+      identically on all nodes.
+  - scenario: Multi-node DP deployment (e.g. DeepSeek-R1/V3.1 across 2 nodes)
+    value: 29550
+    reason: Docs require the same RPC port on all nodes; keep it consistent with --data-parallel-address and ensure the port
+      is open between nodes.
+  caveats:
+  - Verify the chosen port is not already bound and is allowed through any firewall between DP nodes before launching.
+  - Changing this value does not improve throughput; only adjust it to resolve port conflicts.
+  quick_guide: Set the same free TCP port (default 29550) on every DP node; it only affects DP handshake/startup, not runtime
+    throughput.
+analysis_date: '2026-10-27'

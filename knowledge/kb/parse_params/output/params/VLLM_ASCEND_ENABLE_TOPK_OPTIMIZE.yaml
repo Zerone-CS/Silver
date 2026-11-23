@@ -1,0 +1,87 @@
+name: VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE
+type: env
+category: model
+scope: vllm-ascend
+source_file:
+- tests/e2e/common/multi_node/external_dp/utils.py:189
+- tests/e2e/common/multi_node/internal_dp/test_multi_node.py:30
+- tests/e2e/common/single_node/test_single_node.py:348
+- docs/source/tutorials/models/GLM4.x.md:138
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (any value not in ('0', '', 'false', 'False') is treated as enabled)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE is an Ascend-specific environment flag that enables a
+
+  top-k optimization path in the vllm-ascend model execution (notably for MoE / fused-MoE
+
+  style models such as GLM-4.x W8A8 with MTP, per the GLM4.x tutorial). The provided context
+
+  only shows the flag being consumed by the e2e test harnesses (tests/e2e/common/...), where
+
+  it is read as a boolean feature toggle: "any value other than \"0\", \"\", \"false\", \"False\" is"
+
+  treated as enabled and recorded as the "topk_optimize" feature in benchmark result metadata.
+
+  The actual kernel-level effect lives in the vllm-ascend runtime (not shown in this context),
+
+  where enabling the top-k optimization reduces the cost of the top-k selection / routing step
+
+  in MoE layers, lowering per-token latency and improving decode throughput. Because the
+
+  optimization is a compute-path change (not a memory-allocation change), its primary impact is
+
+  on latency/throughput rather than memory footprint. The docs recommend enabling it (=1) in the
+
+  GLM-4.7-W8A8-floatmtp deployment scripts, indicating it is a recommended performance toggle
+
+  for that model family.
+
+  '
+usage_locations:
+- file: tests/e2e/common/multi_node/external_dp/utils.py:189
+  context: 'Feature extraction: reads env var, treats non-false values as enabling ''topk_optimize'' feature tag for benchmark
+    metadata.'
+- file: tests/e2e/common/multi_node/internal_dp/test_multi_node.py:30
+  context: _FEATURE_ENVS mapping used to tag multi-node internal-DP benchmark runs with the topk_optimize feature.
+- file: tests/e2e/common/single_node/test_single_node.py:348
+  context: _FEATURE_ENVS mapping used to tag single-node benchmark runs with the topk_optimize feature.
+- file: docs/source/tutorials/models/GLM4.x.md:138
+  context: Recommended export VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1 in GLM-4.x single-node, multi-node internal-DP and external-DP
+    launch scripts.
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_FUSED_MC2
+  relation: Both are Ascend performance feature toggles commonly enabled together for MoE models; fused MC2 is set via --additional-config
+    enable_fused_mc2.
+- name: VLLM_ASCEND_ENABLE_MLAPO
+  relation: Another Ascend performance feature toggle (enable_mlapo) frequently combined with topk optimize in the same deployment.
+- name: --quantization ascend
+  relation: The GLM4.x docs pair this flag with W8A8 quantized models (--quantization ascend); the optimization is most relevant
+    for quantized MoE models.
+constraints:
+- 'The value is interpreted as a boolean: only ''0'', empty string, ''false'' or ''False'' disable it; any other value (including
+  ''1'') enables it.'
+- This is a vllm-ascend-only environment variable; it has no effect on upstream vLLM GPU execution.
+tuning_advice:
+  summary: Enable VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1 for MoE/quantized models (e.g. GLM-4.x W8A8) to reduce top-k routing
+    overhead and improve decode latency/throughput on Ascend NPU.
+  suggested_values:
+  - scenario: GLM-4.x W8A8 (floatmtp) MoE deployment on Ascend, single or multi-node
+    value: '1'
+    reason: The GLM4.x tutorial explicitly exports VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1 in all launch scripts, indicating it
+      is the recommended performance setting for this model family.
+  - scenario: Default / non-MoE or unverified models
+    value: '0'
+    reason: Leave disabled unless the model benefits from the top-k optimization; the default is off and the optimization
+      is model-specific.
+  caveats:
+  - Benchmark with and without the flag on your target hardware to confirm the gain; the optimization is model-dependent.
+  - Combine with other Ascend performance toggles (fused MC2, MLAPO) as shown in the GLM4.x docs for best results.
+  - Ensure the value is exactly '1' (or any non-false string) to enable; '0' disables.
+  quick_guide: export VLLM_ASCEND_ENABLE_TOPK_OPTIMIZE=1 for MoE/quantized models like GLM-4.x W8A8; leave 0 otherwise.
+analysis_date: '2026-10-27'

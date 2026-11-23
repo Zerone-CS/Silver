@@ -1,0 +1,90 @@
+name: eplb.policy
+type: nested
+category: parallelism
+scope: both
+source_file:
+- vllm/distributed/eplb/eplb_state.py:473
+- vllm_ascend/distributed/eplb/policy/factory.py:10
+- vllm_ascend/worker/v2/eplb.py:56
+- vllm_ascend/distributed/eplb/eplb_state.py:166
+- vllm_ascend/patch/platform/patch_eplb.py:44
+value_type: str
+default: stair
+valid_choices:
+- default
+- stair
+cli_example: --eplb-config.policy <default|stair>
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+impact_detail: "The EPLB policy determines the algorithm used to compute the new physical-to-logical\nexpert placement (rebalance_experts)\
+  \ when expert-parallel load balancing triggers.\nOn Ascend, vllm-ascend overrides the upstream policy selection:\n- \"vllm_ascend/distributed/eplb/policy/factory.py:create_eplb_policy\
+  \ maps \\\"default\\\" to\"\n  upstream DefaultEplbPolicy and \"stair\" to Ascend's StairEplbPolicy. Any other value\n \
+  \ raises ValueError(\"Unsupported EPLB policy\").\n- \"vllm_ascend/patch/platform/patch_eplb.py defines _ASCEND_EPLB_POLICIES\
+  \ = (\\\"default\\\", \\\"stair\\\")\"\n  and patches the async rebalance path so that eplb_state.policy.rebalance_experts\
+  \ is\n  invoked with Ascend-specific arguments (last_committed_mean_ratios, rank_node_ids,\n  sample_counts). The STAIR\
+  \ policy additionally transforms temporal load samples via\n  prepare_local_load_stats (AscendEplbState.uses_custom_load_stats),\
+  \ which changes how\n  the load window is aggregated before rebalancing.\n- \"The STAIR policy runs its planner in a separate\
+  \ process (vllm_ascend/distributed/eplb/policy/_stair_process.py)\"\n  with single-threaded BLAS env vars, so the rebalance\
+  \ computation is offloaded from the\n  main worker thread — reducing rebalance-induced stalls but adding IPC overhead.\n\
+  The chosen policy directly affects how well expert load is balanced across EP ranks,\nwhich in turn affects MoE token throughput\
+  \ and tail latency: \"a better-balanced placement\"\nreduces the max-rank token load (the bottleneck in EP all-to-all),\
+  \ while a poor policy\nleaves hot experts overloaded. The policy also affects the frequency/magnitude of expert\nweight\
+  \ transfers (redundant expert movement), which consumes HCCL/Gloo bandwidth and\ncan stall decode steps.\n"
+usage_locations:
+- file: vllm_ascend/distributed/eplb/policy/factory.py:10
+  context: create_eplb_policy dispatches on policy string to DefaultEplbPolicy or StairEplbPolicy; raises ValueError otherwise.
+- file: vllm_ascend/worker/v2/eplb.py:56
+  context: AscendEPLBController builds self.eplb_policy from parallel_config.eplb_config.policy via create_eplb_policy (MRv2
+    path).
+- file: vllm_ascend/distributed/eplb/eplb_state.py:166
+  context: AscendEplbState.add_model exposes the configured Ascend policy to upstream EPLB_POLICIES during state init.
+- file: vllm_ascend/patch/platform/patch_eplb.py:495
+  context: Patched async rebalance calls eplb_state.policy.rebalance_experts with Ascend-specific stats and rank_node_ids.
+- file: vllm/distributed/eplb/eplb_state.py:473
+  context: Upstream selects EPLB_POLICIES[policy_type] from eplb_config.policy (GPU reference path).
+related_parameters:
+- name: --enable-eplb
+  relation: EPLB must be enabled for the policy to be instantiated; MRv1 does not accept upstream --enable-eplb on Ascend.
+- name: eplb_config.window_size
+  relation: Load window size feeds the policy's rebalance input; larger windows give the policy more history.
+- name: eplb_config.step_interval
+  relation: Controls how often rebalance (and thus policy invocation) runs.
+- name: eplb_config.communicator
+  relation: STAIR default pairs with async Gloo movement; communicator choice interacts with policy transfer behavior.
+- name: eplb_config.stair_config
+  relation: STAIR-specific tuning fields (accepted only by MRv2) that parameterize StairEplbPolicy.
+- name: eplb_config.load_collection_phase
+  relation: MRv2-only field controlling which batch phase contributes load samples to the policy.
+constraints:
+- Only 'default' and 'stair' are accepted on Ascend; any other value raises ValueError('Unsupported EPLB policy') at startup.
+- The policy is only instantiated when EPLB is enabled (--enable-eplb); otherwise it has no effect.
+- On Model Runner V1, upstream --enable-eplb is not accepted on Ascend, so the upstream policy selector is not usable there.
+- stair_config and load_collection_phase are only accepted by Model Runner V2; mixing MRv1 and MRv2 EPLB schemas fails during
+  startup.
+- The policy's rebalance_experts must return a CPU tensor; a non-CPU mapping raises RuntimeError('EPLB policy returned a non-CPU
+  expert mapping').
+tuning_advice:
+  summary: Use the Ascend-default STAIR policy for topology-aware, async-planned expert balancing; fall back to 'default'
+    only for comparison or debugging.
+  suggested_values:
+  - scenario: Production MoE serving on Ascend with EPLB enabled (MRv2)
+    value: stair
+    reason: STAIR is the Ascend default, runs its planner off the main thread, and uses rank_node_ids/last_committed_mean_ratios
+      for topology-aware placement, reducing max-rank load and rebalance stalls.
+  - scenario: Baseline comparison or debugging against upstream behavior
+    value: default
+    reason: Runs the upstream DefaultEplbPolicy to isolate whether STAIR's sample transformation or placement is causing an
+      issue.
+  - scenario: Model Runner V1 deployments
+    value: stair
+    reason: MRv1 does not accept upstream --enable-eplb on Ascend; use the legacy Ascend EPLB fields with the STAIR policy.
+  caveats:
+  - Omitting --eplb-config.policy silently selects STAIR on Ascend, unlike upstream where 'default' is the baseline.
+  - STAIR's separate planner process adds IPC latency per rebalance; avoid very small step_interval values that trigger frequent
+    rebalances.
+  - Only 'default' and 'stair' are valid; other strings fail startup with ValueError.
+  quick_guide: Leave --eplb-config.policy unset (STAIR) for Ascend MoE serving; set 'default' only to compare against upstream.
+analysis_date: '2026-10-27'

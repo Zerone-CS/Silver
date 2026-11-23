@@ -1,0 +1,73 @@
+name: VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL
+type: env
+category: parallelism
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:468
+- docs/source/user_guide/release_notes.md:763
+value_type: bool
+default: 'false'
+valid_choices: 0 or 1 (boolean env var)
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This environment variable no longer exists in the current vllm-ascend source tree — it was
+
+  removed during the migration of configuration into `AscendConfig` (PR #9668). No definition
+
+  or usage site was found in either vllm or vllm-ascend, confirming it is a dead/removed knob.
+
+  Historically it toggled context parallelism (CP) for DSA (DeepSeek Sparse Attention) models,
+
+  which shards the KV cache / attention context across devices to reduce per-device memory and
+
+  attention latency. Its functionality has been replaced by the `additional_config.enable_dsa_cp`
+
+  option, and DSA-CP is now decoupled from the FlashComm1 switch (`additional_config.enable_flashcomm1`).
+
+  Setting this env var today has no runtime effect on Ascend NPU performance; the actual
+
+  performance lever is `enable_dsa_cp`. Because it is inert, its direct performance impact is
+
+  classified as low (it only matters as a migration signal — deployments still setting it are
+
+  silently NOT getting context parallelism, which can cause unexpected memory pressure/latency
+
+  on long-context DSA workloads).
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:468
+  context: Release note stating the env var was removed during AscendConfig migration; DSA-CP now controlled by additional_config.enable_dsa_cp.
+- file: docs/source/user_guide/release_notes.md:763
+  context: 'Breaking-change note: VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL removed; migrate to equivalent AscendConfig option.'
+related_parameters:
+- name: additional_config.enable_dsa_cp
+  relation: Replacement for this env var; now the sole switch controlling DSA context parallelism.
+- name: additional_config.enable_flashcomm1
+  relation: Previously implicitly enabled DSA-CP; now decoupled — both must be set explicitly.
+constraints:
+- This environment variable has been removed and setting it has no effect; use additional_config.enable_dsa_cp instead.
+- DSA-CP is no longer implicitly enabled by FlashComm1; enable_dsa_cp must be set explicitly alongside enable_flashcomm1.
+tuning_advice:
+  summary: Do not use this removed env var; migrate to additional_config.enable_dsa_cp for context parallelism on DSA models.
+  suggested_values:
+  - scenario: Deployment previously relying on VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1 for DSA long-context inference
+    value: 'additional_config={"enable_dsa_cp": true}'
+    reason: The env var is removed; enable_dsa_cp is the supported replacement that actually activates DSA context parallelism.
+  - scenario: Deployment that used FlashComm1 and assumed it enabled DSA-CP
+    value: 'additional_config={"enable_flashcomm1": true, "enable_dsa_cp": true}'
+    reason: DSA-CP is now decoupled from FlashComm1, so both options must be set explicitly to retain prior behavior.
+  caveats:
+  - Setting VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL=1 silently does nothing — no error is raised, so long-context DSA workloads
+    may run without CP and hit higher memory/latency than expected.
+  - Context parallelism (DSA-CP) is only meaningful for DSA/sparse-attention model categories; enabling it for other models
+    has no benefit.
+  - Sequence Parallelism is marked unavailable for all current model categories in the v0.23.0 support matrix; use FlashComm1
+    where applicable instead.
+  quick_guide: Replace VLLM_ASCEND_ENABLE_CONTEXT_PARALLEL with additional_config.enable_dsa_cp (and set enable_flashcomm1
+    explicitly if needed).
+analysis_date: '2026-10-27'

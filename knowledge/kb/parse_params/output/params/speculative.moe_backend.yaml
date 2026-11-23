@@ -1,0 +1,95 @@
+name: speculative.moe_backend
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/v1/worker/gpu/spec_decode/eagle/utils.py:79
+- vllm/v1/worker/gpu/spec_decode/eagle/utils.py:86
+value_type: str
+default: null
+valid_choices: Any MoE backend name accepted by kernel_config.moe_backend (e.g. 'auto', 'triton', or Ascend-specific backends);
+  None means inherit the target model's --moe-backend
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter only appears in the upstream vLLM v1 GPU worker path
+
+  (vllm/v1/worker/gpu/spec_decode/eagle/utils.py:load_eagle_model). When set, it
+
+  replaces kernel_config.moe_backend for the draft (EAGLE head) model''s VllmConfig
+
+  before get_model() constructs the draft, so the draft MoE layers are built with a
+
+  different MoE kernel than the target. The comment explicitly states the motivation:
+
+  the draft inherits the target''s --moe-backend by default, "which fails when the
+
+  draft is unquantized and that backend is not." So the primary effect is
+
+  correctness/compatibility (allowing a quantized generator + unquantized drafter),
+
+  not raw throughput. Indirect performance effect: the chosen MoE kernel for the
+
+  draft determines the draft model''s per-token latency and memory footprint, which
+
+  in turn affects speculative-decoding acceptance-step cost. No definition or usage
+
+  of this parameter was found in vllm-ascend source; the Ascend v1/v2 worker paths
+
+  do not read speculative_config.moe_backend, so on Ascend this setting has no
+
+  effect and the draft inherits the target''s MoE backend behavior.
+
+  '
+usage_locations:
+- file: vllm/v1/worker/gpu/spec_decode/eagle/utils.py:79
+  context: Guard checking whether speculative_config.moe_backend is set before overriding the draft's kernel_config.moe_backend
+- file: vllm/v1/worker/gpu/spec_decode/eagle/utils.py:86
+  context: Replaces kernel_config.moe_backend with speculative_config.moe_backend for the draft model VllmConfig
+- file: tests/v1/e2e/spec_decode/draft_model/test_draft_model.py:241
+  context: Test verifying draft config uses the override while target keeps its own moe_backend
+- file: tests/v1/spec_decode/test_draft_moe_backend_override.py:51
+  context: Unit test constructing SpeculativeConfig with a draft moe_backend override
+related_parameters:
+- name: --moe-backend
+  relation: Target model's MoE backend; the draft inherits it when speculative.moe_backend is None
+- name: speculative_config.model
+  relation: Draft model whose MoE layers are built with this backend
+- name: speculative_config.method
+  relation: Only relevant for draft-model/EAGLE-style spec decode paths that load a separate draft model
+- name: speculative_config.kv_cache_dtype
+  relation: Sibling override applied in the same load_eagle_model function
+- name: speculative_config.attention_backend
+  relation: Sibling override applied in the same load_eagle_model function
+constraints:
+- Only takes effect when a separate draft model is loaded (draft_model/EAGLE-style speculative decoding); it is ignored for
+  methods that do not construct a draft model.
+- When left unset (None), the draft model inherits the target model's --moe-backend, which fails if the draft is unquantized
+  and that backend requires quantized weights.
+- The value must be a MoE backend name valid for the draft model's quantization state; an incompatible backend will fail at
+  draft model construction.
+tuning_advice:
+  summary: Set only when the draft model's quantization differs from the target's and the inherited MoE backend is incompatible;
+    otherwise leave None.
+  suggested_values:
+  - scenario: Quantized target model with an unquantized draft model on upstream vLLM v1 GPU worker
+    value: auto
+    reason: Lets the draft pick a backend compatible with its unquantized weights instead of inheriting the target's quantized-only
+      backend.
+  - scenario: Draft and target share the same quantization / backend requirements
+    value: unset
+    reason: Inheriting the target's --moe-backend is correct and avoids extra configuration; the override is unnecessary.
+  - scenario: Running on Ascend NPU (vllm-ascend v1 or v2 worker)
+    value: unset
+    reason: vllm-ascend does not read speculative.moe_backend, so the override is a no-op; configure --moe-backend on the
+      target instead.
+  caveats:
+  - On Ascend this parameter is not wired into the vllm-ascend worker paths, so it will not change draft MoE kernel selection.
+  - Setting an incompatible backend for the draft's quantization state will fail at draft model construction rather than silently
+    falling back.
+  quick_guide: Leave unset unless the draft model's quantization requires a different MoE backend than the target; on Ascend
+    it has no effect.
+analysis_date: '2026-10-27'

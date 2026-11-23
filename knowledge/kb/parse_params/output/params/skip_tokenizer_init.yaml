@@ -1,0 +1,128 @@
+name: --skip-tokenizer-init
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:291
+- vllm/engine/arg_utils.py:930
+- vllm/engine/arg_utils.py:1852
+- vllm/entrypoints/llm.py:81
+- vllm/v1/structured_output/__init__.py:71
+- vllm/benchmarks/serve.py:2102
+- vllm/entrypoints/generate/base/serving.py:338
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: --skip-tokenizer-init
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag controls whether the tokenizer and detokenizer are constructed at
+
+  engine startup. In vLLM upstream, ModelConfig.skip_tokenizer_init (vllm/config/model.py:291)
+
+  is threaded through EngineArgs (arg_utils.py:444, 1852) into the engine. When True,
+
+  the engine skips loading the HF tokenizer/detokenizer objects entirely, so:
+
+  (1) startup latency is reduced (no tokenizer download/parse, no detokenizer init);
+
+  (2) host (CPU) memory is saved because the tokenizer object graph is not held;
+
+  (3) the structured-output path in vllm/v1/structured_output/__init__.py:71 skips
+
+  creating the tokenizer-backed ThreadPoolExecutor and reasoning-parser plugin, so
+
+  grammar compilation falls back to token-id-only handling.
+
+  On the request path, prompts must be supplied as prompt_token_ids (TokensPrompt)
+
+  and outputs are returned as token ids rather than decoded strings, which removes
+
+  the per-request detokenization step (a small CPU-side latency saving, not an NPU
+
+  compute saving). The flag does NOT change model execution, KV-cache sizing, graph
+
+  capture, or HCCL communication on Ascend — the NPU forward pass is identical.
+
+  vllm-ascend does not override this parameter; it is consumed only in tests
+
+  (tests/e2e/conftest.py, tests/ut/...) to build token-in/token-out configs. The
+
+  Ascend e2e test test_extract_hidden_states.py notes that for multimodal models
+
+  (e.g. Qwen3.5) skipping tokenizer init leaves tokenizer=None and the
+
+  Qwen3VLProcessor crashes, so the flag is only safe for text-only models.
+
+  Net effect on Ascend: "low — a startup/host-side optimization, not a throughput"
+
+  or NPU-memory lever.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:291
+  context: ModelConfig field definition and docstring describing token-in/token-out contract
+- file: vllm/engine/arg_utils.py:930
+  context: CLI argument registration for --skip-tokenizer-init
+- file: vllm/engine/arg_utils.py:1852
+  context: EngineArgs.create_model_config passes skip_tokenizer_init into ModelConfig
+- file: vllm/v1/structured_output/__init__.py:71
+  context: Skips tokenizer/executor/reasoning-parser setup for structured output when True
+- file: vllm/benchmarks/serve.py:2102
+  context: Benchmark client skips tokenizer loading and sends token ids
+- file: vllm/entrypoints/generate/base/serving.py:338
+  context: Raises ValueError when decoded token requested but tokenizer is None
+- file: tests/e2e/pull_request/one_card/spec_decode/test_extract_hidden_states.py:28
+  context: Ascend e2e test uses skip_tokenizer_init + TokensPrompt for token-in/token-out; notes multimodal crash
+- file: tests/e2e/conftest.py:1755
+  context: Ascend test harness honors skip_tokenizer_init when building model/tokenizer
+related_parameters:
+- name: --tokenizer
+  relation: Ignored for decoding when --skip-tokenizer-init is set; no tokenizer is loaded
+- name: --tokenizer-mode
+  relation: Has no effect when --skip-tokenizer-init is set
+- name: --enable-prompt-embeds
+  relation: Alternative input path; prompt embeds bypass tokenizer but are a separate mechanism
+- name: --structured-outputs-config
+  relation: Structured output tokenizer/executor setup is skipped when --skip-tokenizer-init is set
+constraints:
+- When --skip-tokenizer-init is set, every request must supply valid prompt_token_ids and prompt must be None; text prompts
+  will not be tokenized.
+- Generated output contains only token ids, not decoded text; requesting decoded tokens raises ValueError ('Unable to get
+  tokenizer because `skip_tokenizer_init=True`').
+- Multimodal models that require a processor/tokenizer (e.g. Qwen3VLProcessor) will crash when --skip-tokenizer-init is set
+  because tokenizer is None.
+- Structured output / reasoning parser features that depend on the tokenizer are not initialized when --skip-tokenizer-init
+  is set.
+tuning_advice:
+  summary: 'Enable only for token-in/token-out workloads (RL rollouts, benchmarks, custom
+
+    serving frontends that tokenize client-side) to shave startup latency and host
+
+    memory; it does not improve NPU throughput and is unsafe for multimodal models.
+
+    '
+  suggested_values:
+  - scenario: Text-only model, client already tokenizes and consumes token ids (RL/offline eval, benchmarks)
+    value: true
+    reason: Skips tokenizer/detokenizer construction, reducing startup latency and host memory; avoids per-request detokenization
+      on the CPU side.
+  - scenario: Standard OpenAI-compatible text serving where clients send text prompts
+    value: false
+    reason: Engine must tokenize text prompts and detokenize outputs; disabling tokenizer init would break the request path.
+  - scenario: Multimodal model (e.g. Qwen3.5 / Qwen3VLProcessor) on Ascend
+    value: false
+    reason: Ascend e2e test notes that skipping tokenizer init leaves tokenizer=None and the multimodal processor crashes.
+  caveats:
+  - This is a host-side/startup optimization; it does not change NPU compute, KV-cache size, graph capture, or HCCL behavior
+    on Ascend.
+  - vllm-ascend does not override this parameter; it is only exercised in Ascend tests to build token-in/token-out configs.
+  - Structured output and reasoning-parser features that need the tokenizer are silently not initialized when this is enabled.
+  - Benchmark client (vllm/benchmarks/serve.py) also skips tokenizer loading when this flag is set, so the client must send
+    token ids.
+  quick_guide: Set --skip-tokenizer-init only for text-only token-in/token-out pipelines; leave it off for normal text or
+    multimodal serving.
+analysis_date: '2026-10-27'

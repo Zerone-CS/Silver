@@ -1,0 +1,87 @@
+name: VLLM_LORA_RESOLVER_HF_REPO_LIST
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1161
+- vllm/envs.py:117
+- vllm/plugins/lora_resolvers/hf_hub_resolver.py:129
+value_type: str
+default: null
+valid_choices: Comma-separated list of Hugging Face repo IDs (e.g. 'org/adapter-a,org/adapter-b'); unset means the resolver
+  is not registered
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var is read only once at plugin registration time in
+
+  vllm/plugins/lora_resolvers/hf_hub_resolver.py:129 (register_hf_hub_resolver).
+
+  If set AND "lora_hf_hub_resolver" is present in VLLM_PLUGINS, an HfHubResolver
+
+  is constructed with the comma-split repo list and registered into
+
+  LoRAResolverRegistry. The resolver is then consulted during LoRA adapter
+
+  resolution (i.e. when a request references a LoRA name that is not already
+
+  loaded). Its cost is a network/HF-hub lookup plus a download of the adapter
+
+  weights on first use — this adds latency to the first request that triggers
+
+  resolution, not to steady-state token generation. It does not touch the
+
+  inference hot path, KV cache, or NPU kernels. On Ascend, vllm-ascend does not
+
+  reference this env var anywhere, so behavior is identical to upstream vLLM:
+
+  the resolver mechanism is device-agnostic (pure Python + HF hub download) and
+
+  the actual LoRA compute still runs through the Ascend LoRA kernels. Hence the
+
+  performance impact is low and limited to one-time adapter fetch latency.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1161
+  context: Environment variable definition; reads comma-separated HF repo list, default None
+- file: vllm/envs.py:117
+  context: 'Type annotation VLLM_LORA_RESOLVER_HF_REPO_LIST: str | None = None'
+- file: vllm/plugins/lora_resolvers/hf_hub_resolver.py:129
+  context: register_hf_hub_resolver reads the env var, splits on comma, and registers HfHubResolver if VLLM_PLUGINS enables
+    lora_hf_hub_resolver
+related_parameters:
+- name: VLLM_PLUGINS
+  relation: Must include 'lora_hf_hub_resolver' for this env var to take effect; otherwise a warning is logged and the resolver
+    is not registered
+- name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+  relation: Runtime LoRA loading/unloading must be enabled for dynamically resolved adapters to be usable
+- name: VLLM_LORA_RESOLVER_CACHE_DIR
+  relation: Alternative local-directory resolver; can be used together to avoid repeated remote downloads
+constraints:
+- The value must be a comma-separated string of Hugging Face repo IDs; it is split with str.split(',') and passed directly
+  to HfHubResolver.
+- The resolver is only registered if VLLM_PLUGINS is set and contains 'lora_hf_hub_resolver'; otherwise the env var is ignored
+  with a warning.
+- Runtime LoRA updating (VLLM_ALLOW_RUNTIME_LORA_UPDATING) must be enabled for dynamically resolved adapters to be loaded
+  at request time.
+tuning_advice:
+  summary: Enable only when you need dynamic LoRA discovery from HF repos; pair with VLLM_PLUGINS and runtime LoRA updating,
+    and pre-warm adapters to hide download latency.
+  suggested_values:
+  - scenario: Serving many tenant-specific LoRA adapters hosted in one or more HF repos, with runtime LoRA updates enabled
+    value: org/my-lora-collection
+    reason: Registers HfHubResolver so adapters can be resolved by name on demand without pre-listing them at startup.
+  - scenario: Air-gapped or latency-sensitive Ascend deployment
+    value: unset
+    reason: Avoids remote HF hub lookups on the request path; use VLLM_LORA_RESOLVER_CACHE_DIR with pre-downloaded adapters
+      instead.
+  caveats:
+  - Must also set VLLM_PLUGINS to include lora_hf_hub_resolver, otherwise the setting is silently ignored (warning only).
+  - Enable VLLM_ALLOW_RUNTIME_LORA_UPDATING so resolved adapters can actually be loaded/unloaded at runtime.
+  - Pre-download adapters or use the cache-dir resolver to eliminate first-request download latency on Ascend.
+  quick_guide: Set VLLM_LORA_RESOLVER_HF_REPO_LIST only with VLLM_PLUGINS=lora_hf_hub_resolver and runtime LoRA updating;
+    pre-warm adapters to avoid first-request latency.
+analysis_date: '2026-10-27'

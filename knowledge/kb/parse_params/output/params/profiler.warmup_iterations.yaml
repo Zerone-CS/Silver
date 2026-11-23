@@ -1,0 +1,68 @@
+name: profiler.warmup_iterations
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:230
+- vllm/profiler/wrapper.py:242
+value_type: int
+default: 0
+valid_choices: integer >= 0
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only affects the PyTorch profiler schedule used for observability
+
+  (vllm/profiler/wrapper.py). When warmup_iterations > 0 (or wait_iterations > 0),
+
+  a torch.profiler.schedule is created with skip_first=0, wait=wait_iterations,
+
+  warmup=warmup_iterations, active=active_iterations, repeat=1. During the warmup
+
+  phase the profiler runs but discards data, which reduces noise from JIT
+
+  compilation and one-time costs in the captured trace. It does NOT change model
+
+  execution, kernel dispatch, or memory allocation on Ascend NPU. Its only runtime
+
+  effect is that profiling is active for a bounded number of iterations rather than
+
+  every iteration, which can slightly reduce the overhead of profiling itself
+
+  (profiler instrumentation adds per-step CPU/device overhead). No vllm-ascend
+
+  override or monkey-patch of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:230
+  context: Conditionally builds torch.profiler.schedule when warmup_iterations > 0 or wait_iterations > 0
+- file: vllm/profiler/wrapper.py:242
+  context: Logs the configured warmup value in the profiler schedule info message
+related_parameters:
+- name: profiler.wait_iterations
+  relation: Either wait_iterations or warmup_iterations being > 0 enables schedule-based profiling
+- name: profiler.active_iterations
+  relation: Defines the number of iterations actually recorded after warmup completes
+- name: profiler.torch_profiler_trace_dir
+  relation: Trace output destination for the profiled iterations
+constraints:
+- Schedule-based profiling is only enabled when warmup_iterations > 0 or wait_iterations > 0; otherwise all iterations are
+  recorded.
+- warmup_iterations must be a non-negative integer.
+tuning_advice:
+  summary: Set a small warmup (e.g. 2-5 iterations) to skip JIT/one-time costs when capturing a clean Ascend profiling trace.
+  suggested_values:
+  - scenario: Capturing a clean steady-state trace on Ascend NPU
+    value: 3
+    reason: Skips initial JIT compilation and one-time CANN/kernel warmup so the active trace reflects steady-state execution.
+  - scenario: Quick single-shot profiling where overhead is not a concern
+    value: 0
+    reason: Disables schedule-based profiling and records all iterations; simplest but noisier trace.
+  caveats:
+  - This parameter only affects profiling traces, not actual inference performance; do not expect throughput changes.
+  - Profiling itself adds overhead; use bounded warmup/active iterations to limit the profiled window.
+  quick_guide: Use warmup_iterations=2-5 with active_iterations to capture a clean steady-state Ascend trace.
+analysis_date: '2026-10-27'

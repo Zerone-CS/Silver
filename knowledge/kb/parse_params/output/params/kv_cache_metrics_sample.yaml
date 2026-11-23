@@ -1,0 +1,86 @@
+name: --kv-cache-metrics-sample
+type: cli
+category: observability
+scope: vllm
+source_file:
+- vllm/config/observability.py:65
+- vllm/engine/arg_utils.py:683
+- vllm/engine/arg_utils.py:1546
+- vllm/v1/core/sched/scheduler.py:107
+value_type: float
+default: 0.01
+valid_choices: (0.0, 1.0] — must be greater than 0 and less than or equal to 1
+cli_example: --kv-cache-metrics-sample 0.01
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only takes effect when --kv-cache-metrics is enabled. In
+
+  vllm/v1/core/sched/scheduler.py:104-108, the scheduler constructs a
+
+  KVCacheMetricsCollector only if observability_config.kv_cache_metrics is True,
+
+  passing kv_cache_metrics_sample as the sampling rate. The collector samples a
+
+  fraction of KV cache blocks to record residency metrics (lifetime, idle time,
+
+  reuse gaps). Higher sampling rates mean more blocks are tracked per scheduling
+
+  step, adding CPU-side bookkeeping overhead in the scheduler loop, which can
+
+  slightly increase per-step latency and reduce throughput. The default 0.01
+
+  (1% of blocks) is deliberately low to minimize this overhead. When
+
+  --kv-cache-metrics is False (the default), this parameter has no runtime
+
+  effect at all. No vllm-ascend override of this parameter was found in the
+
+  provided context; the sampling logic is pure Python scheduler-side bookkeeping
+
+  and is device-agnostic, so it behaves identically on Ascend NPU as on GPU.
+
+  The impact is low because the overhead is CPU-side and bounded by the sampling
+
+  fraction, not by NPU compute.
+
+  '
+usage_locations:
+- file: vllm/config/observability.py:65
+  context: Field definition with constraint gt=0, le=1 and default 0.01
+- file: vllm/engine/arg_utils.py:683
+  context: EngineArgs field mirroring ObservabilityConfig.kv_cache_metrics_sample
+- file: vllm/engine/arg_utils.py:1546
+  context: CLI argument registration under ObservabilityConfig group
+- file: vllm/v1/core/sched/scheduler.py:107
+  context: Passed to KVCacheMetricsCollector constructor when kv_cache_metrics is enabled
+related_parameters:
+- name: --kv-cache-metrics
+  relation: Master switch; this sampling rate is only used when --kv-cache-metrics is enabled
+- name: --disable-log-stats
+  relation: KV cache metrics require log stats to be enabled (i.e., --disable-log-stats must not be set)
+constraints:
+- The value must be strictly greater than 0 and less than or equal to 1 (Field(gt=0, le=1)).
+- This parameter has no effect unless --kv-cache-metrics is enabled.
+- KV cache metrics require log stats to be enabled, so --disable-log-stats must not be set.
+tuning_advice:
+  summary: Leave at the default 0.01 unless you need finer KV cache residency visibility; only relevant when --kv-cache-metrics
+    is enabled.
+  suggested_values:
+  - scenario: Production serving with KV cache metrics enabled
+    value: 0.01
+    reason: Default 1% sampling keeps scheduler bookkeeping overhead negligible while still yielding statistically useful
+      residency metrics.
+  - scenario: Debugging KV cache fragmentation or reuse-gap issues
+    value: 0.1
+    reason: Higher sampling gives more accurate per-block lifetime/reuse statistics at a modest CPU overhead cost.
+  - scenario: Short benchmark runs needing precise per-block metrics
+    value: 1.0
+    reason: Full sampling captures every block; acceptable for short runs where throughput impact is tolerable.
+  caveats:
+  - Only meaningful together with --kv-cache-metrics; otherwise ignored.
+  - Values above ~0.1 can measurably slow the scheduler loop under high request concurrency.
+  quick_guide: Keep at 0.01 for production; raise toward 0.1-1.0 only for short diagnostic runs with --kv-cache-metrics enabled.
+analysis_date: '2026-10-27'

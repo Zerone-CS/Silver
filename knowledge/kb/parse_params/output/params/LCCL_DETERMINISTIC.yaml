@@ -1,0 +1,104 @@
+name: LCCL_DETERMINISTIC
+type: env
+category: hardware
+scope: vllm-ascend
+source_file:
+- vllm_ascend/batch_invariant.py:109
+- vllm_ascend/batch_invariant.py:117
+- examples/rl/rlhf_async_new_apis.py:202
+value_type: str
+default: '0'
+valid_choices: 0 or 1 (CANN LCCL deterministic switch; '1' enables deterministic LCCL communication)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'LCCL_DETERMINISTIC is a CANN/HCCL-family environment variable that forces the
+
+  LCCL (low-level collective communication library) path to use deterministic
+
+  reduction/communication algorithms. It is not defined in vLLM upstream; it is
+
+  set by vllm-ascend in vllm_ascend/batch_invariant.py:109 inside
+
+  override_envs_for_invariance(), which is invoked when batch-invariant mode is
+
+  active (VLLM_BATCH_INVARIANT=1 or rl_config.enable_batch_invariant=true). The
+
+  same function also sets HCCL_DETERMINISTIC=strict, weight_nz_mode=0, and calls
+
+  torch.use_deterministic_algorithms(True, warn_only=True).
+
+  Mechanism: "deterministic collective algorithms typically forbid certain"
+
+  high-performance reduction orders (e.g. tree/ring variants that reorder
+
+  floating-point accumulation) and may disable fused/overlapped communication
+
+  kernels, so collective ops (AllReduce/AllGather/ReduceScatter) can run slower
+
+  and with less overlap with compute. This directly affects multi-card (TP/EP/DP)
+
+  latency and throughput. On single-card runs the effect is minimal since there
+
+  is little collective traffic. The variable is also set in e2e tests
+
+  (spec-decode acceptance tests) and in the RL example, always paired with
+
+  HCCL_DETERMINISTIC, indicating it is part of the deterministic/batch-invariant
+
+  bundle rather than a standalone tuning knob.
+
+  '
+usage_locations:
+- file: vllm_ascend/batch_invariant.py:109
+  context: override_envs_for_invariance() sets LCCL_DETERMINISTIC=1 alongside HCCL_DETERMINISTIC=strict and weight_nz_mode=0
+    when batch-invariant mode is enabled
+- file: vllm_ascend/batch_invariant.py:117
+  context: Debug log confirming the batch-invariant env override bundle
+- file: examples/rl/rlhf_async_new_apis.py:202
+  context: RL example sets LCCL_DETERMINISTIC=1 in Ray env vars together with VLLM_BATCH_INVARIANT=1 and HCCL_DETERMINISTIC=strict
+- file: tests/e2e/pull_request/two_card/spec_decode/test_spec_decode_heavy.py:372
+  context: Spec-decode acceptance tests set LCCL_DETERMINISTIC=1 with HCCL_DETERMINISTIC=true for reproducible acceptance-length
+    measurements
+related_parameters:
+- name: VLLM_BATCH_INVARIANT
+  relation: Master switch; when set to 1, worker-side batch-invariant init sets LCCL_DETERMINISTIC=1 automatically
+- name: HCCL_DETERMINISTIC
+  relation: Set together to 'strict'/'true' in the same deterministic bundle; both control collective determinism
+- name: rl_config.enable_batch_invariant
+  relation: When true, sets VLLM_BATCH_INVARIANT=1 before workers start, which in turn sets LCCL_DETERMINISTIC=1
+- name: weight_nz_mode
+  relation: Set to 0 by the same override_envs_for_invariance() function; RL mode forces weight_nz_mode=0
+- name: ATB_MATMUL_SHUFFLE_K_ENABLE
+  relation: Set to 0 in the same deterministic test/FAQ bundles to avoid non-deterministic matmul K-shuffle
+constraints:
+- LCCL_DETERMINISTIC must be set before the worker processes start (it is read by CANN at process/collective initialization),
+  so setting it after engine startup has no effect.
+- Batch-invariant mode requires vllm-ascend to be built from source with COMPILE_CUSTOM_KERNELS=1; otherwise the deterministic
+  path is not available.
+- When using rl_config.enable_batch_invariant=true, you do not need to set LCCL_DETERMINISTIC manually — it is set automatically
+  by worker-side batch-invariant initialization.
+tuning_advice:
+  summary: Only enable LCCL_DETERMINISTIC=1 when bitwise-reproducible/batch-invariant results are required (RL training-inference
+    consistency, acceptance-length testing); leave it unset for maximum throughput.
+  suggested_values:
+  - scenario: Standard online inference / serving where reproducibility is not required
+    value: unset (default 0)
+    reason: Avoids deterministic collective algorithms, preserving full HCCL communication throughput and overlap.
+  - scenario: RL training-inference consistency or batch-invariant mode
+    value: '1'
+    reason: Required for deterministic collectives; set automatically via VLLM_BATCH_INVARIANT=1 or rl_config.enable_batch_invariant=true,
+      paired with HCCL_DETERMINISTIC=strict.
+  - scenario: Spec-decode acceptance-length / regression testing
+    value: '1'
+    reason: Tests set it together with HCCL_DETERMINISTIC=true to obtain stable, reproducible acceptance lengths across runs.
+  caveats:
+  - Expect some multi-card throughput/latency regression when enabled; benchmark before deploying in latency-sensitive serving.
+  - Set it as an environment variable before launching the engine (or via Ray runtime_env), not at runtime.
+  - Do not enable it alone — pair with HCCL_DETERMINISTIC=strict for full determinism.
+  quick_guide: Leave LCCL_DETERMINISTIC unset for performance; set to 1 (with HCCL_DETERMINISTIC=strict) only when batch-invariant/reproducible
+    results are needed.
+analysis_date: '2026-10-27'

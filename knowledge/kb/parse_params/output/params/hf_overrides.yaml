@@ -1,0 +1,103 @@
+name: --hf-overrides
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:320
+- vllm/engine/arg_utils.py:940
+- vllm/engine/arg_utils.py:1836
+- vllm/config/speculative.py:1064
+- vllm_ascend/_310p/worker/v2/spec_decode/mtp_speculator.py:45
+- vllm_ascend/spec_decode/step3p5.py:713
+value_type: dict
+default: {}
+valid_choices: dict of HuggingFace PretrainedConfig field overrides, or a callable that transforms the config
+cli_example: '--hf-overrides ''{"rope_parameters": {"rope_type": "yarn", "factor": 4, "original_max_position_embeddings":
+  262144}}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--hf-overrides patches the HuggingFace PretrainedConfig before the model is built, so it\nindirectly controls\
+  \ several runtime-relevant model properties on Ascend:\n- \"rope_parameters (rope_type/rope_theta/factor/original_max_position_embeddings):\
+  \ enabling\"\n  YaRN extends the usable context window. This changes the RoPE computation path and lets\n  --max-model-len\
+  \ grow, which directly increases KV cache footprint (memory) and prefill\n  latency for long sequences. The vllm-ascend\
+  \ docs (Qwen3-235B-A22B.md, Qwen3-Coder-30B-A3B.md)\n  explicitly recommend --hf-overrides for long-context YaRN scaling.\n\
+  - \"text_config.num_hidden_layers / num_nextn_predict_layers: shrinking layer counts (used in\"\n  tests) reduces model\
+  \ size and memory; MTP draft layer counts affect speculative decoding\n  throughput.\n- \"Model-specific flags such as use_index_cache\
+  \ / index_topk_freq (DeepSeek-V4 DSA) toggle\"\n  sparse-attention index caching, which changes attention compute and memory\
+  \ on Ascend.\n- quantization_config: \"on Ascend, ModelSlim keeps quant metadata in quant_model_description.json\"\n  rather\
+  \ than config.json, so get_quant_config falls through to the hf_overrides branch. The\n  vllm-ascend code (step3p5.py, mtp_speculator.py)\
+  \ normalizes hf_overrides to {} for draft\n  configs so the verifier's quant path is taken — a wrong/None hf_overrides here\
+  \ can break\n  quant config resolution and thus weight loading / memory layout.\nThe parameter itself is not a hot-path\
+  \ knob; its performance effect is entirely mediated by\nwhich config fields it overrides. It is hashed into the config hash\
+  \ (model.py:452 lists\nhf_overrides in ignored_factors, so it does NOT affect the config hash / compilation cache key).\n"
+usage_locations:
+- file: vllm/config/model.py:320
+  context: ModelConfig field definition; dict forwarded to HF config, callable applied to update it
+- file: vllm/engine/arg_utils.py:1836
+  context: Passed into ModelConfig construction from EngineArgs
+- file: vllm/config/speculative.py:1064
+  context: compose_draft_hf_overrides builds draft ModelConfig hf_overrides; callable target overrides propagate to draft,
+    dict overrides do not
+- file: vllm/config/utils.py:287
+  context: Callables accepted only as classes for hashing; funcs/lambdas rejected
+- file: vllm/entrypoints/chat_utils.py:2241
+  context: Reads hf_overrides.model_type to pick tool-call id type (kimi_k2 vs random)
+- file: vllm_ascend/_310p/worker/v2/spec_decode/mtp_speculator.py:45
+  context: v2 310P MTP speculator normalizes non-dict hf_overrides to {} so get_quant_config re-run during VllmConfig.replace()
+    works
+- file: vllm_ascend/spec_decode/step3p5.py:713
+  context: v1 Step3.5 MTP draft normalizes hf_overrides to {} so draft takes verifier quant path
+related_parameters:
+- name: --max-model-len
+  relation: YaRN rope_parameters in hf_overrides extend the supported context, allowing larger --max-model-len (and larger
+    KV cache)
+- name: --rope-scaling
+  relation: Legacy equivalent for pre-v0.12.0; superseded by rope_parameters inside --hf-overrides
+- name: --quantization
+  relation: On Ascend, quant metadata may live outside config.json; hf_overrides interacts with get_quant_config fallback
+- name: --speculative-config
+  relation: Draft ModelConfig hf_overrides composed via compose_draft_hf_overrides; callable target overrides propagate to
+    draft
+- name: --language-model-only
+  relation: Often paired with text_config overrides for multimodal models
+constraints:
+- If a callable is passed, it must be picklable (a module-referenceable class or functools.partial over a static method);
+  local closures/lambdas fail with 'Can't get local object' when the draft ModelConfig is sent to spawned engine-core processes.
+- For hashing, callables are only accepted as classes; plain functions, lambdas, and callable instances raise TypeError in
+  normalize_value.
+- On vllm-ascend v1 Step3.5 MTP and v2 310P MTP paths, hf_overrides must be a dict (or None is normalized to {}); a callable
+  is replaced with {} for the draft config.
+- Dict overrides are target-specific and are NOT applied to the speculative draft model; only callable overrides propagate
+  to the draft.
+- Overriding model_type to a Kimi model type changes tool-call id generation to kimi_k2.
+tuning_advice:
+  summary: Use --hf-overrides to enable YaRN long-context scaling or model-specific flags; keep it a plain dict on Ascend
+    and avoid conflicting quantization_config.
+  suggested_values:
+  - scenario: Extend context beyond native window on Qwen3-235B-A22B (vLLM >= v0.12.0)
+    value: '{"rope_parameters": {"rope_type": "yarn", "rope_theta": 1000000, "factor": 4, "original_max_position_embeddings":
+      32768}}'
+    reason: Documented vllm-ascend recipe to enable long context via YaRN; replaces legacy --rope-scaling.
+  - scenario: Extend Qwen3-Coder-30B-A3B beyond 256k up to 1M
+    value: '{"rope_parameters": {"rope_type": "yarn", "factor": 4, "original_max_position_embeddings": 262144}}'
+    reason: Documented recipe for 1M context; increases KV cache memory, so pair with adequate --max-model-len and memory
+      utilization.
+  - scenario: DeepSeek-V4 DSA sparse attention index caching
+    value: '{"use_index_cache": true, "index_topk_freq": 4}'
+    reason: Toggles index cache / topk frequency to reduce attention compute on Ascend DSA models.
+  - scenario: Shrink model for tests / memory-constrained runs
+    value: '{"text_config": {"num_hidden_layers": <N>}}'
+    reason: Reduces layer count to lower memory and speed up iteration; used in vllm-ascend e2e tests.
+  caveats:
+  - Keep hf_overrides as a dict on Ascend; vllm-ascend normalizes non-dict values to {} for MTP draft configs, so callables
+    may be silently dropped.
+  - Do not set quantization_config via hf_overrides on Ascend ModelSlim checkpoints — quant metadata lives in quant_model_description.json.
+  - YaRN scaling raises KV cache memory and prefill latency; re-tune --max-model-len and --gpu-memory-utilization.
+  - hf_overrides is excluded from the config hash, so it won't invalidate compilation caches.
+  quick_guide: Pass a dict of HF config overrides (e.g. rope_parameters for YaRN) to extend context or toggle model flags;
+    keep it a dict on Ascend.
+analysis_date: '2026-10-27'

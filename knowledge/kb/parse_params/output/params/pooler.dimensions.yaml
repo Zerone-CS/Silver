@@ -1,0 +1,71 @@
+name: pooler.dimensions
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/pooler.py:1
+value_type: int
+default: null
+valid_choices: Any positive integer <= the model's native embedding dimension; only meaningful for models supporting Matryoshka
+  representation
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'pooler.dimensions controls the output dimensionality of the pooling/embedding
+
+  head when the model supports Matryoshka representation learning (e.g. certain
+
+  embedding models). It is a nested config field (pooler.dimensions) consumed by
+
+  the pooler/embedding path, not the generation path. No definition or usage site
+
+  was found in either the vllm or vllm-ascend source context provided, and no
+
+  vllm-ascend override or monkey-patch affecting it was located. On Ascend NPU,
+
+  reducing the embedding dimension would only shrink the final projection/output
+
+  tensor and any downstream similarity computation, yielding a marginal memory and
+
+  latency reduction on the pooling output. It does not affect the transformer
+
+  forward pass, KV cache, attention kernels, HCCL communication, or CANN
+
+  compilation, so its runtime impact on Ascend is minimal and limited to
+
+  embedding/pooling workloads.
+
+  '
+usage_locations:
+- file: vllm/config/pooler.py:1
+  context: Nested pooler config field defining the reduced embedding dimension for Matryoshka-capable models; no concrete
+    usage site present in provided context.
+related_parameters:
+- name: runner_type
+  relation: Pooler dimensions only apply when the runner is configured for pooling/embedding (pooling runner), not for generation.
+- name: convert
+  relation: Pooler config 'convert' option controls whether the model is treated as a pooling model; dimensions is only relevant
+    when pooling is active.
+constraints:
+- The value must not exceed the model's native embedding/hidden dimension.
+- It only has an effect for models that support Matryoshka representation; for other models it is ignored.
+- It is only meaningful when the model is run as a pooling/embedding model rather than a generative model.
+tuning_advice:
+  summary: Leave at default (None, full dimension) unless running a Matryoshka-capable embedding model where a smaller output
+    dimension is acceptable.
+  suggested_values:
+  - scenario: Standard embedding serving where accuracy matters
+    value: unset
+    reason: Keeping the full native dimension preserves embedding quality; the parameter has negligible Ascend runtime impact.
+  - scenario: Latency/memory-sensitive embedding retrieval with a Matryoshka model
+    value: 512
+    reason: A reduced dimension shrinks the pooling output tensor and downstream similarity compute, giving a modest memory/latency
+      saving on Ascend.
+  caveats:
+  - Only applies to pooling/embedding runners, not generative inference.
+  - Confirm the target model actually supports Matryoshka representation before setting a reduced dimension.
+  quick_guide: Set only for Matryoshka embedding models; otherwise leave None.
+analysis_date: '2026-10-27'

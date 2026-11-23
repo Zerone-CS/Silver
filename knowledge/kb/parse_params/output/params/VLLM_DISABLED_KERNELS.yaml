@@ -1,0 +1,88 @@
+name: VLLM_DISABLED_KERNELS
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1190
+- vllm/envs.py:127
+- vllm/model_executor/kernels/linear/__init__.py:608
+- vllm/model_executor/kernels/linear/__init__.py:852
+value_type: list[str]
+default: []
+valid_choices: Comma-separated list of MPLinearKernel class names, e.g. MacheteLinearKernel, MarlinLinearKernel, ExllamaLinearKernel,
+  AiterMxfp4LinearKernel, FlashInferFP8ScaledMMLinearKernel
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_DISABLED_KERNELS is parsed in vllm/envs.py as a comma-separated string split into a
+
+  list (default empty list). It is consumed only in the mixed-precision linear kernel selection
+
+  path: "vllm/model_executor/kernels/linear/__init__.py:608 (is_supported_and_can_implement_kernel)"
+
+  and :852 (choose_mp_linear_kernel). When a kernel class name appears in the list, that kernel
+
+  is skipped and the selector falls through to the next candidate kernel in _POSSIBLE_KERNELS for
+
+  the current platform. It also gates a warning in the MXFP4 AITER kernel (mxfp4/aiter.py:166).
+
+  The effect is purely on which quantized linear kernel implementation is chosen at model load
+
+  time; it does not change runtime scheduling, memory allocation, or communication. On Ascend NPU,
+
+  the _POSSIBLE_KERNELS table is keyed by current_platform._enum and the listed kernels
+
+  (Machete/Marlin/Exllama/AITER/FlashInfer) are CUDA/ROCm-specific, so on Ascend this env var
+
+  typically has no matching kernel to disable and therefore no measurable runtime effect. If a
+
+  matching kernel were present, disabling a faster kernel would force a slower fallback, degrading
+
+  latency/throughput of quantized linear layers. This is primarily a testing/debugging knob.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1190
+  context: Parses VLLM_DISABLED_KERNELS env var into a list[str] by splitting on commas.
+- file: vllm/envs.py:127
+  context: 'Type declaration VLLM_DISABLED_KERNELS: list[str] = [] in the envs module.'
+- file: vllm/model_executor/kernels/linear/__init__.py:608
+  context: is_supported_and_can_implement_kernel returns False if kernel name is in the disabled list.
+- file: vllm/model_executor/kernels/linear/__init__.py:852
+  context: choose_mp_linear_kernel skips disabled kernels and records a failure reason.
+- file: vllm/model_executor/kernels/linear/mxfp4/aiter.py:166
+  context: AiterMxfp4LinearKernel checks the disabled list before emitting an AITER-missing warning.
+related_parameters:
+- name: --linear-backend
+  relation: Both filter the candidate MPLinearKernel set during kernel selection; --linear-backend selects a specific backend
+    while VLLM_DISABLED_KERNELS excludes named kernels.
+- name: --quantization
+  relation: Only relevant when a quantized (mixed-precision) linear kernel is being selected; has no effect for unquantized
+    models.
+constraints:
+- The value must be a comma-separated list of exact kernel class names (e.g. MacheteLinearKernel); names that do not match
+  any candidate kernel are silently ignored.
+- Only affects MPLinearKernel selection for mixed-precision/quantized linear layers; it has no effect on other kernel types
+  or on unquantized models.
+tuning_advice:
+  summary: Leave unset on Ascend NPU; use only to force a fallback kernel when debugging a specific quantized kernel issue.
+  suggested_values:
+  - scenario: Production deployment on Ascend NPU
+    value: []
+    reason: The disable-able kernels are CUDA/ROCm-specific and not in the Ascend candidate table, so setting this provides
+      no benefit and risks unintended fallback if a name matches.
+  - scenario: Debugging a suspected faulty quantized linear kernel
+    value:
+    - MacheteLinearKernel
+    reason: Excluding a specific kernel forces selection of the next candidate, useful to isolate kernel-specific correctness
+      or performance issues.
+  caveats:
+  - Applies to vLLM upstream kernel selection only; vllm-ascend does not override this variable, and it has negligible effect
+    on Ascend hardware.
+  - Disabling a kernel may silently select a slower fallback, reducing throughput of quantized models.
+  quick_guide: Do not set VLLM_DISABLED_KERNELS on Ascend; it is a CUDA/ROCm kernel-selection debug knob with no practical
+    Ascend effect.
+analysis_date: '2026-10-27'

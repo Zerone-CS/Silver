@@ -1,0 +1,118 @@
+name: --num-gpu-blocks-override
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:124
+- vllm/engine/arg_utils.py:1277
+- vllm/engine/arg_utils.py:2104
+- vllm/v1/core/kv_cache_utils.py:1103
+- vllm/v1/core/kv_cache_utils.py:2697
+- vllm/v1/worker/gpu_model_runner.py:6554
+value_type: int
+default: null
+valid_choices: any positive integer; None means use profiled num_gpu_blocks
+cli_example: --num-gpu-blocks-override 64
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This parameter directly overrides the profiled KV cache block count. In upstream vLLM v1,
+
+  `may_override_num_blocks` (vllm/v1/core/kv_cache_utils.py:1103) replaces the profiled
+
+  `num_blocks` with the override value, and `get_kv_cache_configs` (line 2697) adjusts the
+
+  effective `available_memory` to `override * bytes_per_block` so that auto-fit, admission
+
+  checks, and per-worker config builders all plan against the same capacity. The result is
+
+  that the KV cache tensor allocation size is decoupled from the profiled free memory.
+
+  On Ascend, vllm-ascend reuses this field in its own KV cache planning paths: the
+
+  DeepSeek-V4.1 cache config builder (`get_deepseek_v41_kv_cache_config`) honors
+
+  `num_gpu_blocks_override` as a "safe override capacity" (see
+
+  tests/ut/models/test_deepseek_v41_cache.py:394, where override=3 clamps num_blocks to 3
+
+  even when available memory would allow 5 blocks), and the Ascend KV cache utils patch
+
+  (`_ascend_get_kv_cache_config_from_groups`) reads it when replanning block counts against
+
+  Ascend-specific `_ascend_pool_bytes_per_block`. Because Ascend uses different per-block
+
+  byte accounting (e.g. UniformTypeKVCacheSpecs summing per-layer page sizes, index/state
+
+  pages padded to canonical widths), the override value interacts with Ascend''s own
+
+  bytes-per-block computation rather than the upstream one.
+
+  Performance mechanism: "setting a smaller override reduces KV cache memory footprint"
+
+  (freeing NPU HBM for weights/activations) but lowers max concurrency and increases
+
+  preemption/recompute frequency, hurting throughput and tail latency. Setting a larger
+
+  override than the profiled capacity risks OOM on NPU HBM allocation. The parameter is
+
+  excluded from `compute_hash` (vllm/config/cache.py:265), so it does not trigger graph
+
+  recompilation — it only changes runtime capacity.
+
+  '
+usage_locations:
+- file: vllm/v1/core/kv_cache_utils.py:1103
+  context: may_override_num_blocks replaces profiled num_blocks with the override value
+- file: vllm/v1/core/kv_cache_utils.py:2697
+  context: get_kv_cache_configs adjusts available_memory to override * bytes_per_block and logs the override
+- file: vllm/v1/worker/gpu_model_runner.py:6554
+  context: Temporarily sets num_gpu_blocks_override to min_blocks to allocate a minimal KV cache for CUDA graph profiling,
+    then restores it
+- file: vllm/config/cache.py:265
+  context: Listed in compute_hash ignored_factors, so it does not affect compiled graph shape
+- file: tests/ut/models/test_deepseek_v41_cache.py:394
+  context: Ascend DeepSeek-V4.1 cache builder clamps num_blocks to the override (safe override capacity)
+- file: tests/ut/patch/platform/test_prefix_cache_cp_patches.py:964
+  context: Ascend KV cache utils patch reads num_gpu_blocks_override when replanning block counts
+- file: tests/e2e/cases/features/kv_pool/test_kvpp_dspark.py:46
+  context: Ascend e2e test uses num_gpu_blocks_override=64 to bound KV cache for KVPP/DSpark testing
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: Determines profiled num_gpu_blocks; the override supersedes the profiled value
+- name: --kv-cache-memory-bytes
+  relation: Alternative explicit KV cache sizing; both decouple allocation from profiling
+- name: --block-size
+  relation: Together with override determines total KV cache bytes (override * bytes_per_block)
+- name: --max-num-seqs
+  relation: Override limits max concurrency; too-small override forces preemption below max_num_seqs
+- name: --enable-prefix-caching
+  relation: Prefix caching consumes blocks; a tight override reduces prefix cache hit capacity
+constraints:
+- The value must be a positive integer; None means the profiled num_gpu_blocks is used unchanged.
+- Setting the override larger than what fits in available NPU HBM will cause KV cache allocation to fail or OOM.
+- The override is applied per worker; with pipeline/tensor parallelism each worker allocates override blocks, so total memory
+  scales with the number of workers.
+tuning_advice:
+  summary: Use only to deliberately cap KV cache capacity (testing preemption or bounding memory); for production prefer gpu-memory-utilization
+    or kv-cache-memory-bytes.
+  suggested_values:
+  - scenario: Testing preemption / scheduler behavior on Ascend
+    value: 64
+    reason: Small fixed block count forces preemption paths to exercise; used in Ascend KVPP/DSpark e2e tests.
+  - scenario: Bounding KV cache memory for KVPP or hybrid-cache models on Ascend
+    value: '<computed: fit within remaining HBM after weights>'
+    reason: Ascend DeepSeek-V4.1 cache builder clamps num_blocks to the override, so pick a value that fits Ascend's larger
+      per-block byte accounting.
+  - scenario: Production throughput-oriented serving
+    value: unset
+    reason: Leave unset so the profiled num_gpu_blocks (driven by gpu-memory-utilization) maximizes KV cache and concurrency.
+  caveats:
+  - Do not set an override larger than the profiled capacity on NPU; Ascend HBM allocation will fail.
+  - Ascend per-block bytes differ from GPU, so re-tune any override value when moving from GPU to NPU.
+  - A tight override reduces prefix-cache hit capacity and increases preemption, hurting throughput and tail latency.
+  quick_guide: Leave unset for production; set a small integer only to test preemption or to hard-cap KV cache memory on Ascend.
+analysis_date: '2026-10-27'

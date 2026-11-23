@@ -1,0 +1,70 @@
+name: --enable-cumem-allocator
+type: cli
+category: memory
+scope: vllm
+source_file:
+- vllm/config/model.py:354
+- vllm/engine/arg_utils.py:955
+- vllm/engine/arg_utils.py:725
+- vllm/engine/arg_utils.py:1878
+- vllm/config/model.py:617
+- vllm/config/vllm.py:1095
+- vllm/v1/worker/gpu_worker.py:315
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --enable-cumem-allocator
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: "This parameter enables vLLM's custom CuMemAllocator, a CUDA/HIP virtual memory\nmanagement (VMM) based allocator.\
+  \ Its effect is gated by platform checks:\n- \"In vllm/config/model.py:617, when sleep mode is enabled on a CUDA-alike platform,\"\
+  \n  enable_cumem_allocator is auto-set to True.\n- \"In vllm/config/model.py:622-626, if enable_cumem_allocator is True\
+  \ but\"\n  current_platform.is_cumem_allocator_available() returns False, a ValueError is\n  raised (\"cumem allocator is\
+  \ not supported on current platform.\").\n- \"In vllm/v1/worker/gpu_worker.py:312-333, _maybe_get_memory_pool_context returns\
+  \ a\"\n  nullcontext() when the platform is CUDA-alike and enable_cumem_allocator is False;\n  otherwise it routes weight/KV\
+  \ allocations through the CuMemAllocator memory pool.\nThe docstring explicitly states \"Only cuda and hip platforms are\
+  \ supported.\" Ascend NPU\nis neither CUDA nor HIP, so is_cumem_allocator_available() is False on Ascend and the\nflag cannot\
+  \ be enabled — attempting to set it raises a ValueError. No vllm-ascend\noverride or usage of this parameter was found in\
+  \ the provided context. Therefore on\nAscend NPU this parameter has no runtime performance effect (it is effectively\nunusable),\
+  \ and its impact is rated low.\n"
+usage_locations:
+- file: vllm/config/model.py:617
+  context: Auto-enables cumem allocator when sleep mode is on for CUDA-alike platforms; raises ValueError if platform does
+    not support it.
+- file: vllm/config/vllm.py:1095
+  context: Exempts the expandable_segments + KV connector incompatibility check when cumem allocator is enabled.
+- file: vllm/v1/worker/gpu_worker.py:315
+  context: Selects CuMemAllocator memory pool context for weight/KV allocations vs nullcontext based on this flag.
+- file: vllm/engine/arg_utils.py:955
+  context: CLI argument registration for --enable-cumem-allocator.
+related_parameters:
+- name: --enable-sleep-mode
+  relation: Sleep mode automatically enables the cumem allocator on CUDA-alike platforms; sleep mode requires this allocator.
+- name: --sleep-mode-backend
+  relation: The 'cumem' backend (default) relies on the CuMemAllocator that this flag controls.
+- name: --enable-nccl-comm-suspend
+  relation: Related sleep-mode memory release feature; both concern freeing/restoring device memory.
+- name: PYTORCH_CUDA_ALLOC_CONF (expandable_segments:True)
+  relation: Enabling cumem allocator exempts the KV-connector incompatibility check with expandable_segments.
+constraints:
+- Only CUDA and HIP platforms are supported; on any other platform (including Ascend NPU) enabling this flag raises a ValueError.
+- If enable_sleep_mode is set on a CUDA-alike platform, enable_cumem_allocator is forced to True automatically.
+- The CuMem allocator can only be used for one instance per process (asserted in gpu_worker when allocating weights).
+tuning_advice:
+  summary: Do not set --enable-cumem-allocator on Ascend NPU; it is CUDA/HIP-only and will raise an error.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1 or v2 worker)
+    value: false
+    reason: The cumem allocator is only available on CUDA/HIP platforms; on Ascend it is unsupported and enabling it raises
+      a ValueError at config validation.
+  - scenario: CUDA/HIP deployment using sleep mode or memory-pinning KV connectors
+    value: true
+    reason: Enables the CuMemAllocator memory pool, required for sleep mode and to keep KV cache on stable physical pages
+      with expandable_segments.
+  caveats:
+  - Setting this flag on Ascend NPU causes a startup failure, not a performance gain.
+  - Sleep mode auto-enables this allocator on CUDA-alike platforms, so manual setting is usually unnecessary there.
+  quick_guide: Leave unset (false) on Ascend NPU — this flag is CUDA/HIP-only and unsupported.
+analysis_date: '2026-10-27'

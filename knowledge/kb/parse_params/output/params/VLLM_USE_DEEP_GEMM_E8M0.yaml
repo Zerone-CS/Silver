@@ -1,0 +1,86 @@
+name: VLLM_USE_DEEP_GEMM_E8M0
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1543
+- vllm/envs.py:198
+- vllm/utils/deep_gemm.py:73
+- vllm/utils/deep_gemm.py:135
+- vllm/transformers_utils/config.py:847
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This env var only gates the DeepGEMM E8M0 (UE8M0) scale-format path, which is a
+
+  CUDA/Blackwell/Hopper-specific kernel feature. In vllm/utils/deep_gemm.py the
+
+  DeepGemmQuantScaleFMT.init_oracle_cache() checks envs.VLLM_USE_DEEP_GEMM_E8M0
+
+  together with is_deep_gemm_supported() and the presence of _fp8_gemm_nt_impl
+
+  (the DeepGEMM fp8 GEMM implementation). is_deep_gemm_e8m0_used() also returns
+
+  False early if DeepGEMM is not supported on the system or _fp8_gemm_nt_impl is
+
+  None. On Ascend NPU, DeepGEMM (a CUDA library) is not available, so
+
+  is_deep_gemm_supported() is False and this flag has no effect on the actual
+
+  compute path. The only other usage is in vllm/transformers_utils/config.py,
+
+  where a model''s quantization_config.scale_fmt == "ue8m0" auto-sets this env var
+
+  to "1" (or warns if explicitly disabled) — this is a config-time decision, not a
+
+  runtime kernel selection on Ascend. No vllm-ascend source references this
+
+  parameter, and there is no Ascend override. Therefore on Ascend NPU it does not
+
+  change latency, throughput, or memory in any measurable way; it is effectively
+
+  inert because the underlying DeepGEMM kernels are CUDA-only.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1543
+  context: Defines the env var, defaulting to 1 (True).
+- file: vllm/utils/deep_gemm.py:73
+  context: init_oracle_cache() uses it to decide whether to select UE8M0/FLOAT32_CEIL_UE8M0 scale format, gated by is_deep_gemm_supported().
+- file: vllm/utils/deep_gemm.py:135
+  context: is_deep_gemm_e8m0_used() returns True only if DeepGEMM is supported and _fp8_gemm_nt_impl exists and the env var
+    is set.
+- file: vllm/transformers_utils/config.py:847
+  context: Auto-enables the env var when quantization_config.scale_fmt == 'ue8m0'; warns if explicitly disabled.
+related_parameters:
+- name: VLLM_USE_DEEP_GEMM
+  relation: Master switch for DeepGEMM kernels; E8M0 scaling only matters when DeepGEMM is used.
+- name: VLLM_MOE_USE_DEEP_GEMM
+  relation: Enables DeepGEMM specifically for MoE fused ops; E8M0 applies to those fp8 GEMMs.
+- name: VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES
+  relation: Companion DeepGEMM scale-layout option; both are CUDA/Blackwell-oriented.
+constraints:
+- The E8M0 scale path is only active when DeepGEMM is supported on the system and the DeepGEMM fp8 GEMM implementation is
+  available; otherwise the flag is ignored.
+- If a model's quantization_config.scale_fmt is 'ue8m0' but VLLM_USE_DEEP_GEMM_E8M0=0 is explicitly set, vLLM logs a warning
+  and disables UE8M0 for DeepGEMM.
+tuning_advice:
+  summary: No Ascend tuning needed — this flag only affects CUDA DeepGEMM E8M0 scaling and is inert on NPU.
+  suggested_values:
+  - scenario: Running on Ascend NPU (any model)
+    value: true
+    reason: DeepGEMM is not available on Ascend, so the flag is ignored; keep the default to avoid confusion.
+  - scenario: Model config requests scale_fmt=ue8m0 but you want to force-disable on CUDA
+    value: false
+    reason: Explicitly disables UE8M0 for DeepGEMM (CUDA-only scenario); irrelevant on Ascend.
+  caveats:
+  - Do not expect any throughput or memory change on Ascend from toggling this variable.
+  - For Ascend quantization performance, tune Ascend-specific options (e.g. quantization method, VLLM_ASCEND_* env vars) instead.
+  quick_guide: Leave at default on Ascend; it only affects CUDA DeepGEMM E8M0 scaling and has no NPU effect.
+analysis_date: '2026-10-27'

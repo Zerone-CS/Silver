@@ -1,0 +1,102 @@
+name: additional_config.scheduler_config.batch_job_sched_config.enabled
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1521
+- vllm_ascend/ascend_config.py:516
+- vllm_ascend/platform.py:1390
+- vllm_ascend/platform.py:1052
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This flag is a vllm-ascend-only switch (defined in vllm_ascend/ascend_config.py
+
+  BatchJobSchedConfig, default False). When set to true, NPUPlatform.check_and_update_config
+
+  (vllm_ascend/platform.py:1390) replaces vllm_config.scheduler_config.scheduler_cls with
+
+  vllm_ascend.core.batch_job_aware_scheduler.BatchJobAwareAsyncScheduler (if async_scheduling
+
+  is on) or BatchJobAwareScheduler (otherwise). This swaps the entire request-scheduling
+
+  policy: "instead of plain FCFS admission, the scheduler groups requests into \"jobs\" and"
+
+  applies batch-job-aware admission/eviction using the sibling knobs max_jobs,
+
+  reserve_margin_blocks, reserve_max_blocks, low_available_tokens_threshold and
+
+  short_decode_token_threshold. The mechanism affects throughput and latency by changing
+
+  how KV-cache blocks are reserved and how decode batches are formed (reserving blocks per
+
+  job, prioritizing short decodes when available tokens are low). It does not change
+
+  per-op kernel behavior or memory footprint of the model itself; the effect is purely at
+
+  the scheduling/admission layer, hence medium impact. It is mutually exclusive with
+
+  short_request_first_config.enabled (platform.py:1052 raises ValueError if both are on).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1528
+  context: 'Field definition `enabled: bool = False` inside BatchJobSchedConfig pydantic dataclass.'
+- file: vllm_ascend/ascend_config.py:516
+  context: Documented default in the additional_config example dict under scheduler_config.batch_job_sched_config.
+- file: vllm_ascend/platform.py:1390
+  context: Selects BatchJobAwareScheduler / BatchJobAwareAsyncScheduler as scheduler_cls when enabled.
+- file: vllm_ascend/platform.py:1052
+  context: 'Validation: raises ValueError if short_request_first_config.enabled is also true.'
+related_parameters:
+- name: additional_config.scheduler_config.batch_job_sched_config.max_jobs
+  relation: Sibling knob controlling how many jobs the batch-job-aware scheduler tracks; only meaningful when enabled=true.
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_margin_blocks
+  relation: Sibling knob for per-job KV block reservation margin; only used when enabled=true.
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_max_blocks
+  relation: Sibling knob capping reserved blocks per job; only used when enabled=true.
+- name: additional_config.scheduler_config.batch_job_sched_config.low_available_tokens_threshold
+  relation: Sibling knob defining the low-available-token trigger for short-decode prioritization; only used when enabled=true.
+- name: additional_config.scheduler_config.batch_job_sched_config.short_decode_token_threshold
+  relation: Sibling knob defining what counts as a short decode; only used when enabled=true.
+- name: additional_config.scheduler_config.short_request_first_config.enabled
+  relation: Mutually exclusive — enabling both raises ValueError in platform.py:1052.
+- name: scheduler_config.policy
+  relation: Batch-job-aware scheduler replaces scheduler_cls; interacts with the base scheduling policy.
+- name: scheduler_config.async_scheduling
+  relation: Determines whether BatchJobAwareAsyncScheduler or BatchJobAwareScheduler is installed.
+constraints:
+- batch_job_sched_config.enabled cannot be true at the same time as short_request_first_config.enabled; the platform raises
+  a ValueError telling you to disable one of them.
+- The parameter must be supplied as a boolean (or boolean-like string) under additional_config.scheduler_config.batch_job_sched_config;
+  unknown keys are rejected because the config uses extra='forbid'.
+- The legacy top-level key batch_job_sched_config still resolves but emits a deprecation warning; prefer nesting it under
+  scheduler_config.
+tuning_advice:
+  summary: Enable only when serving workloads composed of distinct batch jobs and after tuning the sibling reservation knobs;
+    otherwise keep it disabled.
+  suggested_values:
+  - scenario: Standard online serving with mixed continuous requests (no explicit batch-job structure)
+    value: false
+    reason: Default FCFS scheduling is simpler and avoids the risk of suboptimal admission decisions; batch-job awareness
+      only helps when requests genuinely form jobs.
+  - scenario: Offline/batch inference where requests arrive as discrete jobs and you want per-job KV reservation
+    value: true
+    reason: Installs BatchJobAwareScheduler, which reserves KV blocks per job and can improve throughput stability for job-structured
+      workloads.
+  - scenario: Async scheduling enabled with job-structured traffic
+    value: true
+    reason: Selects BatchJobAwareAsyncScheduler, preserving async scheduling while adding batch-job-aware admission.
+  caveats:
+  - Do not combine with short_request_first_config.enabled — the platform raises a ValueError.
+  - Tune max_jobs, reserve_margin_blocks, reserve_max_blocks, low_available_tokens_threshold and short_decode_token_threshold
+    together with this flag; defaults may not fit your job sizes.
+  - Benchmark against the default scheduler; enabling it on non-job workloads can hurt throughput.
+  quick_guide: Set to true only for job-structured workloads and after tuning the sibling reservation knobs; keep false otherwise.
+analysis_date: '2026-10-27'

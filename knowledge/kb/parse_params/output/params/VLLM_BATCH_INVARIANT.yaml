@@ -1,0 +1,94 @@
+name: VLLM_BATCH_INVARIANT
+type: env
+category: other
+scope: both
+source_file:
+- vllm/envs.py:619
+- vllm_ascend/batch_invariant.py:175
+- vllm_ascend/ascend_config.py:393
+- vllm_ascend/utils.py:561
+- vllm_ascend/sample/sampler.py:96
+- vllm_ascend/attention/attention_v1.py:982
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed as bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "VLLM_BATCH_INVARIANT enables deterministic, batch-composition-independent\nexecution. On Ascend it is read\
+  \ in several hot paths, each of which trades\nperformance for determinism:\n\n1. Custom op disable (vllm_ascend/utils.py:561):\
+  \ when set, enable_custom_op()\n   returns False, so vllm_ascend_C custom kernels are NOT loaded. All ops fall\n   back\
+  \ to generic torch_npu/CANN paths, which is a significant throughput loss\n   on Ascend since custom ops are the optimized\
+  \ kernels.\n\n2. Sampler fallback (vllm_ascend/sample/sampler.py:96 and\n   _310p/sample/sampler.py:156): AscendTopKTopPSampler.forward_native\
+  \ falls\n   back to vLLM's native top-k/top-p implementation instead of the torch_npu\n   optimized apply_top_k_top_p +\
+  \ random_sample path. This adds per-step\n   sampling latency.\n\n3. Attention dispatch (vllm_ascend/attention/attention_v1.py:982):\
+  \ in\n   ChunkedPrefill mixing prefill+decode, batch-invariant mode forces the\n   per-phase FIA split path (_forward_fia_chunked_prefill_split)\
+  \ regardless of\n   hardware capability, instead of the fused single FIA call. This splits one\n   kernel launch into two,\
+  \ increasing latency and reducing fusion benefit.\n\n4. Upstream vLLM effects that also apply: disable_custom_all_reduce=True\n\
+  \   (vllm/config/parallel.py:1058) disables the custom all-reduce kernel,\n   forcing slower collective; enable_allreduce_rms_fusion\
+  \ returns False\n   (vllm/config/vllm.py:184) disabling fused all-reduce+RMSNorm; cascade\n   attention is disabled (vllm/config/vllm.py:1926);\
+  \ FlashAttention AOT\n   scheduling disabled and max_num_splits forced to 1\n   (vllm/v1/attention/backends/flash_attn.py:786,817);\
+  \ flashinfer fixed split\n   sizes and disable_split_kv (vllm/v1/attention/backends/flashinfer.py:707).\n\nNet effect: \"\
+  lower throughput and higher latency, but deterministic outputs\"\nrequired for RL validation / training-inference consistency.\n"
+usage_locations:
+- file: vllm/envs.py:619
+  context: 'Definition: bool(int(os.getenv(''VLLM_BATCH_INVARIANT'', ''0'')))'
+- file: vllm_ascend/batch_invariant.py:175
+  context: init_batch_invariance() checks env and calls override_envs_for_invariance + enable_batch_invariant_mode
+- file: vllm_ascend/utils.py:561
+  context: enable_custom_op() returns False when batch invariant is on, disabling custom kernels
+- file: vllm_ascend/sample/sampler.py:96
+  context: Sampler falls back to vLLM native top-k/top-p implementation
+- file: vllm_ascend/attention/attention_v1.py:982
+  context: Forces per-phase FIA split for chunked prefill mixing prefill+decode
+- file: vllm_ascend/ascend_config.py:393
+  context: rl_config.enable_batch_invariant sets VLLM_BATCH_INVARIANT=1
+- file: vllm/config/parallel.py:1058
+  context: Disables custom all-reduce
+- file: vllm/config/vllm.py:184
+  context: Disables allreduce+RMSNorm fusion
+- file: vllm/config/vllm.py:1926
+  context: Disables cascade attention
+related_parameters:
+- name: rl_config.enable_batch_invariant
+  relation: When true, sets VLLM_BATCH_INVARIANT=1 before workers start
+- name: HCCL_DETERMINISTIC
+  relation: Set to 'strict' by worker-side batch-invariant init
+- name: LCCL_DETERMINISTIC
+  relation: Set to '1' by worker-side batch-invariant init
+- name: disable_custom_all_reduce
+  relation: Forced True when VLLM_BATCH_INVARIANT is set
+- name: weight_nz_mode
+  relation: RL mode (which may enable batch invariant) forces weight_nz_mode=0
+- name: COMPILE_CUSTOM_KERNELS
+  relation: Batch-invariant custom ops require building vllm-ascend from source with COMPILE_CUSTOM_KERNELS=1
+constraints:
+- Batch-invariant mode requires building vllm-ascend from source with VLLM_BATCH_INVARIANT=1 (and COMPILE_CUSTOM_KERNELS=1)
+  so the batch_invariant_ops custom operator library is built and installed.
+- Batch invariance requires custom operators for Atlas A2, A3, and 950PR&950DT products; on unsupported hardware or when Triton/AscendC
+  batch-invariant ops are unavailable, initialization is skipped with a warning and determinism is not guaranteed.
+- When VLLM_BATCH_INVARIANT is set, all vllm-ascend custom ops are disabled (enable_custom_op returns False).
+- When rl_config.enabled is false, all other rl_config sub-fields including enable_batch_invariant are ignored.
+tuning_advice:
+  summary: Enable only when deterministic, batch-composition-independent output is required; otherwise leave disabled to keep
+    Ascend custom kernels and fused paths.
+  suggested_values:
+  - scenario: RL training-inference consistency / validation requiring deterministic output
+    value: '1'
+    reason: Deterministic output independent of batch composition is required for validation to succeed; use rl_config.enable_batch_invariant
+      or set VLLM_BATCH_INVARIANT=1.
+  - scenario: Standard high-throughput serving
+    value: '0'
+    reason: Keeps Ascend custom ops, fused all-reduce+RMSNorm, custom all-reduce, and fused FIA paths enabled for maximum
+      throughput.
+  caveats:
+  - Must build vllm-ascend from source with VLLM_BATCH_INVARIANT=1 and COMPILE_CUSTOM_KERNELS=1 to get the batch-invariant
+    operator library.
+  - Expect lower throughput and higher latency; benchmark before deploying in latency-sensitive serving.
+  - Pair with HCCL_DETERMINISTIC=strict and LCCL_DETERMINISTIC=1 for full determinism across collectives.
+  quick_guide: Set VLLM_BATCH_INVARIANT=1 only for deterministic RL/validation workloads; keep 0 for throughput.
+analysis_date: '2026-10-27'

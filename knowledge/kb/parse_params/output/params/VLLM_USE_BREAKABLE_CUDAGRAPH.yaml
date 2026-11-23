@@ -1,0 +1,137 @@
+name: VLLM_USE_BREAKABLE_CUDAGRAPH
+type: env
+category: compilation
+scope: both
+source_file:
+- vllm/envs.py:759
+- vllm/envs.py:178
+- vllm/compilation/breakable_cudagraph.py:54
+- vllm/config/vllm.py:756
+- vllm/config/vllm.py:116
+- vllm/v1/worker/gpu/cudagraph_utils.py:612
+- vllm/v1/worker/gpu/model_runner.py:698
+- vllm/v1/executor/ray_env_utils.py:7
+- vllm_ascend/platform.py:73
+- vllm_ascend/platform.py:1312
+- vllm_ascend/patch/worker/patch_v2/patch_model_runner.py:140
+value_type: bool
+default: false
+valid_choices: 0 or 1 (string compared against '1'; any other value is treated as disabled)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This flag selects the graph-capture strategy used for decode-phase execution.
+
+  Upstream (vllm/compilation/breakable_cudagraph.py:54) `is_breakable_cudagraph_enabled()`
+
+  simply returns the env bool. When enabled, vllm/config/vllm.py:756-774
+
+  `_maybe_enable_breakable_cudagraph()` forces `compilation_config.mode = CompilationMode.NONE`,
+
+  i.e. the model is NOT torch-compiled; instead piecewise graphs are captured via the
+
+  breakable-CUDAGraph runner (vllm/v1/worker/gpu/cudagraph_utils.py:602-613). This trades
+
+  torch.compile graph optimization for a capture path that does not require a compiled
+
+  submodule, and it changes both compile-time latency (no torch.compile) and steady-state
+
+  decode latency/throughput (different graph structure, potentially different memory for
+
+  captured graphs).
+
+
+  On Ascend, vllm_ascend/platform.py:73 does `os.environ.setdefault("VLLM_USE_BREAKABLE_CUDAGRAPH", "0")`
+
+  at import time, deliberately keeping breakable graph capture OPT-IN on Ascend and
+
+  preventing upstream''s architecture-based auto-enable (vllm/config/vllm.py:116,
+
+  `default_breakable_cudagraph_architectures()`) from silently turning it on. So on Ascend
+
+  the effective default is 0 unless the user explicitly sets it.
+
+
+  When enabled on Ascend, vllm_ascend/platform.py:1312 relaxes the assertion that
+
+  `compilation_config.mode == CompilationMode.VLLM_COMPILE` for piecewise cudagraph modes:
+
+  with breakable graphs on, piecewise ACL graph capture is allowed even without VLLM_COMPILE.
+
+  In the v2 worker path (vllm_ascend/patch/worker/patch_v2/patch_model_runner.py:140),
+
+  `piecewise_capture_available = VLLM_USE_BREAKABLE_CUDAGRAPH or has_compiled_submodule(model)`,
+
+  which feeds `resolve_adaptive_cudagraph_mode` and `resolve_cudagraph_mode_and_sizes` —
+
+  directly determining whether PIECEWISE (or FULL_AND_PIECEWISE) ACL graphs are captured
+
+  versus falling back to FULL or NONE. This changes decode latency (graph replay vs eager),
+
+  throughput, and captured-graph memory footprint.
+
+  '
+usage_locations:
+- file: vllm/envs.py:759
+  context: Env var definition; parses '1' as True, default '0'.
+- file: vllm/compilation/breakable_cudagraph.py:54
+  context: is_breakable_cudagraph_enabled() reads the flag to gate breakable capture.
+- file: vllm/config/vllm.py:756
+  context: Auto-enables flag for certain architectures if unset, and forces CompilationMode.NONE when enabled.
+- file: vllm/v1/worker/gpu/cudagraph_utils.py:612
+  context: Raises if piecewise graphs requested but model not compiled and breakable CG off.
+- file: vllm/v1/worker/gpu/model_runner.py:698
+  context: piecewise_capture_available = flag OR has_compiled_submodule(model).
+- file: vllm/v1/executor/ray_env_utils.py:7
+  context: Propagates the flag to Ray workers before actor import.
+- file: vllm_ascend/platform.py:73
+  context: Ascend forces default to '0' via setdefault, keeping breakable CG opt-in.
+- file: vllm_ascend/platform.py:1312
+  context: Relaxes VLLM_COMPILE assertion for piecewise cudagraph when flag is on.
+- file: vllm_ascend/patch/worker/patch_v2/patch_model_runner.py:140
+  context: 'v2 worker: flag OR compiled submodule determines piecewise capture availability.'
+related_parameters:
+- name: compilation_config.cudagraph_mode
+  relation: When breakable CG is enabled, piecewise modes are permitted without VLLM_COMPILE; also forces CompilationMode.NONE
+    upstream.
+- name: compilation_config.mode
+  relation: Upstream sets mode=NONE when breakable CG enabled; Ascend relaxes the VLLM_COMPILE assertion for piecewise modes.
+- name: VLLM_USE_AOT_COMPILE
+  relation: Alternative compile path; breakable CG bypasses torch.compile entirely.
+- name: compilation_config.max_cudagraph_capture_size
+  relation: Capture sizes interact with which graph mode is resolved when piecewise capture is available.
+constraints:
+- The value is interpreted as enabled only when the string equals '1'; any other value (including 'true') is treated as disabled.
+- On Ascend, vllm-ascend sets the default to '0' at import, so breakable graph capture is opt-in and must be explicitly enabled
+  by the user.
+- When cudagraph_mode requires piecewise compilation, compilation mode must be VLLM_COMPILE unless VLLM_USE_BREAKABLE_CUDAGRAPH
+  is enabled, otherwise an AssertionError is raised (vllm_ascend/platform.py:1312).
+- If piecewise CUDA graphs are requested but the model is not torch-compiled and breakable CG is off, a RuntimeError is raised
+  (vllm/v1/worker/gpu/cudagraph_utils.py:612).
+tuning_advice:
+  summary: Keep breakable ACL graph capture off by default on Ascend; enable only when piecewise graphs are needed without
+    torch.compile or when a model cannot be compiled.
+  suggested_values:
+  - scenario: Default Ascend deployment with compilable models
+    value: '0'
+    reason: vllm-ascend sets this default intentionally; torch.compile-based piecewise graphs generally give better decode
+      performance than the breakable path.
+  - scenario: Model cannot be torch-compiled but piecewise ACL graphs are desired (v1 and v2 workers)
+    value: '1'
+    reason: Enables piecewise capture without a compiled submodule and relaxes the VLLM_COMPILE assertion (platform.py:1312);
+      v2 worker uses it to set piecewise_capture_available.
+  - scenario: Debugging/regression testing of breakable ACL graph path
+    value: '1'
+    reason: Matches the e2e regression case CASE_DS_BREAKABLE_ACLGRAPH in tests/e2e/pull_request/four_card/test_graph_mode.py.
+  caveats:
+  - Setting the value to anything other than '1' (e.g. 'true') disables it — use exactly '1'.
+  - Enabling it forces CompilationMode.NONE upstream, so verify decode latency/throughput and captured-graph memory against
+    the compiled baseline.
+  - In multi-node/Ray deployments, set the env var on all workers; it is propagated pre-import but must be consistent.
+  quick_guide: Leave unset (defaults to 0 on Ascend); set VLLM_USE_BREAKABLE_CUDAGRAPH=1 only when you need piecewise ACL
+    graphs without torch.compile.
+analysis_date: '2026-10-27'

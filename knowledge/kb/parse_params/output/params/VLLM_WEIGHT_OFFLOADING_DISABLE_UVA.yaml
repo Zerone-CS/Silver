@@ -1,0 +1,89 @@
+name: VLLM_WEIGHT_OFFLOADING_DISABLE_UVA
+type: env
+category: memory
+scope: vllm
+source_file:
+- vllm/envs.py:2057
+- vllm/envs.py:304
+- vllm/model_executor/offloader/uva.py:52
+- vllm/platforms/xpu.py:347
+value_type: bool
+default: false
+valid_choices: 0 or 1 (boolean; parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This env var only matters when CPU weight offloading is active (--cpu-offload-gb > 0 or
+
+  offload_config with uva backend). In vllm/model_executor/offloader/uva.py:52, the UVAOffloader
+
+  computes `self.uva_offloading = is_uva_available() and not envs.VLLM_WEIGHT_OFFLOADING_DISABLE_UVA`.
+
+  When UVA offloading is enabled, offloaded weights stay in host memory that is directly
+
+  addressable by the device (UVA), so kernels can read them without an explicit H2D copy per
+
+  forward pass — this is what allows CUDA graph capture to still work with offloaded weights
+
+  (see tests/basic_correctness/test_cpu_offload.py:31-33, which appends --enforce-eager when
+
+  UVA is disabled because "cuda graph only works with UVA offloading"). Setting this to 1
+
+  forces the non-UVA path: "weights must be copied to device memory before use, which adds"
+
+  per-step H2D transfer latency and typically forces eager execution (disabling graph replay
+
+  speedups). On XPU (vllm/platforms/xpu.py:347) disabling UVA also skips the Inductor
+
+  static-launcher workaround. On Ascend NPU, UVA semantics depend on the CANN/driver host
+
+  memory mapping support; vllm-ascend does not reference this env var in the provided context,
+
+  so it is inherited from upstream vLLM and only takes effect if the Ascend offloader path
+
+  honors is_uva_available(). Impact is low because it only applies to CPU-offloading
+
+  deployments, not the default NPU serving path.
+
+  '
+usage_locations:
+- file: vllm/model_executor/offloader/uva.py:52
+  context: UVAOffloader.__init__ decides whether to use UVA-based offloading based on is_uva_available() and this env var
+- file: vllm/platforms/xpu.py:347
+  context: XPU platform disables Inductor static Triton launcher for UVA offloading unless this env var is set
+- file: tests/basic_correctness/test_cpu_offload.py:26
+  context: Test toggles this env var and adds --enforce-eager when UVA is disabled
+related_parameters:
+- name: --cpu-offload-gb
+  relation: This env var only has effect when CPU weight offloading is enabled via --cpu-offload-gb
+- name: VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY
+  relation: Companion env var controlling pinned memory for the same offloading path
+- name: --enforce-eager
+  relation: Disabling UVA typically requires eager mode since CUDA/NPU graphs only work with UVA offloading
+- name: offload_config.offload_backend
+  relation: Selects uva/auto backend; this env var disables the UVA mechanism within that backend
+constraints:
+- The value is parsed as bool(int(...)), so only 0 or 1 are valid; other strings raise a ValueError.
+- This env var has no effect unless CPU weight offloading is enabled (e.g. --cpu-offload-gb > 0).
+- When UVA offloading is disabled, graph capture is not supported for offloaded weights and eager mode must be used.
+tuning_advice:
+  summary: Leave at default 0 to keep UVA offloading (and graph capture) enabled when using CPU weight offloading; set to
+    1 only if UVA causes correctness or driver issues on your platform.
+  suggested_values:
+  - scenario: Default NPU serving without CPU offloading
+    value: 0
+    reason: Env var is irrelevant when no weights are offloaded; keep default.
+  - scenario: CPU weight offloading with graph capture desired
+    value: 0
+    reason: UVA offloading keeps offloaded weights device-addressable, allowing graph capture and avoiding per-step H2D copies.
+  - scenario: UVA host memory mapping unsupported or causing faults on the platform
+    value: 1
+    reason: Falls back to non-UVA offloading; must pair with --enforce-eager since graphs require UVA offloading.
+  caveats:
+  - Setting to 1 without --enforce-eager may cause graph capture failures with offloaded weights.
+  - Verify Ascend driver/CANN support for UVA host memory before relying on the default UVA path.
+  quick_guide: Keep 0 unless UVA offloading breaks; if set to 1, also pass --enforce-eager.
+analysis_date: '2026-10-27'

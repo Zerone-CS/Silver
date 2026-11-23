@@ -1,0 +1,70 @@
+name: HCCL_RDMA_TIMEOUT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/utils/utils.py:91
+value_type: int
+default: '20'
+valid_choices: non-negative integer (HCCL RDMA timeout exponent); practical range roughly 0-24
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'HCCL_RDMA_TIMEOUT is read in get_transfer_timeout_value() in
+
+  vllm_ascend/distributed/kv_transfer/utils/utils.py. It is used as an exponent to
+
+  compute the KV-transfer timeout: "timeout_ms = (4.096 * 2^HCCL_RDMA_TIMEOUT) *"
+
+  HCCL_RDMA_RETRY_CNT // 1000 + 3000. This value is only consulted when
+
+  ASCEND_TRANSFER_TIMEOUT is not set (ASCEND_TRANSFER_TIMEOUT takes precedence and
+
+  short-circuits the computation). The resulting timeout governs how long KV-cache
+
+  transfer operations (e.g. disaggregated prefill/decode PD transfer) wait before
+
+  declaring failure. It does not affect steady-state throughput or per-token latency;
+
+  it only affects failure-detection latency and retry behavior. Because the value is
+
+  an exponent, each increment doubles the base timeout, so misconfiguration can
+
+  dramatically change how long a stalled transfer blocks before erroring out.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:91
+  context: Reads HCCL_RDMA_TIMEOUT (default 20) and HCCL_RDMA_RETRY_CNT to compute the KV transfer timeout in get_transfer_timeout_value()
+related_parameters:
+- name: ASCEND_TRANSFER_TIMEOUT
+  relation: Takes precedence; if set (non-empty), HCCL_RDMA_TIMEOUT is ignored entirely
+- name: HCCL_RDMA_RETRY_CNT
+  relation: Multiplies the computed base timeout; both feed the final timeout formula
+constraints:
+- HCCL_RDMA_TIMEOUT must be a valid integer string; a non-integer value causes int() to raise ValueError.
+- HCCL_RDMA_TIMEOUT has no effect when ASCEND_TRANSFER_TIMEOUT is set to a non-empty value.
+- Because the value is used as an exponent (2^HCCL_RDMA_TIMEOUT), very large values produce extremely long timeouts and can
+  overflow or cause impractically long stalls.
+tuning_advice:
+  summary: Leave at default 20 for typical KV-transfer deployments; adjust only to shorten failure detection or tolerate slow
+    RDMA links, or override with ASCEND_TRANSFER_TIMEOUT for exact control.
+  suggested_values:
+  - scenario: Default / stable RDMA fabric, standard PD disaggregation
+    value: 20
+    reason: Default value yields a large timeout that tolerates transient RDMA hiccups without premature transfer failures.
+  - scenario: Fast-fail desired on a reliable fabric to surface errors quickly
+    value: 16
+    reason: Lowering the exponent reduces the computed timeout, making stalled transfers error out sooner at the cost of less
+      tolerance for transient delays.
+  - scenario: Slow or congested RDMA link needing more retry tolerance
+    value: 22
+    reason: Raising the exponent increases the timeout window, reducing spurious transfer failures on high-latency links.
+  caveats:
+  - Remember this is an exponent; small numeric changes cause large timeout changes.
+  - Setting ASCEND_TRANSFER_TIMEOUT overrides this parameter completely.
+  quick_guide: Keep HCCL_RDMA_TIMEOUT at 20 unless tuning KV-transfer failure tolerance; use ASCEND_TRANSFER_TIMEOUT for exact
+    timeouts.
+analysis_date: '2026-10-27'

@@ -1,0 +1,79 @@
+name: kv_transfer_config.kv_connector_extra_config.memcache_dp_init_barrier
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- 'vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py: <unknown>'
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:585
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a nested boolean inside kv_transfer_config.kv_connector_extra_config used by the
+
+  vllm-ascend AscendStoreConnector when backend is "memcache". Per the vllm-ascend docs, it
+
+  defaults to true. When enabled, after successful MemCache store initialization, workers in a
+
+  DP group synchronize through the CPU process group before continuing to NPU work such as
+
+  graph capture. This prevents earlier workers from proceeding (e.g. starting graph capture)
+
+  while peer ranks are still initializing MemCache channels. The mechanism is a startup-time
+
+  barrier, not a per-token hot-path operation, so it does not affect steady-state throughput
+
+  or per-request latency. Its performance relevance is limited to startup: it adds a one-time
+
+  synchronization cost at initialization but avoids potential stalls/mismatched graph-capture
+
+  timing across DP ranks. DP size 1, metadata-only scheduler clients, and stores using lazy
+
+  initialization skip this synchronization entirely. No source definition was found in the
+
+  provided vllm or vllm-ascend code context; behavior is derived from the vllm-ascend
+
+  documentation excerpt.
+
+  '
+usage_locations:
+- file: 'vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/memcache_backend.py: <unknown>'
+  context: MemCache backend DP-group initialization barrier before NPU work such as graph capture (per docs)
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:585
+  context: Documented default true, DP-group CPU process group synchronization after store init
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.backend
+  relation: Only applies when backend is set to memcache
+- name: kv_transfer_config.kv_connector
+  relation: With MultiConnector, this boolean must be placed in the AscendStoreConnector child's kv_connector_extra_config
+- name: data_parallel_size
+  relation: Barrier is skipped when DP size is 1; meaningful only for DP groups larger than 1
+constraints:
+- The same value must be set on every rank in the DP group.
+- When using MultiConnector, this boolean must be placed in the AscendStoreConnector child's kv_connector_extra_config.
+- The barrier only applies to the memcache backend; other backends ignore it.
+tuning_advice:
+  summary: Keep the default true for multi-rank DP MemCache deployments to avoid init/graph-capture skew; disable only when
+    startup synchronization is unnecessary or problematic.
+  suggested_values:
+  - scenario: Multi-rank DP group using memcache backend (default)
+    value: true
+    reason: Ensures all DP ranks finish MemCache channel initialization before any proceeds to NPU work such as graph capture,
+      avoiding startup skew.
+  - scenario: DP size 1 or metadata-only scheduler client
+    value: true
+    reason: Barrier is skipped automatically in these cases, so leaving the default has no cost.
+  - scenario: Debugging startup hangs or when lazy initialization is used and eager barrier is undesired
+    value: false
+    reason: Disabling removes the CPU process-group synchronization; use only if you understand the init ordering implications.
+  caveats:
+  - Set the identical value on every rank in the DP group to avoid inconsistent barrier participation.
+  - With MultiConnector, put the flag inside the AscendStoreConnector child's kv_connector_extra_config, not at the top level.
+  quick_guide: Leave memcache_dp_init_barrier at its default true for multi-rank DP MemCache; set false only to skip the one-time
+    startup barrier.
+analysis_date: '2026-10-27'

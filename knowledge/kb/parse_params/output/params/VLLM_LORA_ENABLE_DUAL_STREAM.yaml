@@ -1,0 +1,118 @@
+name: VLLM_LORA_ENABLE_DUAL_STREAM
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:2151
+- vllm/envs.py:322
+- vllm/config/lora.py:125
+- vllm/lora/layers/base_linear.py:31
+- vllm/lora/layers/base_linear.py:78
+- vllm/lora/layers/fused_moe.py:51
+- vllm/lora/layers/utils.py:19
+- vllm/lora/ops/triton_ops/lora_expand_op.py:247
+- vllm/lora/ops/triton_ops/lora_shrink_op.py:230
+- vllm_ascend/lora/fused_moe.py:334
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Upstream vLLM uses this flag to run the LoRA adapter branch on a secondary CUDA
+
+  stream so the base-layer GEMM and the LoRA fast path overlap (see
+
+  vllm/lora/layers/base_linear.py:31-102 and fused_moe.py:51, which set
+
+  self._enable_aux_cuda_stream and register a lora_linear_async custom op). It also
+
+  gates PDL (programmatic dependent launch) in the Triton LoRA shrink/expand kernels
+
+  (lora_shrink_op.py:230, lora_expand_op.py:247: use_gdc = supports_pdl(...) and
+
+  VLLM_LORA_ENABLE_DUAL_STREAM).
+
+  On Ascend, the mechanism is fundamentally different: vllm_ascend/lora/fused_moe.py:334
+
+  reads envs.VLLM_LORA_ENABLE_DUAL_STREAM into self._enable_aux_cuda_stream, but the
+
+  Ascend FusedMoEWithLoRA constructor deliberately skips the upstream GPU-only
+
+  _init_lora_stream_context / _inject_lora_into_fused_moe path (comment at lines
+
+  320-336: "\"it immediately asserts Triton internals and calls"
+
+  _inject_lora_into_fused_moe which is GPU-only"). Ascend sets self._lora_stream = None
+
+  and self._events = None, so no auxiliary stream is actually created on NPU. The
+
+  Ascend MoE LoRA path applies delta natively inside unquant_apply_mlp
+
+  (moe_lora_apply_w13 / moe_lora_apply_w2) rather than via a dual-stream overlap.
+
+  Additionally, upstream LoRAConfig._validate_lora_config (config/lora.py:125) raises
+
+  ValueError if the flag is set on a non-CUDA-alike platform, so on Ascend the flag
+
+  cannot even be enabled through the normal config validation path. Net effect on
+
+  Ascend NPU runtime performance is negligible: "the flag is effectively inert for"
+
+  the Ascend MoE LoRA path and blocked by validation for the dense path.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2151
+  context: Environment variable definition, default 0 (disabled).
+- file: vllm/config/lora.py:125
+  context: 'Validation: raises ValueError if enabled on non-CUDA-alike platform; also disables it when fully_sharded_loras
+    is set.'
+- file: vllm/lora/layers/base_linear.py:31
+  context: Conditionally defines lora_linear_async custom op for dual-stream overlap (CUDA only).
+- file: vllm/lora/layers/base_linear.py:78
+  context: Sets _enable_aux_cuda_stream and initializes aux CUDA stream context.
+- file: vllm/lora/layers/fused_moe.py:51
+  context: Upstream FusedMoEWithLoRA sets _enable_aux_cuda_stream and inits stream context.
+- file: vllm/lora/layers/utils.py:19
+  context: _get_lora_aux_cuda_stream returns None unless flag set and platform is CUDA-alike.
+- file: vllm/lora/ops/triton_ops/lora_shrink_op.py:230
+  context: Enables PDL (use_gdc) in Triton LoRA shrink kernel when flag set.
+- file: vllm/lora/ops/triton_ops/lora_expand_op.py:247
+  context: Enables PDL (use_gdc) in Triton LoRA expand kernel when flag set.
+- file: vllm_ascend/lora/fused_moe.py:334
+  context: Ascend FusedMoEWithLoRA reads the flag into _enable_aux_cuda_stream but skips stream init (GPU-only path).
+related_parameters:
+- name: enable_lora
+  relation: Parent feature; this flag only matters when LoRA is enabled.
+- name: fully_sharded_loras
+  relation: Mutually exclusive; upstream validation disables dual stream when fully_sharded_loras is set.
+- name: max_loras
+  relation: LoRA concurrency setting; dual stream overlap benefit scales with LoRA workload.
+- name: VLLM_LORA_DISABLE_PDL
+  relation: Related PDL control for LoRA kernels; PDL in Triton LoRA ops is gated by dual stream.
+constraints:
+- Enabling VLLM_LORA_ENABLE_DUAL_STREAM on a non-CUDA-alike platform (including Ascend NPU) raises ValueError in LoRAConfig
+  validation.
+- The flag is automatically forced to False when fully_sharded_loras is enabled.
+- The value must be 0 or 1; it is parsed as bool(int(...)).
+tuning_advice:
+  summary: Leave disabled on Ascend NPU; the dual-stream LoRA overlap is a CUDA-only optimization that vllm-ascend does not
+    implement.
+  suggested_values:
+  - scenario: Any LoRA deployment on Ascend NPU (v1 or v2 worker)
+    value: 0
+    reason: Ascend skips the GPU-only aux stream init and config validation rejects the flag on non-CUDA platforms, so enabling
+      it provides no benefit and may raise an error.
+  - scenario: CUDA GPU deployment with LoRA and no fully_sharded_loras
+    value: 1
+    reason: Upstream overlaps base-layer compute with the LoRA fast path and enables PDL in Triton LoRA kernels, reducing
+      latency.
+  caveats:
+  - Do not set this on Ascend expecting a speedup; the Ascend MoE LoRA path applies deltas natively without a secondary stream.
+  - If you also use fully_sharded_loras, upstream will silently reset the flag to False.
+  quick_guide: Keep VLLM_LORA_ENABLE_DUAL_STREAM=0 on Ascend NPU; it is a CUDA-only LoRA overlap optimization.
+analysis_date: '2026-10-27'

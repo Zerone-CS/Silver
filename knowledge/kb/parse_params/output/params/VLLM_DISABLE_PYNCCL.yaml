@@ -1,0 +1,79 @@
+name: VLLM_DISABLE_PYNCCL
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1212
+- vllm/envs.py:131
+- vllm/distributed/device_communicators/pynccl.py:127
+- vllm/distributed/device_communicators/pynccl.py:229
+value_type: bool
+default: false
+valid_choices: 'boolean-like string: ''True''/''true''/''1'' enable, ''False''/''false''/''0'' or unset disable'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_DISABLE_PYNCCL is an upstream vLLM env var (vllm/envs.py:1212) that, when truthy,
+
+  forces PyNcclCommunicator to be unavailable. In vllm/distributed/device_communicators/pynccl.py:127
+
+  and :229, the constructor checks `if self.world_size == 1 or envs.VLLM_DISABLE_PYNCCL:` and
+
+  immediately sets `self.available = False; self.disabled = True` and returns without loading the
+
+  NCCL library or initializing a communicator. This disables the PyNCCL fast-path collective
+
+  (used for custom all-reduce / quick all-reduce in tensor-parallel groups) and forces callers to
+
+  fall back to torch.distributed (HCCL on Ascend). PyNCCL is a CUDA/NCCL-specific mechanism; on
+
+  Ascend NPU the NCCL library is not present, so PyNcclCommunicator would already fail to load
+
+  (the `except Exception` at pynccl.py:133-138 disables it) and vllm-ascend uses HCCL via
+
+  torch.distributed regardless. Therefore this flag has essentially no effect on Ascend runtime
+
+  performance — it only short-circuits a code path that is already non-functional on NPU. On GPU
+
+  it would trade a slightly faster custom all-reduce for the standard torch.distributed path,
+
+  a minor latency/throughput difference in TP communication.
+
+  '
+usage_locations:
+- file: vllm/distributed/device_communicators/pynccl.py:127
+  context: PyNcclCommunicator.__init__ early-returns with available=False when VLLM_DISABLE_PYNCCL is set
+- file: vllm/distributed/device_communicators/pynccl.py:229
+  context: from_unique_id classmethod also disables communicator when VLLM_DISABLE_PYNCCL is set
+- file: vllm/envs.py:1212
+  context: env var definition, parsed as bool from 'true'/'1'
+related_parameters:
+- name: VLLM_SKIP_P2P_CHECK
+  relation: Both relate to custom/PyNCCL communication setup; P2P check is part of the same custom all-reduce path
+- name: tensor_parallel_size
+  relation: PyNCCL is only relevant when world_size > 1 (TP > 1); with world_size == 1 the communicator is disabled regardless
+constraints:
+- The value is parsed as truthy only for 'true' or '1' (case-insensitive); any other value including 'False' leaves PyNCCL
+  enabled.
+- When set, PyNcclCommunicator is unconditionally marked unavailable and disabled, so any code relying on the PyNCCL fast
+  collective must fall back to torch.distributed.
+- Has no effect when world_size == 1, since the communicator is already disabled in that case.
+tuning_advice:
+  summary: Leave unset on Ascend NPU — PyNCCL is not used (HCCL is the backend), so this flag has no performance benefit and
+    only matters for GPU debugging.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: False (unset)
+    reason: PyNCCL is CUDA/NCCL-specific; Ascend uses HCCL via torch.distributed, so disabling PyNCCL changes nothing at runtime.
+  - scenario: GPU deployment debugging NCCL library load failures
+    value: 'True'
+    reason: Forces fallback to torch.distributed when the NCCL library cannot be loaded, avoiding init errors at the cost
+      of the custom all-reduce fast path.
+  caveats:
+  - Do not expect any throughput or latency change on Ascend from toggling this flag.
+  - On GPU, enabling it removes the PyNCCL custom all-reduce fast path, which can slightly lower TP communication performance.
+  quick_guide: Ignore on Ascend; only set to True on GPU to bypass PyNCCL/NCCL issues.
+analysis_date: '2026-10-27'

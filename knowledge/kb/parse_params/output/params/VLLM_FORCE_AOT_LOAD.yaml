@@ -1,0 +1,115 @@
+name: VLLM_FORCE_AOT_LOAD
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:782
+- vllm/envs.py:120
+- vllm/compilation/decorators.py:293
+- vllm/compilation/decorators.py:328
+value_type: bool
+default: false
+valid_choices: 0 or 1 (string compared to '1')
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_FORCE_AOT_LOAD only changes error-handling behavior in the AOT compile
+
+  load path (vllm/compilation/decorators.py:_try_load_aot_compiled_fn). When a
+
+  cached AOT artifact fails to load, the default behavior (False) logs a warning
+
+  and returns None, causing vLLM to fall back to recompiling the model (a slow
+
+  but functional path). When set to True, the exception is re-raised, producing a
+
+  hard startup failure instead of a silent recompile.
+
+
+  It does NOT change the actual compilation or execution path when loading
+
+  succeeds: "the same torch.compiler.load_compiled_function call, guard"
+
+  verification, and finalize_loading are executed regardless. Therefore it has
+
+  no effect on steady-state inference latency or throughput. Its only
+
+  performance-relevant effect is indirect: "it prevents an accidental expensive"
+
+  recompilation from being silently masked, which can surface as a startup
+
+  latency regression (or a crash) rather than a runtime throughput change.
+
+
+  It is also explicitly listed in the compile_factors ignored_factors set
+
+  (vllm/envs.py:2283), so it does not participate in torch.compile cache key
+
+  hashing — toggling it will not invalidate or alter compiled artifacts.
+
+
+  No vllm-ascend source references this env var; the behavior is inherited
+
+  unchanged from upstream vLLM. On Ascend, AOT compile support depends on the
+
+  torch.compile / torch-npu backend path being functional; if AOT artifacts are
+
+  not produced or not loadable on NPU, enabling this flag will turn a fallback
+
+  recompile into a hard error.
+
+  '
+usage_locations:
+- file: vllm/envs.py:782
+  context: Env var definition; parsed as os.environ.get('VLLM_FORCE_AOT_LOAD', '0') == '1'
+- file: vllm/envs.py:120
+  context: 'Type annotation in envs module: VLLM_FORCE_AOT_LOAD: bool = False'
+- file: vllm/compilation/decorators.py:328
+  context: 'In _try_load_aot_compiled_fn exception handler: re-raises load failure when flag is set, otherwise returns None
+    to trigger recompile'
+- file: vllm/envs.py:2283
+  context: Listed in compile_factors ignored_factors, excluded from torch.compile cache key hashing
+related_parameters:
+- name: VLLM_USE_AOT_COMPILE
+  relation: Parent feature flag; VLLM_FORCE_AOT_LOAD is ignored when AOT compile is disabled
+- name: VLLM_USE_MEGA_AOT_ARTIFACT
+  relation: Related AOT artifact loading optimization; used together in tests to exercise the load-from-disk path
+- name: VLLM_USE_STANDALONE_COMPILE
+  relation: Used together in AOT compile tests to produce standalone compile artifacts
+constraints:
+- VLLM_FORCE_AOT_LOAD has no effect when VLLM_USE_AOT_COMPILE is disabled.
+- When VLLM_FORCE_AOT_LOAD=1, any failure to load an AOT-compiled artifact from disk results in a hard error (exception re-raised)
+  instead of falling back to recompilation.
+- The value is interpreted strictly as the string '1' to enable; any other value (including 'true') is treated as disabled.
+tuning_advice:
+  summary: 'Leave disabled in normal serving; enable only in CI/pre-warmed deployments where
+
+    AOT artifacts are guaranteed present and you want load failures to fail fast
+
+    rather than silently trigger a slow recompile.
+
+    '
+  suggested_values:
+  - scenario: Standard production serving on Ascend NPU
+    value: '0'
+    reason: Default behavior allows graceful fallback to recompilation if a cached AOT artifact is missing or corrupted, avoiding
+      a hard startup failure.
+  - scenario: CI / regression testing of AOT compile artifacts
+    value: '1'
+    reason: Forces a hard error when the expected AOT artifact cannot be loaded, catching broken caches or incompatible artifacts
+      early instead of masking them with a recompile.
+  - scenario: Pre-warmed deployment with verified AOT cache and strict startup guarantees
+    value: '1'
+    reason: Ensures the service never silently pays a multi-minute recompilation cost at startup; a load failure surfaces
+      immediately.
+  caveats:
+  - This flag does not affect steady-state inference latency or throughput; it only changes whether a load failure is fatal
+    or triggers a recompile.
+  - It is excluded from torch.compile cache key factors, so toggling it does not invalidate compiled artifacts.
+  - On Ascend, AOT compile depends on the torch-npu/torch.compile backend producing loadable artifacts; if that path is not
+    fully supported, enabling this flag can turn a benign fallback into a startup crash.
+  - Only the literal string '1' enables it; setting 'true' or 'True' will not work.
+  quick_guide: Keep 0 for normal serving; set 1 only when AOT artifacts are guaranteed and you want load failures to be fatal.
+analysis_date: '2026-10-27'

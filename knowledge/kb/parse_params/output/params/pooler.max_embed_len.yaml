@@ -1,0 +1,83 @@
+name: pooler.max_embed_len
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/entrypoints/pooling/base/protocol.py:182
+value_type: int
+default: null
+valid_choices: Any positive integer up to max_model_len, or null (unset)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'pooler.max_embed_len is a PoolerConfig field consumed only in the pooling/embedding
+
+  entrypoint path (vllm/entrypoints/pooling/base/protocol.py, EmbeddingTokenizeParamsMixin.build_tok_params).
+
+  It does NOT appear in vllm-ascend source, so there is no Ascend-specific override; the
+
+  upstream logic applies unchanged on NPU. The parameter only affects tokenization/validation
+
+  bounds for embedding requests, not the model forward pass or NPU kernel selection.
+
+  Mechanism: "when enable_chunked_processing is True, max_total_tokens is set to"
+
+  pooler_config.max_embed_len (line 182), capping the total token budget per request.
+
+  When chunked processing is False, max_embed_len (or max_model_len if unset) determines
+
+  max_output_tokens = max_model_len - max_embed_len (lines 184-185), i.e. it reserves
+
+  headroom so inputs up to max_embed_len are accepted while the remaining context is
+
+  treated as output budget. This indirectly bounds per-request sequence length, which on
+
+  Ascend affects KV-cache/activation memory footprint and prefill latency for embedding
+
+  models, but it does not change throughput of the core decode path (embedding models are
+
+  prefill-only). Hence low impact.
+
+  '
+usage_locations:
+- file: vllm/entrypoints/pooling/base/protocol.py:182
+  context: Sets max_total_tokens to max_embed_len when enable_chunked_processing is enabled
+- file: vllm/entrypoints/pooling/base/protocol.py:184
+  context: Falls back to max_model_len when max_embed_len is None; computes max_output_tokens = max_model_len - max_embed_len
+related_parameters:
+- name: pooler.enable_chunked_processing
+  relation: When True, max_embed_len becomes the total token budget; when False it defines the input headroom against max_model_len
+- name: max_model_len
+  relation: Upper bound and fallback default; max_embed_len must not exceed it
+- name: max_output_tokens
+  relation: Derived as max_model_len - max_embed_len in the non-chunked path
+constraints:
+- max_embed_len must not exceed max_model_len, otherwise the derived max_output_tokens becomes negative and tokenization validation
+  fails.
+- Only applies to pooling/embedding models; it has no effect on generation (chat/completion) models.
+- When enable_chunked_processing is True, max_embed_len is used directly as the total token budget and must be a positive
+  integer.
+tuning_advice:
+  summary: Set max_embed_len to the largest embedding input you expect so long inputs are accepted without inflating the reserved
+    output budget; leave unset to default to max_model_len.
+  suggested_values:
+  - scenario: Embedding model serving short-to-medium inputs (<= 2K tokens)
+    value: 2048
+    reason: Caps per-request token budget, reducing activation/KV memory on Ascend NPU while covering typical embedding workloads.
+  - scenario: Long-document embedding with chunked processing enabled
+    value: 8192
+    reason: With enable_chunked_processing=True this becomes the total token budget per request; size it to your chunk length
+      to bound prefill latency.
+  - scenario: Default / unsure of input distribution
+    value: unset
+    reason: Leaving it unset falls back to max_model_len, preserving upstream behavior with no risk of negative max_output_tokens.
+  caveats:
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM on Ascend NPU.
+  - Setting max_embed_len close to max_model_len leaves almost no output budget in the non-chunked path, which can cause validation
+    errors for requests needing output tokens.
+  - This parameter does not affect generation throughput; it only bounds embedding request length and thus prefill memory/latency.
+  quick_guide: Set to your max expected embedding input length (<= max_model_len); leave null to inherit max_model_len.
+analysis_date: '2026-10-27'

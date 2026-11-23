@@ -1,0 +1,77 @@
+name: kv_transfer_config.kv_connector_extra_config.layerwise_prefetch_layers
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/... (Mooncake layerwise connector, not present in provided context)
+value_type: int
+default: 1
+valid_choices: positive integer (prefetch window depth in layers); recommended to start at 1
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a nested key inside kv_transfer_config.kv_connector_extra_config, consumed by the
+
+  vllm-ascend Mooncake layerwise KV-transfer connector (documented in
+
+  user_guide/feature_guide/mooncake_layerwise_adaptation_and_optimization.md). It controls the
+
+  prefetch window depth: "how many KV-cache layers ahead of the current compute layer the connector"
+
+  issues layerwise KV transfers. A larger window overlaps more of the KV transfer latency with NPU
+
+  compute, reducing per-layer stalls in disaggregated prefill/decode (PD) deployments. However, a
+
+  fixed value cannot adapt to varying per-layer compute times or network jitter (doc P1 item 1),
+
+  and deeper prefetch consumes more transfer buffers and can increase queue depth / memory pressure.
+
+  The parameter is not defined in upstream vLLM; it is an Ascend-specific extension of the Mooncake
+
+  layerwise connector, so its effect is entirely within the vllm-ascend KV-transfer path.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer (Mooncake layerwise connector)
+  context: Reads layerwise_prefetch_layers from kv_connector_extra_config to size the per-layer prefetch window for overlapping
+    KV transfer with compute.
+- file: docs/user_guide/feature_guide/mooncake_layerwise_adaptation_and_optimization.md:205
+  context: Recommends starting hardware validation with layerwise_prefetch_layers=1 and increasing prefetch depth gradually.
+- file: docs/user_guide/feature_guide/mooncake_layerwise_adaptation_and_optimization.md:235
+  context: Notes a fixed prefetch depth cannot adapt to per-layer compute time or network jitter; adaptive depth is a proposed
+    improvement.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Must select the Mooncake layerwise connector for this extra-config key to take effect.
+- name: tensor_parallel_size
+  relation: Prefetch depth should be tuned after TP size is fixed; docs recommend increasing TP before increasing prefetch
+    depth.
+- name: VLLM_ASCEND_KVPOOL_RANGE_DEBUG
+  relation: Debug env var that emits per-layer range audit logs; keep at 0 in production to avoid per-layer overhead.
+constraints:
+- layerwise_prefetch_layers only has an effect when the Mooncake layerwise KV connector is selected via kv_transfer_config.kv_connector.
+- The value must be a positive integer representing a prefetch window depth in layers.
+tuning_advice:
+  summary: Start at 1 for validation, then increase the prefetch window gradually once TP size and block count are stable
+    to overlap KV transfer with compute.
+  suggested_values:
+  - scenario: First hardware validation / bring-up
+    value: 1
+    reason: Docs recommend starting with layerwise_prefetch_layers=1, TP=1, and hybrid/CP/PP disabled to establish a correct
+      baseline before tuning.
+  - scenario: Stable PD disaggregation with high network latency relative to per-layer compute
+    value: 2
+    reason: A deeper window overlaps more transfer latency with compute, but should be increased only after TP size and block
+      count are fixed.
+  - scenario: Compute-bound layers with fast interconnect
+    value: 1
+    reason: When per-layer compute dominates, a large prefetch window yields little benefit and only adds buffer/queue pressure.
+  caveats:
+  - Tune TP size and block count before increasing prefetch depth; increase one dimension at a time.
+  - Monitor buffer usage and queue depth when raising the window, as deeper prefetch increases memory pressure.
+  - A fixed value cannot adapt to jitter; re-tune per workload rather than assuming one value fits all.
+  quick_guide: Start at 1, verify correctness, then raise gradually while watching buffer/queue pressure.
+analysis_date: '2026-10-27'

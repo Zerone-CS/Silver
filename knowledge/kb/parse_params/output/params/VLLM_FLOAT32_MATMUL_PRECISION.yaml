@@ -1,0 +1,83 @@
+name: VLLM_FLOAT32_MATMUL_PRECISION
+type: env
+category: hardware
+scope: vllm
+source_file:
+- vllm/envs.py:611
+- vllm/envs.py:91
+- vllm/v1/worker/gpu_worker.py:200
+value_type: str
+default: highest
+valid_choices:
+- highest
+- high
+- medium
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var controls torch.set_float32_matmul_precision() inside vLLM workers.
+
+  In vllm/envs.py:611 it is parsed via env_with_choices with default "highest" and
+
+  allowed values ["highest", "high", "medium"] (case-insensitive). It is consumed
+
+  in vllm/v1/worker/gpu_worker.py:200-201, where the worker __init__ calls
+
+  torch.set_float32_matmul_precision(precision) once at startup.
+
+
+  The setting only affects PyTorch float32 matmul kernels: "\"highest\" forces full"
+
+  IEEE FP32 (no TF32-style reduced precision), while "high"/"medium" allow PyTorch
+
+  to use faster reduced-precision FP32 matmul paths (e.g. TF32 on CUDA). On Ascend
+
+  NPU, the equivalent fast path is governed by CANN/HCCL and the torch_npu backend
+
+  rather than CUDA TF32, so the practical effect on Ascend is limited. Most LLM
+
+  inference compute runs in bf16/fp16, not fp32, so this flag rarely touches the
+
+  hot path. It can matter for fp32 layers (e.g. some norms, logits, or fp32
+
+  fallback ops) and for numerical determinism. No vllm-ascend override of this
+
+  env var was found in the provided context; the v1 worker path in vllm-ascend
+
+  inherits the upstream worker behavior. Impact on Ascend runtime is therefore low.
+
+  '
+usage_locations:
+- file: vllm/envs.py:611
+  context: Definition of VLLM_FLOAT32_MATMUL_PRECISION via env_with_choices, default highest, choices highest/high/medium
+- file: vllm/envs.py:91
+  context: Type annotation Literal['highest','high','medium'] = 'highest'
+- file: vllm/v1/worker/gpu_worker.py:200
+  context: Worker __init__ reads env and calls torch.set_float32_matmul_precision(precision)
+related_parameters:
+- name: VLLM_BATCH_INVARIANT
+  relation: Both affect numerical determinism; batch-invariant mode may require full FP32 precision (highest)
+constraints:
+- Value must be one of highest, high, or medium (case-insensitive); other values raise an error via env_with_choices.
+tuning_advice:
+  summary: Keep the default highest on Ascend unless profiling shows fp32 matmul is a bottleneck; the flag has minimal effect
+    on NPU bf16 inference.
+  suggested_values:
+  - scenario: Default / accuracy-sensitive or reproducibility-critical workloads (v1 worker)
+    value: highest
+    reason: Full IEEE FP32 precision; matches upstream default and avoids accuracy regressions. Ascend gains from lower precision
+      are limited.
+  - scenario: Profiling shows fp32 matmul ops dominating and accuracy tolerance is acceptable
+    value: high
+    reason: Allows PyTorch to use faster reduced-precision fp32 matmul where the backend supports it; test accuracy impact
+      on Ascend before adopting.
+  caveats:
+  - No vllm-ascend override found; behavior follows upstream v1 worker. Verify actual speedup on NPU since CANN controls the
+    fp32 fast path.
+  - Do not lower precision when using VLLM_BATCH_INVARIANT or when strict numerical parity is required.
+  quick_guide: Leave VLLM_FLOAT32_MATMUL_PRECISION=highest on Ascend; only try high after confirming fp32 matmul is a real
+    bottleneck.
+analysis_date: '2026-10-27'

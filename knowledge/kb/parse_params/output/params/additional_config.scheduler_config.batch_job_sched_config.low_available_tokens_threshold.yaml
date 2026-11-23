@@ -1,0 +1,87 @@
+name: additional_config.scheduler_config.batch_job_sched_config.low_available_tokens_threshold
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1532
+- vllm_ascend/ascend_config.py:1547
+value_type: int
+default: 4096
+valid_choices: Any positive integer (> 0); values <= 0 raise ValueError
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter is defined only in vllm-ascend (vllm_ascend/ascend_config.py:1532) as part of
+
+  BatchJobSchedConfig, the config for the batch-job-aware scheduler. It is not an upstream vLLM
+
+  parameter. Per the docs (additional_config.md:246), it is the threshold that decides whether the
+
+  scheduler prioritises long-decode jobs or short-decode jobs: "when available KV-cache tokens are"
+
+  greater than the threshold, long decode jobs are prioritised; when available tokens are at or
+
+  below the threshold, short decode jobs are prioritised. This directly changes the order in which
+
+  decode requests are batched, which affects per-request decode latency (short jobs finish sooner
+
+  when the threshold is high enough to trigger short-job priority under memory pressure) and overall
+
+  throughput (long jobs keep the pipeline full when memory is plentiful). The parameter only takes
+
+  effect when batch_job_sched_config.enabled is true; otherwise the scheduler is not active and the
+
+  value has no runtime effect. The impact is indirect (scheduling policy, not a direct compute or
+
+  memory knob), hence medium rather than high.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1532
+  context: Field definition with default 4096 in BatchJobSchedConfig pydantic dataclass
+- file: vllm_ascend/ascend_config.py:1547
+  context: model_validator _validate rejects values <= 0 with ValueError
+related_parameters:
+- name: additional_config.scheduler_config.batch_job_sched_config.enabled
+  relation: Master switch; the threshold has no effect unless enabled is true
+- name: additional_config.scheduler_config.batch_job_sched_config.short_decode_token_threshold
+  relation: Defines what counts as a 'short decode' job; works together with this threshold to decide priority
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_margin_blocks
+  relation: Controls KV-cache reserve that determines available tokens compared against this threshold
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_max_blocks
+  relation: Caps the KV-cache reserve, indirectly affecting available-token levels seen by this threshold
+constraints:
+- low_available_tokens_threshold must be a positive integer; values <= 0 raise a ValueError at config validation.
+- The parameter only has any effect when batch_job_sched_config.enabled is set to true.
+tuning_advice:
+  summary: 'Keep the default 4096 for mixed workloads; lower it for consistently long-decode-heavy workloads
+
+    so long jobs stay prioritised, and raise it when short jobs must not be starved under memory pressure.
+
+    '
+  suggested_values:
+  - scenario: Mixed short and long decode workloads (default recommendation)
+    value: 4096
+    reason: Default balances long-job priority when memory is plentiful against short-job priority under pressure; docs recommend
+      keeping the default for mixed workloads.
+  - scenario: Consistently long-decode-heavy workload
+    value: 2048
+    reason: Docs advise lowering the threshold so long decode jobs remain prioritised even when available tokens drop, avoiding
+      premature switching to short-job priority.
+  - scenario: Latency-sensitive short requests mixed with long jobs on a memory-constrained NPU
+    value: 8192
+    reason: A higher threshold triggers short-job priority earlier, reducing tail latency of short requests when KV-cache
+      headroom is tight.
+  caveats:
+  - No effect unless batch_job_sched_config.enabled is true; verify the scheduler is actually active before tuning.
+  - This is a vllm-ascend-only parameter; it does not exist in upstream vLLM and will be ignored by a stock vLLM deployment.
+  - Setting the value too low can starve short decode jobs under memory pressure, inflating their tail latency; setting it
+    too high can delay long jobs and reduce overall throughput.
+  - The threshold is compared against available KV-cache tokens, so its effective behaviour depends on reserve_margin_blocks
+    and reserve_max_blocks settings.
+  quick_guide: Leave at 4096 for mixed workloads; lower (~2048) for long-decode-heavy traffic, raise (~8192) to protect short-request
+    latency under memory pressure.
+analysis_date: '2026-10-27'

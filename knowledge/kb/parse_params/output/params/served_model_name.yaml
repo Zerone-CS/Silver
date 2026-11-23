@@ -1,0 +1,83 @@
+name: --served-model-name
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:301
+- vllm/engine/arg_utils.py:439
+- vllm/engine/arg_utils.py:936
+- vllm/engine/arg_utils.py:1854
+- vllm/entrypoints/launchers/api_server/app_state.py:49
+- vllm/v1/metrics/loggers.py:474
+- vllm/benchmarks/serve.py:2099
+value_type: str
+default: null
+valid_choices: any string or list of strings; if unset, defaults to the value of --model
+cli_example: --served-model-name <model-name>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "--served-model-name is a pure API-identity / naming parameter. It is stored in\nModelConfig.served_model_name\
+  \ (vllm/config/model.py:301) and consumed only at the\nserving layer:\n- \"vllm/entrypoints/launchers/api_server/app_state.py:49-61\
+  \ builds BaseModelPath\"\n  entries from the served names so the OpenAI-compatible /v1/models endpoint and\n  request routing\
+  \ can match the `model` field of incoming requests.\n- \"vllm/v1/metrics/loggers.py:474 uses the first served name as the\
+  \ `model_name`\"\n  Prometheus label value.\n- \"vllm/benchmarks/serve.py:2099 uses it as the model name sent by the benchmark\
+  \ client.\"\nNone of these paths touch the model forward pass, KV cache, scheduler, HCCL\ncommunication, or CANN graph capture,\
+  \ so there is no direct effect on NPU compute,\nmemory, or throughput. The only indirect latency effect is request admission:\
+  \ if a\nclient sends a `model` string that does not match any served name, the request is\nrejected (404) rather than executed,\
+  \ which is a correctness/availability issue, not\na performance one. vllm-ascend does not override or patch this parameter;\
+  \ the\nvllm-ascend docs only reference it as the string clients must use in requests\n(e.g. lora.md, Cohere-Transcribe.md,\
+  \ Dots3-Note.md, Kimi-K2-Thinking.md).\n"
+usage_locations:
+- file: vllm/config/model.py:301
+  context: Field definition and docstring; also used as model_name tag in metrics when unset.
+- file: vllm/engine/arg_utils.py:439
+  context: EngineArgs field mirroring ModelConfig.served_model_name.
+- file: vllm/engine/arg_utils.py:936
+  context: CLI argument registration for --served-model-name.
+- file: vllm/engine/arg_utils.py:1854
+  context: Passed into ModelConfig construction from EngineArgs.
+- file: vllm/entrypoints/launchers/api_server/app_state.py:49
+  context: Builds BaseModelPath list for API model routing; falls back to [args.model].
+- file: vllm/v1/metrics/loggers.py:474
+  context: Used as the model_name label value in Prometheus metrics.
+- file: vllm/benchmarks/serve.py:2099
+  context: Benchmark client uses it as the model name in requests.
+related_parameters:
+- name: --model
+  relation: If --served-model-name is not set, the served name defaults to the --model value; BaseModelPath model_path is
+    always args.model.
+- name: --tool-call-parser
+  relation: When set, init_app_state initializes parser metrics using served_model_name as the model label.
+- name: --enable-log-requests
+  relation: Request logging is initialized in the same app_state setup path that resolves served model names.
+constraints:
+- If --served-model-name is not provided, the served model name defaults to the value of --model.
+- When multiple names are given, the first name is used as the model field in responses and as the model_name tag in Prometheus
+  metrics.
+- Client requests must use one of the served model names in the `model` field; otherwise the request is rejected (e.g. the
+  default `default` name returns 404 per vllm-ascend docs).
+tuning_advice:
+  summary: Use --served-model-name to give a stable, human-friendly API alias; it has no NPU runtime performance effect, so
+    choose it for operational clarity only.
+  suggested_values:
+  - scenario: Production deployment behind a gateway or load balancer
+    value: a short stable alias such as `qwen3-32b`
+    reason: Decouples the client-facing model name from the long HF path in --model, so weights can be swapped without changing
+      client code; no performance cost on Ascend.
+  - scenario: Benchmarking with vllm bench serve
+    value: the same string passed to --served-model-name on the server
+    reason: The benchmark client sends this as the model name (vllm/benchmarks/serve.py:2099); matching it avoids 404s that
+      would otherwise skew latency/throughput measurements.
+  - scenario: Multi-model or LoRA serving
+    value: the base model alias documented for the deployment (e.g. `Qwen3.5-27B`)
+    reason: vllm-ascend LoRA docs require clients to use the served base name; using the documented alias keeps requests routed
+      correctly.
+  caveats:
+  - Do not expect any throughput or memory change from this flag; it only affects API routing and metric labels.
+  - If you change the served name, update client configs, benchmark scripts, and Prometheus dashboards that key on the model_name
+    label.
+  quick_guide: Set --served-model-name to a short stable alias and use that exact string in all client requests; it does not
+    affect Ascend NPU performance.
+analysis_date: '2026-10-27'

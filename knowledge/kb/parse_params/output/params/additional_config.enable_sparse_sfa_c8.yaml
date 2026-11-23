@@ -1,0 +1,109 @@
+name: additional_config.enable_sparse_sfa_c8
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:642
+- vllm_ascend/ascend_config.py:449
+- vllm_ascend/platform.py:1679
+- vllm_ascend/quantization/methods/kv_cache/turboquant/config.py:32
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'enable_sparse_sfa_c8 selects the C8 (8-bit / FP8-style packed) variant of the Sparse Flash
+
+  Attention (SFA) main KV cache path used by sparse-attention models such as DeepSeek-V3.2,
+
+  GLM-5.1 and GLM-5.2. It is a vllm-ascend-only switch declared in AscendConfig
+
+  (vllm_ascend/ascend_config.py:642) and passed through --additional-config JSON.
+
+  When enabled, the SFA main cache is stored in a packed C8 format, which roughly halves the
+
+  per-token KV footprint versus the non-C8 path and reduces memory bandwidth pressure on the
+
+  attention kernels during decode — the primary mechanism for throughput/memory benefit.
+
+  The flag is also consulted by platform validation (vllm_ascend/platform.py:1679): when SFA
+
+  DCP with a replicated indexer is active, enabling C8 requires the hardware profile to expose
+
+  HardwareCapability.SFA_C8_DCP_REPLICATED_INDEXER, otherwise a NotImplementedError is raised.
+
+  It is mutually exclusive with the TurboQuant cache dtype
+
+  (vllm_ascend/quantization/methods/kv_cache/turboquant/config.py:32-36).
+
+  Docs note that in v0.23.0 GLM-5.2 DCP combined with enable_sparse_sfa_c8 has known
+
+  performance degradation and is not recommended, and that GLM-5.1 P/D-disaggregated serving
+
+  with both sfa_c8 and li_c8 enabled shows a regression on 64k-input/1k-output workloads.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:642
+  context: Field declaration in AscendConfig (default False), settable via --additional-config.
+- file: vllm_ascend/ascend_config.py:449
+  context: Documented in the AscendConfig docstring example JSON of supported keys.
+- file: vllm_ascend/platform.py:1679
+  context: Hardware-profile gate — raises NotImplementedError if SFA C8 DCP with replicated indexer is unsupported.
+- file: vllm_ascend/quantization/methods/kv_cache/turboquant/config.py:32
+  context: Mutex check — TurboQuant cache dtype cannot be combined with enable_sparse_sfa_c8.
+related_parameters:
+- name: additional_config.enable_sparse_li_c8
+  relation: Sibling switch split from the former enable_sparse_c8; both enabled together has a reported perf regression in
+    P/D serving.
+- name: additional_config.enable_sparse_sfa_turboquant
+  relation: Alternative SFA cache quantization path; TurboQuant cache dtype is mutually exclusive with enable_sparse_sfa_c8.
+- name: additional_config.enable_dsa_cp
+  relation: DCP/context-parallel related; SFA C8 DCP with replicated indexer has hardware-profile restrictions.
+- name: additional_config.c8_enable_reshape_optim
+  relation: C8-specific reshape optimization toggle that applies to the C8 path.
+- name: additional_config.enable_sparse_c8
+  relation: Deprecated predecessor option that was split into enable_sparse_sfa_c8 and enable_sparse_li_c8.
+constraints:
+- enable_sparse_sfa_c8 cannot be enabled together with the TurboQuant KV cache dtype; a ValueError is raised.
+- When SFA DCP with a replicated indexer is active, enabling enable_sparse_sfa_c8 requires the current hardware profile to
+  support SFA_C8_DCP_REPLICATED_INDEXER, otherwise a NotImplementedError is raised.
+- Unknown keys in --additional-config are rejected (extra=forbid), so the key name must be spelled exactly enable_sparse_sfa_c8.
+- The former enable_sparse_c8 option was split into enable_sparse_sfa_c8 and enable_sparse_li_c8; the old key must be replaced.
+tuning_advice:
+  summary: 'Enable enable_sparse_sfa_c8 for sparse-attention models (DeepSeek-V3.2, GLM-5.x) when you
+
+    want a smaller packed SFA KV cache and lower decode bandwidth, but avoid it in GLM-5.2 DCP
+
+    deployments and in P/D serving where both sfa_c8 and li_c8 are on.
+
+    '
+  suggested_values:
+  - scenario: Sparse-attention model (DeepSeek-V3.2 / GLM-5.1) on A2/A3 without DCP, memory- or bandwidth-bound decode
+    value: true
+    reason: Packed C8 SFA cache reduces KV footprint and attention bandwidth, improving decode throughput.
+  - scenario: GLM-5.2 with DCP enabled (v0.23.0)
+    value: false
+    reason: Docs report known issues including performance degradation when combining GLM-5.2 DCP with enable_sparse_sfa_c8;
+      not recommended.
+  - scenario: P/D-disaggregated serving with both sfa_c8 and li_c8 desired
+    value: false
+    reason: Reported performance regression for 64k-input/1k-output workloads when both are enabled; keep one disabled.
+  - scenario: TurboQuant KV cache dtype in use
+    value: false
+    reason: Mutually exclusive — enabling both raises a ValueError.
+  caveats:
+  - GLM-5.2-W4A8C8 P/D serving with enable_sparse_sfa_c8 can show GPQA accuracy fluctuations of ~2-3 percentage points across
+    runs.
+  - SFA C8 DCP with a replicated indexer is only supported on hardware profiles exposing SFA_C8_DCP_REPLICATED_INDEXER; A5's
+    SFA C8 operator does not yet support DCP with replicated indexer.
+  - For P/D-disaggregated SFA models, DCP must be enabled or disabled symmetrically on prefiller and decoder nodes to avoid
+    accuracy issues.
+  - On Ascend 950, context parallelism is not supported with SFA.
+  quick_guide: Set enable_sparse_sfa_c8=true for sparse-attention models to shrink the SFA KV cache, but leave it off with
+    GLM-5.2 DCP, TurboQuant, or combined sfa_c8+li_c8 P/D serving.
+analysis_date: '2026-10-27'

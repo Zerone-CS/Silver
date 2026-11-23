@@ -1,0 +1,83 @@
+name: VLLM_MOE_USE_DEEP_GEMM
+type: env
+category: quantization
+scope: vllm
+source_file:
+- vllm/envs.py:1539
+- vllm/envs.py:197
+- vllm/model_executor/layers/fused_moe/oracle/fp8.py:393
+- vllm/model_executor/warmup/deep_gemm_warmup.py:127
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only gates the DeepGEMM FP8 MoE backend selection in vLLM upstream
+
+  (vllm/model_executor/layers/fused_moe/oracle/fp8.py:393). When either
+
+  VLLM_USE_DEEP_GEMM or VLLM_MOE_USE_DEEP_GEMM is explicitly set and one of them is
+
+  false, the DEEPGEMM and BATCHED_DEEPGEMM entries are removed from AVAILABLE_BACKENDS,
+
+  forcing the FP8 MoE oracle to fall back to another backend (e.g. CUTLASS/Triton).
+
+  It also gates the DeepGEMM warmup path in deep_gemm_warmup.py:127, which pre-JITs
+
+  fused MoE grouped GEMM kernels to avoid JIT in the hot path.
+
+  DeepGEMM is a CUDA/Blackwell-oriented kernel library; on Ascend NPU the FP8 MoE
+
+  path is served by vllm-ascend''s own fused MoE implementations (AscendC/CANN kernels),
+
+  not DeepGEMM. No vllm-ascend source references VLLM_MOE_USE_DEEP_GEMM, so on Ascend
+
+  this flag has no effect on the actual MoE kernel selection or runtime performance.
+
+  Its only conceivable Ascend impact is via the upstream oracle code path if it were
+
+  reached, which it is not for Ascend NPU execution.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1539
+  context: Environment variable definition and default (1/True).
+- file: vllm/envs.py:197
+  context: Type annotation in the envs class (bool = True).
+- file: vllm/model_executor/layers/fused_moe/oracle/fp8.py:393
+  context: Gates removal of DEEPGEMM/BATCHED_DEEPGEMM from FP8 MoE available backends.
+- file: vllm/model_executor/warmup/deep_gemm_warmup.py:127
+  context: Gates whether fused MoE grouped GEMM may use DeepGEMM during warmup.
+related_parameters:
+- name: VLLM_USE_DEEP_GEMM
+  relation: Master switch; both must be true for DeepGEMM MoE backend to remain available.
+- name: VLLM_USE_DEEP_GEMM_E8M0
+  relation: Only relevant when DeepGEMM is used (Blackwell E8M0 scaling).
+- name: VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES
+  relation: Only relevant when DeepGEMM is used (TMA-aligned scale tensors).
+- name: VLLM_DEEP_GEMM_WARMUP
+  relation: Controls DeepGEMM JIT warmup behavior when DeepGEMM is enabled.
+constraints:
+- The value must be parseable as an integer (0 or 1); other strings will raise a ValueError during bool(int(...)) conversion.
+- DeepGEMM MoE backend is only removed from the candidate list when the env var is explicitly set; if unset, the default True
+  keeps DeepGEMM available.
+tuning_advice:
+  summary: Leave at default on Ascend NPU; this flag only affects CUDA DeepGEMM MoE backend selection and has no runtime effect
+    on NPU.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: 1
+    reason: DeepGEMM is not used on Ascend; keeping the default avoids any upstream oracle side effects and matches stock
+      behavior.
+  - scenario: GPU (Blackwell) FP8 MoE with DeepGEMM available
+    value: 1
+    reason: Enables the DeepGEMM FP8 MoE backend and warmup for best throughput on supported GPUs.
+  caveats:
+  - Do not expect any latency/throughput change on Ascend from toggling this variable.
+  - If you must disable DeepGEMM on GPU, also consider VLLM_USE_DEEP_GEMM to fully remove the backend.
+  quick_guide: On Ascend NPU, ignore this flag — it only gates CUDA DeepGEMM MoE backend selection.
+analysis_date: '2026-10-27'

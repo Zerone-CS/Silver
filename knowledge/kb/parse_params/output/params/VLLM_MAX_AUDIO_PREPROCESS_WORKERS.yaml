@@ -1,0 +1,81 @@
+name: VLLM_MAX_AUDIO_PREPROCESS_WORKERS
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1028
+- vllm/envs.py:84
+- vllm/entrypoints/speech_to_text/base/serving.py:147
+value_type: int
+default: '<computed: max(1, min(os.cpu_count() or 1, 2))>'
+valid_choices: positive integer >= 1
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only affects the speech-to-text (STT) serving path. In
+
+  vllm/entrypoints/speech_to_text/base/serving.py:147-154, the value is read once
+
+  during STT serving initialization and used as max_workers for a dedicated
+
+  ThreadPoolExecutor (thread_name_prefix="stt-preprocess"). That executor runs
+
+  _decode_and_chunk_speech via make_async_with_semaphore, i.e. audio decoding and
+
+  chunking happen on CPU worker threads in the frontend, separate from the Renderer
+
+  thread pool (the comment notes a separate pool was chosen because reusing the
+
+  Renderer pool showed lower throughput).
+
+  On Ascend NPU this parameter does NOT touch any NPU/HCCL/CANN code path — it is
+
+  pure host-side CPU thread-pool sizing for audio preprocessing. It can influence
+
+  end-to-end STT request latency/throughput only insofar as audio preprocessing is
+
+  a bottleneck relative to NPU inference; the upstream default caps at 2 because
+
+  profiling showed that performed best. No vllm-ascend override or monkey-patch of
+
+  this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1028
+  context: Env var definition; default computed as max(1, min(os.cpu_count() or 1, 2))
+- file: vllm/envs.py:84
+  context: 'Type annotation declaration VLLM_MAX_AUDIO_PREPROCESS_WORKERS: int'
+- file: vllm/entrypoints/speech_to_text/base/serving.py:147
+  context: Read to size the STT preprocessing ThreadPoolExecutor (max_workers)
+related_parameters:
+- name: VLLM_MEDIA_LOADING_THREAD_COUNT
+  relation: Sibling media-loading thread pool size; both govern host-side CPU concurrency for multimodal input handling
+- name: VLLM_MAX_AUDIO_DECODE_DURATION_S
+  relation: Bounds the audio decode work performed inside these preprocessing worker threads
+- name: VLLM_MAX_AUDIO_DECODE_BYTES
+  relation: Bounds memory allocated during audio decode executed on these worker threads
+constraints:
+- The value must be a positive integer; a value below 1 would make ThreadPoolExecutor construction fail.
+- This parameter only has an effect on the speech-to-text serving path; it is ignored for text-only or non-STT multimodal
+  serving.
+tuning_advice:
+  summary: Leave at the default (2) unless STT audio preprocessing is measured as the bottleneck; this is a host-CPU-only
+    knob with no NPU impact.
+  suggested_values:
+  - scenario: Default STT deployment on Ascend NPU
+    value: 2
+    reason: 'Upstream profiling (PR #44612) showed capping at 2 workers gave the best throughput; matches the computed default.'
+  - scenario: High-concurrency STT serving where audio decode/chunking is the measured bottleneck and ample CPU cores are
+      available
+    value: 4
+    reason: More worker threads can parallelize CPU-bound audio decoding, but only raise after profiling confirms preprocessing
+      is limiting end-to-end latency.
+  caveats:
+  - Do not raise this expecting NPU throughput gains — it only sizes a CPU thread pool in the STT frontend.
+  - Over-provisioning workers can starve the Renderer/engine threads of CPU and hurt overall throughput.
+  quick_guide: Keep the default (2); only increase for STT workloads if audio preprocessing is profiled as the bottleneck.
+analysis_date: '2026-10-27'

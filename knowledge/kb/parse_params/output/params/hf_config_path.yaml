@@ -1,0 +1,92 @@
+name: --hf-config-path
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:194
+- vllm/engine/arg_utils.py:441
+- vllm/engine/arg_utils.py:887
+- vllm/engine/arg_utils.py:1823
+value_type: str
+default: null
+valid_choices: Any Hugging Face repo ID or local filesystem path to a config directory/file
+cli_example: --hf-config-path <path-or-repo-id>
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: '--hf-config-path only selects which Hugging Face PretrainedConfig is loaded to
+
+  describe the model architecture (hidden size, num layers, num attention heads,
+
+  vocab size, etc.). It is consumed in ModelConfig (vllm/config/model.py:194) and
+
+  passed through EngineArgs.create_model_config (vllm/engine/arg_utils.py:1823).
+
+  It does NOT change the model weights, the compute graph, or the runtime kernels.
+
+  Crucially, it is listed in ModelConfig.compute_hash''s ignored_factors set
+
+  (vllm/config/model.py:437), meaning it does not affect the computation graph hash
+
+  and therefore does not trigger recompilation or alter CUDA/NPU graph capture.
+
+  Its only indirect performance relevance on Ascend is that the loaded config
+
+  determines derived values such as max_model_len, num_hidden_layers, and
+
+  vocab_size, which in turn drive KV-cache sizing and memory profiling. If a
+
+  mismatched config is supplied, the derived memory budget (gpu_memory_utilization
+
+  accounting) and KV-cache block count can be wrong, potentially causing OOM or
+
+  reduced concurrency. No vllm-ascend-specific override of this parameter was
+
+  found in the provided context; vllm-ascend inherits the upstream behavior.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:194
+  context: ModelConfig field definition; docstring states it defaults to model name/path when unspecified
+- file: vllm/config/model.py:437
+  context: Listed in compute_hash ignored_factors, so it does not affect graph structure/hash
+- file: vllm/engine/arg_utils.py:441
+  context: EngineArgs dataclass field mirroring ModelConfig.hf_config_path
+- file: vllm/engine/arg_utils.py:887
+  context: CLI argument registration under ModelConfig argument group
+- file: vllm/engine/arg_utils.py:1823
+  context: Forwarded into ModelConfig construction in create_model_config
+related_parameters:
+- name: --model
+  relation: When --hf-config-path is unset, the model name/path is used to load the config
+- name: --config-format
+  relation: Determines how the config at hf_config_path is parsed (auto/hf/mistral, etc.)
+- name: --revision
+  relation: Revision used when resolving the config from the HF Hub
+- name: --trust-remote-code
+  relation: Required if the config's custom code must be executed to load it
+- name: --max-model-len
+  relation: Often derived from the loaded config; a mismatched config can yield a wrong default
+constraints:
+- If --hf-config-path is not specified, the model name or path given by --model is used to load the config.
+- The config at --hf-config-path must be compatible with the actual model weights; a mismatched architecture config leads
+  to incorrect derived parameters and potential load/runtime failures.
+- Loading a config that requires custom code needs --trust-remote-code to be enabled.
+tuning_advice:
+  summary: Leave unset in normal deployments; only set it to point at a config when the model directory lacks a usable config.json
+    or you need to override architecture metadata.
+  suggested_values:
+  - scenario: Standard deployment where the model directory contains a valid config.json
+    value: unset (default)
+    reason: The model path already provides the config; setting it adds no benefit and risks mismatch.
+  - scenario: Model weights stored separately from config, or config needs to be pinned to a specific revision
+    value: /path/to/config_dir
+    reason: Explicitly supplies the architecture config so derived parameters (max_model_len, layer count) are correct for
+      KV-cache sizing.
+  caveats:
+  - Ensure the supplied config matches the actual weights; a mismatch corrupts memory profiling and can cause OOM on Ascend
+    NPUs.
+  - Changing this value does not invalidate the graph hash, so it will not force recompilation.
+  quick_guide: Usually leave unset; only specify when the model directory lacks a valid config.json.
+analysis_date: '2026-10-27'

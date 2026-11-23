@@ -1,0 +1,154 @@
+name: --all2all-backend
+type: cli
+category: communication
+scope: both
+source_file:
+- vllm/config/parallel.py:197
+- vllm/engine/arg_utils.py:1203
+- vllm/engine/arg_utils.py:516
+- vllm/engine/arg_utils.py:2364
+- vllm_ascend/ascend_config.py:765
+- vllm_ascend/patch/platform/patch_parallel_config.py:10
+- vllm_ascend/platform.py:1320
+value_type: str
+default: allgather_reducescatter
+valid_choices:
+- allgather_reducescatter
+- deepep_high_throughput
+- deepep_low_latency
+- deepep_v2
+- flashinfer_all2allv
+- flashinfer_nvlink_one_sided
+- flashinfer_nvlink_two_sided
+- mori_high_throughput
+- mori_low_latency
+- nixl_ep
+cli_example: --all2all-backend allgather_reducescatter
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This parameter selects the All2All communication algorithm used for MoE expert-parallel
+
+  token dispatch/combine. On Ascend it has two distinct effects:
+
+
+  1) It is the switch that enables/disables MoE sequence parallelism (SP). In
+
+  vllm_ascend/patch/platform/patch_parallel_config.py:10, `use_sequence_parallel_moe`
+
+  returns True only when `all2all_backend` is one of {allgather_reducescatter,
+
+  deepep_high_throughput, deepep_low_latency, deepep_v2, flashinfer_nvlink_one_sided,
+
+  mori_high_throughput, mori_low_latency, nixl_ep} AND enable_expert_parallel AND
+
+  tensor_parallel_size > 1. So the backend choice directly gates whether the SP MoE
+
+  path (allgather/reducescatter-based expert sharding) is used, which changes both
+
+  compute distribution and communication volume across NPUs.
+
+
+  2) vllm-ascend silently overrides it. In vllm_ascend/ascend_config.py:765, when
+
+  FlashComm1 is NOT explicitly enabled (neither additional_config.enable_flashcomm1
+
+  nor env VLLM_ASCEND_ENABLE_FLASHCOMM1) and DSA-CP is off, the code forcibly sets
+
+  `vllm_config.parallel_config.all2all_backend = "flashinfer_all2allv"` — a "tricky
+
+  way to disable SP moe". This means on Ascend the user-supplied value is clobbered
+
+  to flashinfer_all2allv unless FlashComm1 is turned on, effectively disabling the
+
+  SP MoE path. When FlashComm1 is enabled but the config does not support SP MoE,
+
+  a warning is logged and SP MoE is disabled.
+
+
+  3) It feeds into compilation graph splitting. vllm_ascend/platform.py:1320 passes
+
+  all2all_backend into `set_splitting_ops_for_v1`, and upstream
+
+  vllm/config/compilation.py:1248 disables CUDA/ACL graphs when
+
+  all2all_backend == "deepep_high_throughput" and data_parallel_size > 1 (DeepEP
+
+  high-throughput kernels are prefill-optimized and graph-incompatible). This
+
+  changes whether piecewise/full graph capture is used, affecting decode latency.
+
+
+  Net effect: "the backend choice changes communication algorithm, whether SP MoE is"
+
+  active, and whether graph capture is available — all of which materially affect
+
+  throughput, latency, and memory on Ascend NPU.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:765
+  context: Forces all2all_backend to flashinfer_all2allv when FlashComm1 is disabled, to disable SP MoE
+- file: vllm_ascend/patch/platform/patch_parallel_config.py:10
+  context: use_sequence_parallel_moe property checks all2all_backend membership to gate SP MoE
+- file: vllm_ascend/platform.py:1320
+  context: Passes all2all_backend into compilation_config.set_splitting_ops_for_v1 for graph splitting
+- file: vllm/config/compilation.py:1248
+  context: Disables CUDA graphs for deepep_high_throughput when data_parallel_size > 1
+- file: vllm/config/parallel.py:501
+  context: Falls back to allgather_reducescatter if pplx/naive (removed backends) are specified
+- file: vllm/v1/engine/utils.py:624
+  context: 'Ray DP pack strategy validation: deepep backends require strict pack strategy'
+related_parameters:
+- name: --enable-expert-parallel
+  relation: SP MoE (use_sequence_parallel_moe) requires enable_expert_parallel=True
+- name: --tensor-parallel-size
+  relation: SP MoE requires tensor_parallel_size > 1
+- name: additional_config.enable_flashcomm1 / VLLM_ASCEND_ENABLE_FLASHCOMM1
+  relation: When FlashComm1 is off, all2all_backend is forcibly overridden to flashinfer_all2allv
+- name: enable_dsa_cp
+  relation: DSA-CP auto-enables FlashComm, which prevents the flashinfer_all2allv override
+- name: --data-parallel-size
+  relation: deepep_high_throughput disables graphs only when data_parallel_size > 1
+- name: compilation_config.cudagraph_mode
+  relation: Backend choice can force cudagraph_mode to NONE (deepep_high_throughput + DP>1)
+- name: VLLM_RAY_DP_PACK_STRATEGY
+  relation: deepep backends require strict pack strategy under Ray
+constraints:
+- The removed backends pplx and naive are not valid; they are silently replaced with allgather_reducescatter.
+- MoE sequence parallelism is only enabled when all2all_backend is one of allgather_reducescatter, deepep_high_throughput,
+  deepep_low_latency, deepep_v2, flashinfer_nvlink_one_sided, mori_high_throughput, mori_low_latency, or nixl_ep, combined
+  with enable_expert_parallel and tensor_parallel_size > 1.
+- On Ascend, if FlashComm1 is not explicitly enabled (additional_config.enable_flashcomm1 or VLLM_ASCEND_ENABLE_FLASHCOMM1)
+  and DSA-CP is off, the user-specified all2all_backend is overridden to flashinfer_all2allv.
+- When using Ray with VLLM_RAY_DP_PACK_STRATEGY=fill, deepep_high_throughput and deepep_low_latency are rejected; strict pack
+  strategy must be used.
+tuning_advice:
+  summary: On Ascend, enable FlashComm1 and use allgather_reducescatter to activate SP MoE for TP/EP MoE models; otherwise
+    the backend is forced to flashinfer_all2allv and SP MoE is disabled.
+  suggested_values:
+  - scenario: MoE model with TP>1 and EP enabled, wanting sequence-parallel MoE on Ascend
+    value: allgather_reducescatter
+    reason: In the SP MoE allow-list; combined with enable_flashcomm1 it activates the allgather/reducescatter SP path instead
+      of being overridden to flashinfer_all2allv.
+  - scenario: Decode-latency-sensitive MoE deployment with DP>1 where graph capture matters
+    value: deepep_low_latency
+    reason: Avoids the deepep_high_throughput graph-disable path (cudagraph_mode forced to NONE) while still in the SP MoE
+      allow-list.
+  - scenario: Prefill-heavy / high-throughput MoE with DP=1
+    value: deepep_high_throughput
+    reason: Prefill-optimized kernels; graph disable only triggers when data_parallel_size > 1, so DP=1 keeps graphs.
+  - scenario: Default / non-SP baseline or when FlashComm1 is off
+    value: flashinfer_all2allv
+    reason: This is what Ascend forces when FlashComm1 is disabled; explicitly setting it matches the effective behavior and
+      disables SP MoE.
+  caveats:
+  - Setting --all2all-backend without enabling FlashComm1 has no effect on Ascend — the value is overwritten to flashinfer_all2allv.
+  - deepep_high_throughput + DP>1 disables graph capture, increasing decode latency.
+  - Under Ray, deepep backends require VLLM_RAY_DP_PACK_STRATEGY=strict.
+  quick_guide: Enable FlashComm1 and set --all2all-backend allgather_reducescatter for SP MoE; use deepep_low_latency for
+    decode with DP>1.
+analysis_date: '2026-10-27'

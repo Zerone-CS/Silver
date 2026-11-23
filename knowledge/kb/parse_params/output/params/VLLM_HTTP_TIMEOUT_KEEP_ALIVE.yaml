@@ -1,0 +1,82 @@
+name: VLLM_HTTP_TIMEOUT_KEEP_ALIVE
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1117
+- vllm/envs.py:109
+- vllm/entrypoints/launchers/api_server/entry.py:151
+- vllm/entrypoints/launchers/render/entry.py:54
+- vllm/v1/utils.py:400
+value_type: int
+default: 5
+valid_choices: any non-negative integer (seconds); 0 disables keep-alive (force close)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only controls the uvicorn HTTP keep-alive idle timeout
+
+  (timeout_keep_alive) for the OpenAI-compatible API server. It is read in
+
+  vllm/envs.py:1117 and passed to serve_http() in
+
+  vllm/entrypoints/launchers/api_server/entry.py:151 and
+
+  vllm/entrypoints/launchers/render/entry.py:54. It also gets forwarded to the
+
+  Rust frontend via args_dict["http_timeout_keep_alive"] in vllm/v1/utils.py:400.
+
+  It has NO effect on the model execution path, NPU kernels, HCCL communication,
+
+  KV-cache, or scheduling. Its only performance relevance is at the HTTP
+
+  transport layer: "a too-short keep-alive causes clients to reuse a socket the"
+
+  server has already closed, producing ServerDisconnectedError and retried
+
+  requests (extra latency, wasted work); a too-long keep-alive holds idle
+
+  connections open (minor resource retention). This is identical on Ascend NPU
+
+  and GPU — vllm-ascend does not override or reference this parameter, so the
+
+  upstream behavior applies unchanged.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1117
+  context: 'Definition: reads VLLM_HTTP_TIMEOUT_KEEP_ALIVE as int, default 5 seconds'
+- file: vllm/entrypoints/launchers/api_server/entry.py:151
+  context: Passed as timeout_keep_alive to serve_http() for the API server
+- file: vllm/entrypoints/launchers/render/entry.py:54
+  context: Passed as timeout_keep_alive to serve_http() for the render server
+- file: vllm/v1/utils.py:400
+  context: Forwarded to Rust frontend via args_dict['http_timeout_keep_alive']
+related_parameters:
+- name: VLLM_ENGINE_READY_TIMEOUT_S
+  relation: Forwarded together to the Rust frontend in vllm/v1/utils.py; both are env-driven runtime args
+- name: VLLM_KEEP_ALIVE_ON_ENGINE_DEATH
+  relation: Related server-liveness env var; controls whether the API server stays alive after engine death
+constraints:
+- The value must be a valid integer number of seconds; a non-integer string will raise a ValueError when the env var is parsed.
+- A value of 0 disables keep-alive (connections are force-closed after each request), which is valid but increases per-request
+  connection setup overhead.
+tuning_advice:
+  summary: Leave at default 5s for most deployments; increase only if clients hold long-lived idle connections, and keep client-side
+    pool timeouts below this value.
+  suggested_values:
+  - scenario: Standard OpenAI-compatible serving behind a load balancer
+    value: 5
+    reason: Default matches typical client keep-alive behavior and avoids holding idle sockets.
+  - scenario: Clients/proxies with long idle gaps between requests (e.g. disaggregated encoder proxy)
+    value: 30
+    reason: Reduces ServerDisconnectedError from clients reusing sockets the server closed; ensure client pool keepalive_timeout
+      is set below this value.
+  - scenario: High request-rate, connection-churn-sensitive workloads
+    value: 65
+    reason: Longer keep-alive amortizes TCP/TLS handshake cost across bursts of requests, lowering per-request latency.
+  caveats: []
+  quick_guide: Keep default 5s unless clients pool connections longer; then raise it and set client pool timeouts below it.
+analysis_date: '2026-10-27'

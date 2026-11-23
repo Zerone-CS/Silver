@@ -1,0 +1,90 @@
+name: VLLM_REGEX_COMPILATION_TIMEOUT_S
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1626
+- vllm/envs.py:222
+- vllm/v1/structured_output/utils.py:78
+value_type: int
+default: 5
+valid_choices: Any integer; <= 0 disables the timeout
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only gates regex compilation in structured-output backends
+
+  (xgrammar, outlines, guidance) via compile_regex_with_timeout() in
+
+  vllm/v1/structured_output/utils.py. When timeout > 0, the compilation callable
+
+  is submitted to a single-worker ThreadPoolExecutor and awaited with
+
+  future.result(timeout=timeout). This adds a thread-pool creation and a
+
+  blocking wait per regex compilation, but compilation happens once per
+
+  (schema/regex) request setup, not per decode step, so steady-state token
+
+  throughput is unaffected. The timeout only bounds worst-case latency for
+
+  pathological (ReDoS-style) patterns; it does not change the fast path for
+
+  normal patterns. On Ascend NPU this code path is entirely host-side (CPU) and
+
+  has no interaction with CANN/HCCL/NPU kernels — vllm-ascend does not override
+
+  or reference this variable in runtime code (only the e2e guided-decoding test
+
+  sets it to 30). Hence impact on NPU runtime performance is low.
+
+  '
+usage_locations:
+- file: vllm/v1/structured_output/utils.py:78
+  context: Reads envs.VLLM_REGEX_COMPILATION_TIMEOUT_S; if <= 0 runs fn directly, else runs fn in a ThreadPoolExecutor with
+    future.result(timeout=timeout) and raises ValueError on TimeoutError
+- file: vllm/envs.py:1626
+  context: Environment variable definition, default 5 seconds
+- file: tests/e2e/pull_request/one_card/test_guided_decoding.py:37
+  context: vllm-ascend e2e test sets VLLM_REGEX_COMPILATION_TIMEOUT_S=30 for guided decoding tests (test-only, not runtime
+    override)
+related_parameters:
+- name: VLLM_XGRAMMAR_CACHE_MB
+  relation: Both affect structured-output backend (xgrammar) setup cost; cache size controls schema cache, timeout bounds
+    regex compilation
+- name: VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS
+  relation: Separate timeout for tool-call parsing regexes; distinct code path but same ReDoS-protection intent
+constraints:
+- A value of 0 (or any value <= 0) disables the timeout entirely, causing regex compilation to run synchronously without any
+  bound.
+- If regex compilation exceeds the configured timeout, a ValueError is raised and the request fails.
+tuning_advice:
+  summary: Keep the default 5s in production; raise it only for legitimately complex but trusted regexes, and never set 0
+    in a multi-tenant deployment.
+  suggested_values:
+  - scenario: Production serving with untrusted/user-supplied regex or JSON schema (ReDoS protection)
+    value: 5
+    reason: Default bounds worst-case compilation latency and prevents a single adversarial pattern from hanging the worker;
+      normal patterns compile far below this.
+  - scenario: Trusted workloads with very large/complex regexes that legitimately need more compile time
+    value: 30
+    reason: vllm-ascend's own guided-decoding e2e test uses 30s to accommodate complex test patterns; a larger bound avoids
+      spurious failures while still capping runaway compilation.
+  - scenario: Debugging/benchmarking where you want to measure raw compilation time
+    value: 0
+    reason: Disables the timeout so compilation runs directly without thread-pool overhead; acceptable only in controlled,
+      trusted environments.
+  caveats:
+  - This is a host-side (CPU) code path in vllm/v1/structured_output/utils.py; it does not touch Ascend NPU kernels, CANN,
+    or HCCL, so it has no direct effect on NPU compute throughput.
+  - Setting the value to 0 removes ReDoS protection and can hang the inference worker indefinitely on adversarial patterns
+    — not recommended in production.
+  - The timeout adds a ThreadPoolExecutor creation and blocking wait per regex compilation; this is negligible relative to
+    model execution but occurs at request setup, so very tight timeouts can cause spurious request failures under heavy CPU
+    contention.
+  - vllm-ascend does not override this variable in runtime code; only its e2e guided-decoding test sets it to 30.
+  quick_guide: Leave at default 5s for production ReDoS protection; raise to ~30s only for trusted complex regexes; avoid
+    0 outside debugging.
+analysis_date: '2026-10-27'

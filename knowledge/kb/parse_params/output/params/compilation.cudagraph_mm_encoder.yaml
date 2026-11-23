@@ -1,0 +1,95 @@
+name: compilation.cudagraph_mm_encoder
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/vllm.py:1315
+- vllm/config/vllm.py:3060
+- vllm/v1/worker/gpu/model_states/interface.py:72
+- vllm/v1/worker/gpu_model_runner.py:6627
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter enables CUDA graph capture of the multimodal encoder (ViT) forward pass
+
+  in upstream vLLM. On the v1 GPU path, `_create_encoder_cudagraph_manager` (gpu_model_runner.py:6627)
+
+  only builds an `EncoderCudaGraphManager` when `cudagraph_mm_encoder` is true AND the model
+
+  supports multimodal inputs AND `supports_encoder_cudagraph(model)` returns true. When active,
+
+  the encoder forward is captured as a CUDA graph per token-budget level, reducing per-request
+
+  encoder launch overhead and CPU dispatch cost for multimodal workloads.
+
+  On Ascend, this is a CUDA-graph-specific mechanism. vllm-ascend does not define or reference
+
+  `cudagraph_mm_encoder` anywhere in its source (no definition or usage site found), and the
+
+  encoder CUDA graph manager lives in the upstream GPU worker path (`vllm/v1/worker/gpu_model_runner.py`,
+
+  `vllm/v1/worker/gpu/model_states/interface.py`), which is not the code path used by the
+
+  Ascend worker. Therefore on Ascend NPU this parameter has no runtime effect — the encoder
+
+  graph capture path is never reached. Its only observable effect on Ascend is the validation
+
+  in vllm/config/vllm.py:1315, which raises if combined with `--language-model-only`.
+
+  Because it does not change Ascend runtime behavior, performance impact is low.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1315
+  context: 'Validation: raises ValueError if language_model_only is set together with cudagraph_mm_encoder=True.'
+- file: vllm/config/vllm.py:3060
+  context: Proton profiler validation treats cudagraph_mm_encoder as implying CUDA graphs exist (unless enforce_eager).
+- file: vllm/v1/worker/gpu/model_states/interface.py:72
+  context: GPU v1 model state decides whether to build EncoderCudaGraphManager based on this flag plus supports_encoder_cudagraph.
+- file: vllm/v1/worker/gpu_model_runner.py:6627
+  context: GPU v1 model runner creates encoder CUDA graph manager only when flag set and model supports mm inputs.
+related_parameters:
+- name: --language-model-only
+  relation: 'Mutually exclusive: enabling both raises ValueError.'
+- name: --enforce-eager
+  relation: When enforce_eager is set, encoder CUDA graph capture is disabled regardless of this flag.
+- name: compilation_config.cudagraph_mode
+  relation: Related CUDA graph setting; cudagraph_mm_encoder only matters when CUDA graphs are otherwise usable.
+- name: proton_graph_attribution
+  relation: Proton profiler validation considers cudagraph_mm_encoder as implying CUDA graphs.
+constraints:
+- cudagraph_mm_encoder cannot be enabled together with --language-model-only; doing so raises a ValueError.
+- Encoder CUDA graph capture only takes effect when the model supports multimodal inputs and implements the encoder CUDA graph
+  interface.
+- When --enforce-eager is set, encoder CUDA graph capture is disabled regardless of this flag.
+tuning_advice:
+  summary: 'On Ascend NPU this parameter has no runtime effect because vllm-ascend does not implement
+
+    the encoder CUDA graph path; leave it at its default (disabled) and rely on Ascend-native
+
+    graph/compilation settings instead.
+
+    '
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: 'vllm-ascend does not reference cudagraph_mm_encoder and the encoder CUDA graph manager
+
+      is only wired into the upstream GPU worker path, so enabling it provides no benefit on
+
+      Ascend and only risks triggering the language-model-only validation error.
+
+      '
+  caveats:
+  - Enabling this flag on Ascend does not accelerate the multimodal encoder; the encoder CUDA graph manager is not instantiated
+    in the Ascend worker path.
+  - Combining this flag with --language-model-only raises a ValueError at config validation time.
+  - For Ascend graph acceleration of the language model, use the Ascend compilation/graph settings (e.g. compilation_config.cudagraph_mode)
+    rather than this CUDA-specific encoder flag.
+  quick_guide: Leave disabled on Ascend; it only affects the upstream GPU encoder CUDA graph path.
+analysis_date: '2026-10-27'

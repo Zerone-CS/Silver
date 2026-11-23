@@ -1,0 +1,99 @@
+name: structured_outputs.backend
+type: nested
+category: other
+scope: both
+source_file:
+- vllm/sampling_params.py:1100
+- vllm/sampling_params.py:1212
+- vllm/v1/structured_output/__init__.py:132
+- vllm_ascend/patch/platform/patch_structured_output.py:26
+- vllm_ascend/patch/platform/patch_structured_output.py:52
+value_type: str
+default: auto
+valid_choices:
+- auto
+- xgrammar
+- guidance
+- outlines
+- lm-format-enforcer
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This parameter selects the grammar/FSM backend used to constrain token sampling\nfor structured outputs (JSON\
+  \ schema, regex, structural tags). It does not affect\nthe core model forward pass, but it directly affects the per-step\
+  \ token-mask\ncomputation cost during decoding:\n- \"In vLLM v1 (vllm/v1/structured_output/__init__.py:132), the backend\
+  \ is\"\n  instantiated lazily on the first structured request from\n  `request.sampling_params.structured_outputs._backend`.\
+  \ The chosen backend\n  (XgrammarBackend, GuidanceBackend, OutlinesBackend) builds a grammar matcher\n  and, per decode\
+  \ step, computes a token bitmask over the vocabulary that is\n  applied to logits. The cost of this mask computation differs\
+  \ substantially\n  between backends (xgrammar is generally the fastest CPU-side FSM; guidance\n  and outlines are heavier),\
+  \ so backend choice changes decode-step latency and\n  therefore throughput for structured-output workloads.\n- \"With \\\
+  \"auto\\\" (vllm/sampling_params.py:1212), vLLM first tries xgrammar and\"\n  falls back to guidance/outlines only when\
+  \ the schema uses features xgrammar\n  cannot handle. This means \"auto\" usually lands on the fastest backend, but\n  the\
+  \ fallback path can silently switch to a slower backend for certain schemas.\n- \"vllm-ascend adds a platform patch (vllm_ascend/patch/platform/patch_structured_output.py)\"\
+  \n  that enforces a single backend per engine. `_request_backend` reads the\n  resolved `_backend` from the request's structured_outputs,\
+  \ and\n  `_raise_mixed_backend` raises VLLMValidationError if a later request resolves\n  to a different backend than the\
+  \ one already initialized. This is a correctness\n  guard, not a performance change, but it means the first structured request's\n\
+  \  resolved backend pins the engine's backend for its lifetime — so an unlucky\n  first request (e.g. one that forces guidance\
+  \ fallback under \"auto\") can lock\n  the whole engine onto the slower backend.\n- \"The Ascend e2e tests (tests/e2e/pull_request/one_card/test_guided_decoding.py)\"\
+  \n  explicitly pin `backend: \"xgrammar\"` with `disable_any_whitespace: True`,\n  indicating xgrammar is the validated/recommended\
+  \ backend on Ascend NPU.\n"
+usage_locations:
+- file: vllm/sampling_params.py:1100
+  context: Reads structured_outputs_config.backend and validates against request-level _backend; rejects request-level backend
+    selection.
+- file: vllm/sampling_params.py:1212
+  context: In 'auto' mode, tries xgrammar validation first and sets _backend='xgrammar' on success, else falls back to guidance/outlines.
+- file: vllm/v1/structured_output/__init__.py:132
+  context: Lazily instantiates the concrete backend (XgrammarBackend/GuidanceBackend/OutlinesBackend) from the resolved _backend
+    on first structured request.
+- file: vllm_ascend/patch/platform/patch_structured_output.py:26
+  context: Ascend patch reads the resolved _backend from the request to enforce single-backend-per-engine.
+- file: vllm_ascend/patch/platform/patch_structured_output.py:52
+  context: Ascend patch raises VLLMValidationError when a request resolves to a different backend than the already-initialized
+    one.
+- file: tests/e2e/pull_request/one_card/test_guided_decoding.py:79
+  context: Ascend e2e test pins backend='xgrammar' with disable_any_whitespace=True for guided JSON/regex.
+related_parameters:
+- name: structured_outputs_config.disable_any_whitespace
+  relation: xgrammar-specific option; Ascend tests set it True alongside backend='xgrammar' to tighten grammar and reduce
+    wasted whitespace tokens.
+- name: structured_outputs (per-request StructuredOutputsParams)
+  relation: Request-level _backend must match the engine-level backend; request-level backend selection is not supported.
+- name: skip_tokenizer_init
+  relation: Structured outputs require a tokenizer; enabling skip_tokenizer_init makes structured outputs invalid.
+constraints:
+- Only one structured-output backend can be used per engine; a request resolving to a different backend than the already-initialized
+  one raises VLLMValidationError.
+- Request-level backend selection is not supported; the request's _backend must match the engine's configured backend (or
+  be unset).
+- Structured outputs require a tokenizer, so they cannot be used together with skip_tokenizer_init.
+- Structured outputs are not supported for diffusion language models.
+- The 'lm-format-enforcer' backend does not support the Mistral tokenizer; use xgrammar or outlines instead.
+tuning_advice:
+  summary: Pin backend='xgrammar' explicitly for structured-output workloads on Ascend NPU to avoid 'auto' fallback locking
+    the engine onto a slower backend.
+  suggested_values:
+  - scenario: Production structured-output serving on Ascend NPU with JSON schema / regex
+    value: xgrammar
+    reason: xgrammar is the fastest FSM backend and the one validated by Ascend e2e tests; pinning it avoids 'auto' fallback
+      to guidance/outlines which is slower per decode step.
+  - scenario: Schemas using features xgrammar cannot handle (need automatic fallback)
+    value: auto
+    reason: Lets vLLM try xgrammar first and fall back to guidance/outlines only when required; acceptable when schema diversity
+      is high and you accept possible slower backend.
+  - scenario: Debugging / development with simple schemas
+    value: outlines
+    reason: Outlines is a widely compatible backend useful for validation, though slower than xgrammar for high-throughput
+      serving.
+  caveats:
+  - Because vllm-ascend enforces a single backend per engine, ensure all requests use schemas compatible with the chosen backend
+    to avoid VLLMValidationError.
+  - Pair backend='xgrammar' with disable_any_whitespace=True as in Ascend e2e tests to reduce wasted whitespace tokens.
+  - Do not rely on 'auto' in mixed-schema production workloads; the first request's fallback decision is sticky for the engine
+    lifetime.
+  quick_guide: Use backend='xgrammar' explicitly on Ascend NPU; reserve 'auto' for heterogeneous schemas where fallback is
+    acceptable.
+analysis_date: '2026-10-27'

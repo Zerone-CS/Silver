@@ -1,0 +1,10 @@
+{
+  "python_minor": [
+    3,
+    9
+  ],
+  "system": "Linux",
+  "machine": "aarch64",
+  "system_interpreter_required": true,
+  "wheel_count": 18
+}

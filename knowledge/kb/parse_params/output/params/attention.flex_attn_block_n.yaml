@@ -1,0 +1,78 @@
+name: attention.flex_attn_block_n
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/model_executor/layers/attention/attention.py:395
+value_type: int
+default: null
+valid_choices: power of 2, >= 16; must be <= cache block size when VLLM_BATCH_INVARIANT=1
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'flex_attn_block_n is the Triton kernel BLOCK_N tile size for the FLEX_ATTENTION
+
+  backend. It is read in vllm/model_executor/layers/attention/attention.py:395 and,
+
+  when not None, injected into extra_impl_args via setdefault("block_n", block_n)
+
+  (line 413-414). This value is only consumed by the FLEX_ATTENTION backend''s Triton
+
+  kernels, which tile the key/value sequence dimension by BLOCK_N. Larger BLOCK_N
+
+  reduces kernel launch/loop overhead and can improve compute efficiency but increases
+
+  per-tile register/shared-memory pressure; smaller BLOCK_N reduces memory footprint
+
+  but adds loop iterations. On Ascend NPU, vLLM''s Triton FLEX_ATTENTION backend is
+
+  not the native execution path — vllm-ascend uses its own attention backends
+
+  (e.g. Ascend-native attention / CANN operators) and does not define or consume
+
+  flex_attn_block_n. No definition or usage of this parameter was found in the
+
+  vllm-ascend repo, so it has no direct effect on Ascend NPU runtime performance.
+
+  Its impact is therefore limited to the (non-Ascend) Triton flex-attention path.
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/attention/attention.py:395
+  context: Reads flex_attn_block_n from attention_config when backend is FLEX_ATTENTION
+- file: vllm/model_executor/layers/attention/attention.py:404
+  context: Validates block_n <= cache block size when VLLM_BATCH_INVARIANT is enabled
+- file: vllm/model_executor/layers/attention/attention.py:413
+  context: Injects block_n into extra_impl_args for the flex attention kernel
+related_parameters:
+- name: attention.flex_attn_block_m
+  relation: Sibling tile-size parameter for the query dimension of the same flex attention kernel
+- name: VLLM_BATCH_INVARIANT
+  relation: When enabled, block_n must be <= cache block size and defaults to 16 if None
+- name: cache_config.block_size
+  relation: Upper bound for block_n under batch invariance
+constraints:
+- flex_attn_block_n must be a power of 2 and at least 16.
+- When VLLM_BATCH_INVARIANT=1, flex_attn_block_n must be less than or equal to the KV cache block size, otherwise a ValueError
+  is raised.
+- flex_attn_block_n only takes effect when the attention backend is FLEX_ATTENTION; it is ignored by other backends.
+tuning_advice:
+  summary: Only relevant on the Triton FLEX_ATTENTION backend; on Ascend NPU it has no effect, so leave it unset.
+  suggested_values:
+  - scenario: Ascend NPU deployment (vllm-ascend native attention backends)
+    value: unset
+    reason: vllm-ascend does not use the Triton flex-attention path, so this parameter is inert; no tuning needed.
+  - scenario: Triton FLEX_ATTENTION backend with batch invariance enabled
+    value: 16
+    reason: Must be <= cache block size and defaults to 16 when None; 16 is the safe minimum power-of-2 tile.
+  - scenario: Triton FLEX_ATTENTION backend, throughput-oriented, no batch invariance
+    value: 64
+    reason: Larger power-of-2 BLOCK_N reduces loop overhead and improves compute efficiency, subject to memory pressure.
+  caveats:
+  - Do not expect any performance change on Ascend NPU from this parameter.
+  - Ensure the value is a power of 2 >= 16 and, under batch invariance, <= cache block size.
+  quick_guide: Leave unset on Ascend; only tune on the Triton flex-attention path (power of 2, >= 16).
+analysis_date: '2026-10-27'

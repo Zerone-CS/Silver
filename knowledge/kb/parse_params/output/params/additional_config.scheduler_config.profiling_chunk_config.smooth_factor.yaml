@@ -1,0 +1,91 @@
+name: additional_config.scheduler_config.profiling_chunk_config.smooth_factor
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1493
+- vllm_ascend/ascend_config.py:1511
+value_type: float
+default: 1.0
+valid_choices: (0, 1.0] — must be strictly greater than 0 and less than or equal to 1.0
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'smooth_factor is part of ProfilingChunkConfig in vllm_ascend/ascend_config.py (vllm-ascend only;
+
+  no upstream vLLM equivalent). It controls the smoothing/trust level applied to the dynamic
+
+  chunk-size prediction used by Dynamic Chunked Pipeline Parallel (CPP). When
+
+  profiling_chunk_config.enabled is True (requires --pipeline-parallel-size > 1 and
+
+  --enable-chunked-prefill), the scheduler uses profiling data to dynamically pick the prefill
+
+  chunk size per step instead of a fixed --max-num-batched-tokens. smooth_factor weights how much
+
+  the dynamic prediction is trusted versus a smoothed/stable estimate: higher values (closer to
+
+  1.0) trust the dynamic prediction more, lower values dampen it toward a conservative/stable
+
+  chunk size. This directly affects prefill chunk sizing, which in turn affects TTFT (latency) and
+
+  pipeline bubble / operator efficiency (throughput) on Ascend NPU. The value is validated in the
+
+  after-model_validator: "`if not (0 < self.smooth_factor <= 1.0): raise ValueError(...)`. Note the"
+
+  doc table says "0.0 disables dynamic adjustment" but the code validator rejects 0.0 (must be
+
+  > 0), so 0.0 is not actually accepted — the smallest accepted value is a tiny positive float.
+
+  When enabled=False (the default), this parameter has no runtime effect.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1493
+  context: 'Field definition: smooth_factor: float = 1.0 inside ProfilingChunkConfig dataclass.'
+- file: vllm_ascend/ascend_config.py:1511
+  context: after model_validator enforces 0 < smooth_factor <= 1.0, raising ValueError otherwise.
+related_parameters:
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: Master switch; smooth_factor only takes effect when enabled=True (requires PP>1).
+- name: additional_config.scheduler_config.profiling_chunk_config.min_chunk
+  relation: Lower bound on dynamically computed chunk size; interacts with smooth_factor's prediction.
+- name: additional_config.scheduler_config.profiling_chunk_config.need_timing
+  relation: Enables online calibration of chunk timing data that feeds the dynamic prediction.
+- name: additional_config.scheduler_config.profiling_chunk_config.max_fit_chunk
+  relation: Number of chunk-time data points used for fitting the prediction model.
+- name: max-num-batched-tokens
+  relation: Serves as the initial chunk size for dynamic chunk calculation; must be tuned before smooth_factor.
+- name: pipeline-parallel-size
+  relation: Must be > 1 for CPP (and thus smooth_factor) to be active.
+- name: enable-chunked-prefill
+  relation: Required for CPP to function.
+constraints:
+- smooth_factor must be strictly greater than 0 and less than or equal to 1.0; values outside (0, 1.0] raise a ValueError
+  at config validation.
+- smooth_factor has no effect unless profiling_chunk_config.enabled is True.
+- Dynamic Chunked Pipeline Parallel requires --pipeline-parallel-size > 1 and --enable-chunked-prefill.
+- Although docs mention 0.0 disables dynamic adjustment, the code validator rejects 0.0; use a small positive value instead.
+tuning_advice:
+  summary: Enable CPP first, tune --max-num-batched-tokens, then raise smooth_factor toward 1.0 when profiling data is reliable;
+    lower it if chunk sizing is unstable.
+  suggested_values:
+  - scenario: Stable workload with reliable online calibration (need_timing=True, max_fit_chunk>=30)
+    value: 1.0
+    reason: Default; fully trusts the dynamic prediction, maximizing adaptivity and TTFT gains when timing data is trustworthy.
+  - scenario: Noisy profiling data or unstable chunk sizing
+    value: 0.5
+    reason: Dampens the dynamic prediction toward a stable chunk size, reducing jitter at the cost of some adaptivity.
+  - scenario: Conservative / early tuning before calibration converges
+    value: 0.3
+    reason: Low trust in prediction keeps chunk sizes closer to the stable baseline while calibration data accumulates.
+  caveats:
+  - Do not set 0.0 despite the doc note — the validator requires smooth_factor > 0.
+  - Adjust --max-num-batched-tokens before smooth_factor; it is the initial chunk size and dominates TTFT sensitivity.
+  - smooth_factor is ignored entirely when profiling_chunk_config.enabled=False (the default).
+  quick_guide: Enable CPP, tune --max-num-batched-tokens, then set smooth_factor near 1.0 for reliable profiling or lower
+    (0.3-0.5) for stability.
+analysis_date: '2026-10-27'

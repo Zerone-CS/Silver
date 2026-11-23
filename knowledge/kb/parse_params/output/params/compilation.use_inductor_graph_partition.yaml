@@ -1,0 +1,75 @@
+name: compilation.use_inductor_graph_partition
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm_ascend/platform.py:934
+- vllm/compilation/backends.py:155
+- vllm/compilation/backends.py:657
+- vllm/compilation/decorators.py:754
+- vllm/compilation/passes/vllm_inductor_pass.py:51
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This flag selects whether piecewise graph splitting for CUDA-graph capture happens\nat Inductor codegen time\
+  \ (after all passes/fusions) rather than via Dynamo-based\nsplitting. In upstream vLLM it is read in several places:\n-\
+  \ \"vllm/compilation/backends.py:155 wraps compilation in inductor_partition_rule_context\"\n  when enabled, so splitting_ops\
+  \ are applied as Inductor partition rules.\n- \"vllm/compilation/backends.py:657 skips the Dynamo-based CUDAGraphWrapper\
+  \ when\"\n  use_inductor_graph_partition is True (the Inductor path handles wrapping instead).\n- \"vllm/compilation/decorators.py:754\
+  \ installs customized_cudagraph_wrapper hooks so\"\n  each Inductor partition is wrapped with the platform static-graph\
+  \ wrapper.\n- \"vllm/compilation/passes/vllm_inductor_pass.py:51 propagates the flag into\"\n  InductorCompilationConfig\
+  \ used by passes (e.g. sequence_parallelism.py:606,\n  collective_fusion.py:980) to assert full-graph compilation.\nOn Ascend,\
+  \ however, vllm_ascend/platform.py:934 unconditionally resets this flag to\nFalse during platform config validation, logging\
+  \ that it is \"not supported on Ascend\nNPU (use_inductor is False)\". Because vllm-ascend does not use the Inductor backend\n\
+  for graph capture (it relies on its own ACL graph / piecewise splitting path), the\nparameter has no runtime effect on Ascend\
+  \ NPU. Any performance benefit it might\nprovide on GPU (finer-grained piecewise CUDA graphs, better fusion before splitting)\n\
+  is neutralized by the override. Therefore the effective Ascend performance impact is\nlow/none — the value is forced to\
+  \ False regardless of user input.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:934
+  context: Ascend platform check_config resets use_inductor_graph_partition to False with a warning, neutralizing the parameter
+    on NPU.
+- file: vllm/compilation/backends.py:155
+  context: Wraps Inductor compilation in inductor_partition_rule_context when enabled (upstream GPU path).
+- file: vllm/compilation/backends.py:657
+  context: Skips Dynamo-based CUDAGraphWrapper when Inductor graph partition is used.
+- file: vllm/compilation/decorators.py:754
+  context: Installs customized cudagraph partition wrappers for Inductor partitions.
+- file: vllm/compilation/passes/vllm_inductor_pass.py:51
+  context: Propagates flag into InductorCompilationConfig consumed by passes.
+related_parameters:
+- name: compilation_config.splitting_ops
+  relation: Used together as Inductor partition rules when use_inductor_graph_partition is True; passes assert full-graph
+    compilation based on both.
+- name: compilation_config.cudagraph_mode
+  relation: Piecewise cudagraph wrapping behavior depends on both cudagraph_mode.has_piecewise_cudagraphs() and this flag.
+- name: compilation_config.use_inductor
+  relation: Ascend warning states use_inductor is False, which is why this flag is unsupported.
+- name: compilation_config.pass_config.enable_sp
+  relation: Sequence parallelism requires full-graph compilation, asserted via this flag or empty splitting_ops.
+constraints:
+- On Ascend NPU this parameter is forcibly reset to False by vllm-ascend regardless of the value the user sets.
+- Sequence parallelism and AsyncTP passes require full-graph compilation, which is asserted via use_inductor_graph_partition
+  being True or splitting_ops being empty.
+tuning_advice:
+  summary: Leave this at its default False on Ascend; vllm-ascend overrides it anyway, so it cannot be used to tune NPU performance.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: vllm_ascend/platform.py forcibly resets the flag to False because use_inductor is disabled on Ascend; setting
+      True only produces a warning and no behavioral change.
+  - scenario: Upstream GPU reference (non-Ascend) with piecewise cudagraphs and custom splitting_ops
+    value: true
+    reason: On GPU this enables Inductor-time graph partitioning after fusions, which can improve fusion and piecewise cudagraph
+      capture; not applicable to Ascend.
+  caveats:
+  - Do not rely on this flag for Ascend tuning — it is neutralized by the platform override.
+  - If you see the 'not supported on Ascend NPU' warning, it confirms the value was reset and can be safely ignored.
+  quick_guide: Keep default False on Ascend; the flag is overridden and has no NPU runtime effect.
+analysis_date: '2026-10-27'

@@ -1,0 +1,102 @@
+name: VLLM_WORKER_MULTIPROC_METHOD
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:930
+- vllm/envs.py:68
+- vllm/entrypoints/serve/utils/api_utils.py:164
+- vllm/config/vllm.py:1527
+- vllm/config/vllm.py:1813
+- vllm/utils/numa_utils.py:583
+- examples/offline_inference_npu.py:24
+- examples/offline_data_parallel.py:68
+- examples/offline_disaggregated_prefill_npu.py:25
+- examples/offline_external_launcher.py:76
+value_type: str
+default: fork
+valid_choices:
+- fork
+- spawn
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This env var selects the Python multiprocessing start method used to launch\nworker processes (vllm/envs.py:930,\
+  \ choices [\"spawn\", \"fork\"], default \"fork\").\nIt does NOT change per-token compute, kernel selection, or HCCL communication\n\
+  on Ascend NPU. Its performance relevance is indirect and confined to process\nstartup and memory footprint:\n- \"\\\"fork\\\
+  \" (upstream default) uses copy-on-write of the parent process, so worker\"\n  startup is fast and shared read-only pages\
+  \ (e.g. imported modules, model\n  metadata) are not duplicated. However, fork is unsafe with accelerators that\n  initialize\
+  \ device runtimes in the parent (CUDA/NPU context, threads), which is\n  why upstream CLI entrypoints force \"spawn\" (vllm/entrypoints/serve/utils/api_utils.py:164)\n\
+  \  and the CPU/XPU platforms force \"spawn\" (vllm/platforms/cpu.py:385, vllm/platforms/xpu.py:374).\n- \"\\\"spawn\\\"\
+  \ starts a fresh interpreter per worker, which is slower to start and\"\n  duplicates module memory, but is required for\
+  \ certain features (torch_shm\n  multimodal IPC, vllm/config/vllm.py:1527; NUMA binding, vllm/utils/numa_utils.py:583;\n\
+  \  Whisper, vllm/config/vllm.py:1813; RL sleep mode per vllm-ascend docs).\nvllm-ascend does not override the default in\
+  \ library code; instead its examples\nexplicitly set \"spawn\" (examples/offline_inference_npu.py:24, offline_data_parallel.py:68,\n\
+  offline_disaggregated_prefill_npu.py:25, offline_external_launcher.py:76, etc.),\nwhile the large-scale EP docs recommend\
+  \ \"fork\" for the distributed DP server\n(user_guide/feature_guide/large_scale_ep.md:131,195). So the choice is\ndeployment-dependent\
+  \ and affects startup latency and host memory, not steady-state\nNPU throughput.\n"
+usage_locations:
+- file: vllm/envs.py:930
+  context: Definition of the env var with choices spawn/fork, default fork.
+- file: vllm/entrypoints/serve/utils/api_utils.py:164
+  context: CLI entrypoint sets VLLM_WORKER_MULTIPROC_METHOD=spawn if unset, to avoid fork incompatibility with accelerators.
+- file: vllm/config/vllm.py:1527
+  context: Raises ValueError if mm_tensor_ipc=torch_shm and method is not spawn.
+- file: vllm/config/vllm.py:1813
+  context: Warns Whisper may hang with forked workers; recommends spawn.
+- file: vllm/utils/numa_utils.py:583
+  context: NUMA binding is ineffective unless start method is spawn.
+- file: examples/offline_inference_npu.py:24
+  context: vllm-ascend example sets spawn before importing vllm.
+- file: examples/offline_data_parallel.py:68
+  context: vllm-ascend DP example sets spawn.
+- file: user_guide/feature_guide/large_scale_ep.md:131
+  context: vllm-ascend large-scale EP doc recommends fork for distributed DP server.
+related_parameters:
+- name: VLLM_USE_MODELSCOPE
+  relation: Commonly set alongside in vllm-ascend examples; unrelated to multiprocessing semantics.
+- name: VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED
+  relation: Docs pair fork with this flag for the distributed DP server.
+- name: mm_tensor_ipc
+  relation: torch_shm value requires VLLM_WORKER_MULTIPROC_METHOD=spawn or config raises ValueError.
+- name: VLLM_ENABLE_V1_MULTIPROCESSING
+  relation: Controls whether the v1 engine runs in a separate process; interacts with worker start method.
+constraints:
+- The value must be one of 'fork' or 'spawn'; other values are rejected by env_with_choices.
+- If multimodal mm_tensor_ipc is set to 'torch_shm', VLLM_WORKER_MULTIPROC_METHOD must be 'spawn' or vLLM raises a ValueError
+  at config validation.
+- NUMA binding is silently ineffective unless VLLM_WORKER_MULTIPROC_METHOD is 'spawn'.
+- When using spawn, the entry script must be guarded by 'if __name__ == "__main__":' or worker startup will misbehave.
+tuning_advice:
+  summary: Use spawn for vllm-ascend offline/online serving examples and feature-gated paths (torch_shm, NUMA, sleep mode);
+    use fork only for the large-scale distributed DP server as documented.
+  suggested_values:
+  - scenario: Standard vllm-ascend offline inference / OpenAI server on NPU
+    value: spawn
+    reason: vllm-ascend examples (offline_inference_npu.py, offline_data_parallel.py, offline_external_launcher.py) all set
+      spawn; upstream CLI also forces spawn to avoid fork incompatibility with accelerator runtimes.
+  - scenario: Large-scale expert-parallel distributed DP server (DeepSeek-R1 W8A8)
+    value: fork
+    reason: vllm-ascend large_scale_ep.md explicitly exports VLLM_WORKER_MULTIPROC_METHOD=fork together with VLLM_ASCEND_EXTERNAL_DP_LB_ENABLED=1
+      for the distributed DP server.
+  - scenario: RL sleep mode / trainer-rollout sharing NPUs
+    value: spawn
+    reason: rl.md configuration checklist lists VLLM_WORKER_MULTIPROC_METHOD=spawn as the supported worker start method for
+      sleep mode.
+  - scenario: Multimodal with mm_tensor_ipc=torch_shm
+    value: spawn
+    reason: Config validation raises ValueError unless spawn is used with torch_shm.
+  caveats:
+  - spawn increases worker startup latency and host memory (fresh interpreter per worker); fork is faster to start but unsafe
+    with initialized NPU/CUDA contexts.
+  - fork relies on copy-on-write; if the parent has already initialized the NPU runtime or spawned threads, forked workers
+    can hang or crash.
+  - This setting does not affect steady-state NPU throughput or HCCL communication; do not expect token/sec gains from changing
+    it.
+  - When using spawn, ensure the launch script is protected by 'if __name__ == "__main__":'.
+  quick_guide: Default to spawn for vllm-ascend serving/offline; use fork only for the documented large-scale distributed
+    DP server.
+analysis_date: '2026-10-27'

@@ -1,0 +1,73 @@
+name: kv_transfer.kv_buffer_device
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:92
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py:567
+value_type: str
+default: <computed>
+valid_choices: '[''cuda'', ''cpu'', ''xpu'', ''npu''] (npu used by vllm-ascend MooncakeConnectorV1; actual allowed set is
+  validated per-platform via _NIXL_SUPPORTED_DEVICE)'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This field lives inside the --kv-transfer-config JSON (kv_transfer_config.kv_buffer_device)\nand selects which\
+  \ memory the KV connector uses to stage/register KV cache for transfer.\n\nUpstream (vllm) NIXL path:\n- \"base_scheduler.py:88-93\
+  \ sets `use_host_buffer = (kv_buffer_device == \\\"cpu\\\")` unless the\"\n  platform device_type is already \"cpu\". This\
+  \ flag propagates to the worker and decides\n  whether KV data is copied into a host (CPU) staging buffer before being handed\
+  \ to the\n  NIXL transfer engine, or registered directly from device memory.\n- \"base_worker.py:567-583 reads the value,\
+  \ validates it against `_NIXL_SUPPORTED_DEVICE`\"\n  (raising RuntimeError if the device_type/kv_buffer_device pair is unsupported),\
+  \ and sets\n  `use_host_buffer` accordingly. When use_host_buffer is True, per-layer host_xfer_buffers\n  are allocated\
+  \ and an extra device->host copy is inserted on the send path (and host->device\n  on the receive path), adding latency\
+  \ and consuming host RAM proportional to the KV cache\n  being transferred. When False, the device KV tensors are registered\
+  \ directly with the\n  transfer engine (e.g. VRAM/RDMA), avoiding the extra copy.\n\nAscend (vllm-ascend) path:\n- \"The\
+  \ vllm-ascend docs (using_volcano_kthena.md) show MooncakeConnectorV1 configured with\"\n  `\"kv_buffer_device\":\"npu\"\
+  `, i.e. on Ascend the KV buffer is placed in NPU (HBM) memory\n  rather than host memory. This means KV blocks are registered/transferred\
+  \ directly from\n  device memory, avoiding a device->host staging copy on the critical PD-disaggregation\n  transfer path,\
+  \ which lowers per-token transfer latency and reduces host memory pressure.\n- \"Choosing \\\"cpu\\\" on Ascend would force\
+  \ host staging buffers, adding an extra HBM->host copy\"\n  per transfer and increasing host memory usage, hurting latency/throughput\
+  \ of the\n  prefill->decode KV handoff.\n\nNet effect: \"the choice of buffer device determines whether an extra device<->host\
+  \ copy is on\"\nthe KV transfer critical path and how much host memory is reserved, directly affecting\ndisaggregated prefill/decode\
+  \ latency, throughput, and memory footprint.\n"
+usage_locations:
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_scheduler.py:92
+  context: Scheduler sets use_host_buffer based on kv_buffer_device == 'cpu'
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py:567
+  context: Worker reads kv_buffer_device, validates against _NIXL_SUPPORTED_DEVICE, sets use_host_buffer and allocates host_xfer_buffers
+- file: vllm_ascend (docs) user_guide/deployment_guide/using_volcano_kthena.md:140
+  context: MooncakeConnectorV1 PD-disaggregation example uses kv_buffer_device 'npu'
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Selects the connector implementation (e.g. MooncakeConnectorV1, NixlConnector) that consumes kv_buffer_device
+- name: kv_transfer_config.kv_role
+  relation: Producer/consumer role in PD disaggregation; both sides must agree on buffer device semantics
+- name: kv_transfer_config.kv_parallel_size
+  relation: Parallelism of the KV transfer; interacts with buffer placement and bandwidth
+constraints:
+- The value must be one of the devices supported for the current platform (validated against _NIXL_SUPPORTED_DEVICE); an unsupported
+  device_type/kv_buffer_device pair raises a RuntimeError at worker init.
+- On Ascend NPU deployments the value must be 'npu' (as shown in vllm-ascend MooncakeConnectorV1 examples); 'cuda'/'xpu' are
+  not valid on Ascend hardware.
+- When the platform device_type is already 'cpu', use_host_buffer is forced to False regardless of this value.
+tuning_advice:
+  summary: On Ascend PD-disaggregation, use 'npu' to transfer KV directly from HBM and avoid host staging copies.
+  suggested_values:
+  - scenario: Ascend NPU prefill/decode disaggregation with MooncakeConnectorV1
+    value: npu
+    reason: vllm-ascend docs configure kv_buffer_device as 'npu', registering KV cache directly from NPU memory and avoiding
+      an extra HBM->host copy on the transfer critical path.
+  - scenario: Fallback when the transfer backend cannot register NPU memory
+    value: cpu
+    reason: Host staging buffers are used; works universally but adds a device->host copy and host memory overhead, so only
+      use when direct NPU registration is unsupported.
+  caveats:
+  - Verify the chosen connector (Mooncake/NIXL) supports NPU memory registration before selecting 'npu'.
+  - Monitor host memory usage; 'cpu' buffer device scales host RAM with the amount of KV being transferred.
+  quick_guide: Use kv_buffer_device 'npu' on Ascend for direct HBM KV transfer; only fall back to 'cpu' if the backend cannot
+    register NPU memory.
+analysis_date: '2026-10-27'

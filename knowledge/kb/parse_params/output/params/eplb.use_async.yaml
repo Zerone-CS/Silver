@@ -1,0 +1,105 @@
+name: eplb.use_async
+type: nested
+category: scheduling
+scope: both
+source_file:
+- vllm/config/parallel.py:900
+- vllm/distributed/eplb/eplb_state.py:368
+- vllm_ascend/platform.py:994
+- vllm_ascend/platform.py:1000
+value_type: bool
+default: true
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'eplb.use_async controls whether EPLB (Expert Parallelism Load Balancer) expert
+
+  rearrangement runs asynchronously (non-blocking) or synchronously (blocking the
+
+  forward pass). In upstream vLLM, EplbState.add_model reads
+
+  parallel_config.eplb_config.use_async into self.is_async (vllm/distributed/eplb/eplb_state.py:368),
+
+  which governs whether the expert-weight redistribution is overlapped with model
+
+  execution or performed inline. Synchronous EPLB stalls the inference loop during
+
+  each rearrangement (every step_interval steps), adding latency spikes and reducing
+
+  steady-state throughput; asynchronous EPLB overlaps the transfer so the forward
+
+  pass is not blocked.
+
+  On Ascend (vllm-ascend), this parameter is effectively forced: in
+
+  vllm_ascend/platform.py:994-1000, if use_async is False the platform logs a warning
+
+  ("Synchronous EPLB is not supported on Ascend") and sets use_async = True. So on
+
+  Ascend MRv2 the runtime always runs asynchronous EPLB regardless of the user value.
+
+  The performance-relevant consequence is that the async path requires a supported
+
+  communicator (torch_gloo or hixl) for the background expert transfer; the choice of
+
+  communicator (hixl vs torch_gloo) then determines the actual overlap efficiency and
+
+  bandwidth of the async transfer, which is where the real Ascend performance
+
+  difference lies.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:994
+  context: Validates use_async; if False, warns and forces use_async=True (sync EPLB unsupported on Ascend).
+- file: vllm_ascend/platform.py:1000
+  context: Assignment upstream_eplb_config.use_async = True — silent override of user value.
+- file: vllm/config/parallel.py:900
+  context: Elastic EP + async EPLB requires NIXL package; raises ValueError if unavailable.
+- file: vllm/distributed/eplb/eplb_state.py:368
+  context: EplbState.is_async = parallel_config.eplb_config.use_async — drives async vs sync rearrangement path.
+related_parameters:
+- name: enable_eplb
+  relation: use_async only takes effect when --enable-eplb is set; EPLB validation is gated on enable_eplb.
+- name: eplb_config.communicator
+  relation: Async EPLB on Ascend requires communicator to be torch_gloo or hixl; other values raise ValueError.
+- name: enable_elastic_ep
+  relation: Async EPLB is not supported with elastic EP on Ascend (raises ValueError); upstream requires NIXL for elastic
+    EP + async EPLB.
+- name: eplb_config.step_interval
+  relation: Frequency of rearrangement; with async EPLB the transfer is overlapped, with sync it would block each interval.
+- name: eplb_config.policy
+  relation: Policy (stair on Ascend) determines rearrangement plan executed via the async path.
+constraints:
+- Synchronous EPLB (use_async=false) is not supported on Ascend; the value is normalized to true with a warning.
+- Async EPLB on Ascend requires eplb_config.communicator to be torch_gloo or hixl; any other communicator raises ValueError.
+- Async EPLB is not supported together with elastic EP on Ascend (raises ValueError).
+- Upstream EPLB (including use_async) is only supported by Model Runner V2 on Ascend; using it with Model Runner V1 raises
+  ValueError.
+- In upstream vLLM, elastic EP with async EPLB requires the NIXL package, otherwise a ValueError is raised.
+tuning_advice:
+  summary: On Ascend MRv2 always leave use_async=true (it is forced anyway) and focus tuning on the communicator (prefer hixl)
+    to maximize async overlap.
+  suggested_values:
+  - scenario: Ascend Model Runner V2 with EPLB enabled (default/recommended)
+    value: true
+    reason: Ascend forces async EPLB; setting true avoids the normalization warning and matches the only supported path.
+  - scenario: Ascend with HIXL available for high-bandwidth async expert transfer
+    value: true
+    reason: Pair use_async=true with communicator=hixl to overlap expert rearrangement with compute and minimize latency spikes.
+  - scenario: Ascend without HIXL (Gloo fallback)
+    value: true
+    reason: use_async=true with communicator=torch_gloo is the supported fallback; async overlap still avoids blocking the
+      forward pass, though bandwidth is lower.
+  caveats:
+  - Setting use_async=false on Ascend is pointless — it is silently overridden to true with a warning.
+  - Do not combine async EPLB with --enable-elastic-ep on Ascend; it raises ValueError.
+  - Ensure --enable-eplb is set and Model Runner V2 is active, otherwise EPLB config is rejected.
+  quick_guide: Keep --eplb-config.use_async true on Ascend and choose communicator=hixl when available for best async overlap.
+analysis_date: '2026-10-27'

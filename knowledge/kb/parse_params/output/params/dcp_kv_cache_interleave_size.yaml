@@ -1,0 +1,121 @@
+name: --dcp-kv-cache-interleave-size
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1111
+- vllm/engine/arg_utils.py:494
+- vllm/config/parallel.py:358
+- vllm/config/vllm.py:3097
+- vllm/distributed/kv_transfer/kv_transfer_state.py:87
+value_type: int
+default: 1
+valid_choices: integer >= 1; typically 1 or a value equal to block_size
+cli_example: --dcp-kv-cache-interleave-size 1
+deprecated: true
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter controls how the decode KV cache is interleaved across the DCP
+
+  (Decode Context Parallel) group. It only has any effect when
+
+  --decode-context-parallel-size (DCP) is greater than 1; when DCP <= 1 the
+
+  adjust_dcp_kv_cache_interleave_size() method returns early (vllm/config/vllm.py:3106)
+
+  and the value is inert.
+
+
+  The value is consumed in the attention backend (e.g. flashinfer.py:752) where it
+
+  is read as cp_kv_cache_interleave_size and passed to get_dcp_local_seq_lens()
+
+  (flashinfer.py:1433-1437) to compute rank-local sequence lengths for the sharded
+
+  KV cache. The interleave size determines the granularity at which KV cache
+
+  tokens are striped across DCP ranks, which affects the memory access pattern and
+
+  the amount of cross-rank communication needed during decode attention.
+
+
+  For NIXL P/D (prefill-decode disaggregation), adjust_dcp_kv_cache_interleave_size()
+
+  (vllm/config/vllm.py:3097) forces cp_kv_cache_interleave_size to equal
+
+  dcp_kv_cache_interleave_size when the latter is > 1, and the KV transfer path
+
+  requires an interleave_size equal to block_size (kv_transfer_state.py:86). This
+
+  is a correctness/compatibility normalization, not a direct throughput lever.
+
+
+  On Ascend NPU, DCP is a relatively new feature and the interleave size mainly
+
+  influences the KV cache layout and the local seq-len computation feeding the
+
+  attention kernel. Its performance effect is secondary to the DCP size itself and
+
+  the chosen communication backend; the parameter is being deprecated in favor of
+
+  --cp-kv-cache-interleave-size as PCP support matures. No vllm-ascend-specific
+
+  override of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:358
+  context: Field definition with default 1; docstring notes it is replaced by cp_kv_cache_interleave_size and will be deprecated.
+- file: vllm/config/vllm.py:3097
+  context: adjust_dcp_kv_cache_interleave_size() normalizes cp_kv_cache_interleave_size against dcp_kv_cache_interleave_size
+    for NIXL P/D.
+- file: vllm/distributed/kv_transfer/kv_transfer_state.py:87
+  context: Called during KV transfer init; NIXL P/D requires interleave_size equal to block_size.
+- file: vllm/v1/attention/backends/flashinfer.py:752
+  context: Attention backend reads cp_kv_cache_interleave_size (derived from this param) for DCP local seq-len computation.
+- file: vllm/v1/attention/backends/flashinfer.py:1437
+  context: get_dcp_local_seq_lens() uses the interleave size to compute rank-local sequence lengths.
+related_parameters:
+- name: --decode-context-parallel-size
+  relation: This parameter only takes effect when DCP size > 1; otherwise it is ignored.
+- name: --cp-kv-cache-interleave-size
+  relation: Replacement parameter; dcp_kv_cache_interleave_size overrides cp_kv_cache_interleave_size when > 1 in the NIXL
+    P/D path.
+- name: --dcp-comm-backend
+  relation: DCP communication backend that governs how sharded KV cache is exchanged; interleave size interacts with the communication
+    pattern.
+- name: --block-size
+  relation: NIXL P/D requires interleave_size to equal block_size; the value is normalized against block_size.
+constraints:
+- The parameter only has an effect when --decode-context-parallel-size is greater than 1; otherwise it is ignored.
+- For NIXL prefill-decode disaggregation, the interleave size must equal the KV cache block_size, and it is automatically
+  adjusted to block_size if it differs.
+- When dcp_kv_cache_interleave_size is greater than 1, it overrides cp_kv_cache_interleave_size in the NIXL P/D path.
+tuning_advice:
+  summary: 'Leave at the default of 1 unless using DCP with NIXL P/D; prefer the newer
+
+    --cp-kv-cache-interleave-size for new deployments.
+
+    '
+  suggested_values:
+  - scenario: DCP disabled (default single-rank decode)
+    value: 1
+    reason: The parameter is inert when DCP <= 1; the default avoids any layout change.
+  - scenario: DCP enabled with NIXL prefill-decode disaggregation
+    value: <block_size>
+    reason: NIXL P/D requires interleave_size equal to block_size; the code auto-adjusts to block_size, so set it explicitly
+      to match --block-size to avoid a warning and unexpected override.
+  - scenario: New deployments migrating to PCP
+    value: 1
+    reason: This parameter is being deprecated in favor of --cp-kv-cache-interleave-size; use the replacement flag instead.
+  caveats:
+  - This parameter is deprecated and will be removed once PCP is fully supported; prefer --cp-kv-cache-interleave-size.
+  - On Ascend NPU, DCP is a newer feature; the interleave size mainly affects KV cache layout and local seq-len computation,
+    with secondary performance impact compared to DCP size and communication backend.
+  - Setting a non-default value without NIXL P/D provides little benefit and may complicate KV cache layout; keep at 1 unless
+    a specific need arises.
+  quick_guide: Keep at 1 unless using DCP with NIXL P/D (then match block_size); prefer --cp-kv-cache-interleave-size for
+    new setups.
+analysis_date: '2026-10-27'

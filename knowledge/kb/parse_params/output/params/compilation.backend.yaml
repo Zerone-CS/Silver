@@ -1,0 +1,132 @@
+name: compilation.backend
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/compilation.py:483
+- vllm/config/compilation.py:1037
+- vllm/config/vllm.py:1564
+- vllm/config/vllm.py:1605
+- vllm/compilation/backends.py:101
+- vllm_ascend/platform.py:1303
+value_type: str
+default: ''
+valid_choices:
+- ''
+- eager
+- inductor
+- openxla
+- <full.module.name>
+cli_example: '--compilation-config ''{"backend": "eager"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'compilation.backend selects the torch.compile backend used when
+
+  compilation_config.mode is VLLM_COMPILE (or STOCK_TORCH_COMPILE). In upstream
+
+  vLLM, make_compiler() (vllm/compilation/backends.py:101) branches on this value:
+
+  "inductor" -> InductorAdaptor (or InductorStandaloneAdaptor when
+
+  VLLM_USE_STANDALONE_COMPILE is set), "eager" -> EagerAdaptor (no graph
+
+  optimization, effectively eager execution of the FX graph), anything else ->
+
+  a custom CompilerInterface resolved via current_platform.get_compile_backend().
+
+  The backend choice directly determines whether graph-level fusions, kernel
+
+  selection, and memory planning happen, so it strongly affects latency,
+
+  throughput, and peak memory.
+
+
+  On Ascend, vllm_ascend/platform.py:1303-1304 overrides the effective behavior:
+
+  it sets compilation_config.oot_compiler = compile_backend (the Ascend custom
+
+  compile backend used for graph fusion) and forces
+
+  compilation_config.use_inductor = False. This means the upstream "inductor"
+
+  path is NOT used on Ascend; instead the Ascend out-of-tree compiler performs
+
+  graph fusion (AddRMSNormQuantFusionPass etc., see
+
+  tests/e2e/pull_request/one_card/compile/backend.py). The Ascend backend is
+
+  registered through the platform''s get_compile_backend() and resolved by
+
+  make_compiler()''s custom-backend branch. Consequently, setting backend to
+
+  "inductor" on Ascend does not give you CUDA-style Inductor codegen; the
+
+  Ascend compiler still drives fusion. Setting backend to "eager" disables
+
+  graph fusion and yields slower execution but faster startup and lower
+
+  compile-time memory. When cudagraph_mode is NONE, vllm-ascend additionally
+
+  forces mode=NONE and disables npugraph_ex/static_kernel/super_kernel
+
+  (platform.py:1305-1309), so backend becomes irrelevant in that path.
+
+  '
+usage_locations:
+- file: vllm/config/compilation.py:483
+  context: Field definition and docstring describing accepted backend strings.
+- file: vllm/config/compilation.py:1037
+  context: Validation - only "", "eager", "inductor" allowed for piecewise (VLLM_COMPILE) compilation.
+- file: vllm/config/vllm.py:1564
+  context: Warns that Inductor-only optimizations are ignored when backend=="eager" or mode != VLLM_COMPILE.
+- file: vllm/config/vllm.py:1605
+  context: ir_enable_torch_wrap and custom_ops defaults depend on backend=="inductor".
+- file: vllm/compilation/backends.py:101
+  context: make_compiler() dispatches to Inductor/Eager/custom compiler based on backend.
+- file: vllm_ascend/platform.py:1303
+  context: Ascend sets oot_compiler=compile_backend and use_inductor=False, overriding upstream inductor path.
+related_parameters:
+- name: compilation.mode
+  relation: backend is only meaningful when mode is VLLM_COMPILE or STOCK_TORCH_COMPILE; mode=NONE bypasses backend selection.
+- name: compilation.cudagraph_mode
+  relation: When cudagraph_mode=NONE, vllm-ascend forces mode=NONE and disables npugraph_ex/static_kernel/super_kernel, making
+    backend irrelevant.
+- name: compilation.use_inductor
+  relation: vllm-ascend forces use_inductor=False regardless of backend.
+- name: compilation.oot_compiler
+  relation: Set by vllm-ascend to the Ascend custom compile backend for graph fusion.
+- name: compilation.custom_ops
+  relation: Default custom_ops selection depends on whether backend==inductor.
+- name: compilation.ir_enable_torch_wrap
+  relation: Defaults to True only when mode==VLLM_COMPILE and backend==inductor.
+constraints:
+- When compilation mode is VLLM_COMPILE (piecewise compilation), backend must be one of "", "eager", or "inductor"; any other
+  value raises ValueError (vllm/config/compilation.py:1037).
+- Custom backends (full.module.name) are not supported for piecewise compilation.
+- On Ascend, the upstream inductor backend is not used; vllm-ascend forces use_inductor=False and routes compilation through
+  the Ascend oot_compiler.
+- If cudagraph_mode is NONE, vllm-ascend forces compilation mode to NONE, so the backend setting has no effect.
+tuning_advice:
+  summary: On Ascend, leave backend at default ("") so the Ascend custom compiler performs graph fusion; use "eager" only
+    for debugging or when compile time/memory is critical.
+  suggested_values:
+  - scenario: Production throughput/latency on Ascend NPU (v1 and v2 workers)
+    value: unset
+    reason: Default routes to the Ascend oot_compiler for graph fusion (AddRMSNormQuantFusionPass etc.), maximizing throughput;
+      vllm-ascend forces use_inductor=False anyway.
+  - scenario: Debugging or fast startup where compile time/memory matters
+    value: eager
+    reason: EagerAdaptor skips graph optimization, reducing compile time and memory at the cost of throughput.
+  - scenario: Custom graph-fusion pass development/testing
+    value: full.module.name
+    reason: A qualified custom CompilerInterface can be plugged in for testing fusion passes (see tests/e2e/pull_request/one_card/compile/backend.py).
+  caveats:
+  - Do not expect CUDA-style Inductor codegen on Ascend; the Ascend compiler drives fusion regardless.
+  - backend="eager" disables fusion and will lower throughput.
+  - When cudagraph_mode=NONE, backend is ignored entirely.
+  quick_guide: Keep backend default on Ascend; use eager only for debugging.
+analysis_date: '2026-10-27'

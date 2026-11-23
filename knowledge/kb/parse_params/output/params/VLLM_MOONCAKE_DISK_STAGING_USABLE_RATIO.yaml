@@ -1,0 +1,83 @@
+name: VLLM_MOONCAKE_DISK_STAGING_USABLE_RATIO
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1695
+- vllm/envs.py:235
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:272
+value_type: float
+default: 0.9
+valid_choices: float in range (0.0, 1.0]; values are multiplied against the raw DirectIO staging buffer budget
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This env var is read only in the upstream vLLM Mooncake KV-store connector
+
+  (vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:272).
+
+  The helper _get_usable_disk_offload_buffer_budget_bytes multiplies the raw
+
+  DirectIO staging buffer budget by this ratio (default 0.9) and clamps to at
+
+  least 1 byte. The resulting value caps how much of the owner''s staging buffer
+
+  is filled per GET batch when pulling KV blocks from the disk tier. A larger
+
+  ratio allows bigger disk-tier GET batches (fewer round trips, better disk
+
+  read throughput), while a smaller ratio leaves headroom in the staging buffer
+
+  and reduces memory pressure / risk of overrun. It only affects the Mooncake
+
+  disk-offload path (external KV cache store), not the core NPU compute path.
+
+  No vllm-ascend override or reference to this parameter was found in the
+
+  provided context, so on Ascend it retains upstream semantics and only matters
+
+  when the Mooncake KV connector with a disk tier is in use.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1695
+  context: Env var definition and default (0.9) via os.getenv float parse
+- file: vllm/envs.py:235
+  context: 'Type annotation VLLM_MOONCAKE_DISK_STAGING_USABLE_RATIO: float = 0.9'
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:272
+  context: Multiplies raw DirectIO staging buffer budget to compute usable disk offload buffer budget per GET batch
+related_parameters:
+- name: VLLM_MOONCAKE_LOAD_RECV_THREADS
+  relation: Both tune Mooncake KV-load throughput; recv threads overlap control overhead while this ratio sizes per-batch
+    disk staging
+- name: VLLM_MOONCAKE_STORE_TIER_LOG
+  relation: Enables per-batch memory/disk tier breakdown logging useful for observing the effect of this ratio
+- name: MOONCAKE_PREFERRED_SEGMENT
+  relation: Selects the owner segment whose staging buffer this ratio applies to
+constraints:
+- The value is a float multiplier applied to the raw staging buffer budget; values above 1.0 would exceed the allocated staging
+  buffer and risk overrun.
+- The computed budget is clamped to a minimum of 1 byte, so a value of 0 or negative does not disable the path but yields
+  a degenerate 1-byte budget.
+tuning_advice:
+  summary: Keep near the 0.9 default; raise slightly for higher disk-tier read throughput, lower for more staging-buffer safety
+    margin.
+  suggested_values:
+  - scenario: Default / general Mooncake disk-tier offload
+    value: 0.9
+    reason: Upstream default balances disk read batch size against staging buffer headroom.
+  - scenario: Disk-tier read throughput is the bottleneck and staging buffer is large
+    value: 0.95
+    reason: Larger per-GET batches reduce round trips and better saturate disk bandwidth while retaining a small safety margin.
+  - scenario: Memory-constrained or observing staging buffer overruns
+    value: 0.8
+    reason: Leaves more headroom in the DirectIO staging buffer to avoid overrun under bursty loads.
+  caveats:
+  - Applies only to the Mooncake KV connector disk tier; irrelevant for standard NPU KV cache.
+  - Values above 1.0 risk exceeding the allocated staging buffer.
+  quick_guide: Leave at 0.9 unless tuning Mooncake disk-tier KV offload throughput; nudge toward 0.95 for speed or 0.8 for
+    safety.
+analysis_date: '2026-10-27'

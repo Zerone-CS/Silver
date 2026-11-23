@@ -1,0 +1,92 @@
+name: --no-disable-hybrid-kv-cache-manager
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- 'vllm/engine/arg_utils.py: <unknown>'
+- 'vllm/config/cache.py: <unknown>'
+value_type: bool
+default: false
+valid_choices: boolean flag (store_true / store_false pair); presence of --no-disable-hybrid-kv-cache-manager sets disable_hybrid_kv_cache_manager=False
+cli_example: --no-disable-hybrid-kv-cache-manager
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This flag is the negation form of vLLM''s `--disable-hybrid-kv-cache-manager`. In upstream vLLM,
+
+  `disable_hybrid_kv_cache_manager` controls whether the hybrid KV cache manager (which manages
+
+  per-layer KV cache groups for models with heterogeneous attention layers, e.g. sliding-window /
+
+  linear-attention / MLA hybrids) is used. When the hybrid manager is disabled, vLLM falls back to
+
+  a simpler uniform KV cache allocation, which can over-allocate memory for layers that do not need
+
+  full-length KV (or under-utilize it), and changes how KV cache blocks are grouped and scheduled.
+
+  Passing `--no-disable-hybrid-kv-cache-manager` keeps the hybrid KV cache manager ENABLED.
+
+  On Ascend, the vllm-ascend documentation explicitly states that for DeepSeek-V4 (DSv4) KV Pool
+
+  deployments this flag MUST be added at startup, otherwise the service runs into an OOM problem
+
+  during startup. This is a memory-usage effect: the hybrid KV cache manager is required to
+
+  correctly size/partition the KV cache for DSv4''s multi-family compression-ratio states, and
+
+  without it the allocator over-commits NPU HBM and OOMs at startup. Keeping the hybrid manager
+
+  enabled therefore directly affects memory footprint (avoiding startup OOM) and, indirectly,
+
+  the achievable KV cache capacity and thus throughput. The parameter itself does not change
+
+  kernel selection or communication; its performance relevance is via KV cache memory management.
+
+  '
+usage_locations:
+- file: 'vllm/engine/arg_utils.py: <unknown>'
+  context: CLI argument definition for the disable_hybrid_kv_cache_manager flag and its --no- negation form
+- file: 'vllm/config/cache.py: <unknown>'
+  context: CacheConfig field disable_hybrid_kv_cache_manager consumed by the KV cache manager selection logic
+- file: 'vllm_ascend docs: user_guide/feature_guide/kv_cache_pool_ascend_store.md:1650'
+  context: DSv4 KV Pool deployment requires --no-disable-hybrid-kv-cache-manager to avoid startup OOM
+- file: 'vllm_ascend docs: tutorials/models/DeepSeek-V4-Flash.md:1088'
+  context: DeepSeek-V4 KV Pool deployments require this flag; otherwise service may OOM during startup
+- file: 'vllm_ascend docs: tutorials/models/DeepSeek-V4-Pro.md:1394'
+  context: Same requirement documented for DeepSeek-V4-Pro KV Pool deployments
+related_parameters:
+- name: --kv-transfer-config
+  relation: Used together in DeepSeek-V4 KV Pool / PD-disaggregation deployments where this flag is required
+- name: --enable-prefix-caching
+  relation: Hybrid KV cache manager interacts with prefix caching; VLLM_PREFIX_CACHE_RETENTION_INTERVAL only takes effect
+    when prefix caching is enabled
+- name: --block-size
+  relation: KV cache block sizing interacts with hybrid manager allocation; VLLM_PREFIX_CACHE_RETENTION_INTERVAL must be a
+    multiple of --block-size
+constraints:
+- For DeepSeek-V4 KV Pool deployments on Ascend, --no-disable-hybrid-kv-cache-manager must be added at startup; otherwise
+  the service runs into an OOM problem during startup.
+- The flag is the negation form of --disable-hybrid-kv-cache-manager; specifying both forms is contradictory and only one
+  effective value applies.
+tuning_advice:
+  summary: Keep the hybrid KV cache manager enabled (pass --no-disable-hybrid-kv-cache-manager) for DeepSeek-V4 KV Pool deployments
+    on Ascend to avoid startup OOM; otherwise leave at default.
+  suggested_values:
+  - scenario: DeepSeek-V4 (Flash/Pro) KV Pool / PD-disaggregation deployment on Ascend NPU
+    value: true
+    reason: vllm-ascend docs state this flag is required; without it the service OOMs during startup because the hybrid KV
+      cache manager is needed to correctly size KV cache for DSv4's multi-family compression states.
+  - scenario: Standard models without hybrid attention layers or without KV Pool
+    value: false
+    reason: Default behavior is sufficient; the flag only matters when the hybrid KV cache manager is relevant to the model's
+      attention layout.
+  caveats:
+  - This is a memory-management flag, not a kernel/communication flag; its performance effect is via KV cache capacity and
+    startup memory footprint, not raw compute.
+  - DSv4 fully stores all compression-ratio family states; a 1M-token sequence takes ~300GB, which is expected upstream behavior
+    and not fixed by this flag.
+  - The flag only affects the KV cache manager selection; it does not change HCCL/CANN behavior on Ascend.
+  quick_guide: Add --no-disable-hybrid-kv-cache-manager for DeepSeek-V4 KV Pool deployments on Ascend to prevent startup OOM.
+analysis_date: '2026-10-27'

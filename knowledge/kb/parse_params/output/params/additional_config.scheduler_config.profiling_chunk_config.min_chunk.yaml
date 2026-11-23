@@ -1,0 +1,111 @@
+name: additional_config.scheduler_config.profiling_chunk_config.min_chunk
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1494
+- vllm_ascend/ascend_config.py:1513
+- vllm_ascend/ascend_config.py:720
+value_type: int
+default: 4096
+valid_choices: positive integer (> 0); should be smaller than --max-num-batched-tokens
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'min_chunk is the lower bound of the dynamically computed chunk size used by
+
+  Dynamic Chunked Pipeline Parallel (CPP) in vllm-ascend. It is defined in
+
+  ProfilingChunkConfig (vllm_ascend/ascend_config.py:1494) and only takes effect
+
+  when profiling_chunk_config.enabled is True (which itself requires
+
+  --pipeline-parallel-size > 1). The dynamic chunk sizing logic uses profiling
+
+  data to fit a chunk-latency curve and picks a chunk size per step; min_chunk
+
+  clamps that computed value from below so the scheduler never issues a chunk
+
+  smaller than this floor. A too-small min_chunk lets the dynamic algorithm
+
+  shrink chunks aggressively, increasing per-step scheduling overhead and
+
+  reducing operator efficiency on Ascend NPU (small matmuls underutilize the
+
+  Da Vinci cores). A too-large min_chunk forces large chunks, which can cause
+
+  computational waste (padding / wasted compute on short sequences) and raise
+
+  TTFT. At config validation time (ascend_config.py:718-729), if
+
+  max_num_batched_tokens < min_chunk, vllm-ascend logs a warning and silently
+
+  clamps min_chunk down to max_num_batched_tokens, so min_chunk can never
+
+  exceed the initial chunk size. This parameter is Ascend-specific (not present
+
+  in upstream vLLM) and only affects the CPP scheduling path.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1494
+  context: 'Field definition: min_chunk: int = 4096 inside ProfilingChunkConfig'
+- file: vllm_ascend/ascend_config.py:1513
+  context: after-validator raises ValueError if min_chunk <= 0
+- file: vllm_ascend/ascend_config.py:720
+  context: 'Clamp logic: if max_num_batched_tokens < min_chunk, min_chunk is set to max_num_batched_tokens with a warning'
+related_parameters:
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: min_chunk only has any effect when enabled is True; enabling requires --pipeline-parallel-size > 1
+- name: --max-num-batched-tokens
+  relation: Acts as the initial chunk size; min_chunk is clamped down to it if min_chunk is larger
+- name: additional_config.scheduler_config.profiling_chunk_config.smooth_factor
+  relation: Controls how much the dynamic prediction is trusted; interacts with min_chunk in determining the final chunk size
+- name: additional_config.scheduler_config.profiling_chunk_config.need_timing
+  relation: Online calibration improves chunk-latency fitting accuracy, which feeds the dynamic chunk computation bounded
+    by min_chunk
+- name: --pipeline-parallel-size
+  relation: Must be > 1 for profiling_chunk_config (and thus min_chunk) to be usable
+constraints:
+- min_chunk must be a positive integer; a value <= 0 raises a ValueError at config validation.
+- min_chunk should be smaller than --max-num-batched-tokens; if it is larger, vllm-ascend clamps it down to --max-num-batched-tokens
+  with a warning.
+- min_chunk has no effect unless profiling_chunk_config.enabled is True.
+- profiling_chunk_config (and therefore min_chunk) requires --pipeline-parallel-size greater than 1.
+- profiling_chunk_config cannot be combined with enable_balance_scheduling.
+tuning_advice:
+  summary: 'Leave min_chunk at its default 4096 in most cases; only lower it if the
+
+    dynamic chunker is producing chunks that are too large for short sequences,
+
+    and only raise it (up to --max-num-batched-tokens) if chunks are shrinking
+
+    too aggressively and hurting NPU operator efficiency.
+
+    '
+  suggested_values:
+  - scenario: Default / general CPP deployment
+    value: 4096
+    reason: Documented default; generally does not need adjustment and works well with typical --max-num-batched-tokens values
+      (20480-32768).
+  - scenario: Short sequences where dynamic chunking shrinks chunks too far and scheduling overhead dominates
+    value: 8192
+    reason: Raising the floor prevents the dynamic algorithm from issuing very small chunks that underutilize Ascend NPU compute
+      units.
+  - scenario: Long-context (128k) with large --max-num-batched-tokens (32768)
+    value: 4096
+    reason: Keep the default floor so the dynamic chunker retains room to shrink chunks for latency-sensitive steps while
+      max-num-batched-tokens provides the upper headroom.
+  caveats:
+  - min_chunk is silently clamped to --max-num-batched-tokens if it is set larger, so setting it above that value has no effect
+    (only a warning is logged).
+  - This parameter is Ascend-specific and only relevant to Dynamic Chunked Pipeline Parallel; it has no effect when profiling_chunk_config.enabled
+    is False.
+  - Setting min_chunk too high forces large chunks, causing computational waste and higher TTFT; setting it too low increases
+    scheduling overhead and reduces operator efficiency.
+  - The docs recommend tuning --max-num-batched-tokens and smooth_factor first; min_chunk generally does not need adjustment.
+  quick_guide: Keep min_chunk at 4096 unless dynamic chunking misbehaves; it must stay below --max-num-batched-tokens.
+analysis_date: '2026-10-27'

@@ -1,0 +1,81 @@
+name: VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1941
+- vllm/envs.py:281
+- vllm/distributed/device_communicators/all2all.py:226
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via int() then bool())
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This env var only affects the DeepEP High-Throughput (HT) all2all manager
+
+  (DeepEPHTAll2AllManager in vllm/distributed/device_communicators/all2all.py).
+
+  In _make_all2all_kwargs, when the group is internode AND this flag is NOT set,
+
+  num_rdma_bytes is set to VLLM_DEEPEP_BUFFER_SIZE_MB * 1024 * 1024 and
+
+  num_qps_per_rank = num_sms // 2. When the flag IS set (or the group is intranode),
+
+  num_rdma_bytes = 0 and num_qps_per_rank = 1. So enabling it forces the intranode
+
+  kernel path for inter-node communication, eliminating RDMA buffer allocation
+
+  (memory saving) and reducing QP count, which can raise prefill throughput on
+
+  systems with multi-node NVLink (e.g. GB200). On Ascend NPU, DeepEP is a CUDA/NVLink
+
+  oriented library; vllm-ascend does not use DeepEP for its all2all path (it uses
+
+  HCCL-based communication), and no reference to this env var exists in vllm-ascend.
+
+  Therefore on Ascend this parameter has effectively no runtime effect unless a
+
+  DeepEP-based all2all backend is somehow selected, which is not the Ascend path.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1941
+  context: Definition of the env var, parsed as bool(int(os.getenv(..., '0'))).
+- file: vllm/envs.py:281
+  context: 'Type stub declaration VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE: bool = False.'
+- file: vllm/distributed/device_communicators/all2all.py:226
+  context: Branch in DeepEPHTAll2AllManager._make_all2all_kwargs controlling num_rdma_bytes and num_qps_per_rank.
+related_parameters:
+- name: VLLM_DEEPEP_BUFFER_SIZE_MB
+  relation: Sets num_nvl_bytes and (when this flag is off and internode) num_rdma_bytes; enabling this flag zeroes the RDMA
+    buffer derived from it.
+- name: VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL
+  relation: Sibling DeepEP tuning flag for the low-latency kernel; this flag applies to the high-throughput kernel.
+- name: VLLM_ALL2ALL_BACKEND
+  relation: DeepEP HT manager is only instantiated when the all2all backend selects deepep; on Ascend the HCCL backend is
+    used instead.
+constraints:
+- The value must be parseable as an integer (0 or 1); other values raise a ValueError during env parsing.
+- This flag only has an effect when the DeepEP high-throughput all2all backend is active; it is ignored for other all2all
+  backends.
+tuning_advice:
+  summary: Leave at default (0) on Ascend NPU; this is a CUDA/NVLink DeepEP tuning knob with no effect on the HCCL-based Ascend
+    communication path.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: 0
+    reason: vllm-ascend uses HCCL for all2all and does not consume this env var; DeepEP HT manager is not on the Ascend path,
+      so changing it has no benefit.
+  - scenario: GPU (CUDA) system with multi-node NVLink such as GB200, using DeepEP high-throughput backend
+    value: 1
+    reason: Forces the intranode kernel for inter-node communication, raising prefill throughput and eliminating RDMA buffer
+      allocation per the upstream comment.
+  caveats:
+  - Do not expect any throughput or memory change on Ascend NPU from this flag.
+  - On GPU systems without multi-node NVLink, enabling it may hurt inter-node communication performance.
+  quick_guide: Keep 0 on Ascend; only set 1 on multi-node-NVLink GPU systems using DeepEP HT.
+analysis_date: '2026-10-27'

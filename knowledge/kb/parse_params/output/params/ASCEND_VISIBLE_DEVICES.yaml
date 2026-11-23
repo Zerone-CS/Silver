@@ -1,0 +1,77 @@
+name: ASCEND_VISIBLE_DEVICES
+type: env
+category: hardware
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/lmcache_ascend_deployment.md:38
+value_type: str
+default: <computed>
+valid_choices: Comma-separated list of NPU device indices, e.g. '0,1,2,3,4,5,6,7'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'ASCEND_VISIBLE_DEVICES is a CANN/Ascend runtime environment variable (not defined or
+
+  read directly in vllm or vllm-ascend source code) that restricts which physical NPU
+
+  devices are exposed to the process. It is consumed by the Ascend driver/CANN layer
+
+  before vLLM initializes its device workers. In the provided documentation it appears
+
+  only in the LMCache-Ascend docker deployment example, where it is set alongside
+
+  ASCEND_RT_VISIBLE_DEVICES to the same device list. Because it controls device
+
+  visibility, it indirectly determines how many NPUs are available for tensor/data/
+
+  pipeline parallelism and thus caps achievable throughput and aggregate HBM. It does
+
+  not itself change per-device kernel behavior, so its direct performance impact is low;
+
+  the real effect is via the number of usable devices and correct device-to-rank mapping.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/lmcache_ascend_deployment.md:38
+  context: Set as a docker -e env var together with ASCEND_RT_VISIBLE_DEVICES to expose NPU devices 0-7 to the LMCache-Ascend
+    container
+related_parameters:
+- name: ASCEND_RT_VISIBLE_DEVICES
+  relation: Companion CANN variable; docs set both to the same device list. RT variant is the runtime-level visibility control
+    and should match ASCEND_VISIBLE_DEVICES.
+- name: ASCEND_TOTAL_MEMORY_GB
+  relation: Set in the same deployment example; together they define per-device memory budget and device count for the container.
+- name: --tensor-parallel-size
+  relation: TP size must not exceed the number of NPUs exposed via ASCEND_VISIBLE_DEVICES.
+- name: --data-parallel-size
+  relation: DP size is bounded by the number of visible NPUs (dp_size × tp_size ≤ visible device count).
+constraints:
+- The device list must reference physical NPU indices that actually exist on the host; invalid indices cause device initialization
+  failures.
+- The number of visible devices must be at least tensor_parallel_size × data_parallel_size (× pipeline_parallel_size) for
+  the requested parallelism to be satisfiable.
+- When used together with ASCEND_RT_VISIBLE_DEVICES, both should list the same devices to avoid rank/device mapping mismatches.
+tuning_advice:
+  summary: Expose exactly the NPUs you intend to use and keep it consistent with ASCEND_RT_VISIBLE_DEVICES and your parallelism
+    settings.
+  suggested_values:
+  - scenario: Single-node 8-NPU full-device deployment
+    value: 0,1,2,3,4,5,6,7
+    reason: Exposes all 8 NPUs so TP/DP can use the full node, matching the documented LMCache-Ascend example.
+  - scenario: Isolating a subset of NPUs for one vLLM instance (e.g. multi-tenant)
+    value: 0,1,2,3
+    reason: Restricts the process to 4 NPUs; set --tensor-parallel-size accordingly (≤4) to avoid requesting more devices
+      than visible.
+  caveats:
+  - This is a CANN/driver-level variable, not a vLLM or vllm-ascend config field; vLLM does not validate it, so mismatches
+    with --tensor-parallel-size surface as device-init errors rather than clear config errors.
+  - Set ASCEND_RT_VISIBLE_DEVICES to the same list; the docs example sets both, and divergence can cause rank-to-device mapping
+    confusion.
+  - In containerized deployments the devices must also be passed through (e.g. --privileged and /dev/davinci* mounts) for
+    the visibility list to take effect.
+  quick_guide: Set ASCEND_VISIBLE_DEVICES (and ASCEND_RT_VISIBLE_DEVICES) to the comma-separated NPU indices you want vLLM
+    to use, and size TP/DP to fit.
+analysis_date: '2026-10-27'

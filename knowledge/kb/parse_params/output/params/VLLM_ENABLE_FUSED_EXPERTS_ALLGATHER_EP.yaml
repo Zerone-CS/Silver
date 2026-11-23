@@ -1,0 +1,63 @@
+name: VLLM_ENABLE_FUSED_EXPERTS_ALLGATHER_EP
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- 'vllm_ascend/envs.py: (removed in PR #5270)'
+value_type: int
+default: 0
+valid_choices: 0 or 1 (boolean-like integer); the env var has been dropped and no longer has any effect
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This environment variable was originally introduced in vllm-ascend (PR #1335) to enable a
+
+  fused allgather-experts kernel for DeepSeek V3/R1 MoE models, combining the expert-parallel
+
+  allgather with the expert MLP computation to reduce communication overhead and kernel launch
+
+  count. It was later re-enabled after a regression (PR #2740), and finally dropped entirely
+
+  in PR #5270 (documented in release_notes.md lines 1527 and 1701). No definition or usage
+
+  site remains in either the vllm or vllm-ascend source trees, so setting it now has no
+
+  runtime effect on Ascend NPU. Any performance benefit it once provided is now handled by
+
+  other mechanisms (e.g. the default MoE dispatch path / other fused MoE optimizations).
+
+  '
+usage_locations:
+- file: user_guide/release_notes.md:2283
+  context: 'Introduced: enables fused allgather-experts kernel for DeepSeek V3/R1, default 0 (PR #1335)'
+- file: user_guide/release_notes.md:1942
+  context: 'Re-enabled after regression (PR #2740)'
+- file: user_guide/release_notes.md:1527
+  context: 'Dropped/removed (PR #5270)'
+- file: user_guide/release_notes.md:1701
+  context: 'Dropped/removed (PR #5270)'
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_PREFETCH_MLP
+  relation: Current recommended MoE/dense performance optimization replacing older fused-expert toggles
+- name: VLLM_ASCEND_ENABLE_FLASHCOMM1
+  relation: Communication-overlap optimization that now covers the role this env var once played
+constraints:
+- This environment variable has been removed from vllm-ascend and setting it has no effect.
+- It only ever applied to DeepSeek V3/R1 MoE models when it was active.
+tuning_advice:
+  summary: Do not use this env var — it is removed; rely on current MoE/communication optimizations instead.
+  suggested_values:
+  - scenario: Any deployment on current vllm-ascend
+    value: 0
+    reason: 'The variable is dropped (PR #5270); leaving it unset or 0 avoids confusion and has no effect either way.'
+  caveats:
+  - Setting VLLM_ENABLE_FUSED_EXPERTS_ALLGATHER_EP on current releases is a no-op; it will not enable any fused kernel.
+  - If you are on an older vllm-ascend version where it still works, it only benefits DeepSeek V3/R1 MoE models and requires
+    expert-parallel (EP) deployment.
+  - For current MoE performance, prefer supported flags such as VLLM_ASCEND_ENABLE_PREFETCH_MLP and communication-overlap
+    features rather than this removed toggle.
+  quick_guide: Ignore this env var — it was removed; use current MoE/communication optimization flags instead.
+analysis_date: '2026-10-27'

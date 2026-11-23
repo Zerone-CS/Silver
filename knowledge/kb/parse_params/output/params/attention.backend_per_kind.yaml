@@ -1,0 +1,93 @@
+name: attention.backend_per_kind
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/v1/attention/selector.py:183
+- tests/v1/e2e/general/test_attention_backend_per_kind.py:50
+value_type: dict
+default: null
+valid_choices: dict mapping KVCacheSpecKind string values (e.g. 'full_attention', 'sliding_window', 'mla_attention', 'sliding_window_mla')
+  to attention backend names (e.g. 'FLASH_ATTN', 'FLASHINFER', 'TRITON_MLA', 'FLASHINFER_MLA')
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This parameter is a vLLM-upstream (v1) attention selector feature. In
+
+  vllm/v1/attention/selector.py:183-189, when attention_config.backend_per_kind is
+
+  non-empty, the selector computes the KV-cache spec kind via get_attn_spec_kind()
+
+  and looks up a per-kind backend override, falling back to the global
+
+  attention_config.backend for kinds not present in the map. The resolved backend
+
+  name is then passed to _cached_get_attn_backend(), which selects the concrete
+
+  attention implementation class. Because the chosen backend determines the actual
+
+  kernel used for attention (prefill/decode), it directly affects latency, throughput,
+
+  and KV-cache memory layout. On Ascend NPU, vllm-ascend registers its own attention
+
+  backends (e.g. Ascend-native MLA/attention implementations) and patches the
+
+  selector; there is no definition or usage of backend_per_kind found in the
+
+  vllm-ascend repo, meaning vllm-ascend does not expose per-kind overrides and the
+
+  Ascend backend selection is governed by its own platform/selector logic. Thus on
+
+  Ascend this parameter has no direct effect unless the upstream selector path is
+
+  used unmodified; its performance relevance is indirect (it can only matter if the
+
+  Ascend selector honors the upstream per-kind map, which the provided context does
+
+  not show).
+
+  '
+usage_locations:
+- file: vllm/v1/attention/selector.py:183
+  context: 'Per-KV-group override lookup: backend = attention_config.backend_per_kind.get(kind.value, backend) before _cached_get_attn_backend()'
+- file: tests/v1/e2e/general/test_attention_backend_per_kind.py:50
+  context: E2E test constructing AttentionConfig(backend_per_kind=...) and verifying each KV-cache group uses the overridden
+    backend
+related_parameters:
+- name: attention_config.backend
+  relation: Global fallback backend; kinds absent from backend_per_kind fall back to this value
+- name: kv_cache_spec_kind
+  relation: The map is keyed by KVCacheSpecKind (full_attention, sliding_window, mla_attention, sliding_window_mla); the model
+    must actually split layers into these kinds for an override to apply
+- name: attention_config.use_mla
+  relation: Determines whether the resolved kind is an MLA kind, which changes which override key is looked up
+constraints:
+- Keys of backend_per_kind must be valid KVCacheSpecKind string values; unknown keys are simply never matched and have no
+  effect.
+- A per-kind override only takes effect for models whose layers actually split into multiple KV-cache groups (e.g. gemma3
+  with full_attention and sliding_window); single-kind models ignore the map.
+- Backend names in the map must be valid attention backend identifiers recognized by the selector, otherwise backend resolution
+  fails.
+tuning_advice:
+  summary: On Ascend NPU this upstream per-kind override is generally not honored by vllm-ascend; rely on vllm-ascend's backend
+    selection and only use backend_per_kind when running the unmodified upstream v1 selector.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1-ascend / v2-ascend)
+    value: unset
+    reason: vllm-ascend does not read backend_per_kind; leave it unset and let vllm-ascend select Ascend-native attention
+      backends.
+  - scenario: Upstream vLLM v1 on GPU reference, model with mixed full/sliding-window attention
+    value:
+      full_attention: FLASH_ATTN
+      sliding_window: FLASH_ATTN
+    reason: Explicitly pinning both kinds to the same backend avoids unexpected per-kind divergence while still allowing future
+      per-kind tuning.
+  caveats:
+  - Do not assume backend_per_kind changes Ascend kernel selection; verify via logs which backend vllm-ascend actually instantiates.
+  - Mixing backends across KV-cache groups can produce incompatible KV layouts; validate with get_kv_cache_spec() behavior.
+  quick_guide: Leave backend_per_kind unset on Ascend; it is an upstream-only per-KV-group override not wired into vllm-ascend.
+analysis_date: '2026-10-27'

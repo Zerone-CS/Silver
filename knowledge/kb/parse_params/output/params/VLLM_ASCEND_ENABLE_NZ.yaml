@@ -1,0 +1,96 @@
+name: VLLM_ASCEND_ENABLE_NZ
+type: env
+category: quantization
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1
+- tests/ut/test_ascend_config.py:431
+value_type: int
+default: 1
+valid_choices: 0 (disable NZ), 1 (NZ for quantized weights only), 2 (NZ for quantized + BF16/FP16 weights when supported)
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'VLLM_ASCEND_ENABLE_NZ is the legacy environment variable that controlled the
+
+  weight NZ (fractal / "N" dimension Z) layout on Ascend NPU. It has been replaced
+
+  by the additional_config key `weight_nz_mode` (int, default 1). The docs state
+
+  explicitly: "\"The legacy VLLM_ASCEND_ENABLE_NZ environment variable is no longer"
+
+  supported." The env var is mapped to `weight_nz_mode` (integer, unchanged, field
+
+  name changed) per the Quick Reference table.
+
+
+  Mechanism: "NZ layout is the Ascend-native fractal weight format used by CANN"
+
+  matmul / quantized matmul operators. When NZ is enabled for quantized weights
+
+  (mode 1), the NPU can consume weights directly in the fractal layout, avoiding
+
+  on-the-fly transposition and enabling more efficient fused quantized matmul
+
+  kernels — improving throughput and reducing per-step overhead. Mode 2 extends
+
+  NZ to BF16/FP16 weights when the operator supports it, trading additional
+
+  weight-conversion memory for potentially faster matmul. Mode 0 disables NZ
+
+  entirely, forcing the standard (ND) layout path.
+
+
+  In the RL config path (rl_config.enabled = true), the code explicitly sets
+
+  weight_nz_mode to 0 and asserts that VLLM_ASCEND_ENABLE_NZ is NOT present in
+
+  os.environ (test_ascend_config.py:431), confirming the env var is deprecated
+
+  and superseded by the config-key mechanism. The migration guide maps
+
+  `export VLLM_ASCEND_ENABLE_NZ=0` to `"rl_config": {"enabled": true}`.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1
+  context: Legacy env var mapped to weight_nz_mode config field; no longer read directly.
+- file: tests/ut/test_ascend_config.py:431
+  context: RL mode asserts VLLM_ASCEND_ENABLE_NZ is absent from os.environ and sets weight_nz_mode=0.
+related_parameters:
+- name: weight_nz_mode
+  relation: Replacement config key (additional_config) for the deprecated env var; same semantics, integer value.
+- name: rl_config.enabled
+  relation: When enabled, forces weight_nz_mode=0 (NZ disabled) and removes VLLM_ASCEND_ENABLE_NZ from environment.
+- name: enable_kv_nz
+  relation: Separate NZ toggle for KV cache layout (MLA models); independent of weight NZ.
+constraints:
+- The VLLM_ASCEND_ENABLE_NZ environment variable is no longer supported; use the additional_config key weight_nz_mode instead.
+- weight_nz_mode must be one of 0, 1, or 2; 0 disables NZ, 1 enables NZ only for quantized weights, 2 also enables NZ for
+  BF16/FP16 weights when supported.
+- When rl_config.enabled is true, weight_nz_mode is forced to 0 and VLLM_ASCEND_ENABLE_NZ must not be set in the environment.
+tuning_advice:
+  summary: Migrate from VLLM_ASCEND_ENABLE_NZ to weight_nz_mode; keep NZ enabled (mode 1) for quantized models to gain Ascend
+    fractal-layout matmul throughput.
+  suggested_values:
+  - scenario: Quantized models (W8A8/INT8/FP8) on Ascend NPU, default deployment
+    value: 1
+    reason: Enables NZ fractal layout for quantized weights, letting CANN quantized matmul consume weights directly and improving
+      throughput.
+  - scenario: BF16/FP16 models where the operator supports NZ and memory headroom exists
+    value: 2
+    reason: Extends NZ to BF16/FP16 weights for potentially faster matmul, at the cost of extra weight-conversion memory.
+  - scenario: RL training/inference consistency mode (rl_config.enabled = true)
+    value: 0
+    reason: RL mode forces weight_nz_mode=0 for numerical consistency; do not set VLLM_ASCEND_ENABLE_NZ.
+  caveats:
+  - VLLM_ASCEND_ENABLE_NZ is deprecated and ignored; setting it has no effect — use additional_config weight_nz_mode.
+  - Mode 2 (BF16/FP16 NZ) increases weight memory due to layout conversion and only takes effect when the operator supports
+    it.
+  - RL mode silently overrides weight_nz_mode to 0; do not rely on NZ being enabled in that path.
+  quick_guide: Replace VLLM_ASCEND_ENABLE_NZ with weight_nz_mode; use 1 for quantized models, 2 for BF16/FP16 when supported,
+    0 to disable.
+analysis_date: '2026-10-27'

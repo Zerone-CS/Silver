@@ -1,0 +1,75 @@
+name: --dtype
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:885
+- vllm/config/model.py
+value_type: str
+default: auto
+valid_choices: auto, half, float16, bfloat16, float, float32
+cli_example: --dtype bfloat16
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--dtype controls the numeric precision of model weights and activations, which on Ascend NPU\ndirectly determines\
+  \ which CANN kernels are selected and how much HBM is consumed.\n- \"On Ascend, BF16 is the native, best-supported compute\
+  \ dtype for the Da Vinci AI cores\"\n  (Cube/Vector units). FP16 is also supported but BF16 generally has wider dynamic\
+  \ range and\n  is the default for most Ascend-optimized model paths. FP32 is far slower (no native FP32\n  Cube matmul at\
+  \ full rate) and doubles memory.\n- The dtype affects memory footprint: \"FP32 weights/activations use 2x the HBM of BF16/FP16,\"\
+  \n  reducing the KV-cache budget and max concurrency, which lowers throughput.\n- The dtype also affects kernel dispatch:\
+  \ \"vllm-ascend custom ops (e.g. quant_lightning_indexer,\"\n  sparse_flash_mla, fused MoE, MC2 communication fusion) are\
+  \ compiled/tuned for specific\n  element types (BF16/FP16). Choosing an unsupported dtype can fall back to slower generic\n\
+  \  paths or fail.\n- \"\\\"auto\\\" resolves to the checkpoint's native dtype (BF16 for BF16 models, FP16 for FP16/FP32\"\
+  \n  models), which is the safest choice for matching pre-tuned Ascend kernels.\n- \"The dtype is part of the RFork structural\
+  \ digest (weight dtype), so changing it changes\"\n  tensor structure and invalidates weight-transfer compatibility.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:885
+  context: Registers --dtype CLI argument from ModelConfig kwargs.
+- file: vllm/config/model.py
+  context: ModelConfig.dtype field; resolved via _get_and_verify_dtype against HF config.
+- file: vllm_ascend/platform.py
+  context: Ascend platform validates/supports dtype and selects NPU kernels accordingly.
+related_parameters:
+- name: --quantization
+  relation: Quantized checkpoints (AWQ/GPTQ/FP8) interact with dtype; --dtype half is recommended for AWQ.
+- name: --kv-cache-dtype
+  relation: Independent dtype for KV cache; can differ from model dtype.
+- name: --max-model-len
+  relation: Larger dtype reduces available KV-cache memory, constraining max-model-len and concurrency.
+- name: --attention_config.indexer_kv_dtype
+  relation: Sparse/quantized attention indexer dtype (int8) is separate from model --dtype.
+constraints:
+- The chosen dtype must be supported by the model checkpoint and by the Ascend kernels for that model; unsupported combinations
+  raise an error at load time.
+- When --dtype auto is used, the dtype is inferred from the checkpoint config and cannot be overridden per-layer.
+- FP8/quantized execution paths require specific hardware generations (e.g. 950PR/950DT for native FP8 matmul); other Ascend
+  generations dequantize to the model dtype.
+tuning_advice:
+  summary: Prefer BF16 (or auto resolving to the checkpoint dtype) on Ascend for best kernel support and memory efficiency;
+    avoid FP32 unless precision demands it.
+  suggested_values:
+  - scenario: BF16-native model on Ascend NPU (most common)
+    value: bfloat16
+    reason: BF16 is the native, best-supported compute dtype on Da Vinci AI cores and matches pre-tuned Ascend kernels, giving
+      best throughput and half the memory of FP32.
+  - scenario: FP16 checkpoint or AWQ-quantized model
+    value: half
+    reason: Upstream recommends FP16 for AWQ; matches the checkpoint's native precision to avoid conversion overhead.
+  - scenario: Default / unsure of checkpoint dtype
+    value: auto
+    reason: auto resolves to the checkpoint's native dtype, ensuring compatibility with pre-tuned Ascend kernels and avoiding
+      unsupported dtype errors.
+  - scenario: Precision-critical workloads tolerating lower throughput
+    value: float32
+    reason: FP32 maximizes numerical precision but doubles memory and is much slower on Ascend; use only when accuracy demands
+      it.
+  caveats:
+  - Do not force FP16 on a BF16-native model on Ascend; it may cause conversion overhead or slower kernel paths.
+  - FP32 significantly reduces KV-cache budget and concurrency; verify memory headroom before using it.
+  - Changing --dtype invalidates RFork weight-transfer compatibility due to structural digest changes.
+  quick_guide: Use --dtype bfloat16 (or auto) on Ascend; only use float32 for precision-critical cases.
+analysis_date: '2026-10-27'

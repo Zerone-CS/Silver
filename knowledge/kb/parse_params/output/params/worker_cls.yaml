@@ -1,0 +1,96 @@
+name: --worker-cls
+type: cli
+category: hardware
+scope: both
+source_file:
+- vllm/config/parallel.py:270
+- vllm/engine/arg_utils.py:1251
+- vllm/engine/arg_utils.py:2382
+- vllm/v1/worker/worker_base.py:274
+- vllm_ascend/platform.py:1354
+- vllm_ascend/platform.py:1360
+- vllm_ascend/device/hardware_profile.py:234
+- vllm_ascend/device/hardware_profile.py:283
+value_type: str
+default: auto
+valid_choices: Any fully-qualified Python class name string; "auto" triggers platform-based selection
+cli_example: --worker-cls <fully.qualified.WorkerClass>
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--worker-cls selects which WorkerBase subclass is instantiated per rank. The worker\nclass is the top-level\
+  \ container for the model runner, KV-cache allocation, graph\ncapture, and collective-communication setup, so the choice\
+  \ of class determines which\nexecution path (and therefore which kernels, graph modes, and memory layout) is used\nat runtime.\n\
+  \nUpstream (vllm): ParallelConfig.worker_cls defaults to \"auto\" (vllm/config/parallel.py:270).\nThe value is threaded\
+  \ through EngineArgs into ParallelConfig (arg_utils.py:2382) and\nresolved in WorkerWrapperBase.init_worker (vllm/v1/worker/worker_base.py:274)\
+  \ via\nresolve_obj_by_qualname. Passing a class object instead of a string raises ValueError\n(\"passing worker_cls is no\
+  \ longer supported\"). worker_cls is part of the ParallelConfig\nhash-ignored factors (parallel.py:853), so it does not\
+  \ perturb the config hash.\n\nvllm-ascend override: \"in vllm_ascend/platform.py:_setup_worker_and_scheduler (line 1354),\"\
+  \nif parallel_config.worker_cls == \"auto\", vllm-ascend replaces it with an Ascend-specific\nworker:\n  - \"If xlite_graph_config.enabled\
+  \ AND the hardware profile supports\"\n    HardwareCapability.STANDARD_WORKER_PATCHES, it sets\n    \"vllm_ascend.xlite.xlite_worker.XliteWorker\"\
+  \ (openEuler Xlite / GVirt path).\n  - \"Otherwise it sets hardware_profile.default_worker_cls, which is\"\n    \"vllm_ascend.worker.worker.NPUWorker\"\
+  \ (_DEFAULT_WORKER_CLS, hardware_profile.py:283)\n    for both A2 and A3 profiles.\nThis means on Ascend the default is\
+  \ NPUWorker (or XliteWorker), NOT the upstream GPU\nworker. NPUWorker carries the Ascend model runner, NPU graph capture,\
+  \ HCCL setup, and\nAscend custom-op dispatch — all of which directly determine latency, throughput, and\nKV-cache memory\
+  \ behavior. Choosing a different worker class (e.g. a custom subclass or\nthe Xlite worker) changes which of these paths\
+  \ is active, hence medium impact: the\nparameter itself is a selector, but the selected class governs the hot execution\
+  \ path.\n\nNote: \"the same _setup_worker_and_scheduler also auto-enables custom ops\"\n(compilation_config.custom_ops =\
+  \ [\"all\"]) and selects specialized scheduler classes,\nso worker selection is coupled with other Ascend runtime decisions.\n"
+usage_locations:
+- file: vllm/config/parallel.py:270
+  context: ParallelConfig.worker_cls field definition, default "auto"
+- file: vllm/engine/arg_utils.py:1251
+  context: CLI flag --worker-cls registered in the parallel argument group
+- file: vllm/engine/arg_utils.py:2382
+  context: EngineArgs passes worker_cls into ParallelConfig
+- file: vllm/v1/worker/worker_base.py:274
+  context: WorkerWrapperBase.init_worker resolves worker_cls string to a class; rejects class objects
+- file: vllm_ascend/platform.py:1354
+  context: Ascend platform overrides worker_cls when it is "auto"
+- file: vllm_ascend/platform.py:1360
+  context: Sets XliteWorker when xlite graph is enabled and hardware supports standard worker patches
+- file: vllm_ascend/device/hardware_profile.py:283
+  context: _DEFAULT_WORKER_CLS = vllm_ascend.worker.worker.NPUWorker used as default_worker_cls
+- file: vllm_ascend/device/hardware_profile.py:234
+  context: HardwareProfile.default_worker_cls field consumed by platform setup
+related_parameters:
+- name: --worker-extension-cls
+  relation: Dynamically mixed into the worker class; must not conflict with attributes of the selected worker_cls
+- name: --xlite-graph-config (xlite_graph_config.enabled)
+  relation: When enabled and hardware supports STANDARD_WORKER_PATCHES, forces worker_cls to XliteWorker
+- name: --distributed-executor-backend
+  relation: Determines how workers are spawned (mp/ray/uni); worker_cls is resolved inside each worker process
+- name: --sd-worker-cls
+  relation: Parallel parameter for the speculative-decoding worker class; independent selection
+constraints:
+- worker_cls must be passed as a fully-qualified class name string; passing a class object raises ValueError in vLLM v1 worker
+  initialization.
+- If --worker-extension-cls is set, the extension class must not define any attribute already present on the selected worker
+  class, otherwise an assertion error is raised.
+- On Ascend, if --worker-cls is left at "auto", vllm-ascend will overwrite it with NPUWorker (or XliteWorker when xlite graph
+  is enabled and supported); an explicit value is required to use any other worker class.
+tuning_advice:
+  summary: Leave --worker-cls at "auto" on Ascend so vllm-ascend selects NPUWorker (or XliteWorker when xlite is enabled);
+    only override with an Ascend-compatible worker subclass.
+  suggested_values:
+  - scenario: Standard Ascend A2/A3 deployment (default)
+    value: auto
+    reason: vllm-ascend resolves "auto" to vllm_ascend.worker.worker.NPUWorker, which wires up the Ascend model runner, NPU
+      graph capture, and HCCL — the supported high-performance path.
+  - scenario: openEuler Xlite / GVirt virtualization on hardware supporting STANDARD_WORKER_PATCHES
+    value: auto
+    reason: With xlite_graph_config.enabled, vllm-ascend automatically selects vllm_ascend.xlite.xlite_worker.XliteWorker;
+      no manual override needed.
+  - scenario: Custom instrumentation or profiling worker
+    value: my_pkg.my_worker.MyNPUWorker
+    reason: Subclass vllm_ascend.worker.worker.NPUWorker and pass its fully-qualified name string; this preserves Ascend execution
+      paths while adding custom behavior.
+  caveats:
+  - Do not point --worker-cls at an upstream GPU worker class on Ascend; it will not initialize NPU devices or HCCL correctly.
+  - Pass the class as a string, not a class object, or vLLM v1 raises ValueError.
+  - If you also set --worker-extension-cls, ensure no attribute name collisions with the worker class.
+  quick_guide: Keep --worker-cls auto on Ascend; it resolves to NPUWorker (or XliteWorker with xlite enabled).
+analysis_date: '2026-10-27'

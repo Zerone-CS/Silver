@@ -1,0 +1,89 @@
+name: additional_config.eplb_config.expert_map_path
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:289
+- vllm_ascend/ascend_config.py:304
+- vllm_ascend/eplb/core/eplb_utils.py:79
+- vllm_ascend/eplb/eplb_updator.py:36
+- vllm_ascend/ops/fused_moe/routed_experts.py:327
+- vllm_ascend/patch/platform/patch_fused_moe.py:139
+- vllm_ascend/worker/model_runner_v1.py:578
+- vllm_ascend/model_loader/rfork/rfork_loader.py:610
+value_type: str
+default: null
+valid_choices: Path to an existing, readable .json file containing a pre-recorded expert placement map
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "expert_map_path enables \"Static EPLB\" (MRv1 only per docs): it loads a pre-recorded\nexpert placement map\
+  \ from a JSON file and applies it as the MoE expert-to-device\nplacement instead of the default linear placement. Mechanism:\n\
+  - \"In vllm_ascend/eplb/core/eplb_utils.py:init_eplb_config, when expert_map_path is set,\"\n  eplb_enable is forced True\
+  \ (line 92), the map is loaded via expert_file_to_tensor\n  (line 93), and n_redundant is recomputed as physical_count -\
+  \ n_experts (line 94).\n  This means the number of redundant expert slots is derived from the file, not from\n  num_redundant_experts.\n\
+  - \"In vllm_ascend/worker/model_runner_v1.py:578, self.eplb_enable becomes True whenever\"\n  expert_map_path is not None,\
+  \ even if dynamic_eplb is False. This activates the EPLB\n  code path (expert map / log2phy mapping) in the MoE forward.\n\
+  - \"In vllm_ascend/patch/platform/patch_fused_moe.py:139, the presence of expert_map_path\"\n  forces enable_eplb=True and\
+  \ propagates num_redundant_experts into the upstream\n  RoutedExperts factory so redundant expert parameter slots are allocated\
+  \ before\n  weights are loaded. This directly affects NPU memory footprint (extra expert weights)\n  and the MoE dispatch\
+  \ layout.\n- \"In vllm_ascend/model_loader/rfork/rfork_loader.py:610, expert_map_path disables the\"\n  RFork fast model-loading\
+  \ path (falls back to the default loader), which increases\n  model load time.\nThe placement itself determines per-NPU\
+  \ expert load balance: \"a well-recorded map\"\nreduces MoE all-to-all imbalance and improves decode throughput; a stale\
+  \ or mismatched\nmap can worsen balance and increase latency. Because redundant experts are allocated,\nNPU HBM usage increases\
+  \ proportional to (physical_count - n_experts).\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:304
+  context: 'Validation: must end with .json, must exist and be readable, else TypeError/ValueError at startup.'
+- file: vllm_ascend/eplb/core/eplb_utils.py:91
+  context: Loads expert map from file, forces eplb_enable=True, derives n_redundant from physical_count.
+- file: vllm_ascend/eplb/eplb_updator.py:36
+  context: EplbUpdator.init_eplb receives expert_map_path for the EPLB update process.
+- file: vllm_ascend/ops/fused_moe/routed_experts.py:327
+  context: make_eplb_placement_config forwards expert_map_path into init_eplb_config.
+- file: vllm_ascend/patch/platform/patch_fused_moe.py:139
+  context: Forces enable_eplb=True and propagates num_redundant_experts into upstream RoutedExperts factory.
+- file: vllm_ascend/worker/model_runner_v1.py:578
+  context: Sets self.eplb_enable=True when expert_map_path is set (MRv1).
+- file: vllm_ascend/model_loader/rfork/rfork_loader.py:610
+  context: Disables RFork fast loading when expert_map_path is set.
+related_parameters:
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: Mutually alternative EPLB modes; expert_map_path is static EPLB, dynamic_eplb is runtime rebalancing. Both set
+    eplb_enable.
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: Overridden by the physical_count derived from the expert map file when expert_map_path is set.
+- name: additional_config.eplb_config.expert_map_record_path
+  relation: Produces the JSON map that expert_map_path later consumes (recording vs static loading).
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: Only relevant for dynamic EPLB; static map loading bypasses policy-based rebalancing.
+constraints:
+- expert_map_path must point to a file whose name ends with .json, otherwise a TypeError is raised at startup.
+- The file at expert_map_path must exist and be readable, otherwise a ValueError is raised at startup.
+- expert_map_path is only supported on the MRv1 (v1 worker) path; the docs mark it as MRv1 only.
+- EPLB requires expert parallelism; when ep_size == 1 the EPLB path asserts and cannot be used.
+- The expert map file must be consistent with the model's expert count and EP size, since n_redundant is derived as physical_count
+  - n_experts.
+tuning_advice:
+  summary: Use expert_map_path to apply a pre-recorded, workload-tuned expert placement for stable MoE load balance on Ascend
+    NPU, ensuring the map matches the deployment's EP size and expert count.
+  suggested_values:
+  - scenario: Stable, well-characterized workload where a good placement was recorded offline
+    value: /path/to/expert_map.json
+    reason: Static EPLB applies a known-good placement, reducing MoE all-to-all imbalance and improving decode throughput
+      without runtime rebalancing overhead.
+  - scenario: Workload with shifting expert hot-spots
+    value: unset
+    reason: Prefer dynamic_eplb=true instead; a static map cannot adapt to changing load and may become suboptimal.
+  caveats:
+  - Verify the JSON map was recorded for the same EP size and expert count as the current deployment; mismatches cause imbalance
+    or errors.
+  - Account for the extra HBM consumed by redundant expert slots derived from the map.
+  - Expect longer model load time since RFork fast loading is bypassed.
+  quick_guide: Set expert_map_path to a matching .json map for static, workload-tuned MoE placement; use dynamic_eplb for
+    adaptive balancing.
+analysis_date: '2026-10-27'

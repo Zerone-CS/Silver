@@ -1,0 +1,91 @@
+name: additional_config.multistream_engram_overlap
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:573
+- vllm_ascend/ascend_config.py:427
+value_type: bool
+default: <computed>
+valid_choices: true or false (boolean; lax coercion accepts strings like "false")
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch (defined in AscendConfig, passed via
+
+  --additional-config JSON). It controls whether Engram-related work — preparing
+
+  hashes, performing lookups, and DP/TP exchanges — is issued on an auxiliary
+
+  (secondary) NPU stream so that it overlaps with the main compute stream.
+
+  Per the inline comment at vllm_ascend/ascend_config.py:570-572, when enabled,
+
+  FULL graph mode waits on descriptor-specific external events at the consumer
+
+  sites, meaning the graph capture must insert cross-stream event waits/syncs.
+
+  The performance mechanism is stream-level concurrency: "overlapping the"
+
+  Engram hash/lookup/DP-TP exchange latency with main-stream compute reduces
+
+  exposed latency and improves throughput on models that use Engram. When
+
+  disabled, those operations serialize on the main stream, adding their latency
+
+  to the critical path. The default is computed at construction time via
+
+  default_factory: "it is True only when the current hardware profile''s"
+
+  device_adaptor_family equals DeviceAdaptorFamily.FP8_OPTIMIZED (i.e. the A5
+
+  family), and False otherwise. Explicit user settings override this policy.
+
+  Because it changes graph capture (external event waits in FULL graphs), it
+
+  also affects compilation/graph behavior, not just runtime scheduling.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:573
+  context: Field definition with default_factory keyed on hardware profile (FP8_OPTIMIZED / A5 => True).
+- file: vllm_ascend/ascend_config.py:427
+  context: Documented as a supported --additional-config key in the AscendConfig docstring example.
+related_parameters:
+- name: multistream_dsv4_dsa_overlap
+  relation: Sibling multistream overlap switch (DSA overlap); same auxiliary-stream overlap family, default True.
+- name: multistream_overlap_shared_expert
+  relation: Sibling multistream overlap switch for shared experts; default False.
+- name: ascend_compilation_config.enable_npugraph_ex
+  relation: Graph capture interacts with the external-event waits inserted for FULL graphs when overlap is enabled.
+constraints:
+- The value must be a boolean; unknown keys in additional_config are rejected (extra="forbid"), so a typo in the key name
+  fails fast.
+- When enabled, FULL graph mode requires descriptor-specific external event waits at consumer sites, so it is only meaningful
+  together with graph capture paths that support these events.
+tuning_advice:
+  summary: Leave at the hardware-derived default; on A5 keep it enabled to overlap Engram hash/lookup/DP-TP exchange with
+    compute, disable only if you observe graph-capture or correctness issues.
+  suggested_values:
+  - scenario: A5 (FP8_OPTIMIZED) hardware, Engram-based model, default behavior
+    value: true
+    reason: Default factory already returns True on A5; overlapping Engram prep/lookups/exchanges on an auxiliary stream hides
+      their latency behind main-stream compute.
+  - scenario: Non-A5 Ascend hardware
+    value: false
+    reason: Default factory returns False because the external-event overlap path is only validated for the A5 family; keep
+      disabled unless explicitly tested.
+  - scenario: Debugging graph-capture hangs or numerical mismatches with Engram models
+    value: false
+    reason: Disabling removes cross-stream external event waits in FULL graphs, simplifying capture and isolating overlap-related
+      issues.
+  caveats:
+  - Explicitly setting this overrides the hardware policy; verify correctness on your specific device family before forcing
+    True on non-A5 hardware.
+  - Interacts with graph capture (FULL graphs wait on descriptor-specific external events), so re-run warmup/compile after
+    changing it.
+  quick_guide: Keep default (True on A5, False elsewhere); disable only to debug graph/overlap issues.
+analysis_date: '2026-10-27'

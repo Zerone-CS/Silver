@@ -1,0 +1,71 @@
+name: kv_events.publisher
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/config/vllm.py:1833
+value_type: str
+default: 'null'
+valid_choices:
+- 'null'
+- zmq
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'kv_events.publisher selects the backend used to publish KV-cache events (block
+
+  allocation/free notifications) from the scheduler. The only usage found in the
+
+  provided context is a validation/warning branch in vllm/config/vllm.py:1833,
+
+  which checks whether publisher != "null" while enable_kv_cache_events is False
+
+  and emits a warning. The actual publishing path (ZMQ socket send per event) is
+
+  not shown in the provided context, but by design a non-"null" publisher adds
+
+  per-event serialization and IPC overhead on the scheduler thread. On Ascend NPU
+
+  this is not an NPU-compute-bound cost; it is host-side CPU/IPC work that can
+
+  add latency to the scheduler loop and slightly reduce throughput when KV events
+
+  are enabled. No vllm-ascend override of this parameter was found in the provided
+
+  context, so behavior is inherited from upstream vLLM. With the default "null"
+
+  publisher, no events are published and there is no runtime cost.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1833
+  context: Validation branch warns when publisher != 'null' but enable_kv_cache_events is False.
+related_parameters:
+- name: kv_events.enable_kv_cache_events
+  relation: Must be True for the publisher to actually emit events; otherwise a warning is logged and no events are published.
+- name: enable_prefix_caching
+  relation: KV cache events are only meaningful when prefix caching is enabled; a warning is emitted if events are on but
+    prefix caching is off.
+constraints:
+- The publisher value must be one of the supported backends, i.e. "null" or "zmq".
+- Setting a non-"null" publisher while enable_kv_cache_events is False has no effect and only produces a warning.
+tuning_advice:
+  summary: Keep the default "null" publisher unless an external KV-event consumer (e.g. a KV-aware router) requires events;
+    if enabled, pair it with prefix caching and enable_kv_cache_events.
+  suggested_values:
+  - scenario: Standard serving without an external KV-event consumer
+    value: 'null'
+    reason: Avoids per-event serialization/IPC overhead on the scheduler thread; no runtime cost.
+  - scenario: Deployment with a KV-aware router or cache-aware load balancer that consumes events
+    value: zmq
+    reason: Enables event publishing over ZMQ; must also set enable_kv_cache_events to True and enable prefix caching for
+      the events to be meaningful.
+  caveats:
+  - Enabling a non-"null" publisher without enable_kv_cache_events only logs a warning and publishes nothing.
+  - Enabling events without prefix caching provides no useful signal and adds overhead.
+  quick_guide: Leave kv_events.publisher as "null" unless you need KV events; if so, use "zmq" with enable_kv_cache_events
+    and prefix caching enabled.
+analysis_date: '2026-10-27'

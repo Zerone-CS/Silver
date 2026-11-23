@@ -1,0 +1,165 @@
+name: --async-scheduling
+type: cli
+category: scheduling
+scope: both
+source_file:
+- vllm/config/scheduler.py:190
+- vllm/config/scheduler.py:214
+- vllm/engine/arg_utils.py:1644
+- vllm/engine/arg_utils.py:2448
+- vllm/config/vllm.py:593
+- vllm/config/vllm.py:1400
+- vllm_ascend/platform.py:1062
+- vllm_ascend/platform.py:1071
+- vllm_ascend/platform.py:1132
+- vllm_ascend/patch/platform/patch_pp_mtp.py:106
+- vllm_ascend/patch/platform/patch_pp_mtp.py:173
+- vllm_ascend/worker/model_runner_v1.py:494
+- vllm_ascend/worker/model_runner_v1.py:902
+- vllm_ascend/worker/dcp_utils.py:92
+- vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:143
+value_type: bool
+default: null
+valid_choices: 'true / false (tri-state: None means auto/not explicitly set)'
+cli_example: --async-scheduling
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'Async scheduling decouples the scheduler from the model forward pass so the next
+
+  batch can be prepared while the current one executes, removing bubbles in NPU
+
+  utilization. In upstream vLLM, SchedulerConfig.get_scheduler_cls() returns
+
+  AsyncScheduler when async_scheduling is truthy (vllm/config/scheduler.py:214), and
+
+  VllmConfig.max_concurrent_batches returns 2 (V1 runner, pp_size<=1) or pp_size+1
+
+  (V2 runner) when async scheduling is on (vllm/config/vllm.py:593), which directly
+
+  increases max_in_flight_tokens and therefore KV-cache reservation requirements.
+
+  On Ascend, vllm-ascend reads scheduler_config.async_scheduling in several places:
+
+  (1) platform.py:1062 — when ShortRequestFirst is enabled, async scheduling swaps
+
+  scheduler_cls to ShortRequestFirstAsyncScheduler; (2) platform.py:1071 — CPP
+
+  (profiling_chunk) with async scheduling requires the v2 model runner, otherwise
+
+  startup raises; (3) platform.py:1132 — the recompute scheduler class is chosen
+
+  based on async_scheduling; (4) patch_pp_mtp.py:106/173 — the PP+MTP runtime patch
+
+  only applies when async scheduling is OFF, and temporarily forces
+
+  async_scheduling=False during _make_cached_request_data for PP IPC; (5) the V1
+
+  model runner allocates an extra pinned int64 valid_sampled_token_count_cpu buffer
+
+  when async scheduling + spec tokens are active (model_runner_v1.py:494) and applies
+
+  PP sampled tokens from scheduler output only under async scheduling
+
+  (model_runner_v1.py:902); (6) DCPManager stores use_async_scheduling to keep
+
+  async rebuild buffers (dcp_utils.py:92/515). Net effect on Ascend: higher NPU
+
+  utilization and lower inter-token latency, at the cost of extra host-side buffers
+
+  and larger in-flight KV footprint.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:214
+  context: get_scheduler_cls() returns AsyncScheduler when async_scheduling is truthy
+- file: vllm/config/vllm.py:593
+  context: max_concurrent_batches returns 2 (V1) or pp_size+1 (V2) under async scheduling, inflating in-flight KV tokens
+- file: vllm/config/vllm.py:1400
+  context: Executor.supports_async_scheduling() gate; hard-fails incompatible configs (e.g. non-eagle spec decode, ROCm DeepEP
+    DBO)
+- file: vllm_ascend/platform.py:1062
+  context: Selects ShortRequestFirstAsyncScheduler when SRF + async scheduling are both enabled
+- file: vllm_ascend/platform.py:1071
+  context: Raises ValueError if profiling_chunk (CPP) is enabled with async scheduling on the v1 model runner
+- file: vllm_ascend/platform.py:1132
+  context: Chooses recompute scheduler class based on async_scheduling for PD-disaggregated decode nodes
+- file: vllm_ascend/patch/platform/patch_pp_mtp.py:106
+  context: PP+MTP post_step patch only short-circuits when async scheduling is disabled
+- file: vllm_ascend/patch/platform/patch_pp_mtp.py:173
+  context: Temporarily forces async_scheduling=False during cached request data build for PP IPC
+- file: vllm_ascend/worker/model_runner_v1.py:494
+  context: Allocates pinned int64 valid_sampled_token_count_cpu buffer when async scheduling + spec tokens
+- file: vllm_ascend/worker/model_runner_v1.py:902
+  context: Applies PP sampled tokens from scheduler output only when async scheduling is on
+- file: vllm_ascend/worker/dcp_utils.py:515
+  context: Keeps async rebuild buffers (req_indices/cu_num_tokens) when use_async_scheduling
+- file: vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:143
+  context: Passes async_scheduling into DCPManager for the v2 autoregressive speculator
+related_parameters:
+- name: --speculative-config / --spec-tokens
+  relation: Upstream only supports async scheduling with eagle-family spec decode; on Ascend, async + spec tokens triggers
+    extra pinned buffers and PP sampled-token handling
+- name: --scheduler-cls
+  relation: A custom scheduler_cls overrides the AsyncScheduler selection; if it subclasses Scheduler instead of AsyncScheduler,
+    async scheduling is effectively disabled (degraded performance warning)
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: CPP (profiling_chunk) + async scheduling requires the v2 model runner; V1 PP path lacks async cadence guarantees
+- name: additional_config.scheduler_config.short_request_first_config
+  relation: When enabled with async scheduling, scheduler_cls is swapped to ShortRequestFirstAsyncScheduler
+- name: additional_config.scheduler_config.profiling_chunk_config
+  relation: CPP + async scheduling requires v2 model runner, else startup error
+- name: additional_config.scheduler_config.recompute_scheduler_enable
+  relation: Recompute scheduler class selection depends on async_scheduling (PD decode nodes only)
+- name: --pipeline-parallel-size
+  relation: PP+MTP runtime patch only applies when async scheduling is off; async scheduling changes max_concurrent_batches
+    to pp_size+1 on V2
+- name: --max-num-batched-tokens
+  relation: max_in_flight_tokens = max_concurrent_batches * max_num_batched_tokens, so async scheduling multiplies KV reservation
+constraints:
+- Async scheduling is only compatible with eagle-family speculative decoding methods upstream; other spec methods raise a
+  ValueError at config validation.
+- Enabling profiling_chunk_config (CPP) together with --async-scheduling requires the v2 model runner (VLLM_USE_V2_MODEL_RUNNER=1);
+  on the v1 model runner startup fails with a configuration error.
+- Async scheduling is not compatible with ROCm DeepEP high-throughput DBO (upstream check; not applicable to Ascend NPU but
+  enforced in shared config validation).
+- If a custom --scheduler-cls is provided that subclasses Scheduler instead of AsyncScheduler, async scheduling is effectively
+  disabled and performance degrades.
+- The vllm-ascend PP+MTP runtime patch (patch_pp_mtp.py) only takes effect when async scheduling is disabled; with async scheduling
+  on, the patch is bypassed.
+tuning_advice:
+  summary: Enable --async-scheduling for production Ascend serving to overlap scheduling with NPU execution and improve throughput/latency;
+    disable only when using PP+MTP runtime patch, v1 CPP, or when KV memory is tight.
+  suggested_values:
+  - scenario: Standard single-node or PD-mixed Ascend serving (text/audio/image), v1 or v2 model runner
+    value: true
+    reason: Async scheduling removes NPU idle gaps between steps; vllm-ascend docs list it as a common parameter for Dots3-Note
+      and GLM5.2/5.3-Flash deployments.
+  - scenario: PD-disaggregated deployment (both P and D nodes), e.g. GLM5.3-Flash with MooncakeConnectorV1
+    value: true
+    reason: Docs explicitly state both prefill and decode roles run with --async-scheduling; recompute scheduler class selection
+      on decode nodes depends on it.
+  - scenario: PP + MTP speculative decoding relying on vllm-ascend patch_pp_mtp runtime patch
+    value: false
+    reason: The PP+MTP post_step patch only short-circuits when async scheduling is off; enabling async scheduling bypasses
+      the patch and changes scheduling behavior.
+  - scenario: CPP (profiling_chunk / dynamic chunk pipeline parallel) on v1 model runner
+    value: false
+    reason: CPP + async scheduling raises a startup error on v1; either disable async scheduling or set VLLM_USE_V2_MODEL_RUNNER=1.
+  - scenario: KV-cache-constrained deployment with large --max-num-batched-tokens
+    value: false
+    reason: Async scheduling doubles (V1) or adds one (V2) concurrent batches, multiplying in-flight KV tokens; disabling
+      reduces memory pressure at the cost of throughput.
+  caveats:
+  - 'Monitor NPU memory after enabling: max_in_flight_tokens scales with max_concurrent_batches, so reduce --max-num-batched-tokens
+    or --max-num-seqs if OOM occurs.'
+  - If you supply a custom --scheduler-cls, ensure it subclasses AsyncScheduler, otherwise async scheduling is silently disabled.
+  - On Ascend, async scheduling with spec tokens adds a pinned host buffer per request; account for host memory in large max_num_reqs
+    deployments.
+  - CPP + async scheduling requires VLLM_USE_V2_MODEL_RUNNER=1; verify the runner version before enabling both.
+  quick_guide: Keep --async-scheduling on for throughput/latency; turn it off for PP+MTP patch path, v1 CPP, or when KV memory
+    is tight.
+analysis_date: '2026-10-27'

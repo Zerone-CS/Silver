@@ -1,0 +1,119 @@
+name: --dp-size-local
+type: cli
+category: parallelism
+scope: vllm-ascend
+source_file:
+- examples/external_online_dp/launch_online_dp.py:12
+- examples/external_online_dp/launch_online_dp.py:23
+- examples/external_online_dp/launch_online_dp.py:54
+- tools/docs_codegen/converters.py:348
+- tests/e2e/common/multi_node/external_dp/external_dp_config.py:51
+value_type: int
+default: -1
+valid_choices: any positive integer; -1 means 'same as --dp-size'; must satisfy dp_size_local * tp_size <= cards on the node
+cli_example: --dp-size-local 8
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is NOT a vLLM engine flag — it is a helper-script argument of
+
+  vllm-ascend''s external online DP launcher (examples/external_online_dp/launch_online_dp.py).
+
+  It controls how many independent vLLM engine processes (DP ranks) are spawned on the
+
+  current node. In launch_online_dp.py:54, `num_cards = dp_size_local * tp_size` and the
+
+  loop `for i in range(dp_size_local)` starts one subprocess per local DP rank, each pinned
+
+  to a disjoint slice of NPUs via ASCEND_RT_VISIBLE_DEVICES (visible_devices =
+
+  range(i*tp_size, (i+1)*tp_size)). So dp_size_local determines the per-node process fan-out
+
+  and NPU partitioning for external DP deployments.
+
+  Performance mechanism: "(1) Throughput — more local DP ranks means more concurrent"
+
+  request streams and better NPU utilization when the model fits per-rank; too many ranks
+
+  with too few cards per rank (small tp_size) can cause HCCL/communication overhead and
+
+  memory pressure. (2) Latency — each DP rank runs its own engine with its own scheduler;
+
+  the DP master (dp_address/dp_rpc_port) coordinates them, so an unbalanced dp_size_local
+
+  across nodes creates stragglers. (3) The value must be consistent with the global
+
+  --dp-size and --dp-rank-start so that ranks are contiguous and non-overlapping across
+
+  nodes; the docs example (DeepSeek-V3.1.md) shows dp_size=32 split as 16+16 or 8+8+8+8
+
+  across nodes with matching dp_rank_start offsets.
+
+  In upstream vLLM the equivalent config field is parallel_config.data_parallel_size_local
+
+  (used in vllm/v1/engine/utils.py for Ray placement groups and in MoRI-IO KV connector
+
+  for per-pod rank folding), but the CLI flag --dp-size-local here belongs to the
+
+  vllm-ascend launcher script, not to `vllm serve`.
+
+  '
+usage_locations:
+- file: examples/external_online_dp/launch_online_dp.py:23
+  context: Reads args.dp_size_local; if -1 falls back to dp_size (single-node default).
+- file: examples/external_online_dp/launch_online_dp.py:54
+  context: num_cards = dp_size_local * tp_size; loop spawns dp_size_local engine subprocesses with disjoint NPU slices.
+- file: tools/docs_codegen/converters.py:348
+  context: Maps config field dp_size_local to the --dp-size-local CLI flag when generating launch commands.
+- file: tests/e2e/common/multi_node/external_dp/external_dp_config.py:51
+  context: NodeInfo.dp_size_local; devices_per_node = dp_size_local * devices_per_rank.
+- file: tests/e2e/common/multi_node/external_dp/runtime.py:364
+  context: Exports DP_SIZE_LOCAL env var into the per-rank server command template.
+related_parameters:
+- name: --dp-size
+  relation: Global DP size; dp_size_local defaults to it when -1, and sum of dp_size_local across nodes should equal dp_size.
+- name: --tp-size
+  relation: Multiplied with dp_size_local to compute cards used per node (num_cards = dp_size_local * tp_size).
+- name: --dp-rank-start
+  relation: Starting global DP rank for this node; must be offset by dp_size_local of preceding nodes to avoid rank collisions.
+- name: --dp-address
+  relation: IP of the DP master node used for cross-node DP coordination.
+- name: --dp-rpc-port
+  relation: RPC port for DP master communication.
+- name: --vllm-start-port
+  relation: Base port; each local DP rank gets vllm_start_port + local index.
+constraints:
+- dp_size_local * tp_size must not exceed the number of NPUs available on the node.
+- The sum of dp_size_local across all nodes should equal the global --dp-size for a consistent DP topology.
+- dp_rank_start on each node must be offset by the dp_size_local of preceding nodes so global DP ranks are contiguous and
+  unique.
+- When --dp-size-local is not set (default -1), it is treated as equal to --dp-size, i.e. all DP ranks run on a single node.
+tuning_advice:
+  summary: Set dp_size_local so that dp_size_local * tp_size fills the node's NPU count, and keep the per-node split balanced
+    across nodes.
+  suggested_values:
+  - scenario: Single node, all DP ranks local (default behavior)
+    value: -1
+    reason: Falls back to --dp-size, spawning all DP ranks on one node; simplest for single-node deployments.
+  - scenario: 8-NPU node, tp_size=1, decode-heavy external DP (DeepSeek-V3.1 950DT example)
+    value: 8
+    reason: dp_size_local * tp_size = 8 fills the node; docs show dp_size=32 split as 8+8+8+8 across four nodes with dp_rank_start
+      0/8/16/24.
+  - scenario: 16-NPU node (A3), tp_size=1, decode external DP
+    value: 16
+    reason: Docs example uses --dp-size 32 --tp-size 1 --dp-size-local 16 with dp_rank_start 0 and 16 on two nodes.
+  - scenario: Prefill node with tp_size=8 on 16 NPUs
+    value: 2
+    reason: dp_size_local * tp_size = 16 fills the node; docs show --dp-size 2 --tp-size 8 --dp-size-local 2 for prefill.
+  caveats:
+  - This flag belongs to the vllm-ascend launcher script (launch_online_dp.py), not to `vllm serve`; passing it to vllm serve
+    will fail.
+  - Unbalanced dp_size_local across nodes creates DP stragglers and hurts tail latency since the DP master waits on all ranks.
+  - Each local DP rank is a separate engine process with its own KV cache and scheduler; too many ranks with small tp_size
+    increases per-process memory overhead and HCCL setup cost.
+  - Ensure ASCEND_RT_VISIBLE_DEVICES slices (computed as i*tp_size .. (i+1)*tp_size) do not overlap between ranks.
+  quick_guide: Set --dp-size-local = (NPUs on node) / tp_size, and make the sum across nodes equal --dp-size with matching
+    --dp-rank-start offsets.
+analysis_date: '2026-10-27'

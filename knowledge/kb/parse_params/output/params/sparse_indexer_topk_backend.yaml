@@ -1,0 +1,85 @@
+name: --sparse-indexer-topk-backend
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/kernel.py:285
+- vllm/engine/arg_utils.py:1681
+- vllm/engine/arg_utils.py:513
+- vllm/model_executor/layers/indexer_topk.py:140
+- vllm/model_executor/layers/sparse_attn_indexer.py:884
+value_type: str
+default: auto
+valid_choices:
+- auto
+- deep_select
+- cooperative
+- persistent
+- per_row
+- flashinfer
+- torch
+cli_example: --sparse-indexer-topk-backend <backend>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "This parameter selects the kernel used for the DSA (DeepSeek Sparse Attention) sparse\nindexer's decode top-k\
+  \ stage (vllm/model_executor/layers/indexer_topk.py:136-217). It is\nread from kernel_config.sparse_indexer_topk_backend\
+  \ in SparseIndexerTopk.__init__ and in\nsparse_attn_indexer.py:884, and only affects the top-k selection kernel that runs\
+  \ during\ndecode for sparse-attention models (e.g. DeepSeek-V3.2/DSA-style models).\n\nOn Ascend NPU the impact is low because\
+  \ the entire backend selection logic is gated on\nCUDA-specific capabilities:\n- \"SparseIndexerTopk.__init__ sets self._is_cuda\
+  \ = current_platform.is_cuda(), and\"\n  _has_deep_select / _cooperative_capable are only true on CUDA device families\n\
+  \  (SM100a/SM103a, SM90). On Ascend these are all False.\n- \"resolve_backend() raises RuntimeError for explicit \\\"cooperative\\\
+  \", \\\"persistent\\\",\"\n  \"flashinfer\", \"deep_select\" backends when the CUDA constraints are unmet\n  (indexer_topk.py:170-205).\
+  \ So on Ascend, any explicit non-\"auto\"/\"torch\"/\"per_row\"\n  value will fail at runtime.\n- \"The \\\"auto\\\" chain\
+  \ (_resolve_auto) falls through to \\\"per_row\\\" on non-CUDA platforms\"\n  (indexer_topk.py:208-217), which is the only\
+  \ path that works on Ascend.\n- \"sparse_attn_indexer.py:890 raises if CUDA and DeepGEMM is missing, but this check is\"\
+  \n  CUDA-only and does not fire on Ascend.\n\nTherefore on Ascend NPU this parameter has essentially no tuning effect: \"\
+  the default\"\n\"auto\" resolves to \"per_row\", and any other value either raises or is a debug reference\n(\"torch\").\
+  \ It does not change throughput/memory on Ascend; at most it could change the\ntop-k kernel latency for DSA models if a\
+  \ non-CUDA backend were ever added, but none of\nthe listed backends are Ascend-compatible in the provided code.\n"
+usage_locations:
+- file: vllm/config/kernel.py:285
+  context: KernelConfig field definition with docstring listing available backends and constraints
+- file: vllm/engine/arg_utils.py:1681
+  context: CLI argument registration under KernelConfig group; normalizes hyphens to underscores
+- file: vllm/engine/arg_utils.py:513
+  context: EngineArgs field mirroring KernelConfig.sparse_indexer_topk_backend
+- file: vllm/model_executor/layers/indexer_topk.py:140
+  context: SparseIndexerTopk reads backend and resolves it via resolve_backend/_resolve_auto
+- file: vllm/model_executor/layers/sparse_attn_indexer.py:884
+  context: Sparse attention indexer stores topk_backend from kernel_config for the custom op
+related_parameters:
+- name: --moe-backend
+  relation: Sibling KernelConfig backend selector; same normalization and CLI group
+- name: --linear-backend
+  relation: Sibling KernelConfig backend selector; same normalization and CLI group
+- name: --kernel-config
+  relation: Parent config object (KernelConfig) that contains sparse_indexer_topk_backend
+constraints:
+- Explicit 'cooperative' backend requires a CUDA platform with SM90+ (not SM120 family) and valid cooperative_topk constraints,
+  otherwise RuntimeError is raised.
+- Explicit 'persistent' backend requires a CUDA platform and topk_tokens in (512, 1024, 2048), otherwise RuntimeError is raised.
+- Explicit 'deep_select' backend requires SM100a/SM103a (10.x device family) and inputs satisfying DeepSelect constraints,
+  otherwise RuntimeError is raised.
+- Explicit 'flashinfer' backend requires a CUDA platform, importable flashinfer.topk.top_k_ragged_transform, and fp32 logits
+  with stride(1) == 1, otherwise RuntimeError is raised.
+- On Ascend NPU none of cooperative/persistent/deep_select/flashinfer are supported, so only 'auto', 'per_row', or 'torch'
+  can run without error.
+tuning_advice:
+  summary: Leave at default 'auto' on Ascend NPU; it resolves to 'per_row' and other backends are CUDA-only.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any DSA/sparse-attention model)
+    value: auto
+    reason: On non-CUDA platforms _resolve_auto falls through to 'per_row', the only Ascend-compatible path; explicit CUDA
+      backends raise RuntimeError.
+  - scenario: Debugging top-k correctness on Ascend
+    value: torch
+    reason: Plain torch.topk reference implementation works on any platform for validating results, but is slower and not
+      for production.
+  caveats:
+  - Do not set cooperative/persistent/deep_select/flashinfer on Ascend — they require CUDA and will raise RuntimeError.
+  - No Ascend-specific top-k kernel is wired to this parameter in the provided code, so it cannot be used to accelerate DSA
+    decode on NPU.
+  quick_guide: Keep --sparse-indexer-topk-backend auto on Ascend; it is a CUDA-only kernel selector with no NPU tuning value.
+analysis_date: '2026-10-27'

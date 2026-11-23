@@ -1,0 +1,97 @@
+name: speculative.kv_cache_dtype
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/v1/worker/gpu/spec_decode/eagle/utils.py:89
+- vllm/v1/worker/gpu/spec_decode/dflash/utils.py:36
+- vllm/v1/worker/gpu/spec_decode/dspark/utils.py:92
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py:115
+value_type: str
+default: null
+valid_choices: Any KV cache dtype string accepted by --kv-cache-dtype (e.g. 'auto', 'fp8', 'fp8_e4m3', 'fp8_e5m2', 'int8');
+  None means inherit the target model's --kv-cache-dtype
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This is a nested field of SpeculativeConfig that only affects the DRAFT (speculator) model''s
+
+  KV cache dtype, not the target model''s. In upstream vLLM it is consumed in the GPU spec-decode
+
+  loaders: "eagle/utils.py:89-96, dflash/utils.py:33-40, and dspark/utils.py:89-96 all do"
+
+  `replace(vllm_config.cache_config, cache_dtype=speculative_config.kv_cache_dtype)` only when the
+
+  value is not None; otherwise the draft inherits the target''s cache_config unchanged. The NIXL
+
+  connector (metadata.py:110-130) resolves `speculative_config.kv_cache_dtype or
+
+  vllm_config.cache_config.cache_dtype` purely for compatibility hashing, not for runtime perf.
+
+  Performance effect: "choosing a lower-precision draft KV dtype (e.g. fp8) reduces the draft"
+
+  model''s KV cache memory footprint and the memory bandwidth needed to read/write draft KV during
+
+  speculative decoding, which can slightly improve decode latency and allow a larger draft KV cache
+
+  / more concurrent spec tokens. However, the draft model is typically small and its KV cache is a
+
+  minor fraction of total KV memory, so the aggregate impact is low. On Ascend NPU, none of these
+
+  GPU spec-decode loader paths (vllm/v1/worker/gpu/...) are used by vllm-ascend''s v1/v2 workers,
+
+  and no vllm-ascend source references speculative_config.kv_cache_dtype; the Ascend KV cache dtype
+
+  is governed by the top-level --kv-cache-dtype and Ascend attention backend support. Thus on
+
+  Ascend this field is effectively inert unless/until the Ascend spec-decode path wires it in.
+
+  '
+usage_locations:
+- file: vllm/v1/worker/gpu/spec_decode/eagle/utils.py:89
+  context: EAGLE draft loader overrides cache_config.cache_dtype with speculative kv_cache_dtype when set
+- file: vllm/v1/worker/gpu/spec_decode/dflash/utils.py:36
+  context: DFlash draft loader replaces cache_dtype for the draft vllm_config when set
+- file: vllm/v1/worker/gpu/spec_decode/dspark/utils.py:92
+  context: DSpark draft loader replaces cache_dtype for the draft vllm_config when set
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py:115
+  context: Resolves effective draft KV dtype for NIXL compatibility hash (None inherits target)
+related_parameters:
+- name: --kv-cache-dtype
+  relation: Target model KV cache dtype; the draft inherits this when speculative.kv_cache_dtype is None
+- name: --speculative-config
+  relation: Parent JSON config object containing this nested field
+- name: --speculative-method
+  relation: Determines which draft loader (eagle/dflash/dspark) consumes this field
+- name: --speculative-draft-model-path
+  relation: The draft model whose KV cache dtype is being overridden
+constraints:
+- When speculative.kv_cache_dtype is None, the draft model inherits the target model's --kv-cache-dtype; setting it explicitly
+  overrides only the draft.
+- The chosen draft KV cache dtype must be supported by the draft model's attention backend, otherwise draft model construction
+  fails.
+- For NIXL KV transfer, an explicit draft kv_cache_dtype that resolves to the same effective dtype as the peer's inherited
+  value is treated as compatible; a genuinely different effective dtype causes a compatibility mismatch.
+tuning_advice:
+  summary: Leave unset (inherit target --kv-cache-dtype) on Ascend; only set explicitly for GPU spec-decode when you want
+    a lower-precision draft KV cache.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker) with speculative decoding
+    value: unset
+    reason: vllm-ascend does not read speculative.kv_cache_dtype; the draft inherits the target's --kv-cache-dtype, which
+      is the only dtype the Ascend attention backend actually honors.
+  - scenario: GPU (upstream vLLM) EAGLE/DFlash/DSpark with memory pressure on the draft KV cache
+    value: fp8
+    reason: Reduces draft KV cache footprint and bandwidth; only takes effect on the GPU spec-decode loaders that read this
+      field.
+  - scenario: Disaggregated / NIXL KV transfer with speculative decoding
+    value: unset
+    reason: Inheriting the target dtype avoids spurious compatibility-hash mismatches between peers.
+  caveats:
+  - Do not expect measurable Ascend speedup from this field; tune the top-level --kv-cache-dtype instead.
+  - Ensure the draft attention backend supports the chosen dtype or draft model construction will fail.
+  quick_guide: On Ascend, leave speculative.kv_cache_dtype unset and tune --kv-cache-dtype instead.
+analysis_date: '2026-10-27'

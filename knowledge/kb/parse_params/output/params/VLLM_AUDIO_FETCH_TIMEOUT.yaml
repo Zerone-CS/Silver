@@ -1,0 +1,87 @@
+name: VLLM_AUDIO_FETCH_TIMEOUT
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:955
+- vllm/envs.py:73
+- vllm/multimodal/media/connector.py:479
+- vllm/multimodal/media/connector.py:494
+value_type: int
+default: 10
+valid_choices: positive integer (seconds); no explicit upper bound enforced
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_AUDIO_FETCH_TIMEOUT is read only in vllm/multimodal/media/connector.py, where it is
+
+  passed as fetch_timeout to load_from_url (sync, line 479) and load_from_url_async (async,
+
+  line 494) for audio media. It bounds how long the HTTP fetch of a remote audio URL may take
+
+  before timing out. It does NOT touch any NPU compute path, HCCL communication, KV cache, or
+
+  scheduling logic — it is purely a network I/O timeout for the multimodal preprocessing stage.
+
+  On Ascend NPU, audio decoding/preprocessing runs on CPU (via AudioMediaIO) before tensors are
+
+  moved to the NPU, so this parameter only affects the wall-clock latency of the input-fetch
+
+  phase of a request. If the timeout is too small, slow audio URLs will fail/retry (adding
+
+  latency and possibly erroring the request); if too large, a hung URL can stall a request
+
+  worker for longer. There is no vllm-ascend override of this env var in the provided context;
+
+  it is inherited unchanged from upstream vLLM. Impact on steady-state NPU throughput is
+
+  negligible because it does not affect the model forward/backward or batching.
+
+  '
+usage_locations:
+- file: vllm/envs.py:955
+  context: Env var definition; parsed as int with default 10 seconds.
+- file: vllm/envs.py:73
+  context: 'Type stub declaration VLLM_AUDIO_FETCH_TIMEOUT: int = 10.'
+- file: vllm/multimodal/media/connector.py:479
+  context: Passed as fetch_timeout to load_from_url in synchronous fetch_audio.
+- file: vllm/multimodal/media/connector.py:494
+  context: Passed as fetch_timeout to load_from_url_async in async fetch_audio_async.
+related_parameters:
+- name: VLLM_IMAGE_FETCH_TIMEOUT
+  relation: Sibling timeout for image URL fetching (default 5s); same mechanism.
+- name: VLLM_VIDEO_FETCH_TIMEOUT
+  relation: Sibling timeout for video URL fetching (default 30s); same mechanism.
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retry count for media fetches; each retry quadruples the timeout, so combined worst-case latency depends on both.
+- name: VLLM_MEDIA_CACHE
+  relation: If media caching is enabled, repeated audio URLs avoid re-fetch and thus the timeout path.
+constraints:
+- The value must be a positive integer number of seconds; a non-integer string will raise a ValueError during env parsing.
+- This timeout only applies to audio fetched from remote URLs (HTTP/data/file); it has no effect on locally provided audio
+  files or base64-embedded audio.
+tuning_advice:
+  summary: Keep the default 10s for typical audio URLs; raise it only when serving large or slow remote audio sources, and
+    lower it if you need fast failure on unreliable endpoints.
+  suggested_values:
+  - scenario: Standard audio serving with reasonably fast remote URLs
+    value: 10
+    reason: Default is adequate for typical audio clip downloads and avoids stalling workers on hung URLs.
+  - scenario: Large audio files or slow/remote object storage endpoints
+    value: 30
+    reason: Upstream tests (test_ultravox.py, test_voxtral.py) set 30s to accommodate larger audio assets; use a higher value
+      to avoid spurious timeouts.
+  - scenario: Unreliable endpoints where fast failure is preferred
+    value: 5
+    reason: Lower timeout fails fast on dead URLs, freeing request workers sooner; combine with VLLM_MEDIA_FETCH_MAX_RETRIES
+      to control retry behavior.
+  caveats:
+  - This is a network I/O timeout, not an NPU tuning knob; do not expect throughput gains from changing it.
+  - Worst-case fetch latency is roughly timeout × (retries+1) due to VLLM_MEDIA_FETCH_MAX_RETRIES quadrupling the timeout
+    per retry.
+  - Enable VLLM_MEDIA_CACHE to avoid repeated fetches of the same audio URL and sidestep the timeout path entirely.
+  quick_guide: Leave at 10s unless audio URLs are large/slow (raise to 30) or unreliable (lower to 5); it affects only input-fetch
+    latency, not NPU throughput.
+analysis_date: '2026-10-27'

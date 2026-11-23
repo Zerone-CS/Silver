@@ -1,0 +1,104 @@
+name: additional_config.eplb_config.stair_config
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:300
+- vllm_ascend/patch/platform/patch_eplb.py:164
+- vllm_ascend/patch/platform/patch_eplb.py:221
+- vllm_ascend/worker/v2/eplb.py:54
+value_type: dict
+default: '{}'
+valid_choices: dict of StairConfig fields (e.g. rank_transfer_limit, cross_node_transfer_limit); unset transfer limits default
+  to unlimited
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'stair_config is a nested dict under additional_config["eplb_config"] that is
+
+  parsed into a StairConfig dataclass (vllm_ascend/ascend_config.py:300). It only
+
+  takes effect when the STAIR EPLB policy is used (Ascend''s default policy per
+
+  docs). In vllm_ascend/worker/v2/eplb.py:51-59, the resolved stair_config is
+
+  passed to create_eplb_policy(...) which builds the EPLB policy that decides
+
+  expert re-placement (redundant expert migration) across ranks. The transfer
+
+  limit fields (rank_transfer_limit, cross_node_transfer_limit) bound how many
+
+  expert migrations are allowed per EPLB cycle, directly controlling the
+
+  communication cost of load rebalancing: "too-high limits cause migration storms"
+
+  that steal HCCL/CPU-staged bandwidth from inference (hurting latency/throughput),
+
+  too-low limits leave experts imbalanced (hurting MoE throughput). On Ascend,
+
+  patch_eplb.py:152-184 (_clamp_stair_limits_for_gloo_fallback) clamps any
+
+  *unset* transfer limits to 1 when the communicator falls back to torch_gloo,
+
+  because CPU-staged transfers cannot sustain a migration storm; explicitly set
+
+  limits are preserved. resolve_ascend_eplb_communicator (patch_eplb.py:204-239)
+
+  returns the stair_config unchanged when HIXL is selected, or the clamped version
+
+  on Gloo fallback. So stair_config affects runtime throughput/latency only when
+
+  dynamic EPLB with the STAIR policy is active; otherwise it is inert.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:300
+  context: EplbConfig field parsed from additional_config['eplb_config']['stair_config'] into StairConfig
+- file: vllm_ascend/worker/v2/eplb.py:51
+  context: stair_config resolved via resolve_ascend_eplb_communicator (or raw config) and passed to create_eplb_policy
+- file: vllm_ascend/patch/platform/patch_eplb.py:164
+  context: reads user-provided stair_config to detect unset transfer limits for Gloo fallback clamping
+- file: vllm_ascend/patch/platform/patch_eplb.py:221
+  context: returns stair_config unchanged when HIXL communicator is used
+related_parameters:
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: stair_config only matters when dynamic EPLB is enabled (requires DYNAMIC_EPLB or EXPERT_MAP_RECORD env)
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: STAIR policy must be selected for stair_config to be consumed
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: redundant experts are the units that STAIR migrates; without them there is nothing to rebalance
+- name: additional_config.eplb_config.communicator
+  relation: HIXL vs torch_gloo determines whether unset transfer limits get clamped to 1
+- name: --enable-eplb
+  relation: upstream EPLB must be enabled; on Ascend only supported by Model Runner V2
+constraints:
+- stair_config is only supported by Model Runner V2; setting it with Model Runner V1 raises a ValueError ('only supported
+  by Model Runner V2').
+- stair_config must be a dict; unknown keys inside eplb_config are rejected (extra='forbid').
+- stair_config only has effect when dynamic EPLB is enabled, which requires the DYNAMIC_EPLB or EXPERT_MAP_RECORD environment
+  variable to be set to true.
+- stair_config is only consumed when the STAIR EPLB policy is active (Ascend default); with other policies it is ignored.
+tuning_advice:
+  summary: Tune STAIR transfer limits to balance expert-migration cost against load balance, only when dynamic EPLB with STAIR
+    policy is active on Model Runner V2.
+  suggested_values:
+  - scenario: HIXL communicator available, stable high-throughput MoE serving
+    value: '{}'
+    reason: Leave transfer limits unset (unlimited) so STAIR can fully rebalance experts; HIXL transfers are fast enough to
+      sustain migration.
+  - scenario: torch_gloo fallback or constrained interconnect
+    value: '{"rank_transfer_limit": 1, "cross_node_transfer_limit": 1}'
+    reason: Limit migrations per cycle to avoid CPU-staged migration storms; matches the automatic clamp applied on Gloo fallback.
+  - scenario: Latency-sensitive decode with cross-node topology
+    value: '{"cross_node_transfer_limit": 0}'
+    reason: Disable cross-node expert transfers to keep migration traffic local and avoid cross-node bandwidth contention.
+  caveats:
+  - Explicitly setting a transfer limit prevents the automatic Gloo-fallback clamp from overriding it.
+  - stair_config is inert unless dynamic EPLB and the STAIR policy are both active.
+  - Only Model Runner V2 accepts stair_config; V1 raises an error.
+  quick_guide: Only set stair_config when using dynamic EPLB + STAIR on Model Runner V2; leave limits unset with HIXL, clamp
+    to 1 on Gloo.
+analysis_date: '2026-10-27'

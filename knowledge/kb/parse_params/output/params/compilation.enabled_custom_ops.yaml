@@ -1,0 +1,85 @@
+name: compilation.enabled_custom_ops
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/model_executor/custom_op.py:187
+- vllm/model_executor/hw_agnostic/custom_op.py:161
+value_type: unknown
+default: <computed>
+valid_choices: set of CustomOp class names (strings) populated at runtime
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a runtime-populated set on CompilationConfig, not a user-facing CLI flag.
+
+  It is filled by CustomOp.dispatch_forward() (vllm/model_executor/custom_op.py:187 and
+
+  vllm/model_executor/hw_agnostic/custom_op.py:161): when a CustomOp is enabled (either via
+
+  _enforce_enable or its own enabled() check), its class name is added to
+
+  compilation_config.enabled_custom_ops; otherwise it is added to disabled_custom_ops.
+
+  The set is then consumed by the torch.compile / graph-capture pipeline to decide whether
+
+  a given op is treated as an opaque custom op (kept as-is, dispatched to forward_oot on
+
+  Ascend) or whether its forward_native is compiled (maybe_compile). On Ascend, vllm-ascend
+
+  registers OOT ops (forward_oot) for many kernels (e.g. attention, MoE, rotary embedding,
+
+  RMSNorm). Whether those ops land in enabled_custom_ops determines if the Ascend-native
+
+  kernel path is used versus a compiled PyTorch-native fallback. Using the Ascend-native
+
+  custom op avoids eager torch ops inside opaque regions and yields better latency/throughput;
+
+  falling back to compiled forward_native can add overhead and may not fuse as well. The set
+
+  itself is derived automatically, so its performance effect is indirect but real: it gates
+
+  which kernel implementation runs during graph capture and eager execution.
+
+  '
+usage_locations:
+- file: vllm/model_executor/custom_op.py:187
+  context: dispatch_forward adds enabled CustomOp names to compilation_config.enabled_custom_ops
+- file: vllm/model_executor/hw_agnostic/custom_op.py:161
+  context: hw-agnostic dispatch_forward adds enabled CustomOp names to enabled_custom_ops
+related_parameters:
+- name: compilation.disabled_custom_ops
+  relation: Complementary set; ops not enabled are added here and their forward_native is compiled instead
+- name: compilation.level
+  relation: Custom op enable/disable only matters when torch.compile / graph mode is active
+- name: compilation.cudagraph_mode
+  relation: Graph capture relies on custom op dispatch to select opaque vs compiled paths
+constraints:
+- This field is populated automatically at runtime by CustomOp.dispatch_forward and is not intended to be set directly by
+  users.
+- An op is placed in enabled_custom_ops only if it is enforce-enabled or its enabled() check passes; otherwise it goes to
+  disabled_custom_ops.
+tuning_advice:
+  summary: 'Do not set this directly; instead control which custom ops are active via compilation
+
+    level, enforce-full-graph / cudagraph settings, and vllm-ascend OOT op registration so
+
+    Ascend-native kernels are selected.
+
+    '
+  suggested_values:
+  - scenario: Default Ascend deployment relying on vllm-ascend OOT kernels
+    value: <computed>
+    reason: Let dispatch_forward populate the set automatically so Ascend-native forward_oot ops are used where available.
+  - scenario: Debugging a suspected custom-op fallback causing slowdown
+    value: <computed>
+    reason: Inspect the populated enabled_custom_ops/disabled_custom_ops sets to confirm whether expected Ascend kernels are
+      enabled rather than falling back to compiled forward_native.
+  caveats:
+  - Manually overriding this set is unsupported and can break graph capture or dispatch consistency.
+  - Performance gains come from ensuring the right ops are enabled, not from editing the set by hand.
+  quick_guide: Leave enabled_custom_ops to be auto-populated; tune compilation level and graph mode instead.
+analysis_date: '2026-10-27'

@@ -1,0 +1,125 @@
+name: --mm-processor-device
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1438
+- vllm/engine/arg_utils.py:625
+- vllm/engine/arg_utils.py:1887
+- vllm/config/model.py:418
+- vllm/config/model.py:551
+- vllm/config/multimodal.py:342
+- vllm/config/multimodal.py:361
+- vllm/config/vllm.py:1849
+- vllm/config/vllm.py:2693
+value_type: str
+default: auto
+valid_choices:
+- auto
+- cpu
+- <current_platform.device_type>
+cli_example: --mm-processor-device auto
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag is a convenience alias that folds into `mm_processor_kwargs["device"]`
+
+  (see `MultiModalConfig.fold_mm_processor_device` in vllm/config/multimodal.py:342).
+
+  It only affects where the HuggingFace "fast" (torchvision-backed) multimodal
+
+  processor runs the image/video transform: on CPU or on the accelerator. The
+
+  processor is a pre-processing step that runs before the model forward pass, so
+
+  moving it to the accelerator can reduce host-side preprocessing latency and
+
+  free CPU cores, but it does not change the model''s compute graph, KV cache, or
+
+  memory layout of the language model itself.
+
+
+  On Ascend NPU, `current_platform.device_type` resolves to "npu", so the flag
+
+  accepts "auto", "cpu", and "npu". However, the "auto" resolution logic in
+
+  `VllmConfig._resolve_mm_processor_device` (vllm/config/vllm.py:2693) only
+
+  selects the accelerator when the instance is an encode-only EC producer AND
+
+  `--mm-tensor-ipc=torch_shm` can carry device tensors. In every other deployment
+
+  "auto" resolves to "cpu". This means for typical single-instance Ascend
+
+  deployments the flag has no effect (processor stays on CPU), and the
+
+  performance impact is limited to the EC encode/prefill disaggregated path.
+
+
+  No vllm-ascend override of this parameter was found in the provided context;
+
+  the behavior is inherited from upstream vLLM. The actual preprocessing work
+
+  (torchvision transforms) runs on whichever device is selected, so on Ascend
+
+  the NPU path would use CANN-backed torch ops, but the dominant cost remains
+
+  the language model forward pass, making this a low-impact knob.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1438
+  context: CLI argument definition with choices auto/cpu/device_type and default auto
+- file: vllm/engine/arg_utils.py:625
+  context: EngineArgs field mm_processor_device defaulting to auto
+- file: vllm/engine/arg_utils.py:1887
+  context: Passed into VllmConfig construction
+- file: vllm/config/multimodal.py:342
+  context: fold_mm_processor_device folds the flag into mm_processor_kwargs['device']
+- file: vllm/config/vllm.py:2693
+  context: _resolve_mm_processor_device resolves 'auto' based on EC role and mm_tensor_ipc
+related_parameters:
+- name: --mm-processor-kwargs
+  relation: An explicit 'device' key in mm_processor_kwargs always wins over this flag; the flag is folded into it
+- name: --mm-tensor-ipc
+  relation: '''auto'' only resolves to the accelerator when mm_tensor_ipc=torch_shm can carry device tensors'
+- name: --mm-encoder-only
+  relation: '''auto'' selects the accelerator only for encode-only EC producer instances'
+- name: --mm-device-do-normalize
+  relation: Companion flag controlling whether normalization runs on the selected device
+constraints:
+- The value must be one of 'auto', 'cpu', or the current platform device type (on Ascend this is 'npu'); other values are
+  rejected by argparse choices.
+- The flag only takes effect for HF 'fast' (torchvision-backed) processors that accept a 'device' argument; other processors
+  ignore it and stay on CPU.
+- An explicit 'device' entry in --mm-processor-kwargs overrides this flag entirely.
+- '''auto'' resolves to the accelerator only for an encode-only EC producer instance whose tensor transport is torch_shm;
+  everywhere else it resolves to ''cpu''.'
+tuning_advice:
+  summary: 'Leave at the default ''auto'' for standard Ascend deployments; only consider
+
+    forcing ''npu'' in encode-only EC producer setups where preprocessing is a
+
+    measurable bottleneck and torch_shm transport is used.
+
+    '
+  suggested_values:
+  - scenario: Standard single-instance Ascend serving (no EC disaggregation)
+    value: auto
+    reason: '''auto'' resolves to ''cpu'' here, which is the safe default; forcing ''npu'' would contend the NPU with the
+      language model for no benefit.'
+  - scenario: Encode-only EC producer with --mm-tensor-ipc=torch_shm and heavy image/video preprocessing
+    value: auto
+    reason: '''auto'' correctly resolves to the accelerator in this case, offloading preprocessing to the NPU without a host
+      copy.'
+  - scenario: Debugging or CPU-only preprocessing to isolate NPU memory pressure
+    value: cpu
+    reason: Forces the processor onto CPU, freeing NPU memory and avoiding contention with the model.
+  caveats:
+  - Verify the model uses an HF 'fast' processor; slow processors ignore the device setting.
+  - Do not set an explicit 'device' in --mm-processor-kwargs simultaneously; it silently overrides this flag.
+  - Measure end-to-end latency before/after; preprocessing is usually a small fraction of total latency for LLM decode.
+  quick_guide: Keep 'auto' unless running an encode-only EC producer with torch_shm transport and preprocessing-bound workloads.
+analysis_date: '2026-10-27'

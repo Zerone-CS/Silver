@@ -1,0 +1,110 @@
+name: kv_transfer.kv_port
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_scheduler.py:82
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:108
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:1763
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1340
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:877
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/scheduler.py:261
+value_type: int
+default: 0
+valid_choices: TCP port number in range 1-65535; the derived handshake ports (kv_port + rank offsets) must also stay within
+  1-65535
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "kv_port is the base TCP port from which every Mooncake-family P/D connector on Ascend\nderives its per-rank\
+  \ handshake/control-plane ports. It is not a tuning knob for compute,\nbut it directly gates whether the disaggregated prefill/decode\
+  \ (PD) data path can be\nestablished and how many concurrent worker sockets can coexist on a host.\n\nDerivation formulas\
+  \ observed in vllm-ascend:\n- \"base_scheduler.py:82 — side_channel_port = kv_port + max_device_id + data_parallel_rank,\"\
+  \n  where max_device_id = tp_size * dp_size * pcp_size * pp_size. Worker handshake ports\n  occupy [kv_port, kv_port + dp_size*pp_size*pcp_size*tp_size),\
+  \ and the scheduler control\n  port is placed immediately after that range to avoid collision.\n- \"base_worker.py:108-112\
+  \ — side_channel_port = kv_port + dp_rank*tp_size*pp_size*pcp_size,\"\n  handshake_port = side_channel_port + device_index\
+  \ where\n  device_index = (pp_rank*pcp_size + pcp_rank)*tp_size + tp_rank.\n- \"mooncake_connector.py:1763 and mooncake_hybrid_connector.py:1340\
+  \ — same\"\n  kv_port + dp_rank*tp_size*pp_size*pcp_size base.\n- \"mooncake_layerwise_connector.py:877/1232 — kv_port +\
+  \ dp_rank*tp_size (scheduler) and\"\n  kv_port + dp_rank*pcp_size*tp_size + pcp_rank*tp_size + tp_rank (worker).\n- \"sfa_pd_rd2h/scheduler.py:261\
+  \ — kv_port + data_parallel_rank*tp_size, explicitly using\"\n  the GLOBAL data_parallel_rank so single-host multi-DP engines\
+  \ get disjoint ranges.\n\nPerformance mechanism: \"if the derived port range overlaps another process, another DP\"\nengine\
+  \ on the same host, or the scheduler control port, socket bind fails and the PD\nhandshake times out — the request stalls\
+  \ or the engine fails to start, which manifests\nas a hard latency/throughput cliff (requests hang until timeout). When\
+  \ ports are chosen\ncorrectly, kv_port has no steady-state cost; it only determines the size of the reserved\nport window.\
+  \ The window size scales with tp_size * dp_size * pp_size * pcp_size, so large\nparallel topologies require a correspondingly\
+  \ large contiguous free port block.\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_scheduler.py:82
+  context: Scheduler control port = kv_port + max_device_id + data_parallel_rank, placed after the worker handshake range
+    to avoid collision.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/base_worker.py:108
+  context: Worker side_channel_port = kv_port + dp_rank*tp_size*pp_size*pcp_size; handshake_port adds device_index.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:1763
+  context: MooncakeConnectorV2 scheduler handshake base port derived from kv_port and DP rank.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2076
+  context: Port offset computed as handshake_port - kv_port to resolve peer host mapping.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1340
+  context: Hybrid connector scheduler base port; requires dcp_size == 1.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:877
+  context: Layerwise connector scheduler base port = kv_port + dp_rank*tp_size.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_layerwise_connector.py:1232
+  context: Layerwise worker base port = kv_port + dp_rank*pcp_size*tp_size + pcp_rank*tp_size; handshake_port adds tp_rank.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/scheduler.py:261
+  context: SFA PD RD2H scheduler control port = kv_port + global data_parallel_rank*tp_size.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Selects which connector (MooncakeConnectorV2, MooncakeLayerwiseConnector, SFA PD RD2H, etc.) consumes kv_port;
+    each connector uses a different port-offset formula.
+- name: kv_transfer_config.kv_role
+  relation: Producer (prefill) and consumer (decode) nodes must use non-overlapping kv_port ranges when co-located on one
+    host.
+- name: tensor_parallel_size
+  relation: Multiplies the reserved port window (kv_port + dp_rank*tp_size*...); larger TP needs a larger free port block.
+- name: data_parallel_size / data_parallel_rank
+  relation: Each DP rank gets a disjoint sub-range starting at kv_port + dp_rank*tp_size*pp_size*pcp_size.
+- name: pipeline_parallel_size
+  relation: Included in the port window size for MooncakeConnectorV2 and base worker/scheduler.
+- name: prefill_context_parallel_size
+  relation: Included in the port window size; layerwise connector asserts pcp_size == 1 on decoder nodes.
+constraints:
+- The derived handshake ports (kv_port plus rank offsets) must all fall within the valid TCP port range 1-65535; a large tp_size*dp_size*pp_size*pcp_size
+  window can overflow past 65535.
+- Prefill and decode nodes co-located on the same host must use non-overlapping kv_port ranges so their derived handshake
+  ports do not collide.
+- The scheduler control port is placed at kv_port + max_device_id + data_parallel_rank, so the reserved worker range [kv_port,
+  kv_port + max_device_id) must not overlap another engine's range.
+- Mooncake Hybrid Connector requires decode_context_parallel_size == 1 (asserted in mooncake_hybrid_connector.py).
+- Mooncake Layerwise Connector requires prefill_context_parallel_size == 1 on decoder (kv_consumer) nodes.
+tuning_advice:
+  summary: Pick a kv_port whose derived range (kv_port + tp_size*dp_size*pp_size*pcp_size) is free on every host and does
+    not overlap the peer role's range; this is a correctness/availability setting, not a throughput knob.
+  suggested_values:
+  - scenario: Single-host P/D disaggregation with MooncakeConnectorV2 (prefill and decode on same host)
+    value: 37000
+    reason: Docs example uses kv_port 37000 for prefill and 37010 for decode; separated base ports keep the derived handshake
+      ranges disjoint on one host.
+  - scenario: Decode node co-located with prefill node
+    value: 37010
+    reason: Docs example assigns decode a distinct base port (37010) so its derived range does not collide with the prefill
+      node's range.
+  - scenario: Large TP/DP/PP topology needing a wide port window
+    value: 20000
+    reason: Choose a low base so kv_port + tp_size*dp_size*pp_size*pcp_size stays below 65535; verify the full window is free
+      with ss/netstat before launch.
+  - scenario: Layerwise connector on decode nodes
+    value: 37000
+    reason: Layerwise reserves decode_data_parallel_size * decode_tensor_parallel_size consecutive ports from kv_port; a modest
+      base with a small window suffices.
+  caveats:
+  - Always verify the full reserved range (not just kv_port) is free on the host; a single occupied port in the window breaks
+    the handshake.
+  - When running multiple DP engines or multiple P/D roles on one host, allocate each a disjoint base port block sized to
+    its parallel topology.
+  - If P/D handshake times out, first compare the connector topology, prefill pp_size, and the available kv_port range before
+    suspecting network issues.
+  quick_guide: Set kv_port to a free base such that kv_port + tp_size*dp_size*pp_size*pcp_size is unoccupied and disjoint
+    from the peer role's range.
+analysis_date: '2026-10-27'

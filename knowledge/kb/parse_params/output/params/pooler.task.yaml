@@ -1,0 +1,115 @@
+name: pooler.task
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:1789
+- vllm/entrypoints/pooling/pooling/serving.py:88
+- vllm/model_executor/layers/pooler/special.py:26
+value_type: str
+default: null
+valid_choices:
+- embed
+- token_embed
+- classify
+- token_classify
+- embed&token_classify
+- plugin
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'pooler.task (exposed as --pooler-config.task) selects which sub-pooler a
+
+  DispatchPooler routes to (vllm/model_executor/layers/pooler/special.py:26-75).
+
+  It is a dispatch/selection knob, not a compute knob: the actual pooling math
+
+  (mean/last-token pooling, classifier head) is determined by the model''s pooler
+
+  implementation and the chosen task only picks which branch runs. In
+
+  vllm/config/model.py:1789 get_pooling_task() reads pooler_config.task and
+
+  validates it against supported_tasks, raising RuntimeError on mismatch; if
+
+  unset it falls back to an architecture/priority-based auto-selection. In the
+
+  v1 worker path (vllm/v1/worker/gpu_model_runner.py:1315 and
+
+  vllm/v1/worker/gpu/pool/pooling_runner.py:75) the task is used to fetch
+
+  PoolingParamsUpdate and apply it to per-request pooling params, and in
+
+  _dummy_pooler_run_task (gpu_model_runner.py:6377, pooling_runner.py:161) it is
+
+  used to build a dummy run for warmup/compilation. So the task choice can
+
+  affect which pooler branch is compiled/captured and whether token_ids are
+
+  required (requires_token_ids), but it does not change the dominant NPU cost
+
+  (the transformer forward pass). No vllm-ascend override of pooler.task was
+
+  found in the provided context; vllm-ascend inherits upstream pooling config
+
+  handling. Net effect on Ascend runtime is minor: at most it changes the small
+
+  post-forward pooling op and warmup shape, not throughput of the model body.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:1789
+  context: get_pooling_task reads pooler_config.task and validates against supported_tasks, raising RuntimeError if unsupported.
+- file: vllm/v1/worker/gpu_model_runner.py:1315
+  context: v1 worker fetches model.pooler.get_pooling_updates(task) and applies to pooling_params per request.
+- file: vllm/v1/worker/gpu/pool/pooling_runner.py:75
+  context: Pooling runner validates task against supported_tasks and applies pooling updates.
+- file: vllm/v1/worker/gpu_model_runner.py:6377
+  context: _dummy_pooler_run_task builds a dummy pooling run for the given task (warmup/compile).
+- file: vllm/entrypoints/pooling/pooling/serving.py:88
+  context: Serving layer validates request task against server pooling_task and suggests --pooler-config.task on mismatch.
+- file: vllm/model_executor/layers/pooler/special.py:26
+  context: DispatchPooler routes forward calls to a sub-pooler based on the pooling task.
+related_parameters:
+- name: --runner
+  relation: Pooling tasks require the pooling runner (e.g. --runner pooling); task is only meaningful for pooling models.
+- name: --task
+  relation: Request-level task must match the server's configured pooling_task or a validation error is raised.
+- name: pooler_config
+  relation: Parent config object; task is one field of PoolerConfig alongside pooling_type/normalize/softmax.
+constraints:
+- The configured pooler.task must be one of the model's supported tasks, otherwise get_pooling_task raises RuntimeError listing
+  supported tasks.
+- The 'embed&token_classify' combined task is only available through an IO processor plugin; selecting it directly via --pooler-config.task
+  raises ValueError.
+- A request whose task differs from the server's configured pooling_task is rejected with a VLLMValidationError unless it
+  is in supported_tasks.
+- The 'plugin' task requires an installed IOProcessor plugin, otherwise a VLLMValidationError is raised.
+tuning_advice:
+  summary: Set pooler.task explicitly to the concrete task your model serves to avoid auto-selection ambiguity and unnecessary
+    warmup/recompile.
+  suggested_values:
+  - scenario: Embedding model serving only embeddings
+    value: embed
+    reason: Explicitly selects the sequence-embedding pooler branch, avoiding auto-selection and matching the model's primary
+      output.
+  - scenario: Sequence classification model
+    value: classify
+    reason: Routes to the classify sub-pooler; avoids the token_classify branch and its token-id requirements.
+  - scenario: Token-level classification
+    value: token_classify
+    reason: Selects per-token classification; note this branch may require token_ids, adding minor overhead.
+  - scenario: Leave default auto-selection
+    value: unset
+    reason: When unset, vLLM auto-selects based on architecture and a priority list; acceptable if the model exposes a single
+      task.
+  caveats:
+  - Do not set 'embed&token_classify' directly via --pooler-config.task; it is only reachable through an IO processor plugin.
+  - Ensure the task matches the model's supported tasks to avoid a RuntimeError at startup.
+  - This parameter has minimal Ascend NPU performance impact; focus tuning effort on parallelism, memory, and compilation
+    parameters instead.
+  quick_guide: Set --pooler-config.task to the concrete pooling task your model serves; it is a dispatch knob with negligible
+    NPU throughput impact.
+analysis_date: '2026-10-27'

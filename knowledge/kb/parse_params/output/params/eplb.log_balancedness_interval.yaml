@@ -1,0 +1,108 @@
+name: eplb.log_balancedness_interval
+type: nested
+category: observability
+scope: both
+source_file:
+- vllm/distributed/eplb/eplb_state.py:591
+- vllm/distributed/eplb/eplb_state.py:704
+- tests/ut/worker/v2/test_eplb_load_collection_phase.py:160
+value_type: int
+default: 1
+valid_choices: positive integer (>= 1)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter controls how often EPLB balancedness statistics are logged. In
+
+  vllm/distributed/eplb/eplb_state.py:591, the EplbState.step() method checks
+
+  `self.expert_rearrangement_step % self.parallel_config.eplb_config.log_balancedness_interval == 0`
+
+  to decide whether to run the balancedness logging path. When triggered, it calls
+
+  `_sync_load_pass()` which performs a cross-rank (HCCL) all-reduce/sync of the
+
+  expert_load_pass tensor across the EP group, then computes per-rank token counts
+
+  and the balancedness ratio. This is a collective communication operation across
+
+  the expert-parallel group, so it adds synchronization overhead on the critical
+
+  path of the MoE forward step.
+
+  Additionally, at eplb_state.py:704, `_should_record_current_step()` uses the
+
+  interval to determine whether expert-load recording should be enabled for the
+
+  current step (via `should_record_tensor`). A smaller interval means the sliding
+
+  window recording is enabled more frequently, which keeps the per-layer load
+
+  recording active more often, adding minor per-step bookkeeping overhead.
+
+  On Ascend, the sync load pass involves HCCL collective communication across the
+
+  EP group, so a very small interval (e.g. 1) causes a collective sync every step,
+
+  which can measurably increase per-step latency and reduce throughput, especially
+
+  at large EP sizes. The default of 1 (per vllm-ascend docs) means logging every
+
+  step — fine for debugging but costly in production. This is primarily an
+
+  observability parameter; its performance effect is indirect (extra collectives
+
+  and recording overhead) rather than a direct throughput/memory knob.
+
+  '
+usage_locations:
+- file: vllm/distributed/eplb/eplb_state.py:591
+  context: step() checks expert_rearrangement_step % log_balancedness_interval == 0 to trigger balancedness logging (which
+    calls _sync_load_pass collective sync)
+- file: vllm/distributed/eplb/eplb_state.py:704
+  context: _should_record_current_step() uses log_balancedness_interval to decide whether to enable expert-load recording
+    for the current step
+- file: tests/ut/worker/v2/test_eplb_load_collection_phase.py:160
+  context: v2-ascend unit test constructs eplb_config with log_balancedness_interval=1 for AscendEplbState
+related_parameters:
+- name: eplb.log_balancedness
+  relation: Master switch; log_balancedness_interval only takes effect when log_balancedness is true (log_stats passed to
+    step)
+- name: eplb.window_size
+  relation: expert_load_window_size; recording window used together with the interval to decide when to record load
+- name: eplb.step_interval
+  relation: expert_rearrangement_step_interval; the modulo clock (expert_rearrangement_step) shared with the logging interval
+constraints:
+- log_balancedness_interval must be a positive integer; a value of 0 would cause a modulo-by-zero error in the step() and
+  _should_record_current_step() computations.
+- The interval only has an effect when log_balancedness is enabled (log_stats is true); otherwise the logging branch is skipped.
+tuning_advice:
+  summary: Keep the interval large in production to avoid per-step HCCL collective syncs for balancedness logging; use small
+    values only for debugging.
+  suggested_values:
+  - scenario: Production serving with EPLB enabled (v2-ascend MRv2)
+    value: 100
+    reason: Reduces the frequency of _sync_load_pass collective syncs across the EP group, lowering per-step latency overhead
+      while still providing periodic balancedness visibility.
+  - scenario: Debugging / validating load balancing behavior
+    value: 1
+    reason: Logs balancedness every step for maximum observability, matching the documented example; acceptable only for short
+      diagnostic runs due to collective sync cost.
+  - scenario: Default / balanced tradeoff
+    value: 10
+    reason: Moderate logging frequency that limits collective sync overhead while giving reasonably frequent balancedness
+      metrics.
+  caveats:
+  - On Ascend, each logging trigger performs a cross-rank sync (_sync_load_pass) over the EP group via HCCL; at large EP sizes
+    a small interval can noticeably increase per-step latency.
+  - A small interval also keeps expert-load recording enabled more often (via should_record_tensor), adding minor per-step
+    bookkeeping overhead.
+  - vllm-ascend docs list the default as 1, meaning logging every step — this is a debugging-friendly default, not a production-optimal
+    one.
+  - This parameter is observability-only; it does not change the rearrangement policy or memory footprint, only the frequency
+    of stats collection.
+  quick_guide: Set log_balancedness_interval to 100+ in production; use 1 only for debugging.
+analysis_date: '2026-10-27'

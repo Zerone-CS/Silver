@@ -1,0 +1,114 @@
+name: --eplb-config
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1234
+- vllm/config/parallel.py:185
+- vllm_ascend/ascend_config.py:279
+- vllm_ascend/platform.py:960
+- vllm_ascend/patch/platform/patch_eplb.py:152
+- vllm_ascend/patch/platform/patch_fused_moe.py:138
+value_type: dict
+default: '{}'
+valid_choices: 'EPLBConfig fields: use_async (bool), policy (''default''|''stair''), communicator (''torch_nccl''|''torch_gloo''|''nixl''|''pynccl''|None),
+  num_redundant_experts (int), log_balancedness (bool), log_balancedness_interval (int); Ascend additional_config.eplb_config
+  fields: dynamic_eplb, expert_map_path, expert_heat_collection_interval, algorithm_execution_interval, expert_map_record_path,
+  num_redundant_experts, eplb_policy_type, eplb_heat_collection_stage, load_collection_phase, stair_config'
+cli_example: '--eplb-config ''{"num_redundant_experts": 32, "use_async": true, "communicator": "torch_gloo", "policy": "stair"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "--eplb-config controls Expert Parallelism Load Balancing (EPLB) for MoE models. On Ascend it is\nsplit across\
+  \ two schemas:\n(1) Upstream vLLM EPLBConfig (vllm/config/parallel.py:185) is used by Model Runner V2. It carries\n    num_redundant_experts\
+  \ (extra physical expert slots that absorb hot-expert load), use_async\n    (non-blocking expert weight movement), policy\
+  \ (\"default\" or \"stair\"), and communicator.\n    num_redundant_experts directly increases per-rank expert weight memory\
+  \ (num_experts +\n    num_redundant_experts physical slots) but reduces MoE token imbalance, which raises effective\n  \
+  \  MoE throughput. use_async=True overlaps expert migration with compute, hiding rebalancing\n    latency; synchronous EPLB\
+  \ stalls the forward pass during migration.\n(2) Ascend legacy EplbConfig (vllm_ascend/ascend_config.py:279) is used by\
+  \ Model Runner V1 via\n    additional_config[\"eplb_config\"]. It carries dynamic_eplb, expert_map_path,\n    expert_heat_collection_interval,\
+  \ algorithm_execution_interval, num_redundant_experts,\n    eplb_policy_type (0=Random,1=DefaultEplb,2=SwiftBalanceEplb,3=FlashLB),\
+  \ and\n    eplb_heat_collection_stage. These drive the Ascend-native EPLB worker that periodically\n    recomputes expert\
+  \ placement from collected heat statistics.\nvllm_ascend/platform.py:960 (_validate_eplb_config) enforces the split: under\
+  \ Model Runner V2 only\nload_collection_phase and stair_config are accepted in additional_config.eplb_config, and the\n\
+  upstream communicator must be torch_gloo or hixl (NCCL/pynccl rejected due to multi-stream\nconflicts). Synchronous EPLB\
+  \ is force-disabled (use_async forced True) on Ascend.\nvllm_ascend/patch/platform/patch_fused_moe.py:138 propagates Ascend\
+  \ num_redundant_experts into the\nupstream fused-MoE factory so redundant expert slots exist at weight-load time; a mismatch\
+  \ between\nupstream and Ascend redundant counts raises ValueError.\nvllm_ascend/patch/platform/patch_eplb.py:152 clamps\
+  \ unset STAIR transfer limits to 1 when EPLB\nfalls back to torch_gloo (CPU-staged transfers cannot sustain a migration\
+  \ storm), which throttles\ncross-node expert movement and thus rebalancing speed.\nNet effect: \"EPLB trades extra NPU memory\
+  \ (redundant experts) for reduced MoE load imbalance and\"\nhigher steady-state throughput; async + STAIR policy + Gloo/hixl\
+  \ communicator are the Ascend path.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1234
+  context: CLI registration of --eplb-config from ParallelConfig.eplb_config
+- file: vllm/config/parallel.py:103
+  context: 'EPLBConfig validator: async requires default policy; NCCL/pynccl incompatible with async'
+- file: vllm_ascend/platform.py:960
+  context: _validate_eplb_config enforces MRv2 field whitelist and communicator/async constraints
+- file: vllm_ascend/ascend_config.py:279
+  context: Ascend EplbConfig dataclass for additional_config['eplb_config'] (MRv1)
+- file: vllm_ascend/patch/platform/patch_fused_moe.py:138
+  context: Propagates Ascend num_redundant_experts into upstream fused-MoE factory
+- file: vllm_ascend/patch/platform/patch_eplb.py:152
+  context: Clamps unset STAIR transfer limits to 1 on torch_gloo fallback
+- file: vllm/v1/engine/core_client.py:1698
+  context: Elastic EP scaling updates eplb_config.num_redundant_experts at runtime
+related_parameters:
+- name: --enable-eplb
+  relation: Must be set for EPLB to activate; MRv2 requires --enable-eplb, MRv1 uses additional_config eplb_config instead
+- name: --enable-expert-parallel
+  relation: EPLB only meaningful when expert parallelism is enabled on MoE models
+- name: --all2all-backend
+  relation: Determines MoE dispatch/combine path that EPLB rebalancing optimizes
+- name: additional_config.eplb_config
+  relation: Ascend MRv1 schema; MRv2 uses upstream --eplb-config instead, mixing schemas fails at startup
+- name: --expert-placement-strategy
+  relation: Initial expert placement (linear/round_robin) that EPLB later rebalances
+constraints:
+- Under Model Runner V2, additional_config.eplb_config may only contain load_collection_phase and stair_config; any other
+  field raises ValueError.
+- Under Model Runner V2, DYNAMIC_EPLB and EXPERT_MAP_RECORD env vars must be unset; use --enable-eplb instead or startup fails.
+- additional_config.eplb_config.load_collection_phase other than 'all' requires --enable-eplb.
+- On Ascend, the upstream eplb_config.communicator must be torch_gloo or hixl (or unset); torch_nccl/pynccl raise ValueError.
+- Synchronous EPLB (use_async=False) is not supported on Ascend and is forced to asynchronous.
+- Async EPLB requires the default policy; setting use_async with a non-default policy raises ValueError.
+- expert_map_path must point to an existing readable .json file or a TypeError/ValueError is raised.
+- expert_map_record_path must end in .json; setting it implicitly enables dynamic_eplb.
+- Conflicting num_redundant_experts between upstream and Ascend config raises ValueError.
+- All DP workers must use identical EPLB-related config (enable_eplb, eplb_config.log_balancedness) or a config-hash mismatch
+  RuntimeError is raised.
+tuning_advice:
+  summary: Enable EPLB for large MoE deployments to cut expert load imbalance; on Ascend use async Gloo/hixl with STAIR policy
+    and size num_redundant_experts to available NPU memory.
+  suggested_values:
+  - scenario: Model Runner V2, large MoE (e.g. DeepSeek) with EP across many NPUs, memory headroom available
+    value: '{"num_redundant_experts": 32, "use_async": true, "communicator": "torch_gloo", "policy": "stair"}'
+    reason: Redundant experts absorb hot-expert load; async Gloo movement overlaps migration with compute; STAIR is the Ascend
+      default policy.
+  - scenario: Model Runner V2, memory-constrained deployment
+    value: '{"num_redundant_experts": 0, "use_async": true, "communicator": "torch_gloo"}'
+    reason: Zero redundant experts avoids extra per-rank expert weight memory while keeping async EPLB plumbing ready.
+  - scenario: Model Runner V1 (legacy Ascend schema via additional_config)
+    value: '{"dynamic_eplb": true, "num_redundant_experts": 16, "eplb_policy_type": 2, "expert_heat_collection_interval":
+      600, "algorithm_execution_interval": 50}'
+    reason: SwiftBalanceEplb (type 2) is the Ascend default; heat collection every 600 iterations balances responsiveness
+      vs overhead.
+  - scenario: Multi-node EPLB where cross-node migration is undesirable
+    value: '{"stair_config": {"cross_node_transfer_limit": 0}}'
+    reason: Explicitly disabling cross-node transfers is preserved even on Gloo fallback; unset limits are clamped to 1.
+  caveats:
+  - On Ascend, synchronous EPLB is silently forced to async; do not rely on use_async=False.
+  - torch_nccl/pynccl communicators are rejected on Ascend due to NCCL multi-stream conflicts; use torch_gloo or hixl.
+  - When EPLB falls back to torch_gloo, unset STAIR transfer limits are clamped to 1, throttling migration; set limits explicitly
+    if you need more aggressive rebalancing.
+  - num_redundant_experts increases per-rank expert weight memory (num_experts + redundant slots); size it against available
+    NPU HBM.
+  - MRv1 and MRv2 use different schemas; mixing them fails at startup rather than being silently ignored.
+  - All DP workers must share identical EPLB config or a config-hash mismatch error occurs.
+  quick_guide: 'For MoE on Ascend MRv2: --enable-eplb plus --eplb-config with use_async=true, communicator=torch_gloo/hixl,
+    policy=stair, and num_redundant_experts sized to memory headroom.'
+analysis_date: '2026-10-27'

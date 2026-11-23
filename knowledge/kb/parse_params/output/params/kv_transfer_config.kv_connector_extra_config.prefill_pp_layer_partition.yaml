@@ -1,0 +1,72 @@
+name: kv_transfer_config.kv_connector_extra_config.prefill_pp_layer_partition
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1540
+value_type: str
+default: null
+valid_choices: Comma-separated layer indices, e.g. "30,31"; if unset, layers are evenly divided by prefill_pp_size
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This parameter is a KV-Pool / PD-disaggregation connector option documented in the
+
+  vllm-ascend KV cache pool feature guide (kv_cache_pool_ascend_store.md). It is not
+
+  defined in vLLM upstream nor found as a named symbol in the vllm-ascend source context
+
+  provided; it is consumed by the Ascend KV-pool connector (Mooncake/Memcache/AscendStore)
+
+  on the Prefill node to decide how transformer layers are partitioned across prefill PP
+
+  ranks when saving KV cache layer-by-layer (use_layerwise). Its performance effect is
+
+  indirect: "it only changes which layers each prefill PP rank owns for KV save/load, so it"
+
+  can affect per-rank KV memory footprint and layerwise save/load balance, but it does not
+
+  change the core compute path. If unset, layers are evenly divided by prefill_pp_size,
+
+  which is normally the balanced default. Misconfiguration (uneven or wrong layer counts)
+
+  can cause load imbalance or KV save/load failures rather than raw throughput changes.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1540
+  context: Documented as a kv-transfer-config extra parameter for Prefill PP layer partition in KV Pool
+related_parameters:
+- name: prefill_pp_size
+  relation: Layer partition is derived from prefill_pp_size when prefill_pp_layer_partition is not set; required when PP +
+    consumer_is_to_put
+- name: use_layerwise
+  relation: Layer-by-layer KV save/load on the Prefill node; layer partition determines per-rank layer assignment
+- name: consumer_is_to_put
+  relation: When enabled with PP, prefill_pp_size (and thus layer partition) becomes required
+- name: backend
+  relation: KV Pool storage backend (mooncake/memcache/yuanrong) that consumes the layer partition
+constraints:
+- Value must be a comma-separated list of layer indices (e.g. "30,31").
+- prefill_pp_size is required when pipeline parallelism is used together with consumer_is_to_put.
+- If prefill_pp_layer_partition is not configured, layers are evenly divided by prefill_pp_size.
+tuning_advice:
+  summary: Leave unset to let layers divide evenly by prefill_pp_size; only set explicitly when a custom, balanced layer split
+    across prefill PP ranks is needed.
+  suggested_values:
+  - scenario: Default PP prefill with layerwise KV save/load
+    value: <unset>
+    reason: Even division by prefill_pp_size is the balanced default and avoids manual misconfiguration.
+  - scenario: Custom PP split where layer counts per rank differ (e.g. uneven model layers)
+    value: '"30,31"'
+    reason: Explicitly assign layer indices per prefill PP rank to match the model's actual layer distribution.
+  caveats:
+  - Only relevant on the Prefill node and primarily when use_layerwise is enabled.
+  - An incorrect or unbalanced partition can cause KV save/load imbalance or failures rather than throughput gains.
+  - This is a vllm-ascend KV-Pool connector option, not a vLLM upstream parameter; behavior is governed by the Ascend KV-pool
+    connector implementation.
+  quick_guide: Usually leave unset; set only for custom balanced PP layer splits on the prefill node.
+analysis_date: '2026-10-27'

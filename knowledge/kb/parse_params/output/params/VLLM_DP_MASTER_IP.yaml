@@ -1,0 +1,91 @@
+name: VLLM_DP_MASTER_IP
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:1443
+- vllm/envs.py:179
+- vllm/config/parallel.py:939
+- examples/offline_data_parallel.py:123
+value_type: str
+default: 127.0.0.1
+valid_choices: Any valid IPv4/IPv6 address or hostname reachable by all DP ranks
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_DP_MASTER_IP is read in vllm/envs.py:1443 (default "127.0.0.1") and consumed in
+
+  vllm/config/parallel.py:939 only in the offline SPMD data-parallel path, where it is
+
+  assigned to ParallelConfig.data_parallel_master_ip. This IP is the address of the DP
+
+  coordinator/master node used to establish the cross-rank coordination channel (e.g. the
+
+  DP coordinator RPC / ZMQ handshake) among data-parallel ranks. It does not affect kernel
+
+  selection, memory allocation, or per-token compute; it only determines whether the DP
+
+  ranks can reach the master to form the DP group. On Ascend, the DP coordination runs over
+
+  the host network (TCP), while the actual tensor/expert-parallel collectives run over HCCL
+
+  (HCCL_IF_IP / HCCL socket config). A wrong or unreachable master IP causes DP group
+
+  formation to hang or fail at startup (a correctness/availability issue), not a steady-state
+
+  throughput change. Once the group is formed, the value has no runtime performance effect.
+
+  vllm-ascend does not override this env var; it is used verbatim in the Ascend offline DP
+
+  example (examples/offline_data_parallel.py:123) and in Ascend e2e tests. Note that
+
+  VLLM_DP_MASTER_IP is explicitly listed in the compile_factors ignored set
+
+  (vllm/envs.py:2276), so changing it does not invalidate torch.compile caches.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1443
+  context: Defines VLLM_DP_MASTER_IP env getter with default 127.0.0.1
+- file: vllm/config/parallel.py:939
+  context: Offline SPMD DP path assigns envs.VLLM_DP_MASTER_IP to data_parallel_master_ip
+- file: examples/offline_data_parallel.py:123
+  context: Ascend offline DP example sets VLLM_DP_MASTER_IP per rank before LLM init
+- file: tests/e2e/conftest.py:909
+  context: Ascend e2e DP worker sets VLLM_DP_MASTER_IP to 127.0.0.1 for local multi-process DP
+related_parameters:
+- name: VLLM_DP_MASTER_PORT
+  relation: Companion port for the DP master; must point to the same master node as the IP
+- name: VLLM_DP_RANK
+  relation: Global DP rank of this process; used together with master IP/port to join the DP group
+- name: VLLM_DP_RANK_LOCAL
+  relation: Local DP rank within a node; defaults to VLLM_DP_RANK
+- name: VLLM_DP_SIZE
+  relation: Total number of DP ranks; must be consistent across all ranks
+- name: HCCL_IF_IP
+  relation: Ascend HCCL host NIC selection; separate from DP master IP but both must be reachable across nodes
+constraints:
+- VLLM_DP_MASTER_IP is only consulted in the offline SPMD data-parallel path (when data_parallel_rank is not set via CLI);
+  online/API-server DP uses the CLI --data-parallel-address instead.
+- All DP ranks must set the same VLLM_DP_MASTER_IP and VLLM_DP_MASTER_PORT so they can rendezvous with the same master.
+- The master IP must be reachable from every DP rank over the host network; an unreachable address causes DP group formation
+  to hang or fail at startup.
+- Offline data parallel with VLLM_DP_SIZE > 1 is only supported for MoE models; dense models raise a ValueError.
+tuning_advice:
+  summary: Set VLLM_DP_MASTER_IP to the reachable IP of the DP master node for multi-node offline DP; use 127.0.0.1 for single-node
+    multi-process DP.
+  suggested_values:
+  - scenario: Single-node multi-process offline DP (v1-ascend and v2-ascend)
+    value: 127.0.0.1
+    reason: All DP ranks run on the same host, so loopback is sufficient and avoids NIC dependency.
+  - scenario: Multi-node offline DP on Ascend
+    value: <master-node-IP>
+    reason: All DP ranks must reach the same master node over the host network; use the master node's routable IP.
+  caveats:
+  - Ensure VLLM_DP_MASTER_PORT is also set consistently across ranks; IP alone is insufficient for rendezvous.
+  - For multi-node Ascend, verify HCCL_IF_IP and the DP master IP are both reachable to avoid startup hangs.
+  quick_guide: Use 127.0.0.1 for single-node DP; use the master node's routable IP for multi-node DP, matching VLLM_DP_MASTER_PORT
+    across all ranks.
+analysis_date: '2026-10-27'

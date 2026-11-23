@@ -1,0 +1,106 @@
+name: --config-format
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:309
+- vllm/engine/arg_utils.py:938
+- vllm/engine/arg_utils.py:457
+- vllm/engine/arg_utils.py:1861
+- vllm/transformers_utils/config.py:434
+- vllm/transformers_utils/config.py:441
+- vllm/tokenizers/registry.py:242
+- vllm/config/speculative.py:1292
+value_type: str
+default: auto
+valid_choices:
+- auto
+- hf
+- mistral
+cli_example: --config-format hf
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--config-format only controls which config parser is used to load the model
+
+  configuration at engine startup (vllm/transformers_utils/config.py:434
+
+  get_config_parser dispatches to a registered ConfigParserBase based on the
+
+  format string). It does not affect the runtime inference loop, kernel
+
+  selection, memory allocation, or scheduling on Ascend NPU. The only
+
+  performance-relevant effect is startup latency: "\"auto\" tries the mistral"
+
+  format first and falls back to hf, which may incur an extra config
+
+  resolution attempt (and possibly extra file reads / network fetches for
+
+  remote repos) compared to pinning "hf" or "mistral" explicitly. Once the
+
+  config is parsed, the resulting PretrainedConfig is identical regardless of
+
+  which parser produced it, so steady-state throughput and memory are
+
+  unaffected. vllm-ascend does not override or patch this parameter; it is
+
+  consumed purely by upstream vLLM config loading. Note that
+
+  vllm/tokenizers/registry.py:242 internally forces config_format="hf" for
+
+  HF-backed tokenizers regardless of the user setting, and
+
+  vllm/config/speculative.py:1292 propagates the target model''s config_format
+
+  to the draft model config for speculative decoding.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:938
+  context: Registers the --config-format CLI argument from ModelConfig.config_format.
+- file: vllm/engine/arg_utils.py:457
+  context: EngineArgs field defaulting to ModelConfig.config_format.
+- file: vllm/engine/arg_utils.py:1861
+  context: Passes config_format into ModelConfig when building VllmConfig.
+- file: vllm/config/model.py:309
+  context: ModelConfig field definition with docstring describing auto/hf/mistral.
+- file: vllm/transformers_utils/config.py:434
+  context: get_config_parser selects the parser implementation by format string; raises ValueError on unknown format.
+- file: vllm/tokenizers/registry.py:242
+  context: Forces config_format='hf' for CachedHfTokenizer regardless of user setting.
+- file: vllm/config/speculative.py:1292
+  context: Propagates target model config_format to draft model config for spec decode.
+related_parameters:
+- name: --model
+  relation: The model repo determines which config files (config.json vs params.json) exist and thus which format is applicable.
+- name: --hf-config-path
+  relation: Alternative config source; interacts with config_format when resolving the config to load.
+- name: --trust-remote-code
+  relation: Passed through to the config parser; custom configs may require it.
+- name: --speculative-config
+  relation: Draft model config inherits the target model's config_format (vllm/config/speculative.py:1292).
+constraints:
+- The value must be a registered config format; an unknown format raises ValueError('Unknown config format') in get_config_parser.
+- Only 'auto', 'hf', and 'mistral' are built-in formats; additional formats require registering a custom parser via register_config_parser.
+- HF-backed tokenizers always load their config with format 'hf' regardless of the --config-format value.
+tuning_advice:
+  summary: Leave at 'auto' unless you have a specific Mistral-format repo; pin 'hf' to skip the mistral-first probe and marginally
+    reduce startup latency.
+  suggested_values:
+  - scenario: Standard HuggingFace-format models (most Ascend deployments)
+    value: hf
+    reason: Skips the mistral-format probe performed by 'auto', slightly reducing config-loading startup time; behavior is
+      otherwise identical.
+  - scenario: Mistral-format repositories (params.json present)
+    value: mistral
+    reason: Explicitly selects the mistral config parser, avoiding ambiguity in dual-format repos.
+  - scenario: Unknown or mixed-format repos / default usage
+    value: auto
+    reason: Default that tries mistral then falls back to hf, maximizing compatibility.
+  caveats:
+  - Do not expect any steady-state throughput or memory benefit on Ascend NPU; this is a startup-only concern.
+  - If a custom config format is needed, register a parser with register_config_parser before launching the engine.
+  quick_guide: Use 'auto' by default; pin 'hf' for pure HF models to shave a bit of startup time.
+analysis_date: '2026-10-27'

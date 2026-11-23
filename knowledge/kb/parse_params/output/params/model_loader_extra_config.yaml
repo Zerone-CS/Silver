@@ -1,0 +1,138 @@
+name: --model-loader-extra-config
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/load.py:97
+- vllm/engine/arg_utils.py:993
+- vllm/engine/arg_utils.py:644
+- vllm/engine/arg_utils.py:1895
+- vllm/model_executor/model_loader/default_loader.py:78
+- vllm/model_executor/model_loader/dummy_loader.py:26
+- vllm/model_executor/model_loader/runai_streamer_loader.py:31
+- vllm/model_executor/model_loader/sharded_state_loader.py:45
+- vllm/model_executor/model_loader/tensorizer.py:420
+- vllm_ascend/model_loader/netloader/netloader.py:130
+- vllm_ascend/model_loader/netloader/netloader.py:756
+- vllm_ascend/model_loader/rfork/rfork_loader.py:475
+- vllm_ascend/model_loader/rfork/rfork_loader.py:198
+- vllm_ascend/model_loader/rfork/session.py:69
+- vllm_ascend/model_loader/rfork/planner_client.py:114
+- vllm_ascend/model_loader/rfork/identity.py:311
+value_type: dict
+default: {}
+valid_choices: 'A JSON object whose allowed keys depend on --load-format: default/auto -> {enable_multithread_load, num_threads,
+  enable_weights_track}; runai_streamer -> {distributed, concurrency, memory_limit}; sharded_state -> {pattern}; tensorizer
+  -> TensorizerConfig fields; netloader -> netloader config fields (e.g. CONFIG_FILE, SOURCE, LISTEN_PORT); rfork -> RForkConfig
+  fields (MODEL_URL, MODEL_DEPLOY_STRATEGY_NAME, rfork_scheduler_url, SEED_TIMEOUT_SEC, REQUEST_TIMEOUT_SEC, SEED_BIND_HOST,
+  SEED_ADVERTISE_HOST)'
+cli_example: '--model-loader-extra-config ''{"enable_multithread_load": true, "num_threads": 128}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This parameter is a pass-through dict consumed by whichever model loader is selected via\n--load-format. It\
+  \ does not affect steady-state inference throughput, but it directly\ncontrols the model-loading phase (startup latency)\
+  \ and, for some loaders, peak host/NPU\nmemory during load.\n\nUpstream vLLM (vllm/model_executor/model_loader/default_loader.py:78-98):\
+  \ the DefaultModelLoader\nreads model_loader_extra_config and accepts only enable_multithread_load, num_threads, and\nenable_weights_track.\
+  \ When enable_multithread_load is true, weights are iterated with a\nmulti-threaded loader using num_threads worker threads,\
+  \ which parallelizes checkpoint reads\nand speeds up model initialization (especially on network filesystems). This is the\
+  \ primary\nperformance-relevant use on Ascend and is explicitly recommended in the vllm-ascend docs\n(MiniMax-M2.md:587,\
+  \ DeepSeek-V4-Pro.md:569) as a way to reduce model loading time.\n\nOther loaders interpret the dict differently: \"runai_streamer_loader.py:31-60\
+  \ maps\"\nconcurrency/memory_limit to RUNAI_STREAMER_* env vars (streaming read concurrency and memory\ncap); sharded_state_loader.py:45\
+  \ reads a pattern for per-rank shard files (fast TP load path);\ntensorizer.py:420 uses it to build a TensorizerConfig for\
+  \ deserialization.\n\nvllm-ascend overrides/additions:\n- \"NetLoader (vllm_ascend/model_loader/netloader/netloader.py:130):\
+  \ reads the dict as a JSON\"\n  object, optionally loads a CONFIG_FILE, and configures elastic/network model loading\n \
+  \ (SOURCE, LISTEN_PORT, int8 cache, output prefix). This is an Ascend-specific distributed\n  weight-loading path that can\
+  \ dramatically reduce per-node load time by streaming weights\n  from a source node instead of each rank reading the full\
+  \ checkpoint.\n- \"NetLoader disk fallback (netloader.py:756): when falling back to DefaultModelLoader, it\"\n  strips netloader-only\
+  \ keys via disk_fallback_loader_extra_config() but preserves\n  multithread-load settings so seed/fallback disk loads stay\
+  \ parallel.\n- \"RFork (vllm_ascend/model_loader/rfork/rfork_loader.py:475): RForkConfig.from_extra_config()\"\n  parses\
+  \ MODEL_URL, MODEL_DEPLOY_STRATEGY_NAME, rfork_scheduler_url, timeouts, and bind/advertise\n  hosts. RFork is an Ascend\
+  \ weight-forking mechanism that lets a new worker pull weights from an\n  already-loaded seed worker over the network, avoiding\
+  \ a full checkpoint reload. The fallback\n  path (rfork_loader.py:198) resets model_loader_extra_config to {} before delegating\
+  \ to\n  DefaultModelLoader.\n\nNet effect: \"medium impact — it does not change per-token latency or decode throughput,\
+  \ but it\"\ncan substantially cut cold-start / scale-out model-loading time and affects host memory usage\nduring load.\
+  \ Misconfiguration (wrong keys for the chosen loader) raises ValueError at loader\nconstruction, failing startup.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:993
+  context: Registers --model-loader-extra-config CLI flag from LoadConfig field.
+- file: vllm/engine/arg_utils.py:644
+  context: EngineArgs field model_loader_extra_config sourced from LoadConfig.
+- file: vllm/engine/arg_utils.py:1895
+  context: validate_tensorizer_args() folds TensorizerConfig fields into tensorizer_config when load_format=tensorizer.
+- file: vllm/model_executor/model_loader/default_loader.py:78
+  context: DefaultModelLoader validates allowed keys and reads enable_multithread_load/num_threads/enable_weights_track.
+- file: vllm/model_executor/model_loader/dummy_loader.py:26
+  context: DummyModelLoader rejects any non-empty extra config.
+- file: vllm/model_executor/model_loader/runai_streamer_loader.py:31
+  context: RunaiModelStreamerLoader maps distributed/concurrency/memory_limit to RUNAI_STREAMER_* env vars.
+- file: vllm/model_executor/model_loader/sharded_state_loader.py:45
+  context: ShardedStateLoader reads 'pattern' for per-rank shard filenames.
+- file: vllm/model_executor/model_loader/tensorizer.py:420
+  context: TensorizerConfig built from extra config for tensorizer load format.
+- file: vllm_ascend/model_loader/netloader/netloader.py:130
+  context: NetLoader reads extra config as JSON object, optionally loads CONFIG_FILE, configures elastic loading.
+- file: vllm_ascend/model_loader/netloader/netloader.py:756
+  context: NetLoader disk fallback strips netloader keys but preserves multithread-load settings.
+- file: vllm_ascend/model_loader/rfork/rfork_loader.py:475
+  context: RForkModelLoader parses RForkConfig from extra config (MODEL_URL, scheduler URL, timeouts, hosts).
+- file: vllm_ascend/model_loader/rfork/rfork_loader.py:198
+  context: RFork fallback resets model_loader_extra_config to {} before DefaultModelLoader.
+- file: vllm_ascend/model_loader/rfork/session.py:69
+  context: RForkSession requires rfork_scheduler_url from extra config or RFORK_SCHEDULER_URL env.
+related_parameters:
+- name: --load-format
+  relation: Selects which loader interprets the extra config; allowed keys are loader-specific.
+- name: --safetensors-load-strategy
+  relation: Mutually exclusive with enable_multithread_load=true; default loader rejects prefetch/eager/torchao when multithread
+    load is enabled.
+- name: --tensorizer-uri
+  relation: Tensorizer-specific options are folded into model_loader_extra_config when load_format=tensorizer.
+- name: RFORK_SCHEDULER_URL
+  relation: Env var fallback for rfork_scheduler_url when not set in extra config.
+- name: MODEL_URL
+  relation: Env var fallback for RFork model_url when not set in extra config.
+- name: MODEL_DEPLOY_STRATEGY_NAME
+  relation: Env var fallback for RFork model_deploy_strategy_name when not set in extra config.
+constraints:
+- The value must be a JSON object (dict); non-dict values raise ValueError in DefaultModelLoader and RuntimeError in NetLoader.
+- For load_format=default/auto, only enable_multithread_load, num_threads, and enable_weights_track are accepted; any other
+  key raises ValueError.
+- For load_format=runai_streamer, only distributed, concurrency, and memory_limit are accepted; concurrency must be a positive
+  integer and distributed must be a bool.
+- For load_format=sharded_state, only the 'pattern' key is accepted; any other key raises ValueError.
+- For load_format=dummy, any non-empty extra config raises ValueError.
+- enable_multithread_load must be a JSON boolean and num_threads must be a positive integer.
+- When enable_multithread_load is true, --safetensors-load-strategy must not be prefetch, eager, or torchao (the default loader
+  rejects this combination).
+- For load_format=rfork, model_url and model_deploy_strategy_name must be non-empty and rfork_scheduler_url must be set (via
+  extra config or RFORK_SCHEDULER_URL), otherwise RFork raises RuntimeError/ValueError.
+tuning_advice:
+  summary: Use --model-loader-extra-config to accelerate the model-loading phase on Ascend, primarily via enable_multithread_load/num_threads
+    for default loading, or via NetLoader/RFork for distributed weight loading.
+  suggested_values:
+  - scenario: Standard safetensors checkpoint on local or network storage, default/auto load format
+    value: '{"enable_multithread_load": true, "num_threads": 128}'
+    reason: Enables the multi-threaded weight iterator to parallelize checkpoint reads, reducing model loading time (recommended
+      in vllm-ascend docs for DeepSeek-V4-Pro and MiniMax-M2).
+  - scenario: CPU-constrained host where 128 threads oversubscribe
+    value: '{"enable_multithread_load": true, "num_threads": 32}'
+    reason: Lower thread count avoids CPU oversubscription and host memory spikes while still parallelizing reads.
+  - scenario: Large multi-node deployment using Ascend NetLoader
+    value: '{"CONFIG_FILE": "/path/to/netloader_config.json"}'
+    reason: NetLoader streams weights from a source node instead of each rank reading the full checkpoint, cutting per-node
+      load time; config can be supplied via a JSON file.
+  - scenario: Scale-out where a seed worker already holds weights (Ascend RFork)
+    value: '{"MODEL_URL": "<url>", "MODEL_DEPLOY_STRATEGY_NAME": "<name>", "rfork_scheduler_url": "<url>"}'
+    reason: RFork pulls weights from an already-loaded seed worker over the network, avoiding a full checkpoint reload on
+      new workers.
+  caveats:
+  - Keys are loader-specific and strictly validated; verify the key set matches --load-format before deploying.
+  - Do not combine enable_multithread_load=true with --safetensors-load-strategy prefetch/eager/torchao.
+  - NetLoader/RFork keys are Ascend-only and will be rejected by upstream loaders.
+  - This parameter does not affect steady-state inference throughput; measure startup/scale-out time to validate benefit.
+  quick_guide: 'For faster startup on Ascend, set --model-loader-extra-config ''{"enable_multithread_load": true, "num_threads":
+    128}'' with default load format; use NetLoader/RFork configs for distributed weight loading.'
+analysis_date: '2026-10-27'

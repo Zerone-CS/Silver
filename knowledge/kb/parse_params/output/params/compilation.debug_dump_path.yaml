@@ -1,0 +1,71 @@
+name: compilation.debug_dump_path
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/vllm.py:2062
+- vllm/config/vllm.py:2596
+value_type: str
+default: null
+valid_choices: Any filesystem path (string or Path); resolved to an absolute, expanded path
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only controls where torch.compile debug artifacts are written.
+
+  In vllm/config/vllm.py:2062-2074 the path is normalized to an absolute,
+
+  user-expanded Path, and can be overridden by the VLLM_DEBUG_DUMP_PATH env var.
+
+  In compile_debug_dump_path() (vllm/config/vllm.py:2592-2602) a rank-aware
+
+  subdirectory (rank_<tp_rank>_dp_<dp_rank>) is appended so each worker dumps to
+
+  its own folder. The parameter does not alter graph capture, kernel selection,
+
+  memory allocation, or scheduling. Its only runtime cost is the I/O of writing
+
+  debug dumps to disk when compilation debug dumping is active, which can add
+
+  latency and disk pressure during startup/compilation. No definition or override
+
+  was found in vllm-ascend, so on Ascend it behaves as the upstream vLLM path
+
+  (subject to whether the Ascend compilation backend actually emits dumps).
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:2062
+  context: Normalizes debug_dump_path to absolute/expanded path and applies VLLM_DEBUG_DUMP_PATH override
+- file: vllm/config/vllm.py:2596
+  context: compile_debug_dump_path() builds rank-aware dump subdirectory from debug_dump_path
+related_parameters:
+- name: VLLM_DEBUG_DUMP_PATH
+  relation: Environment variable that overrides compilation.debug_dump_path when set
+- name: compilation.level
+  relation: Debug dumping is only meaningful when torch.compile / compilation is active
+- name: compilation.cudagraph_mode
+  relation: Graph capture debug artifacts may be dumped under this path when graph mode is enabled
+constraints:
+- If VLLM_DEBUG_DUMP_PATH is set, it overrides any value given via compilation.debug_dump_path and a warning is logged.
+- The path is converted to an absolute, user-expanded path; relative paths are resolved against the current working directory.
+- Each rank writes to a rank_<tp_rank>_dp_<dp_rank> subdirectory, so the base path must be writable by all workers.
+tuning_advice:
+  summary: Leave unset in production; only enable temporarily for debugging torch.compile issues, and prefer a fast local
+    disk.
+  suggested_values:
+  - scenario: Normal production serving
+    value: unset
+    reason: Debug dumping adds disk I/O and latency during compilation with no runtime benefit; keep it disabled.
+  - scenario: Debugging compilation/graph capture problems on Ascend
+    value: /tmp/vllm_debug_dump
+    reason: Point to a fast local writable directory; rank-aware subdirs are created automatically per worker.
+  caveats:
+  - VLLM_DEBUG_DUMP_PATH silently overrides this setting, so check the env var if the configured path is ignored.
+  - Dumping large graphs to slow or network storage can significantly slow startup and consume disk space.
+  - No vllm-ascend override exists; behavior follows upstream vLLM and depends on whether the Ascend compilation backend emits
+    dumps.
+  quick_guide: Keep unset unless debugging compilation; if set, use a fast local writable path.
+analysis_date: '2026-10-27'

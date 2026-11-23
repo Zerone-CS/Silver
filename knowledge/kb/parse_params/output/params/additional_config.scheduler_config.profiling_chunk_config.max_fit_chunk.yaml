@@ -1,0 +1,92 @@
+name: additional_config.scheduler_config.profiling_chunk_config.max_fit_chunk
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1496
+- vllm_ascend/ascend_config.py:1515
+value_type: int
+default: 30
+valid_choices: integer > 5 (values <= 5 raise ValueError); recommended >= 30
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'max_fit_chunk controls how many chunk-time data points are collected for the
+
+  Online Calibration of Dynamic Chunked Pipeline Parallel (CPP) in vllm-ascend.
+
+  It is a field of ProfilingChunkConfig (vllm_ascend/ascend_config.py:1482),
+
+  which is only active when profiling_chunk_config.enabled=True and
+
+  --pipeline-parallel-size > 1. The collected chunk-time samples are used to fit
+
+  a model that predicts the optimal chunk size for each prefill step; the fitted
+
+  model then drives dynamic chunk sizing, which directly affects TTFT (latency)
+
+  and prefill throughput on Ascend NPU. A larger max_fit_chunk gives the fitter
+
+  more data points, producing a more stable/accurate chunk-size prediction
+
+  (especially when initial profiling is noisy or failed), while a too-small value
+
+  yields a poorly-conditioned fit and erratic chunk sizing. The parameter itself
+
+  does not allocate memory or change dispatch logic directly; its effect is
+
+  indirect through the quality of the dynamic chunk-size prediction. The
+
+  after-validator (line 1515) rejects values <= 5 with a ValueError, so it cannot
+
+  be used to disable calibration — use need_timing=False for that.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1496
+  context: Field definition of max_fit_chunk in ProfilingChunkConfig dataclass (default 30)
+- file: vllm_ascend/ascend_config.py:1515
+  context: after model_validator rejects max_fit_chunk <= 5 with ValueError
+related_parameters:
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: max_fit_chunk only has any effect when enabled=True (CPP active); otherwise unused
+- name: additional_config.scheduler_config.profiling_chunk_config.need_timing
+  relation: Online Calibration (which consumes max_fit_chunk data points) is gated by need_timing; if need_timing=False no
+    calibration data is collected
+- name: additional_config.scheduler_config.profiling_chunk_config.smooth_factor
+  relation: smooth_factor controls how much the fitted prediction is trusted; interacts with fit quality driven by max_fit_chunk
+- name: additional_config.scheduler_config.profiling_chunk_config.min_chunk
+  relation: Lower bound on dynamically computed chunk size; should be smaller than --max-num-batched-tokens
+- name: --max-num-batched-tokens
+  relation: Serves as the initial chunk size for dynamic chunk calculation; CPP TTFT is very sensitive to it
+- name: --pipeline-parallel-size
+  relation: CPP requires pipeline-parallel-size > 1 to be meaningful
+constraints:
+- max_fit_chunk must be greater than 5; values <= 5 raise a ValueError at config validation.
+- max_fit_chunk only takes effect when profiling_chunk_config.enabled is True and --pipeline-parallel-size > 1.
+- Online Calibration that consumes max_fit_chunk data points only runs when need_timing is True.
+tuning_advice:
+  summary: Leave max_fit_chunk at the default 30 unless profiling data is noisy or failed, in which case increase it to give
+    Online Calibration more samples.
+  suggested_values:
+  - scenario: Default / stable profiling environment
+    value: 30
+    reason: Default value provides at least 30 data points, which the validator considers the minimum for a reliable fit.
+  - scenario: Noisy or failed initial profiling, unstable chunk-size prediction
+    value: 60
+    reason: More chunk-time samples improve fit stability and reduce erratic dynamic chunk sizing, at the cost of a slightly
+      longer calibration warm-up.
+  - scenario: Long-sequence CPP deployment (128k) with high variance in prefill timing
+    value: 50
+    reason: Longer sequences show more timing variance; a moderately larger sample count stabilizes the fitted chunk-size
+      model.
+  caveats:
+  - Only relevant when profiling_chunk_config.enabled=True and --pipeline-parallel-size > 1.
+  - Values <= 5 are rejected by the validator; do not try to use small values to disable calibration.
+  - Tune --max-num-batched-tokens and smooth_factor first; max_fit_chunk is a secondary knob.
+  quick_guide: Keep max_fit_chunk=30 by default; raise it (e.g. 50-60) only if Online Calibration produces unstable chunk
+    sizes.
+analysis_date: '2026-10-27'

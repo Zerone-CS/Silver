@@ -1,0 +1,88 @@
+name: TASK_QUEUE_ENABLE
+type: env
+category: hardware
+scope: vllm-ascend
+source_file:
+- tests/e2e/pull_request/two_card/test_qwen3_performance.py:58
+- tests/e2e/cases/features/structured_output/conftest.py:34
+- tests/e2e/pull_request/one_card/model_runner_v2/test_qwen3_8B.py:48
+- tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_5_eagle3.py:59
+- tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_6_dflash.py:59
+- tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_6_dspark.py:59
+- docs/source/tutorials/models/DeepSeek-V4-Pro.md:169
+- docs/source/tutorials/models/DeepSeek-V4-Pro.md:245
+value_type: int
+default: '0'
+valid_choices: 0 (disabled), 1 (enabled async dispatch), 2 (optimized operator delivery queue)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "TASK_QUEUE_ENABLE is a CANN/Ascend runtime environment variable (not defined in vLLM or\nvllm-ascend Python\
+  \ source — it is consumed by the Ascend runtime / torch_npu task queue\nsubsystem). It controls whether NPU operators are\
+  \ dispatched asynchronously through the\ndevice task queue instead of synchronously on the host stream.\n- Value 1: \"enables\
+  \ the NPU task queue so operators are dispatched asynchronously, decoupling\"\n  host-side launch from device-side execution.\
+  \ This reduces host launch bubbles and improves\n  device utilization, directly lowering per-step latency and raising throughput\
+  \ for\n  decode-heavy workloads. The vllm-ascend docs (Dots3-Note.md) describe it as \"Enables the\n  NPU task queue to\
+  \ dispatch operators asynchronously\".\n- Value 2: \"the optimization_and_tuning.md doc describes it as \\\"Optimize operator\
+  \ delivery\"\n  queue. This will affect the memory peak value, and may degrade if the memory is tight.\"\n  So value 2 further\
+  \ optimizes the delivery queue but increases peak memory usage.\nThe vllm-ascend e2e performance test (test_qwen3_performance.py)\
+  \ and all model_runner_v2\nspeculative-decoding acceptance tests set TASK_QUEUE_ENABLE=1 as part of their standard\nperformance/acceptance\
+  \ environment, confirming it is a recommended performance setting on\nAscend NPU. It is not read or overridden by vllm-ascend\
+  \ Python code; it is a pure CANN\nruntime knob.\n"
+usage_locations:
+- file: tests/e2e/pull_request/two_card/test_qwen3_performance.py:58
+  context: Set to 1 in the performance benchmark env_dict alongside HCCL_OP_EXPANSION_MODE=AIV
+- file: tests/e2e/cases/features/structured_output/conftest.py:34
+  context: Set to 1 in SERVER_ENV for structured output e2e server
+- file: tests/e2e/pull_request/one_card/model_runner_v2/test_qwen3_8B.py:48
+  context: Set to 1 in eagle3 speculative decoding acceptance test env
+- file: tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_5_eagle3.py:59
+  context: Set to 1 in eagle3 TP2 acceptance test env
+- file: tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_6_dflash.py:59
+  context: Set to 1 in dflash TP2 acceptance test env
+- file: tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_6_dspark.py:59
+  context: Set to 1 in dspark TP2 acceptance test env
+- file: docs/source/tutorials/models/DeepSeek-V4-Pro.md:169
+  context: Tutorial sets TASK_QUEUE_ENABLE=1 in the DeepSeek-V4-Pro deployment environment.
+- file: docs/source/tutorials/models/DeepSeek-V4-Pro.md:245
+  context: Tutorial sets TASK_QUEUE_ENABLE=1 in the DeepSeek-V4-Pro deployment environment.
+related_parameters:
+- name: CPU_AFFINITY_CONF
+  relation: Frequently paired in docs; CPU_AFFINITY_CONF=1 binds CPU cores to reduce cross-NUMA access, complementing async
+    task queue dispatch
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Commonly set together (AIV) in performance test envs to improve collective communication bandwidth
+- name: PYTORCH_NPU_ALLOC_CONF
+  relation: Often set to expandable_segments:True alongside TASK_QUEUE_ENABLE to mitigate memory fragmentation, especially
+    relevant when using value 2 which raises memory peak
+constraints:
+- TASK_QUEUE_ENABLE is a CANN runtime environment variable and must be set before the process starts (export before launching
+  vLLM); changing it at runtime has no effect.
+- Value 2 increases memory peak and may degrade performance if device memory is tight, per the optimization_and_tuning doc.
+tuning_advice:
+  summary: Enable TASK_QUEUE_ENABLE=1 for async NPU operator dispatch to reduce host launch bubbles; use 2 only when memory
+    headroom allows.
+  suggested_values:
+  - scenario: General performance / throughput-oriented serving on Ascend NPU (v1 and v2 worker paths)
+    value: 1
+    reason: Enables asynchronous NPU task queue dispatch, reducing host-side launch overhead and improving device utilization;
+      used as the standard baseline in vllm-ascend performance and acceptance e2e tests.
+  - scenario: Memory-constrained deployments or when OOM is observed
+    value: 0
+    reason: Disabling the task queue avoids the extra memory peak associated with queue optimization; use when device memory
+      is tight.
+  - scenario: Operator-delivery-queue optimization with ample memory headroom
+    value: 2
+    reason: Per optimization_and_tuning.md, value 2 optimizes the operator delivery queue but increases memory peak; only
+      use when memory is not a constraint.
+  caveats:
+  - Value 2 may degrade performance if memory is tight due to increased peak memory.
+  - Pair with CPU_AFFINITY_CONF=1 and HCCL_OP_EXPANSION_MODE=AIV for best multi-card performance, as shown in vllm-ascend
+    docs and e2e tests.
+  - Set the variable before process launch; it is read by the CANN runtime at initialization.
+  quick_guide: export TASK_QUEUE_ENABLE=1 for async operator dispatch; use 2 only with memory headroom.
+analysis_date: '2026-10-27'

@@ -1,0 +1,107 @@
+name: ASCEND_LOCAL_COMM_RES
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/utils.py:721
+- tests/e2e/pull_request/utils.py:522
+- tests/ut/test_utils.py:938
+value_type: str
+default: <unset>
+valid_choices: JSON string; for A5/950 UB the documented minimal value is '{"version":"1.3"}'; otherwise a full endpoint config
+  JSON loaded from ub_endpoint_npu_<id>.json
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ASCEND_LOCAL_COMM_RES is a CANN/HIXL-side environment variable that carries the local
+
+  communication resource (UB endpoint) configuration consumed by the Ascend communication
+
+  stack (HCCL/HIXL) when establishing device-to-device transports. It is not read by vLLM
+
+  upstream at all; it is set by vllm-ascend in setup_ascend_local_comm_res()
+
+  (vllm_ascend/utils.py:690-721). When kv_transfer_config.kv_connector_extra_config contains
+
+  ascend_local_comm_res_path, the helper maps the runtime device ordinal to the host physical
+
+  NPU id via current_platform.visible_device_id_to_physical_device_id(), reads
+
+  ub_endpoint_npu_<physical_id>.json from that directory, and serializes it into
+
+  os.environ["ASCEND_LOCAL_COMM_RES"] as compact JSON. The CANN transport layer then uses
+
+  this endpoint descriptor to select/configure the local UB (Unified Bus) communication
+
+  resource instead of falling back to default discovery. On 950PR/DT (A5) hardware the
+
+  documented minimal form is ''{"version":"1.3"}'', which selects the v1.3 HIXL resource
+
+  format required for UB. Because this determines which physical transport path and endpoint
+
+  the KV-transfer / PD-disaggregation traffic uses, a wrong or missing value forces the
+
+  stack onto a slower or failing path (e.g. RoCE fallback or connection setup failure),
+
+  directly affecting KV-cache transfer latency and hence TTFT/throughput in PD-disaggregated
+
+  deployments. It has no effect on non-disaggregated single-node inference.
+
+  '
+usage_locations:
+- file: vllm_ascend/utils.py:721
+  context: setup_ascend_local_comm_res() writes the parsed ub_endpoint_npu_<id>.json content into os.environ['ASCEND_LOCAL_COMM_RES']
+    after binding the runtime device.
+- file: vllm_ascend/utils.py:700
+  context: Reads kv_connector_extra_config['ascend_local_comm_res_path'] to locate the endpoint config directory; returns
+    early if absent.
+- file: tests/e2e/pull_request/utils.py:522
+  context: E2E PD-disaggregation test sets ASCEND_LOCAL_COMM_RES='{"version":"1.3"}' on 950 (A5) when neither ASCEND_LOCAL_COMM_RES
+    nor ASCEND_GLOBAL_RESOURCE_CONFIG is already set.
+- file: tests/ut/test_utils.py:938
+  context: Unit test verifies the env var is overwritten with the endpoint JSON resolved via the platform physical-device
+    mapping.
+related_parameters:
+- name: kv_connector_extra_config.ascend_local_comm_res_path
+  relation: Source of the endpoint JSON; if unset, ASCEND_LOCAL_COMM_RES is never written by vllm-ascend.
+- name: ASCEND_GLOBAL_RESOURCE_CONFIG
+  relation: Alternative/competing resource config; docs say to unset it when using ASCEND_LOCAL_COMM_RES for UB, and use it
+    instead for UBOE.
+- name: ASCEND_LOCAL_COMM_RES_PATH
+  relation: Documented companion env var pointing at /etc/hixlep/ for the 950PR/DT UB path.
+- name: ASCEND_RT_VISIBLE_DEVICES
+  relation: Affects the visible-to-physical NPU id mapping used to pick the ub_endpoint_npu_<id>.json file.
+constraints:
+- If ascend_local_comm_res_path is set but the corresponding ub_endpoint_npu_<physical_id>.json file is missing, vllm-ascend
+  raises FileNotFoundError and startup fails.
+- If the endpoint config file is not valid JSON, vllm-ascend raises ValueError and startup fails.
+- The endpoint filename must use the host physical NPU id (derived via the platform mapping), not the vLLM local rank or the
+  ordinal passed to torch.npu.set_device.
+- On 950PR/DT (A5) UB deployments the value must use the v1.3 HIXL resource format, e.g. '{"version":"1.3"}'.
+- ASCEND_GLOBAL_RESOURCE_CONFIG must be unset when using ASCEND_LOCAL_COMM_RES for the UB path.
+tuning_advice:
+  summary: For 950PR/DT UB-based PD disaggregation, set ASCEND_LOCAL_COMM_RES='{"version":"1.3"}' (or let vllm-ascend populate
+    it from ascend_local_comm_res_path) and unset ASCEND_GLOBAL_RESOURCE_CONFIG; for other hardware use the RoCE/HCCS path
+    instead.
+  suggested_values:
+  - scenario: 950PR/DT (A5) with Device UB, minimal HIXL v1.3 resource format
+    value: '{"version":"1.3"}'
+    reason: Documented minimal value that selects the v1.3 HIXL resource format required for A5 UB; used by the E2E PD test
+      on 950 hardware.
+  - scenario: Per-device endpoint config supplied via kv_connector_extra_config.ascend_local_comm_res_path
+    value: <auto-populated from ub_endpoint_npu_<physical_id>.json>
+    reason: vllm-ascend reads the per-NPU endpoint JSON and writes it into ASCEND_LOCAL_COMM_RES automatically; do not set
+      it manually in this mode.
+  - scenario: A3 (HCCS) or A2 (RoCE) deployments
+    value: <unset>
+    reason: UB-specific resource config is not applicable; use HCCL_IF_IP / HCCL_INTRA_ROCE_ENABLE and the RoCE path instead.
+  caveats:
+  - Ensure /etc/hixlep/ is mounted and ASCEND_LOCAL_COMM_RES_PATH points to it for the 950 UB path.
+  - Unset ASCEND_GLOBAL_RESOURCE_CONFIG when using ASCEND_LOCAL_COMM_RES; the two are mutually exclusive transport selectors.
+  - Verify the ub_endpoint_npu_*.json files exist for every physical NPU id or startup will fail with FileNotFoundError.
+  quick_guide: On 950 UB PD-disaggregation export ASCEND_LOCAL_COMM_RES='{"version":"1.3"}' and unset ASCEND_GLOBAL_RESOURCE_CONFIG;
+    elsewhere leave it unset.
+analysis_date: '2026-10-27'

@@ -1,0 +1,81 @@
+name: VLLM_FASTSAFETENSORS_QUEUE_SIZE
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1113
+- vllm/envs.py:123
+- vllm/model_executor/model_loader/weight_utils.py:1096
+value_type: int
+default: 0
+valid_choices: non-negative integer (0 disables pipelining; 1 or higher enables pipelined loading with that many extra shard
+  buffers)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This env var only affects the fastsafetensors weight-loading path
+
+  (vllm/model_executor/model_loader/weight_utils.py:1096), where it is passed as
+
+  `queue_size` to fastsafetensors'' ParallelLoader. It controls pipelining of shard
+
+  loading: "with queue_size=0 (default) loading is non-pipelined; with queue_size>=1"
+
+  the producer thread prepares the next shard''s device buffer while the consumer
+
+  copies the current shard into model params, overlapping I/O/metadata prep with
+
+  the copy. This reduces model load (startup) latency at the cost of
+
+  `queue_size` extra shard-sized device buffers resident at peak
+
+  (peak VRAM ~ model_weights + (1 + queue_size) * shard_size). It has NO effect on
+
+  steady-state inference throughput or latency. On Ascend, this path is only
+
+  reached if the fastsafetensors loader is selected; the code shown is upstream
+
+  and uses `cuda:{current_device}` device strings, and no vllm-ascend override of
+
+  this env var was found in the provided context, so its Ascend applicability is
+
+  limited/uncertain. Impact is therefore low and confined to load time.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1113
+  context: Env var definition, default 0, parsed as int
+- file: vllm/envs.py:123
+  context: 'Typed env accessor declaration VLLM_FASTSAFETENSORS_QUEUE_SIZE: int = 0'
+- file: vllm/model_executor/model_loader/weight_utils.py:1096
+  context: Read and passed as queue_size to fastsafetensors ParallelLoader for pipelined weight loading
+related_parameters:
+- name: VLLM_USE_MODELSCOPE
+  relation: Loader selection; fastsafetensors path must be chosen for this env var to matter
+- name: tensor_parallel_size
+  relation: TP>1 forces nogds=True in the loader; queue_size still applies to pipelining
+constraints:
+- Value must be a non-negative integer; negative values are not meaningful for a queue size.
+- Only takes effect when the fastsafetensors weight loader is used; with other loaders it has no effect.
+tuning_advice:
+  summary: Leave at 0 unless model load time is a bottleneck and you have spare device memory; then set to 1-2 to overlap
+    shard loading.
+  suggested_values:
+  - scenario: Default / memory-constrained NPU where load-time OOM risk must be avoided
+    value: 0
+    reason: Preserves non-pipelined memory footprint (no extra shard buffers).
+  - scenario: Large models with slow weight loading and sufficient free HBM
+    value: 1
+    reason: Overlaps producing the next shard's buffer with copying the current shard, reducing load latency with only one
+      extra shard buffer.
+  - scenario: Load latency critical and ample device memory headroom
+    value: 2
+    reason: Deeper pipelining further hides I/O latency at the cost of two extra shard-sized buffers at peak.
+  caveats:
+  - Applies only to the fastsafetensors loader path; irrelevant for other loaders.
+  - Increase cautiously on Ascend — extra shard buffers consume HBM and can trigger load-time OOM.
+  quick_guide: Keep 0 by default; set to 1-2 only to speed up weight loading when HBM headroom allows.
+analysis_date: '2026-10-27'

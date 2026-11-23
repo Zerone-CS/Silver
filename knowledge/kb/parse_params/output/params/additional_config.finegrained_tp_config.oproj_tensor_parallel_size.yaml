@@ -1,0 +1,124 @@
+name: additional_config.finegrained_tp_config.oproj_tensor_parallel_size
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1337
+- vllm_ascend/ascend_config.py:1362
+- vllm_ascend/ascend_config.py:823
+- vllm_ascend/distributed/parallel_state.py:198
+- vllm_ascend/utils.py:990
+value_type: int
+default: 0
+valid_choices: non-negative integer; 0 or 1 disables the feature; values > 1 enable fine-grained TP on o_proj and must divide
+  data_parallel_size
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'This is a vllm-ascend-only knob (defined in FinegrainedTPConfig, vllm_ascend/ascend_config.py:1337)
+
+  that shards the o_proj linear layer across a custom tensor-parallel group instead of the default
+
+  TP group. When set > 1, init_ascend_model_parallel (vllm_ascend/distributed/parallel_state.py:198-206)
+
+  creates a dedicated HCCL process group named "otp" via _create_or_get_group, and oproj_tp_enable()
+
+  (vllm_ascend/utils.py:990) returns True so AscendRowParallelLinear for prefix "o_proj" binds its
+
+  custom_op.comm_group to the _OTP group (see tests/ut/ops/test_linear.py:205-216). This reduces the
+
+  all-reduce/all-gather communication volume for the o_proj output projection by splitting it across
+
+  a smaller group, which lowers decode-step latency and improves throughput on MoE models in PD
+
+  disaggregation decode nodes. Because the shard is along the DP dimension, it also changes weight
+
+  sharding (rfork identity.py:276 treats fine-grained TP as content-sharded across DP), affecting
+
+  memory distribution. The feature is gated to graph mode (ACLGraph) and requires
+
+  recompute_scheduler_enable=true; if the largest cudagraph capture size does not cover the largest
+
+  possible step, the config is silently reset to 0 (ascend_config.py:1400-1413), disabling the
+
+  optimization.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1362
+  context: 'Precondition validation: requires tensor_parallel_size==1, graph mode, kv_consumer (D node), pcp_size==1, and
+    capture bound >= max step'
+- file: vllm_ascend/ascend_config.py:823
+  context: Requires recompute_scheduler_enable=true when oproj/mlp fine-grained TP is enabled
+- file: vllm_ascend/distributed/parallel_state.py:198
+  context: Creates the 'otp' HCCL process group sized oproj_tensor_parallel_size
+- file: vllm_ascend/utils.py:990
+  context: oproj_tp_enable() gates o_proj linear to use the OTP comm group
+- file: vllm_ascend/model_loader/rfork/identity.py:276
+  context: Marks weights as content-sharded across DP for seed/identity resolution
+related_parameters:
+- name: additional_config.finegrained_tp_config.mlp_tensor_parallel_size
+  relation: Shares the same preconditions and is disabled together when capture bound is insufficient
+- name: additional_config.finegrained_tp_config.lmhead_tensor_parallel_size
+  relation: Sibling fine-grained TP field; only requires data_parallel_size divisibility
+- name: additional_config.finegrained_tp_config.embedding_tensor_parallel_size
+  relation: Sibling fine-grained TP field; only requires data_parallel_size divisibility
+- name: additional_config.scheduler_config.recompute_scheduler_enable
+  relation: Must be true for oproj fine-grained TP to be allowed
+- name: compilation_config.cudagraph_mode
+  relation: Must not be NONE; graph mode is required
+- name: compilation_config.max_cudagraph_capture_size
+  relation: Must cover the largest possible step or the feature is auto-disabled
+- name: parallel_config.tensor_parallel_size
+  relation: Must be 1 when oproj fine-grained TP is enabled
+- name: parallel_config.data_parallel_size
+  relation: oproj_tensor_parallel_size must divide data_parallel_size
+- name: parallel_config.prefill_context_parallel_size
+  relation: Must be 1; PCP > 1 is not supported
+- name: kv_transfer_config
+  relation: Must be a KV consumer (PD disaggregation decode node)
+constraints:
+- oproj_tensor_parallel_size must be non-negative.
+- oproj_tensor_parallel_size > 1 requires tensor_parallel_size == 1.
+- oproj_tensor_parallel_size > 1 requires cudagraph_mode to not be NONE (graph mode only).
+- oproj_tensor_parallel_size > 1 is only supported in PD disaggregation and only on the decode (KV consumer) node.
+- oproj_tensor_parallel_size > 1 is not supported with prefill_context_parallel_size > 1.
+- oproj_tensor_parallel_size > 1 requires recompute_scheduler_enable=true.
+- oproj_tensor_parallel_size can only be enabled for MoE models.
+- oproj_tensor_parallel_size must divide data_parallel_size.
+tuning_advice:
+  summary: 'Enable oproj_tensor_parallel_size > 1 only on MoE decode nodes in PD disaggregation with
+
+    TP=1, graph mode, and recompute_scheduler_enable=true, to cut o_proj communication and
+
+    reduce decode latency; otherwise leave at 0.
+
+    '
+  suggested_values:
+  - scenario: MoE model, PD disaggregation decode node, TP=1, ACLGraph, DP=8
+    value: 2
+    reason: Splits o_proj across a 2-rank OTP group, reducing all-reduce volume while 2 divides DP=8; conservative starting
+      point.
+  - scenario: MoE model, PD decode node, TP=1, DP=16, latency-sensitive decode
+    value: 4
+    reason: Larger OTP group further reduces per-rank o_proj communication; 4 divides DP=16 and stays within graph capture
+      bounds.
+  - scenario: Default / non-PD, TP>1, eager mode, or dense model
+    value: 0
+    reason: Feature is disabled by default and is rejected or auto-disabled outside the supported MoE PD decode graph-mode
+      configuration.
+  caveats:
+  - If max_cudagraph_capture_size does not cover the largest possible step (min(max_num_batched_tokens, max_num_seqs * decode_query_len)),
+    the config is silently reset to 0 with only a warning — verify the log line 'finegrained_tp_config enabled'.
+  - Only effective in graph (ACLGraph) mode; eager dispatch keeps per-rank token counts and desyncs cross-DP HCCL collectives.
+  - Requires recompute_scheduler_enable=true to keep decode-node steps decode-shaped.
+  - Because o_proj is sharded along DP, weight content differs per DP rank; rfork identity resolution treats it as content-sharded,
+    which may cost a seed miss.
+  - oproj_tensor_parallel_size and mlp_tensor_parallel_size are disabled together when the capture bound is insufficient.
+  quick_guide: Set to a divisor of data_parallel_size (e.g. 2 or 4) only for MoE PD decode nodes with TP=1, graph mode, and
+    recompute_scheduler_enable=true; keep 0 otherwise.
+analysis_date: '2026-10-27'

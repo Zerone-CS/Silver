@@ -1,0 +1,115 @@
+name: additional_config.enable_kvpp
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:72
+- vllm_ascend/ascend_config.py:1863
+value_type: bool
+default: false
+valid_choices: true or false (boolean; string 'true'/'false' also accepted via validate_additional_config_bool)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'KVPP (KV Pipeline Parallelism) is an Ascend-only feature parsed in
+
+  KVPPConfig.from_vllm_config (vllm_ascend/ascend_config.py:69-79). When enabled, it sets
+
+  KVPPConfig.size = tensor_parallel_size * prefill_context_parallel_size, which defines the
+
+  group of ranks over which persistent MLA KV-cache layers are distributed. Instead of every
+
+  TP (and PCP) rank holding a full copy of every MLA KV-cache layer, each layer''s KV cache is
+
+  owned by a subset of ranks and broadcast to the others before attention. This directly reduces
+
+  per-rank KV-cache memory footprint (memory), which in turn allows larger max_num_seqs /
+
+  max_model_len or more blocks (throughput). The tradeoff is an added per-layer broadcast
+
+  (HCCL all-gather/broadcast) on the critical path, which adds communication latency per
+
+  forward. The broadcast decision uses the global scheduled batch, not PCP-local segment
+
+  offsets. The factory (init_ascend_config, line 1839) constructs kvpp_config from
+
+  additional_config.enable_kvpp + TP/PCP, and the key is stripped from the user kwargs
+
+  (_NON_USER_INPUT_KEYS, line 1863-1864) so it is not passed to pydantic directly. The
+
+  worker path (NPUWorker.get_kv_cache_spec) builds a KVPP cache allocation plan
+
+  (_kvpp_cache_allocation_plan) that rewrites draft-layer specs to FullAttentionSpec and
+
+  assigns layer_owner_ranks, changing the KV-cache layout and block accounting.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:72
+  context: KVPPConfig.from_vllm_config reads additional_config.enable_kvpp and computes group size = TP * PCP
+- file: vllm_ascend/ascend_config.py:1863
+  context: enable_kvpp stripped from user kwargs in init_ascend_config; kvpp_config built by factory
+- file: vllm_ascend/worker/worker.py
+  context: NPUWorker.get_kv_cache_spec builds _kvpp_cache_allocation_plan when KVPP enabled (per test_kvpp_cache_specs.py)
+- file: tests/e2e/pull_request/two_card/test_kvpp.py:61
+  context: E2E test enabling KVPP with MTP speculative decoding
+- file: tests/e2e/cases/features/kv_pool/test_kvpp_dspark.py:58
+  context: E2E test enabling KVPP with dspark speculative decoding
+related_parameters:
+- name: --tensor-parallel-size
+  relation: KVPP group size = TP * PCP; larger TP spreads KV layers across more ranks
+- name: --prefill-context-parallel-size
+  relation: PCP multiplies the KVPP group size; PCP requires VLLM_USE_V2_MODEL_RUNNER=1
+- name: --enforce-eager
+  relation: Required for KVPP; graph execution (non-PIECEWISE cudagraph) is rejected
+- name: --decode-context-parallel-size
+  relation: Mutually exclusive with KVPP (DCP must be 1)
+- name: --speculative-config
+  relation: Only method='mtp' or 'dspark' supported; fixed num_speculative_tokens required
+- name: --kv-transfer-config
+  relation: PD disaggregation requires MooncakeConnectorV2; KVPP must be disabled on decode-only node
+constraints:
+- KVPP and DCP cannot be enabled at the same time (decode_context_parallel_size must be 1).
+- KVPP requires eager execution or PIECEWISE cudagraph mode; other cudagraph modes raise an error.
+- KVPP currently supports only non-hybrid MLA models (use_mla must be true and is_hybrid false).
+- With PD disaggregation, KVPP requires the MooncakeConnectorV2 connector (or AscendStoreConnector) and must be disabled on
+  the decode-only node.
+- KVPP supports speculative decoding only with method='mtp' or method='dspark'.
+- KVPP requires a fixed number of speculative tokens; num_speculative_tokens_per_batch_size must not be set.
+- KVPP does not support DSpark adaptive verification or dynamic speculative lengths.
+- PCP (prefill_context_parallel_size > 1) requires VLLM_USE_V2_MODEL_RUNNER=1.
+tuning_advice:
+  summary: Enable KVPP on Ascend to shard persistent MLA KV-cache layers across TP×PCP ranks, trading a per-layer broadcast
+    for lower per-rank KV memory.
+  suggested_values:
+  - scenario: MLA model (e.g. DeepSeek-style) with TP>1 and KV-cache memory pressure limiting max_num_seqs
+    value: true
+    reason: Distributes MLA KV layers across TP ranks, reducing per-rank KV footprint and freeing memory for more concurrent
+      sequences.
+  - scenario: MLA model with PCP enabled (VLLM_USE_V2_MODEL_RUNNER=1, prefill_context_parallel_size>1)
+    value: true
+    reason: Group size becomes TP×PCP, spreading KV layers across the full PCP replica domain for maximum memory savings.
+  - scenario: Non-MLA model, hybrid model, or DCP enabled
+    value: false
+    reason: KVPP only supports non-hybrid MLA and is mutually exclusive with DCP; enabling it raises a ValueError.
+  - scenario: Latency-sensitive decode with abundant KV memory
+    value: false
+    reason: KVPP adds a per-layer broadcast on the critical path; if memory is not the bottleneck, the extra communication
+      hurts latency.
+  caveats:
+  - KVPP requires --enforce-eager (or PIECEWISE cudagraph); graph capture is not supported, which can reduce throughput versus
+    full cudagraph mode.
+  - Each full layer is broadcast once per forward; the broadcast uses the global scheduled batch, not PCP-local segment offsets,
+    so PCP chunking does not reduce broadcast cost.
+  - With PD disaggregation, KVPP must be disabled on the decode-only node and requires MooncakeConnectorV2.
+  - Speculative decoding is limited to mtp/dspark with a fixed token count; adaptive verification and dynamic speculative
+    lengths are rejected.
+  - The KVPP cache allocation plan rewrites draft-layer specs to FullAttentionSpec, changing block accounting; verify num_gpu_blocks_override
+    and memory profiling accordingly.
+  quick_guide: Set additional_config.enable_kvpp=true with --enforce-eager on non-hybrid MLA models to shard KV cache across
+    TP×PCP ranks; disable if memory is not the bottleneck or DCP is used.
+analysis_date: '2026-10-27'

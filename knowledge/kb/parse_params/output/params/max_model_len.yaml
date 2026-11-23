@@ -1,0 +1,166 @@
+name: --max_model_len
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:215
+- vllm/engine/arg_utils.py:379
+- vllm/engine/arg_utils.py:461
+- vllm_ascend/patch/platform/patch_balance_schedule.py:251
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:62
+- vllm_ascend/patch/platform/patch_mamba_config.py:176
+- vllm_ascend/platform.py:420
+- vllm_ascend/worker/block_table.py:346
+value_type: int
+default: null
+valid_choices: Any positive integer; -1 or 'auto' to auto-select the largest length that fits in device memory; supports human-readable
+  suffixes k/m/g/K/M/G (e.g. 1k=1000, 1K=1024, 25.6k=25600)
+cli_example: --max-model-len 8192
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: '--max_model_len sets the maximum context length (prompt + output) per request and is a
+
+  first-order driver of NPU memory and scheduling behavior on Ascend.
+
+
+  Memory: "In vllm_ascend/worker/block_table.py:346-373, MultiGroupBlockTable computes"
+
+  max_num_blocks_per_req = cdiv(max_model_len, block_size * dcp_world_size) for each KV cache
+
+  group. This directly sizes the per-request block table buffers allocated on the NPU, so a
+
+  larger max_model_len increases block-table memory linearly. More importantly, max_model_len
+
+  bounds the KV cache capacity requirement: "the KV cache must be able to hold at least one"
+
+  request of max_model_len tokens, so a value larger than what fits in the remaining HBM after
+
+  weights causes startup OOM (documented in Cohere-Transcribe.md:251 and Qwen-VL-Dense.md:294).
+
+  For models with full causal attention masks, mask memory grows quadratically with
+
+  max_model_len (Cohere-Transcribe.md:251), which is an Ascend-specific OOM risk.
+
+
+  Throughput/concurrency: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:62
+
+  (_select_kv_token_budget) falls back to max_model_len as the KV token budget when
+
+  max_in_flight_tokens is unset, and the coordinator stores self.max_model_len (line 128) used
+
+  in cache-block accounting. Upstream vllm/config/cache.py:219 defines kv_cache_max_concurrency
+
+  as "Per-DP-engine maximum concurrency at max_model_len tokens" — a larger max_model_len
+
+  lowers the number of concurrent requests the KV cache can hold, reducing batch size and
+
+  therefore decode throughput.
+
+
+  Scheduling: "vllm_ascend/patch/platform/patch_balance_schedule.py:251 clamps num_new_tokens to"
+
+  max_model_len - num_computed_tokens - num_sampled_tokens_per_step, and line 282 notes that a
+
+  request reaching max_model_len yields num_new_tokens == 0 and is skipped. So max_model_len
+
+  caps the total tokens a request can generate and interacts with chunked prefill and
+
+  speculative decoding (num_sampled_tokens_per_step).
+
+
+  Hybrid/mamba models: vllm_ascend/patch/platform/patch_mamba_config.py:176 sets
+
+  mamba_block_size = model_config.max_model_len when prefix caching is off or mamba_cache_mode
+
+  is not "align"; vllm_ascend/platform.py:420 treats mamba_block_size == max_model_len as the
+
+  "unset" sentinel and replaces it with block_size when KV transfer with hybrid models is used.
+
+  Thus max_model_len indirectly influences mamba block sizing and the Triton postprocess path
+
+  selection on Ascend.
+
+
+  vllm-ascend does not override the default value of max_model_len itself; it inherits the
+
+  upstream ModelConfig default (None -> derived from HF config) and the human-readable parsing
+
+  from vllm/engine/arg_utils.py:379-381.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:215
+  context: Field definition with ge=-1; docstring describes auto/-1 and human-readable suffixes
+- file: vllm/engine/arg_utils.py:379
+  context: CLI parsing uses human_readable_int_or_auto for --max-model-len
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:251
+  context: Scheduler clamps num_new_tokens to max_model_len - num_computed_tokens - num_sampled_tokens_per_step
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:62
+  context: _select_kv_token_budget falls back to max_model_len when max_in_flight_tokens is None
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:176
+  context: mamba_block_size defaults to max_model_len when prefix caching off / non-align mode
+- file: vllm_ascend/platform.py:420
+  context: mamba_block_size == max_model_len treated as unset sentinel for KV-transfer hybrid path
+- file: vllm_ascend/worker/block_table.py:346
+  context: MultiGroupBlockTable sizes max_num_blocks_per_req from max_model_len
+related_parameters:
+- name: --max-num-batched-tokens
+  relation: Chunked prefill budget; interacts with max_model_len to determine prefill chunking and per-step token budget
+- name: --max-num-seqs
+  relation: Together with max_model_len determines KV cache concurrency (kv_cache_max_concurrency)
+- name: --gpu-memory-utilization
+  relation: Determines available HBM for KV cache; max_model_len must fit within it or startup OOMs
+- name: --kv-cache-memory-bytes
+  relation: Explicit KV cache size; when set, overrides gpu_memory_utilization and constrains feasible max_model_len
+- name: --block-size
+  relation: max_num_blocks_per_req = cdiv(max_model_len, block_size * dcp_world_size); block_size must divide/align with max_model_len
+    for efficient block tables
+- name: --speculative-config
+  relation: Spec decoding adds num_sampled_tokens_per_step to the max_model_len clamp; draft model may use spec_target_max_model_len
+- name: --enable-prefix-caching
+  relation: Affects mamba_block_size derivation (align vs max_model_len) in patch_mamba_config.py
+- name: --decode-context-parallel-size
+  relation: dcp_world_size divides max_model_len in block table sizing
+constraints:
+- --max-model-len must be >= -1; -1 or 'auto' means auto-select the largest length that fits in device memory.
+- The configured max_model_len must fit in the KV cache capacity available after model weights are loaded, otherwise startup
+  fails with an out-of-memory error.
+- For models requiring a full causal attention mask, memory grows quadratically with max_model_len, so very large values can
+  cause attention-init OOM on NPU.
+- When using KV transfer with hybrid models and mamba_cache_mode 'align', mamba_block_size must be a multiple of block_size;
+  max_model_len is used as the unset sentinel and replaced by block_size.
+tuning_advice:
+  summary: Set --max-model-len explicitly to the smallest value that covers your real prompt+output workload; larger values
+    consume more NPU HBM for KV cache and block tables and reduce achievable concurrency.
+  suggested_values:
+  - scenario: Short-context chat / ASR / OCR workloads on memory-constrained NPUs
+    value: 4096
+    reason: Documented conservative value (Cohere-Transcribe.md:251) that avoids quadratic attention-mask OOM and leaves HBM
+      for KV cache concurrency.
+  - scenario: Long-context models where HF config max-seq-len exceeds KV cache capacity
+    value: 8192
+    reason: Qwen-VL-Dense.md:294 recommends setting --max-model-len to avoid the ValueError when the model's max-seq-len (e.g.
+      256000) exceeds KV cache capacity; 8192 is a safe starting point to raise after verifying NPU memory.
+  - scenario: Speculative decoding draft model
+    value: 4096
+    reason: Kimi-K3.md:400 uses draft max_model_len=4096 for DSpark; keep draft context small to limit extra memory.
+  - scenario: Maximum throughput with abundant HBM
+    value: auto
+    reason: Let vLLM pick the largest length that fits; only safe when HBM is plentiful and attention mask memory is not quadratic.
+  caveats:
+  - On Ascend, an auto-detected large context length can create a full causal attention mask whose memory grows quadratically
+    with max_model_len, causing attention-init OOM (Cohere-Transcribe.md:251).
+  - Larger max_model_len lowers kv_cache_max_concurrency (vllm/config/cache.py:219), reducing batch size and decode throughput.
+  - In vllm_ascend patch_balance_schedule.py:251, requests reaching max_model_len get num_new_tokens == 0 and are skipped,
+    so max_model_len caps total generated tokens per request.
+  - For hybrid/mamba models, max_model_len is used as the mamba_block_size default (patch_mamba_config.py:176) and as an unset
+    sentinel in platform.py:420; changing it can alter mamba block sizing and Triton postprocess path selection.
+  - max_model_len is not necessarily divisible by block_size; block table slot mapping handles this (block_table.py:205),
+    but aligning values reduces wasted blocks.
+  quick_guide: Set --max-model-len to the smallest value covering your real prompt+output length; start at 4096-8192 on memory-constrained
+    NPUs and raise only after verifying HBM headroom.
+analysis_date: '2026-10-27'

@@ -1,0 +1,104 @@
+name: HCCL_EXEC_TIMEOUT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/GLM5.3.md:405
+- docs/source/tutorials/models/GLM5.3-Flash.md:876
+value_type: int
+default: <computed>
+valid_choices: positive integer (seconds); no explicit range enforced by vllm/vllm-ascend source
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'HCCL_EXEC_TIMEOUT is a CANN/HCCL runtime environment variable, not a vLLM or
+
+  vllm-ascend configuration field. It is not defined or read anywhere in the
+
+  vllm or vllm-ascend source trees (no definition or usage sites were found in
+
+  either repo). It is consumed by the underlying Huawei HCCL library to bound
+
+  how long a collective communication operation (AllReduce, AllGather,
+
+  ReduceScatter, AllToAll) may block before the HCCL runtime aborts the
+
+  operation with a timeout error.
+
+
+  Because it is a timeout, it does not change steady-state throughput or memory
+
+  usage. Its performance relevance is indirect: if a collective legitimately
+
+  takes longer than the configured timeout (e.g. large expert-parallel AllToAll
+
+  on a slow multi-node A2 fabric, or a long prefill step), the HCCL call will
+
+  abort and the engine will crash/restart, which manifests as a latency spike
+
+  and lost work. Conversely, setting it too high means a genuinely hung
+
+  collective will not be detected promptly, delaying failure recovery. The
+
+  vllm-ascend docs list it among the "validated A2 startup defaults" for
+
+  multi-node GLM-5.3 deployments, indicating it is tuned to avoid spurious
+
+  timeouts on the slower A2 platform rather than to improve raw performance.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/GLM5.3.md:405
+  context: Listed among A2-specific timeout env vars (with VLLM_RPC_TIMEOUT, VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS, HCCL_CONNECT_TIMEOUT)
+    recommended for multi-node startup/model execution on the slower A2 platform.
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:876
+  context: Grouped with other timeout/runtime variables as validated A2 startup defaults for the model size; docs advise keeping
+    them unless the environment requires different values.
+related_parameters:
+- name: HCCL_CONNECT_TIMEOUT
+  relation: Companion HCCL timeout controlling connection establishment; both are tuned together for multi-node A2 startup.
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Higher-level vLLM timeout for model execution; must be consistent with HCCL operation timeouts so the engine does
+    not give up before HCCL does.
+- name: VLLM_RPC_TIMEOUT
+  relation: RPC timeout for engine communication; part of the same multi-node timeout tuning set.
+- name: VLLM_ENGINE_READY_TIMEOUT_S
+  relation: Engine readiness timeout; also part of the A2 multi-node startup timeout group.
+constraints:
+- The value is interpreted by the HCCL/CANN runtime as a timeout in seconds and must be a positive integer.
+- If a collective communication operation exceeds HCCL_EXEC_TIMEOUT, the HCCL runtime aborts the operation and the engine
+  fails; the value must be large enough to cover the slowest legitimate collective on the target fabric.
+tuning_advice:
+  summary: 'Keep the vllm-ascend documented A2 defaults unless you observe HCCL
+
+    execution timeouts; raise it for slow multi-node fabrics or very large
+
+    collective payloads, and lower it only when you want faster detection of
+
+    genuinely hung collectives.
+
+    '
+  suggested_values:
+  - scenario: Multi-node A2 deployment of large models (e.g. GLM-5.3 / GLM-5.3-Flash) with DP across nodes and TP within nodes
+    value: 200
+    reason: Documented validated A2 startup default for this model size; large enough to avoid spurious HCCL execution timeouts
+      on the slower A2 platform.
+  - scenario: Single-node deployment or fast interconnect where collectives complete quickly
+    value: 120
+    reason: A shorter timeout detects hung collectives sooner without risking spurious aborts when collectives are fast.
+  - scenario: Very large expert-parallel AllToAll or long prefill steps that approach the default timeout
+    value: 600
+    reason: Increase the timeout so long-running collectives do not abort; pair with a correspondingly larger VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS.
+  caveats:
+  - This is a CANN/HCCL runtime variable, not a vLLM or vllm-ascend config field; it is not read by either repo's source and
+    has no effect on steady-state throughput or memory.
+  - Setting it too low causes spurious HCCL execution timeouts and engine crashes on slow multi-node A2 fabrics; setting it
+    too high delays detection of genuinely hung collectives.
+  - Keep it consistent with VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS and VLLM_RPC_TIMEOUT so the higher-level engine timeouts do
+    not fire before HCCL does.
+  - The vllm-ascend docs recommend keeping the validated A2 defaults unless your environment specifically requires different
+    values.
+  quick_guide: Leave at the documented A2 default (200s) unless you see HCCL execution timeouts, then raise it.
+analysis_date: '2026-10-27'

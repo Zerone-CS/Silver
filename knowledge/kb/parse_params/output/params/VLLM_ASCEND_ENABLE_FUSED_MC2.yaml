@@ -1,0 +1,106 @@
+name: VLLM_ASCEND_ENABLE_FUSED_MC2
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:671
+- vllm_ascend/ascend_config.py:442
+- vllm_ascend/ascend_config.py:608
+- docs/source/user_guide/configuration/additional_config.md:23
+- docs/source/user_guide/configuration/additional_config.md:73
+- docs/source/tutorials/models/DeepSeek-V4-Flash.md:1096
+- tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_5_eagle3.py:66
+- tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_6_dspark.py:66
+value_type: int
+default: 0
+valid_choices: 0 (disabled), 1 (dispatch-FFN-combine), 2 (CANN MegaMoe when supported)
+cli_example: null
+deprecated: true
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'This environment variable is the legacy switch for the fused MC2 (MegaMoe / dispatch-FFN-combine)
+
+  MoE path in vllm-ascend. Per the docs it maps to the additional_config key `enable_fused_mc2`
+
+  (integer, unchanged type conversion). When enabled, the MoE layer consolidates the all-to-all
+
+  dispatch, expert FFN computation, and combine into fused kernels (dispatch_ffn_combine /
+
+  npu_moe_distribute_combine_v2), reducing kernel launch overhead and inter-rank communication
+
+  stalls for MoE models (e.g. DeepSeek-V4, Qwen3.5/3.6 MoE variants). This directly affects decode
+
+  latency and MoE throughput on Ascend NPU. Value 1 selects the dispatch-FFN-combine path; value 2
+
+  selects the CANN MegaMoe path when the model and parallel configuration support it. The fused path
+
+  interacts with `mega_moe_max_tokens` (per-rank token capacity after dispatch) and `combine_quant_mode`
+
+  (comm_quant_mode for the combine op), both of which tune the fused kernel''s buffer sizing and
+
+  quantization. The e2e tests enable it alongside TP=2, HCCL_BUFFSIZE=1024, and AIV op expansion for
+
+  speculative decoding (eagle3/dspark) workloads, indicating it is exercised in MoE + spec-decode
+
+  scenarios.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/configuration/additional_config.md:23
+  context: Quick reference table mapping VLLM_ASCEND_ENABLE_FUSED_MC2 to enable_fused_mc2 config key
+- file: docs/source/user_guide/configuration/additional_config.md:73
+  context: 'enable_fused_mc2 description: 0 disables, 1 dispatch-FFN-combine, 2 CANN MegaMoe; legacy env var no longer supported'
+- file: docs/source/tutorials/models/DeepSeek-V4-Flash.md:1096
+  context: 'DeepSeek-V4-Flash deployment: VLLM_ASCEND_ENABLE_FUSED_MC2=1 enables fused MoE (MC2) optimization'
+- file: tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_5_eagle3.py:66
+  context: E2E test sets VLLM_ASCEND_ENABLE_FUSED_MC2=1 for Qwen3.5 eagle3 spec decode TP2
+- file: tests/e2e/pull_request/two_card/model_runner_v2/test_qwen3_6_dspark.py:66
+  context: E2E test sets VLLM_ASCEND_ENABLE_FUSED_MC2=1 for Qwen3.6 dspark spec decode TP2
+related_parameters:
+- name: enable_fused_mc2
+  relation: additional_config key that replaces this legacy env var; the env var is no longer supported
+- name: mega_moe_max_tokens
+  relation: Per-rank token capacity for the fused MC2/MegaMoe path; must be tuned to actual expert load to avoid precision
+    degradation
+- name: combine_quant_mode
+  relation: comm_quant_mode passed to npu_moe_distribute_combine_v2 in the fused MC2 path
+- name: mc2_comm_alg
+  relation: Selects dispatch/combine comm_alg (fullmesh/hierarchy/fullmesh_v2) used by MC2 ops
+- name: enable_prefill_mc2
+  relation: Reserves mc2_token_capacity for prefill batches in the MC2 path
+constraints:
+- The legacy VLLM_ASCEND_ENABLE_FUSED_MC2 environment variable is no longer supported; use the additional_config key enable_fused_mc2
+  instead.
+- Value 2 (CANN MegaMoe) only takes effect when the model and parallel configuration support it.
+- On A5, SiTU models require a CANN MegaMoe wrapper exposing activation and activation_params, which are bound from the MoE
+  configuration during initialization.
+- If a rank's actual MoE load exceeds mega_moe_max_tokens, precision degradation may occur.
+tuning_advice:
+  summary: 'For MoE models on Ascend NPU, enable the fused MC2 path via additional_config enable_fused_mc2
+
+    (the legacy env var is deprecated) to reduce MoE launch overhead and communication stalls;
+
+    use value 1 for dispatch-FFN-combine and value 2 for CANN MegaMoe when supported.
+
+    '
+  suggested_values:
+  - scenario: MoE model (e.g. DeepSeek-V4, Qwen3.5/3.6 MoE) on A2/A3 with supported parallel config
+    value: 1
+    reason: Selects dispatch-FFN-combine fused path, consolidating shared/routed expert computation to cut launch overhead
+      and improve MoE throughput.
+  - scenario: MoE model on A5 with CANN MegaMoe support and SiTU activation wrapper available
+    value: 2
+    reason: Selects CANN MegaMoe path for maximum fusion when model and parallel configuration support it.
+  - scenario: Dense (non-MoE) model or unsupported parallel config
+    value: 0
+    reason: Fused MC2 only benefits MoE layers; leave disabled to avoid unnecessary overhead or fallback.
+  caveats:
+  - Migrate from the env var to additional_config enable_fused_mc2; the env var is no longer supported.
+  - Tune mega_moe_max_tokens to actual expert load to avoid precision degradation and excessive device memory use.
+  - Verify HCCL_BUFFSIZE is large enough (e2e tests use 1024) for the fused all-to-all communication.
+  quick_guide: Set additional_config enable_fused_mc2=1 for MoE models to fuse dispatch-FFN-combine; use 2 for CANN MegaMoe
+    on supported hardware.
+analysis_date: '2026-10-27'

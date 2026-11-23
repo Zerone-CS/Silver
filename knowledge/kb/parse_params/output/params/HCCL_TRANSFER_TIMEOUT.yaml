@@ -1,0 +1,104 @@
+name: HCCL_TRANSFER_TIMEOUT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/DeepSeek-V4-Pro.md:918
+- docs/source/tutorials/models/DeepSeek-V4-Pro.md:985
+- docs/source/tutorials/models/GLM5.3.md:162
+value_type: int
+default: <computed>
+valid_choices: positive integer, unit is seconds; no explicit upper bound documented
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_TRANSFER_TIMEOUT is a CANN/HCCL runtime environment variable, not a vLLM or
+
+  vllm-ascend Python parameter. It is not defined or read anywhere in the vllm or
+
+  vllm-ascend source trees (no definition or usage site found); it is consumed by the
+
+  HCCL collective communication library underneath torch_npu when transferring data
+
+  between NPUs (e.g. all-reduce/all-gather/all-to-all during tensor/pipeline/expert
+
+  parallel execution, and KV-cache transfer in PD-disaggregated deployments).
+
+  Because it is a timeout, it does not change steady-state throughput directly.
+
+  Its performance effect is indirect: "if a collective transfer exceeds the timeout,"
+
+  HCCL aborts the communication and the vLLM worker raises an error, killing the
+
+  request or the whole engine. Setting it too low on large multi-node clusters
+
+  (large all-to-all for MoE, long PD KV transfers) causes spurious timeouts and
+
+  restarts, which destroys throughput and inflates tail latency. Setting it too high
+
+  means a genuinely hung collective is not detected promptly, so a stuck rank stalls
+
+  the whole job for a long time before failing over. The vllm-ascend docs recommend
+
+  600 (seconds) in the DeepSeek-V4-Pro and GLM5.3 multi-node deployment tutorials,
+
+  paired with HCCL_EXEC_TIMEOUT and HCCL_CONNECT_TIMEOUT.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/DeepSeek-V4-Pro.md:918
+  context: Prefill node launch script exports HCCL_TRANSFER_TIMEOUT=600 alongside HCCL_EXEC_TIMEOUT=204 and HCCL_CONNECT_TIMEOUT=6000
+    for multi-node PD disaggregation.
+- file: docs/source/tutorials/models/DeepSeek-V4-Pro.md:985
+  context: Decode node launch script exports HCCL_TRANSFER_TIMEOUT=600 with HCCL_CONNECT_TIMEOUT=1200 and HCCL_BUFFSIZE=1800.
+- file: docs/source/tutorials/models/GLM5.3.md:162
+  context: Multi-node GLM5.3 launch script exports HCCL_TRANSFER_TIMEOUT=600 with HCCL_EXEC_TIMEOUT=3600 and HCCL_CONNECT_TIMEOUT=3600.
+related_parameters:
+- name: HCCL_EXEC_TIMEOUT
+  relation: Companion HCCL timeout controlling how long an HCCL execution op may run; tuned together with HCCL_TRANSFER_TIMEOUT.
+- name: HCCL_CONNECT_TIMEOUT
+  relation: Companion HCCL timeout for connection establishment; must be large enough for multi-node bring-up before transfers
+    start.
+- name: HCCL_BUFFSIZE
+  relation: HCCL communication buffer size; larger buffers reduce transfer time and thus lower the risk of hitting HCCL_TRANSFER_TIMEOUT.
+- name: VLLM_RPC_TIMEOUT
+  relation: vLLM-side RPC timeout; should be raised together with HCCL timeouts so the engine does not give up before HCCL
+    does.
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: vLLM-side model execution timeout; docs raise it together with HCCL timeouts for long-running multi-node steps.
+constraints:
+- The value is interpreted by HCCL in seconds and must be a positive integer.
+- It is a CANN/HCCL environment variable, not a vLLM or vllm-ascend config field, so it must be exported in the process environment
+  before the vLLM engine starts.
+- It only has an effect when HCCL is actually used, i.e. when tensor/pipeline/expert parallelism or PD disaggregation spans
+  more than one NPU.
+tuning_advice:
+  summary: Keep HCCL_TRANSFER_TIMEOUT generous enough (docs use 600s) for large multi-node collectives, and raise it together
+    with the other HCCL and vLLM timeouts.
+  suggested_values:
+  - scenario: Multi-node PD-disaggregated deployment (DeepSeek-V4-Pro prefill/decode nodes)
+    value: 600
+    reason: The vllm-ascend DeepSeek-V4-Pro tutorial exports HCCL_TRANSFER_TIMEOUT=600 on both prefill and decode nodes to
+      tolerate long KV-cache transfers between nodes.
+  - scenario: Multi-node MoE model with large all-to-all (GLM5.3)
+    value: 600
+    reason: The GLM5.3 tutorial uses 600s together with HCCL_EXEC_TIMEOUT=3600 and HCCL_CONNECT_TIMEOUT=3600 for large expert-parallel
+      collectives.
+  - scenario: Single-node multi-NPU (TP/EP within one node)
+    value: 600
+    reason: Intra-node HCCL transfers are fast, so 600s is a safe upper bound that avoids spurious timeouts without meaningfully
+      delaying hang detection.
+  - scenario: Very large cluster or slow interconnect where transfers are known to be long
+    value: 1200
+    reason: Increase proportionally if collectives legitimately take longer than 600s; keep it below the vLLM-side VLLM_RPC_TIMEOUT
+      so HCCL fails first with a clear error.
+  caveats:
+  - Do not lower this below the expected worst-case collective time; a spurious timeout aborts the worker and forces a restart.
+  - Always tune it together with HCCL_EXEC_TIMEOUT, HCCL_CONNECT_TIMEOUT, VLLM_RPC_TIMEOUT and VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS.
+  - Increasing HCCL_BUFFSIZE can shorten transfers and reduce the need for a large timeout.
+  quick_guide: export HCCL_TRANSFER_TIMEOUT=600 for multi-node Ascend deployments, raised together with the other HCCL and
+    vLLM timeouts.
+analysis_date: '2026-10-27'

@@ -1,0 +1,97 @@
+name: --seed
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:180
+- vllm/engine/arg_utils.py:460
+- vllm/engine/arg_utils.py:886
+- vllm/engine/arg_utils.py:1813
+- vllm/config/speculative.py:1282
+- vllm/config/vllm.py:2632
+- vllm_ascend/platform.py:120
+- vllm_ascend/worker/v2/sample/gumbel.py:104
+- vllm_ascend/worker/v2/spec_decode/dflash2/speculator.py:35
+value_type: int
+default: 0
+valid_choices: any non-negative integer (Python int)
+cli_example: --seed 0
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "--seed is a reproducibility knob, not a performance knob. In upstream vLLM it is stored on\nModelConfig (vllm/config/model.py:180,\
+  \ default 0) and propagated to the draft model config for\nspeculative decoding (vllm/config/speculative.py:1282). It is\
+  \ explicitly listed in\nModelConfig.compute_hash's ignored_factors set (vllm/config/model.py:436), so changing the seed\n\
+  does NOT invalidate the compilation/graph hash and does NOT trigger recompilation or graph\nre-capture — hence no direct\
+  \ throughput or memory effect.\n\nOn Ascend the seed feeds the sampling path rather than any kernel-selection path:\n- \"\
+  vllm_ascend/platform.py:120 defines manual_seed_all(cls, seed) as a no-op (`pass`), meaning\"\n  vllm-ascend does NOT perform\
+  \ the usual torch.npu.manual_seed_all global seeding that the\n  upstream GPU platform does. This is an Ascend-specific\
+  \ override: the global RNG state is not\n  reset by the platform hook, so reproducibility relies on the per-request seed\
+  \ tensors that are\n  threaded through the sampling kernels instead.\n- \"In the v2 worker, the seed is passed as a per-request\
+  \ tensor (`seeds`) into the Gumbel sampling\"\n  Triton kernel (vllm_ascend/worker/v2/sample/gumbel.py:104,150-164) and\
+  \ into the speculative\n  decoders (vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:303,337;\n  dflash/speculator.py:151,179;\
+  \ dflash2/speculator.py:35,61). The kernel derives per-token noise\n  via tl.randint(seed, pos) and tl.rand, so the seed\
+  \ only changes the random values, not the\n  amount of work done. The Ascend kernels deliberately downgrade fp64 to fp32\
+  \ (gumbel.py:161-163)\n  and reject fp64 gumbel via tl.static_assert (dflash2/speculator.py:54) — these are precision\n\
+  \  constraints, not seed-dependent performance effects.\n\nNet effect: \"seed selection has negligible runtime performance\
+  \ impact. It can indirectly affect\"\nmeasured throughput/latency only through output-length variance (different sampled\
+  \ tokens lead\nto different numbers of generated tokens and thus different total decode steps), which is a\nmeasurement\
+  \ artifact rather than a real performance change.\n"
+usage_locations:
+- file: vllm/config/model.py:180
+  context: ModelConfig.seed field definition with default 0 and reproducibility docstring
+- file: vllm/config/model.py:436
+  context: seed listed in compute_hash ignored_factors — does not affect graph hash
+- file: vllm/engine/arg_utils.py:886
+  context: CLI registration of --seed via model_group.add_argument
+- file: vllm/engine/arg_utils.py:1813
+  context: Warning logged when VLLM_ENABLE_V1_MULTIPROCESSING is False (global seed affects launcher process)
+- file: vllm/config/speculative.py:1282
+  context: seed propagated from target model config to draft model config
+- file: vllm_ascend/platform.py:120
+  context: Ascend platform manual_seed_all is a no-op override
+- file: vllm_ascend/worker/v2/sample/gumbel.py:104
+  context: seeds_ptr consumed by Gumbel sampling Triton kernel (v2 worker)
+- file: vllm_ascend/worker/v2/spec_decode/dflash2/speculator.py:35
+  context: seeds_ptr consumed by DFlash2 selector walk kernel (v2 worker)
+related_parameters:
+- name: --speculative-config
+  relation: seed is copied into the draft model config; draft and target sampling share the same seed value
+- name: --temperature
+  relation: seed only matters for stochastic sampling; with temperature 0 (greedy) the seed has no effect on output
+- name: --use-fp64-gumbel
+  relation: controls precision of Gumbel noise generation; on Ascend fp64 gumbel is rejected (tl.static_assert), so seed-driven
+    noise uses fp32
+- name: VLLM_ENABLE_V1_MULTIPROCESSING
+  relation: when False, setting the global seed affects the launcher process's RNG state (warning at arg_utils.py:1813)
+constraints:
+- The seed must be a Python int; non-integer values are rejected by argparse.
+- On Ascend, fp64 Gumbel sampling is not supported (tl.static_assert in dflash2/speculator.py), so seed-driven noise is always
+  generated in fp32 regardless of --use-fp64-gumbel.
+- The seed does not participate in ModelConfig.compute_hash, so changing it will not invalidate compiled graphs or trigger
+  recompilation.
+tuning_advice:
+  summary: Keep the default seed 0 for reproducible benchmarks; vary it only when you need to sample different outputs, and
+    never expect it to change steady-state performance.
+  suggested_values:
+  - scenario: Reproducible benchmarking / regression testing on Ascend NPU
+    value: 0
+    reason: Default value; fixes sampling so repeated runs produce identical tokens and comparable output lengths, isolating
+      real performance changes from sampling noise.
+  - scenario: Diversity testing / avoiding identical outputs across replicas
+    value: 42
+    reason: Any fixed non-zero integer gives deterministic but different sampling; useful to confirm behavior is not seed-specific
+      while remaining reproducible.
+  - scenario: Greedy decoding (temperature 0) workloads
+    value: 0
+    reason: Seed is irrelevant when sampling is greedy; leaving the default avoids confusion.
+  caveats:
+  - Do not use --seed to try to improve throughput; it only changes random draws, not kernel selection or graph compilation.
+  - On Ascend the platform manual_seed_all is a no-op, so do not rely on --seed to globally seed torch.npu RNG for custom
+    code — seed per-request or explicitly in your own code if needed.
+  - For fair A/B performance comparisons, pin --seed and also fix input/output lengths, since seed-induced output-length variance
+    can dominate small throughput deltas.
+  quick_guide: Leave --seed at 0 for reproducible Ascend benchmarks; it has no direct performance effect.
+analysis_date: '2026-10-27'

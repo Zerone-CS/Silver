@@ -1,0 +1,115 @@
+name: LD_LIBRARY_PATH
+type: env
+category: hardware
+scope: both
+source_file:
+- vllm/envs.py:738
+- vllm/envs.py:2274
+- vllm/env_override.py:52
+- vllm_ascend/utils.py:463
+- vllm_ascend/utils.py:579
+- vllm_ascend/ops/triton/kda_state_copy_kernel.py:50
+value_type: str
+default: null
+valid_choices: colon-separated list of directory paths (os.pathsep-joined)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'LD_LIBRARY_PATH is the dynamic linker search path. On Ascend it is not a vLLM tuning knob
+
+  but a load-time prerequisite that gates whether the Ascend custom-op extension and vendor
+
+  libraries can be resolved at all. In vllm-ascend, `bootstrap_custom_op_env(include_vendor_lib=True)`
+
+  (vllm_ascend/utils.py:463) prepends the vendor `op_api/lib` directory to LD_LIBRARY_PATH so that
+
+  `libcust_opapi.so` can be found; this is only invoked as a fallback when importing
+
+  `vllm_ascend.vllm_ascend_C` fails with an ImportError mentioning `libcust_opapi.so`
+
+  (vllm_ascend/utils.py:579-593). If the import still fails, `_CUSTOM_OP_ENABLED` is set to False
+
+  and ALL custom ops are disabled, which forces the model to fall back to slower generic
+
+  implementations — a direct throughput/latency regression. The preferred path is the extension''s
+
+  rpath; LD_LIBRARY_PATH mutation is a fallback. Additionally, vllm_ascend/ops/triton/kda_state_copy_kernel.py:50
+
+  includes LD_LIBRARY_PATH in the fail-closed compile configuration key, so changing it invalidates
+
+  the Triton kernel compile cache and triggers recompilation (cold-start latency). Upstream vLLM
+
+  reads LD_LIBRARY_PATH only to locate NCCL (vllm/envs.py:737) and for CUDA forward-compat path
+
+  injection (vllm/env_override.py:52), and explicitly excludes it from torch.compile cache-key
+
+  factors (vllm/envs.py:2274) — so on Ascend the upstream usage is largely irrelevant, and the
+
+  Ascend-specific effect (custom-op availability) dominates.
+
+  '
+usage_locations:
+- file: vllm_ascend/utils.py:463
+  context: bootstrap_custom_op_env prepends vendor op_api/lib to LD_LIBRARY_PATH when include_vendor_lib=True
+- file: vllm_ascend/utils.py:579
+  context: 'Fallback path: on ImportError for libcust_opapi.so, mutate LD_LIBRARY_PATH and retry import; otherwise disable
+    all custom ops'
+- file: vllm_ascend/ops/triton/kda_state_copy_kernel.py:50
+  context: LD_LIBRARY_PATH is part of the fail-closed compile configuration key for Triton kernels
+- file: vllm/envs.py:738
+  context: 'Upstream: LD_LIBRARY_PATH used to locate NCCL library when VLLM_NCCL_SO_PATH unset'
+- file: vllm/envs.py:2274
+  context: 'Upstream: LD_LIBRARY_PATH explicitly ignored in torch.compile cache-key factors'
+- file: vllm/env_override.py:52
+  context: 'Upstream: prepends CUDA compat path to LD_LIBRARY_PATH before importing torch (CUDA only)'
+related_parameters:
+- name: ASCEND_CUSTOM_OPP_PATH
+  relation: Set alongside LD_LIBRARY_PATH by bootstrap_custom_op_env to register the custom op vendor package
+- name: VLLM_NCCL_SO_PATH
+  relation: 'Upstream: when unset, vLLM searches LD_LIBRARY_PATH for the NCCL library'
+- name: VLLM_ENABLE_CUDA_COMPATIBILITY
+  relation: 'Upstream: when enabled, injects CUDA compat dir into LD_LIBRARY_PATH (NVIDIA only, no Ascend effect)'
+- name: MOONCAKE_LIB_DIRS
+  relation: 'Docs: Mooncake library dirs are appended to LD_LIBRARY_PATH for KV-cache pooling deployments'
+constraints:
+- LD_LIBRARY_PATH must include the directory containing libcust_opapi.so (or the extension must have a valid rpath) or all
+  Ascend custom ops are disabled.
+- LD_LIBRARY_PATH must be set before importing torch/torch_npu, since the dynamic linker only consults it when a shared library
+  is first loaded.
+- Changing LD_LIBRARY_PATH invalidates the Triton kernel compile configuration key and forces recompilation.
+- For Mooncake-based KV-cache pooling (PD disaggregation), LD_LIBRARY_PATH must include the Mooncake library directory (e.g.
+  /usr/local/lib) or the Mooncake library fails to load.
+tuning_advice:
+  summary: 'Treat LD_LIBRARY_PATH as a load-time prerequisite, not a perf knob: ensure the Ascend custom-op
+
+    vendor lib and any Mooncake libs are on the path so custom ops stay enabled and KV pooling works.
+
+    '
+  suggested_values:
+  - scenario: Standard single-node Ascend serving (custom ops enabled)
+    value: /usr/local/Ascend/ascend-toolkit/latest/lib64:/usr/local/lib:${LD_LIBRARY_PATH}
+    reason: Keeps CANN runtime libs and the custom-op vendor lib resolvable so vllm_ascend_C imports and custom ops stay enabled.
+  - scenario: PD disaggregation with Mooncake KV-cache pooling
+    value: ${LD_LIBRARY_PATH}:/usr/local/lib
+    reason: Docs (GLM5.md, DeepSeek-V4.1-Flash.md) require /usr/local/lib on LD_LIBRARY_PATH for Mooncake library loading.
+  - scenario: Custom-op import fails with libcust_opapi.so error
+    value: <vendor_path>/op_api/lib:${LD_LIBRARY_PATH}
+    reason: bootstrap_custom_op_env(include_vendor_lib=True) prepends this dir as a fallback; setting it explicitly avoids
+      the fallback and keeps custom ops enabled.
+  caveats:
+  - If the custom-op import fails and the fallback also fails, vllm-ascend logs a warning and disables ALL custom ops, causing
+    a significant throughput/latency regression.
+  - The preferred mechanism is the extension's rpath; LD_LIBRARY_PATH mutation is only a fallback, so avoid relying on it
+    as the primary mechanism.
+  - LD_LIBRARY_PATH is part of the Triton compile config key (kda_state_copy_kernel.py), so changing it between runs invalidates
+    the kernel cache and adds cold-start compile time.
+  - Upstream vLLM excludes LD_LIBRARY_PATH from torch.compile cache-key factors, so it does not affect upstream compile caching
+    — only the Ascend Triton path.
+  - In multi-node/Ray deployments, LD_LIBRARY_PATH must be forwarded to worker processes (Ray runtime_env) or workers may
+    fail to load Ascend libs.
+  quick_guide: Ensure the Ascend custom-op vendor lib and Mooncake libs are on LD_LIBRARY_PATH before launch; verify custom
+    ops are enabled in logs.
+analysis_date: '2026-10-27'

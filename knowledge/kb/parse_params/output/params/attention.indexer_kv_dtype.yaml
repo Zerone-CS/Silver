@@ -1,0 +1,131 @@
+name: attention.indexer_kv_dtype
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/ascend_config.py:921
+- vllm_ascend/ascend_config.py:1871
+- vllm_ascend/patch/platform/patch_indexer_kv_dtype.py:37
+- vllm_ascend/platform.py:511
+- vllm_ascend/worker/model_runner_v1.py:467
+- vllm_ascend/worker/v2/attn_utils.py:199
+- vllm_ascend/attention/indexer.py:198
+- vllm_ascend/models/deepseek_v4/indexer.py:110
+- vllm/v1/attention/backends/mla/indexer.py:60
+value_type: str
+default: auto
+valid_choices:
+- auto
+- bf16
+- fp8
+- mxfp4
+- nvfp4
+- int8
+cli_example: '--attention-config ''{"indexer_kv_dtype": "int8"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "This field selects the storage dtype of the sparse-attention indexer K side-cache\n(Lightning Indexer / DeepSeek\
+  \ sparse indexer / MiniMax-M3 indexer), which is a\nseparate cache from the main KV cache. It is read in several Ascend\
+  \ code paths:\n\n1. vllm_ascend/ascend_config.py:921-924 derives three mutually-exclusive switches\n   from it: \"enable_sparse_li_c8\
+  \ (value in [\\\"fp8\\\",\\\"int8\\\"]), enable_sparse_li_c4\"\n   (value == \"mxfp4\"), and enable_sparse_sfa_turboquant\
+  \ (from cache_dtype). These\n   switches gate whether the C8/C4 packed indexer cache layout and its kernels are\n   used\
+  \ at all. If the value is \"auto\"/\"bf16\", the indexer cache stays bf16 and the\n   quantized (C8/C4) kernels are never\
+  \ selected.\n2. vllm_ascend/worker/model_runner_v1.py:467-476 and\n   vllm_ascend/worker/v2/attn_utils.py:199-207 resolve\
+  \ the concrete torch dtype\n   (float8_e4m3fn -> fp32 scales, int8 -> fp16 scales) and size the indexer cache\n   spec accordingly.\
+  \ A narrower dtype (fp8/int8 = 1 byte vs bf16 = 2 bytes) halves\n   the indexer K cache footprint, which directly increases\
+  \ the number of KV blocks\n   that fit in HBM and therefore the achievable batch size / throughput.\n3. vllm_ascend/attention/indexer.py:195-209\
+  \ selects the C8 or C4 indexer kernel\n   path (c8_k_cache_dtype / c4_k_cache_dtype, c4_k_op_dtype = float4_e2m1fn_x2).\n\
+  \   The quantized kernels (npu_fused_quant_lightning_indexer_manage for int8 C8,\n   Hadamard-rotate + per-token quantize\
+  \ for fp8) run faster than the bf16 indexer\n   because they move less data and use the NPU's native quantized matmul, reducing\n\
+  \   indexer latency on long-context decode.\n4. vllm_ascend/platform.py:511 asserts the hardware supports FP8_ATTENTION\
+  \ when\n   indexer_kv_dtype == \"fp8\", so on hardware without FP8 attention support the fp8\n   path is rejected at startup.\n\
+  5. vllm_ascend/models/deepseek_v4/indexer.py:98-124 resolves \"auto\" to the platform\n   default (fp8 on DSV4_COMPRESSED_CACHE-capable\
+  \ hardware, otherwise int8) and\n   rejects any other dtype, because the DeepSeek V4 indexer has no bf16 write path.\n\n\
+  vllm-ascend overrides upstream in two ways: \"(a) patch_indexer_kv_dtype.py widens the\"\nupstream Literal to accept \"\
+  int8\" (upstream rejects it at pydantic validation), and\n(b) the Ascend default for \"auto\" differs per model (fp8/int8\
+  \ for DeepSeek V4, bf16\nfor MiniMax-M3/Qwen4Exp). Upstream's mxfp4 path additionally requires Blackwell\n(sm_10x) GPUs,\
+  \ which is irrelevant on Ascend where mxfp4 maps to the C4 indexer path.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:921
+  context: Derives enable_sparse_li_c8 / enable_sparse_li_c4 from indexer_kv_dtype and model sparse support; raises if both
+    set.
+- file: vllm_ascend/worker/model_runner_v1.py:467
+  context: v1 worker resolves c8_k_cache_dtype and scale dtype from indexer_kv_dtype for the indexer cache.
+- file: vllm_ascend/worker/v2/attn_utils.py:199
+  context: v2 worker builds KV cache spec using indexer_kv_dtype to size the indexer cache.
+- file: vllm_ascend/attention/indexer.py:198
+  context: Indexer backend selects C8/C4 kernel path and cache dtypes from indexer_kv_dtype.
+- file: vllm_ascend/models/deepseek_v4/indexer.py:110
+  context: DeepSeek V4 resolves 'auto' to platform default (fp8/int8) and validates the dtype.
+- file: vllm_ascend/platform.py:511
+  context: Asserts FP8_ATTENTION hardware capability when indexer_kv_dtype == 'fp8'.
+- file: vllm_ascend/patch/platform/patch_indexer_kv_dtype.py:37
+  context: Widens upstream Literal to accept 'int8' for Ascend DeepSeek V4 indexer cache.
+- file: vllm/v1/attention/backends/mla/indexer.py:60
+  context: Upstream DeepSeek sparse indexer resolves dtype and gates mxfp4 on Blackwell.
+related_parameters:
+- name: kv-cache-dtype
+  relation: Controls the main KV cache dtype (C8 via cache_dtype in ['fp8','int8']); independent of the indexer side-cache
+    but both must be set for full C8 serving.
+- name: attention_config
+  relation: Parent config object; indexer_kv_dtype is a nested field set via --attention-config JSON.
+- name: enable_sparse_li_c8
+  relation: Derived switch, true when indexer_kv_dtype in ['fp8','int8'] and model uses sparse attention.
+- name: enable_sparse_li_c4
+  relation: Derived switch, true when indexer_kv_dtype == 'mxfp4'; mutually exclusive with enable_sparse_li_c8.
+- name: enable_sparse_sfa_turboquant
+  relation: Derived from cache_dtype == 'turboquant_4bit_nc' and sparse SFA support; separate from indexer dtype.
+constraints:
+- indexer_kv_dtype='mxfp4' and indexer_kv_dtype in ['fp8','int8'] cannot both be active; enable_sparse_li_c8 and enable_sparse_li_c4
+  are mutually exclusive and raise ValueError.
+- indexer_kv_dtype='fp8' requires the current Ascend hardware profile to support FP8_ATTENTION, otherwise an assertion fails
+  at startup.
+- For DeepSeek V4, indexer_kv_dtype must resolve to 'fp8' on DSV4_COMPRESSED_CACHE-capable hardware or 'int8' otherwise; any
+  other value raises ValueError because the indexer has no bf16 write path.
+- Upstream vLLM rejects 'int8' at pydantic validation; vllm-ascend widens the Literal via patch_indexer_kv_dtype.py, so 'int8'
+  is only valid on Ascend.
+- The C8 LIM kernel is int8-only; indexer_kv_dtype='fp8' is not a valid LIM C8 serving path for fused Copy-SFA.
+- Upstream mxfp4 indexer requires Blackwell datacenter GPUs (sm_10x); on Ascend mxfp4 maps to the C4 indexer path instead.
+tuning_advice:
+  summary: 'Set indexer_kv_dtype to a quantized format (int8 or fp8) to halve the indexer K
+
+    cache footprint and enable the faster quantized indexer kernels on Ascend; use
+
+    bf16/auto only when accuracy or hardware support demands it.
+
+    '
+  suggested_values:
+  - scenario: DeepSeek V4 / V4-Flash / V4-Pro on 950PR&950DT (compressed-cache capable)
+    value: fp8
+    reason: Platform default resolves 'auto' to fp8; enables Hadamard-rotate + per-token FP8 indexer cache, halving indexer
+      cache memory and using the native FP8 indexer kernel.
+  - scenario: DeepSeek V4 on hardware without DSV4_COMPRESSED_CACHE
+    value: int8
+    reason: The Non-A5 scatter path only accepts int8 updates; 'auto' resolves to int8 and any other dtype raises ValueError.
+  - scenario: LIM C8 / fused Copy-SFA serving path
+    value: int8
+    reason: The C8 LIM kernel (npu_fused_quant_lightning_indexer_manage) is int8-only; fp8 is not a valid LIM C8 path.
+  - scenario: MiniMax-M3 / Qwen4Exp indexer where only bf16 or fp8 is supported
+    value: bf16
+    reason: These models default to bf16 and only accept bf16 or fp8; bf16 keeps the Triton indexer and avoids unsupported-dtype
+      errors.
+  - scenario: Accuracy-sensitive workloads or hardware lacking FP8 attention
+    value: auto
+    reason: Lets the model/platform pick the safe default (bf16 for MiniMax-M3, fp8/int8 for DeepSeek V4) without risking
+      an unsupported combination.
+  caveats:
+  - Quantizing the indexer cache trades a small amount of top-k selection accuracy for memory and speed; validate accuracy
+    on your workload before enabling in production.
+  - indexer_kv_dtype is independent of --kv-cache-dtype; enabling C8 indexer without C8 main KV cache still works but yields
+    less memory savings.
+  - The 'auto' default is model-dependent (fp8/int8 for DeepSeek V4, bf16 for MiniMax-M3/Qwen4Exp), so behavior differs across
+    models even with the same flag.
+  - On Ascend, 'int8' is only accepted because of a platform patch; passing it to a stock upstream vLLM build fails pydantic
+    validation.
+  - mxfp4 selects the C4 indexer path on Ascend and is mutually exclusive with fp8/int8 C8; do not combine them.
+  quick_guide: Use int8 for LIM C8 / non-compressed-cache DeepSeek V4, fp8 for compressed-cache DeepSeek V4, bf16/auto otherwise.
+analysis_date: '2026-10-27'

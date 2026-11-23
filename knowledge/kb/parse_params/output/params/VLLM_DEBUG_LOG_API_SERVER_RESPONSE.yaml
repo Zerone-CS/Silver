@@ -1,0 +1,78 @@
+name: VLLM_DEBUG_LOG_API_SERVER_RESPONSE
+type: env
+category: observability
+scope: vllm
+source_file:
+- vllm/envs.py:804
+- vllm/envs.py:29
+- vllm/entrypoints/serve/middleware/register.py:57
+value_type: bool
+default: false
+valid_choices: true / false (case-insensitive string comparison against 'true')
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var is read once at API server startup in
+
+  vllm/entrypoints/serve/middleware/register.py:57. When true, it registers an
+
+  HTTP middleware (log_response) that logs every API server response body for
+
+  debugging. The middleware runs in the FastAPI/uvicorn request path on the CPU
+
+  host process, not on the Ascend NPU. It does not touch the model execution,
+
+  HCCL communication, or CANN kernels, so it has no direct effect on NPU
+
+  compute throughput or device memory. Its only runtime cost is the extra
+
+  serialization/logging work per request in the API server process, which can
+
+  add small per-request latency and log I/O overhead under high request rates.
+
+  It is also listed in the cache-key-excluded env set (vllm/envs.py:2299), so
+
+  toggling it does not invalidate compiled artifacts. No vllm-ascend override
+
+  or reference to this variable was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:804
+  context: Defines the env var accessor; parses string 'true' (case-insensitive) to bool, default False.
+- file: vllm/entrypoints/serve/middleware/register.py:57
+  context: If enabled, logs a CAUTION warning and registers the log_response HTTP middleware on the FastAPI app.
+- file: vllm/envs.py:2299
+  context: Listed among env vars excluded from the compilation cache key factors.
+related_parameters:
+- name: VLLM_LOGGING_LEVEL
+  relation: Controls overall log verbosity; response logging volume interacts with the configured log level and stream.
+- name: VLLM_LOGGING_STREAM
+  relation: Determines where the logged responses are written (e.g. stdout), affecting I/O overhead when response logging
+    is enabled.
+constraints:
+- The value is compared case-insensitively against the literal string 'true'; any other value (including '1') is treated as
+  false.
+- Enabling it logs full API server responses, which may include sensitive user data and should not be used in production.
+tuning_advice:
+  summary: Keep disabled in production; enable only temporarily for debugging API responses, and be aware it adds host-side
+    logging overhead.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU
+    value: 'false'
+    reason: Avoids per-request response serialization/logging overhead and prevents leaking sensitive response content into
+      logs.
+  - scenario: Debugging malformed or unexpected API responses
+    value: 'true'
+    reason: Registers the log_response middleware so full responses are logged, useful for diagnosing client/server issues;
+      disable again afterward.
+  caveats:
+  - Logging every response can add measurable per-request latency and log I/O pressure at high QPS, indirectly reducing effective
+    throughput of the API server process.
+  - Response bodies may contain sensitive prompt/completion data; the code itself emits a CAUTION warning about production
+    use.
+  - No vllm-ascend-specific override exists; behavior is identical to upstream vLLM and does not affect NPU kernels or HCCL.
+  quick_guide: Leave unset (false) in production; set to 'true' only for short-lived API response debugging.
+analysis_date: '2026-10-27'

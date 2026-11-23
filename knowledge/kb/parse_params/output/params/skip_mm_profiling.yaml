@@ -1,0 +1,104 @@
+name: --skip-mm-profiling
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/multimodal.py:208
+- vllm/engine/arg_utils.py:1424
+- vllm/engine/arg_utils.py:621
+- vllm/engine/arg_utils.py:1860
+- vllm/config/model.py:412
+- vllm/config/model.py:465
+- vllm/v1/worker/gpu_model_runner.py:6468
+- vllm/v1/worker/gpu/model_runner.py:941
+value_type: bool
+default: false
+valid_choices: true or false (BooleanOptionalAction-style flag)
+cli_example: --skip-mm-profiling
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: "This flag controls whether the engine performs a multimodal encoder + encoder-cache\nmemory profiling pass\
+  \ during initialization. In upstream vLLM v1\n(vllm/v1/worker/gpu_model_runner.py:6468), when skip_mm_profiling is True\
+  \ the runner\nlogs \"Skipping memory profiling for multimodal encoder and encoder cache.\" and skips\nthe MultiModalBudget-based\
+  \ encoder profiling (get_encoder_budget / profile_encoder_cache).\nIn the newer v1 model_runner.py:941 path, the encoder\
+  \ profiling block is guarded by\n`if mm_config is not None and not mm_config.skip_mm_profiling`, so setting the flag\nbypasses\
+  \ `encoder_runner.profile_encoder_cache(dummy_mm_inputs, mm_budget)` entirely.\nEffect on Ascend NPU:\n- Latency: \"skipping\
+  \ the encoder profiling run removes a full dummy forward pass through\"\n  the multimodal encoder (ViT) plus encoder-cache\
+  \ allocation, which shortens engine\n  startup / warmup time. This is a one-time startup cost, not steady-state latency.\n\
+  - Memory: \"the profiling pass is what determines the peak activation memory reserved for\"\n  the multimodal encoder and\
+  \ the encoder embedding cache. When skipped, the KV-cache\n  sizing (via --gpu-memory-utilization or --kv-cache-memory-bytes)\
+  \ no longer accounts\n  for encoder activation peaks, so the user must manually reserve headroom. On Ascend,\n  where the\
+  \ FusedMC2 / encoder peak can be large (docs cite ~3.64 GiB per card for the\n  image form), skipping profiling without\
+  \ compensating with an explicit\n  --kv-cache-memory-bytes can cause OOM during graph capture or first real multimodal\n\
+  \  request.\nThe parameter does not change steady-state throughput directly; it trades startup\ntime for manual memory-budget\
+  \ responsibility. vllm-ascend does not appear to override\nthe flag itself; it is consumed through the standard MultiModalConfig\
+  \ path, but the\nAscend docs explicitly recommend enabling it for the image deployment form.\n"
+usage_locations:
+- file: vllm/config/multimodal.py:208
+  context: 'Field definition skip_mm_profiling: bool = False with docstring describing startup-time vs memory-responsibility
+    tradeoff.'
+- file: vllm/engine/arg_utils.py:1424
+  context: CLI argument registration --skip-mm-profiling in the MultiModalConfig argument group.
+- file: vllm/engine/arg_utils.py:621
+  context: EngineArgs field skip_mm_profiling defaulting to MultiModalConfig.skip_mm_profiling.
+- file: vllm/engine/arg_utils.py:1860
+  context: Passed into VllmConfig construction.
+- file: vllm/config/model.py:412
+  context: InitVar skip_mm_profiling forwarded into MultiModalConfig.
+- file: vllm/config/model.py:465
+  context: Listed in ignored_factors for compute_hash (does not affect computation graph hash).
+- file: vllm/v1/worker/gpu_model_runner.py:6468
+  context: 'profile_run: if skip_mm_profiling, logs skip and bypasses encoder/encoder-cache profiling.'
+- file: vllm/v1/worker/gpu/model_runner.py:941
+  context: 'profile_run: encoder profiling guarded by `not mm_config.skip_mm_profiling`.'
+related_parameters:
+- name: --limit-mm-per-prompt
+  relation: Determines the encoder budget that would be profiled; when all modality limits are 0 (embedding-only), encoder
+    profiling is skipped regardless.
+- name: --gpu-memory-utilization
+  relation: When profiling is skipped, this no longer accounts for encoder activation peaks; must be lowered or replaced by
+    explicit KV sizing.
+- name: --kv-cache-memory-bytes
+  relation: Explicit KV sizing is the recommended compensation when --skip-mm-profiling is enabled, to reserve headroom for
+    encoder peaks.
+- name: --max-num-batched-tokens
+  relation: Smaller batched tokens chunk large-image prefill and reduce encoder peak, complementing skipped profiling.
+- name: --language-model-only
+  relation: If set, no multimodal encoder is loaded, making --skip-mm-profiling moot.
+- name: --mm-encoder-tp-mode
+  relation: Affects how encoder memory is distributed across ranks, influencing the peak that profiling would otherwise measure.
+constraints:
+- Only meaningful for multimodal models; for text-only models there is no encoder to profile and the flag has no effect.
+- When enabled, the engine will not automatically reserve memory for multimodal encoder activations or the encoder embedding
+  cache, so the user is responsible for sizing memory to avoid OOM.
+- If all modality limits in --limit-mm-per-prompt are 0 (embedding-only mode), encoder profiling is skipped anyway regardless
+  of this flag.
+tuning_advice:
+  summary: Enable --skip-mm-profiling for multimodal (especially image) deployments on Ascend to cut startup time, but always
+    pair it with explicit --kv-cache-memory-bytes and a conservative --max-num-batched-tokens to reserve encoder peak headroom.
+  suggested_values:
+  - scenario: Image multimodal deployment on Ascend (validated stable config)
+    value: true
+    reason: Docs recommend enabling it with --kv-cache-memory-bytes 2816M and --max-num-batched-tokens 1024; automatic profiling
+      can over-allocate KV and cause worker exit during graph capture.
+  - scenario: Audio multimodal deployment on Ascend
+    value: false
+    reason: Docs use explicit --kv-cache-memory-bytes 4G for audio and do not mark --skip-mm-profiling as enabled; keep default
+      to retain automatic encoder profiling safety.
+  - scenario: Text-only deployment
+    value: false
+    reason: No multimodal encoder exists, so the flag has no effect; leave default.
+  - scenario: Fast iteration / debugging where startup time matters and memory is ample
+    value: true
+    reason: Skips the encoder dummy forward pass, reducing engine initialization time when memory headroom is not a concern.
+  caveats:
+  - Always verify no OOM during graph capture and first real multimodal request after enabling; monitor NPU memory with npu-smi.
+  - Combine with --max-num-batched-tokens to chunk large-image prefill and reduce encoder peak.
+  - If you must keep automatic profiling, consider VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 as an alternative, though docs
+    note it is unvalidated for single-modality deployments.
+  quick_guide: For Ascend image multimodal serving, set --skip-mm-profiling and pin --kv-cache-memory-bytes explicitly; otherwise
+    leave it off.
+analysis_date: '2026-10-27'

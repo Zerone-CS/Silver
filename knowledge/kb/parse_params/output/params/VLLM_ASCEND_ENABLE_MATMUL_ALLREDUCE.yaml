@@ -1,0 +1,65 @@
+name: VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2134
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (boolean-like env flag)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only environment flag (not present in upstream vLLM). When set to 1,
+
+  it enables the MatmulAllReduce fusion kernel, which fuses the tensor-parallel all-reduce
+
+  collective with the preceding matmul (linear) operation in the prefill phase. On Ascend NPU
+
+  this reduces the number of separate kernel launches and avoids materializing the intermediate
+
+  matmul output before the HCCL all-reduce, cutting communication/compute serialization overhead
+
+  and improving prefill latency/throughput when tensor parallelism (TP > 1) is enabled.
+
+  Per the release notes, the feature is supported on A2 hardware and yields better performance
+
+  in eager mode. It only affects the prefill phase and only when TP is enabled; decode and
+
+  single-card (TP=1) runs are unaffected.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2119
+  context: 'Release note: fusion of allreduce and matmul in prefill phase when TP enabled, activated by setting VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE
+    to 1 (PR #1926)'
+- file: docs/source/user_guide/release_notes.md:2134
+  context: 'Parameter change note: enables MatmulAllReduce fusion kernel when tensor parallel is enabled; supported on A2,
+    eager mode performs better'
+related_parameters:
+- name: --tensor-parallel-size
+  relation: Fusion only takes effect when TP > 1; with TP=1 there is no all-reduce to fuse
+- name: VLLM_ASCEND_ENABLE_MOE_ALL2ALL_SEQ
+  relation: Sibling Ascend communication-fusion env flag introduced in the same release
+constraints:
+- The MatmulAllReduce fusion only applies when tensor parallelism is enabled (TP > 1); it has no effect with a single card.
+- The feature is only supported on Ascend A2 hardware.
+tuning_advice:
+  summary: Enable VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE=1 for TP>1 prefill-heavy workloads on A2 to fuse all-reduce with matmul.
+  suggested_values:
+  - scenario: Prefill-heavy / high-throughput serving with tensor parallelism on Ascend A2
+    value: '1'
+    reason: Fuses HCCL all-reduce with the preceding matmul in prefill, reducing kernel launches and communication/compute
+      serialization overhead.
+  - scenario: Single-card (TP=1) deployment or non-A2 hardware
+    value: '0'
+    reason: No all-reduce exists to fuse at TP=1, and the feature is only supported on A2, so enabling it provides no benefit.
+  caveats:
+  - Only benefits the prefill phase; decode latency is unchanged.
+  - Eager mode shows better gains than graph mode per release notes.
+  - Benchmark accuracy and throughput on your specific model/hardware before enabling in production.
+  quick_guide: Set VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE=1 when running TP>1 prefill workloads on A2.
+analysis_date: '2026-10-27'

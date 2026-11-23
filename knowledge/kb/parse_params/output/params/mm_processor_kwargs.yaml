@@ -1,0 +1,98 @@
+name: --mm-processor-kwargs
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/multimodal.py:128
+- vllm/engine/arg_utils.py:1379
+- vllm/engine/arg_utils.py:595
+- vllm/config/model.py:399
+- vllm/config/vllm.py:2739
+- vllm/config/multimodal.py:343
+value_type: dict
+default: null
+valid_choices: Model-specific dict of processor overrides (e.g. min_pixels, max_pixels, fps, num_crops, device); keys depend
+  on the HF AutoProcessor of the model
+cli_example: '--mm-processor-kwargs ''{"min_pixels": 784, "max_pixels": 1003520}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter is forwarded to the HF multi-modal processor (AutoProcessor) and\noverrides its defaults. It\
+  \ does not touch the NPU compute path directly, but it\ncontrols how many pixels/frames the image/video processor emits,\
+  \ which in turn\ndetermines the number of vision tokens fed to the ViT encoder and the language\nmodel. On Ascend this has\
+  \ a real runtime effect:\n- \"`min_pixels`/`max_pixels` (Qwen-VL family) set the resize bounds of the image\"\n  processor.\
+  \ Larger `max_pixels` -> more vision tokens -> larger encoder forward\n  and longer prefill sequences -> higher prefill\
+  \ latency and more KV cache /\n  activation memory. Smaller values reduce tokens and speed up prefill but lose\n  image\
+  \ detail.\n- \"`fps` (video models) controls frame sampling; higher fps -> more frames ->\"\n  proportionally more encoder\
+  \ work and tokens.\n- \"`num_crops` (e.g. Phi-3-Vision) multiplies the number of image crops processed,\"\n  directly scaling\
+  \ encoder cost.\n- \"The `device` key (folded from `--mm-processor-device` via\"\n  `MultiModalConfig.fold_mm_processor_device`\
+  \ and resolved in\n  `VllmConfig._resolve_mm_processor_device`) can move the image transform onto\n  the accelerator for\
+  \ encode-only (EPD) instances when `--mm-tensor-ipc=torch_shm`;\n  otherwise the transform stays on CPU. On Ascend, `current_platform.device_type`\n\
+  \  is `npu`, so `auto` only resolves to the NPU in that narrow EPD+torch_shm case.\n- \"The kwargs are part of the model\
+  \ config hash factors (vllm/config/model.py:459),\"\n  so changing them changes the config fingerprint (affects caching/compilation\n\
+  \  reuse, not steady-state throughput).\nvllm-ascend does not override this parameter; it is passed through unchanged to\n\
+  the HF processor. Ascend e2e tests (tests/e2e/conftest.py, test_vlm.py,\ntest_qwen3_vl_30b_a3b_instruct.py, etc.) use it\
+  \ to bound image size for VLM\nworkloads, confirming it is the standard knob for controlling vision token count\non Ascend.\n"
+usage_locations:
+- file: vllm/config/multimodal.py:128
+  context: Field definition and docstring describing forwarding to AutoProcessor
+- file: vllm/engine/arg_utils.py:1379
+  context: CLI argument registration under MultiModalConfig group
+- file: vllm/engine/arg_utils.py:1862
+  context: Passed into EngineArgs -> VllmConfig construction
+- file: vllm/config/model.py:459
+  context: Included in model config hash factors (ignored_factors list)
+- file: vllm/config/vllm.py:2739
+  context: EPD encoder instance injects 'device' key into mm_processor_kwargs
+- file: vllm/config/multimodal.py:343
+  context: fold_mm_processor_device merges --mm-processor-device into kwargs
+- file: tests/e2e/conftest.py:2000
+  context: Ascend e2e VLM tests set min_pixels/max_pixels/fps for Qwen-VL
+related_parameters:
+- name: --mm-processor-device
+  relation: Convenience flag folded into mm_processor_kwargs['device']; explicit device in kwargs wins
+- name: --mm-tensor-ipc
+  relation: Must be torch_shm for 'auto' device to resolve to the accelerator on EPD encoder instances
+- name: --limit-mm-per-prompt
+  relation: Caps number of images/videos per prompt; together with max_pixels bounds total vision tokens
+- name: --media-io-kwargs
+  relation: Separate kwargs for media decoding (e.g. num_frames); complements processor kwargs
+- name: --mm-processor-cache-gb
+  relation: Caches processed MM inputs; larger token counts increase cache pressure
+constraints:
+- The dict keys must be accepted by the model's HF AutoProcessor; unknown keys cause the processor to raise an error at startup.
+- An explicit 'device' key in --mm-processor-kwargs always wins over --mm-processor-device and is validated by _validate_mm_processor_device.
+- The 'device' override only takes effect for HF 'fast' (torchvision-backed) processors; other processors ignore it and stay
+  on CPU.
+- On EPD encoder-only instances, 'auto' device resolves to the accelerator only when --mm-tensor-ipc=torch_shm; otherwise
+  the processor stays on CPU.
+tuning_advice:
+  summary: Use mm_processor_kwargs to bound image/video token count (min_pixels/max_pixels/fps) to balance VLM prefill latency
+    and memory against accuracy on Ascend NPUs.
+  suggested_values:
+  - scenario: Qwen-VL / Qwen3-VL image workloads on Ascend (default e2e test config)
+    value: '{"min_pixels": 784, "max_pixels": 1003520, "fps": 1}'
+    reason: Matches vllm-ascend e2e tests (28*28 min, 1280*28*28 max); bounds vision tokens to keep prefill latency and KV
+      memory predictable.
+  - scenario: Latency-sensitive / memory-constrained deployment
+    value: '{"min_pixels": 784, "max_pixels": 250880}'
+    reason: Lower max_pixels reduces vision tokens, cutting encoder forward time and KV cache usage at the cost of image detail.
+  - scenario: High-detail OCR or document understanding
+    value: '{"min_pixels": 784, "max_pixels": 2007040}'
+    reason: Higher max_pixels preserves detail for text-heavy images; verify max_model_len and gpu_memory_utilization can
+      absorb the extra tokens.
+  - scenario: Video models
+    value: '{"fps": 1}'
+    reason: Low fps limits sampled frames, directly reducing encoder work and token count for video inputs.
+  caveats:
+  - Always cross-check max_pixels against --max-model-len and --gpu-memory-utilization; oversized images can cause OOM or
+    prefill stalls on NPU.
+  - Do not set 'device' in kwargs unless running an EPD encoder-only instance with --mm-tensor-ipc=torch_shm; otherwise it
+    is ignored or validated away.
+  - Changing these kwargs changes the config hash and invalidates compiled graphs / prefix cache across restarts.
+  quick_guide: Set min_pixels/max_pixels (and fps for video) to cap vision tokens; start from the Ascend e2e defaults and
+    lower max_pixels if prefill latency or memory is too high.
+analysis_date: '2026-10-27'

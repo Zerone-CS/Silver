@@ -1,0 +1,81 @@
+name: --enable-fault-tolerance
+type: cli
+category: other
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1256
+- vllm/engine/arg_utils.py:775
+- vllm/engine/arg_utils.py:818
+- vllm/config/parallel.py:430
+- vllm/config/parallel.py:494
+- vllm/v1/engine/core.py:1094
+- vllm/v1/engine/core_client.py:1075
+- vllm/v1/fault_tolerance/engine_core_sentinel.py:183
+- vllm/v1/worker/gpu_worker.py:207
+- vllm/distributed/device_communicators/all2all.py:285
+value_type: bool
+default: false
+valid_choices: true or false (store_true style boolean flag)
+cli_example: --enable-fault-tolerance
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This is an upstream vLLM (v1 engine) fault-tolerance feature. When enabled, it\nactivates several runtime\
+  \ components that add overhead to the hot path:\n- \"EngineCoreProc wraps its busy loop with fault_tolerant_wrapper\"\n\
+  \  (vllm/v1/fault_tolerance/engine_core_sentinel.py:183), which adds a try/except\n  around every busy-loop iteration and\
+  \ instantiates an EngineCoreSentinel\n  (vllm/v1/engine/core.py:1094-1101).\n- \"AsyncMPClient tracks per-engine status\
+  \ in self._engine_status\"\n  (vllm/v1/engine/core_client.py:1075-1079), adding bookkeeping on the client side.\n- \"GPUWorker\
+  \ creates a WorkerSentinel (vllm/v1/worker/gpu_worker.py:207-208).\"\n- \"DeepEPLLAll2AllManager sets support_fault_tolerance\
+  \ from this flag\"\n  (vllm/distributed/device_communicators/all2all.py:285), which can change the\n  all2all communication\
+  \ path behavior.\nThese are control-plane / error-recovery mechanisms; they do not change the\ncompute kernels or memory\
+  \ layout of the model itself. The overhead is a small\nper-iteration try/except and status bookkeeping, so the steady-state\
+  \ throughput\nand latency impact is minor. The primary value is resilience (recovering from\nDPEngineCore faults by scaling\
+  \ down), not raw performance. No vllm-ascend\noverride of this parameter was found in the provided context; the Ascend worker\n\
+  paths (v1/v2) do not appear to reference enable_fault_tolerance, so on Ascend NPU\nthe feature is effectively upstream-only\
+  \ and its performance effect is negligible.\n"
+usage_locations:
+- file: vllm/config/parallel.py:430
+  context: ParallelConfig field definition; default False, docstring describes scaling down fault DPEngineCore.
+- file: vllm/config/parallel.py:494
+  context: 'Validation: raises ValueError if enable_fault_tolerance and _api_process_count > 1.'
+- file: vllm/engine/arg_utils.py:818
+  context: If --fault-tolerance-config is passed, fault tolerance is auto-enabled with a warning.
+- file: vllm/v1/engine/core.py:1094
+  context: EngineCoreProc initializes EngineCoreSentinel when enabled.
+- file: vllm/v1/engine/core_client.py:1075
+  context: AsyncMPClient initializes per-engine status tracking when enabled.
+- file: vllm/v1/fault_tolerance/engine_core_sentinel.py:183
+  context: fault_tolerant_wrapper catches exceptions in busy loop and delegates to sentinel recovery.
+- file: vllm/v1/worker/gpu_worker.py:207
+  context: GPUWorker creates WorkerSentinel when enabled.
+- file: vllm/distributed/device_communicators/all2all.py:285
+  context: DeepEPLLAll2AllManager sets support_fault_tolerance from this flag.
+related_parameters:
+- name: --fault-tolerance-config
+  relation: Passing --fault-tolerance-config automatically enables --enable-fault-tolerance (arg_utils.py:818).
+- name: --api-server-count
+  relation: Must be 1 when fault tolerance is enabled; _api_process_count > 1 raises ValueError.
+- name: --data-parallel-size
+  relation: Fault tolerance targets DPEngineCore recovery (scaling down a faulty DP engine core).
+constraints:
+- Fault tolerance requires a single API server process (--api-server-count=1); enabling it with more than one API process
+  raises a ValueError.
+- Passing --fault-tolerance-config automatically enables --enable-fault-tolerance even if the flag is not set.
+tuning_advice:
+  summary: Leave disabled for maximum raw performance; enable only when DP-engine fault recovery is required and you can accept
+    a single API server process.
+  suggested_values:
+  - scenario: Standard high-throughput serving where raw performance matters and no fault recovery is needed
+    value: false
+    reason: Default is false; avoids the busy-loop try/except wrapper and status bookkeeping overhead.
+  - scenario: Long-running data-parallel deployment that must survive a faulty DPEngineCore
+    value: true
+    reason: Enables EngineCoreSentinel/WorkerSentinel recovery; requires --api-server-count=1.
+  caveats:
+  - Ensure --api-server-count is 1; otherwise startup fails with a ValueError.
+  - On Ascend NPU this is an upstream-only path with no vllm-ascend-specific tuning; verify behavior against your vllm-ascend
+    version before relying on it in production.
+  quick_guide: Keep off unless you need DP-engine fault recovery; if on, set --api-server-count=1.
+analysis_date: '2026-10-27'

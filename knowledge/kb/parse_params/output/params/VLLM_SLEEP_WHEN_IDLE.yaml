@@ -1,0 +1,71 @@
+name: VLLM_SLEEP_WHEN_IDLE
+type: env
+category: memory
+scope: both
+source_file:
+- 'vllm/envs.py: (VLLM_SLEEP_WHEN_IDLE definition, upstream vLLM env var)'
+- 'vllm-ascend docs: user_guide/feature_guide/netloader.md:97'
+value_type: bool
+default: false
+valid_choices: 'boolean-like: 0/1 (or true/false)'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: 'VLLM_SLEEP_WHEN_IDLE is an upstream vLLM environment variable that, when enabled,
+
+  puts the engine to sleep (releasing/offloading KV cache and model weights memory)
+
+  when the server is idle, and wakes it up on the next request. On Ascend NPU this
+
+  primarily affects memory usage: "sleeping frees device memory (KV cache blocks and"
+
+  possibly weights) during idle periods, which is valuable when multiple processes
+
+  share the NPU or when HCCL connection buffers (e.g. HCCL_BUFFERSIZE ~200 MB per
+
+  connection) consume on-chip memory. The vllm-ascend Netloader documentation
+
+  explicitly recommends setting VLLM_SLEEP_WHEN_IDLE=1 to mitigate unstable or slow
+
+  HCCL connections/transmissions (referencing vLLM Issue #16660 and PR #16226).
+
+  The tradeoff is added wake-up latency on the first request after an idle period,
+
+  since memory must be re-allocated/reloaded. No vllm-ascend source override of this
+
+  variable was found in the provided context; behavior follows upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/envs.py
+  context: Upstream vLLM env var definition controlling idle sleep behavior of the engine
+- file: 'vllm-ascend docs: user_guide/feature_guide/netloader.md:97'
+  context: Recommended to set VLLM_SLEEP_WHEN_IDLE=1 when using Netloader to stabilize HCCL connections
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: Sleeping frees memory during idle; memory utilization setting determines headroom. Docs suggest reserving capacity
+    via --gpu-memory-utilization when Netloader/HCCL buffers are used.
+- name: HCCL_BUFFERSIZE
+  relation: Netloader requires extra on-chip memory for HCCL connections; sleeping when idle helps mitigate memory pressure
+    and unstable connections.
+constraints:
+- Value must be a boolean-like flag (0/1 or true/false); other values may be interpreted as truthy/falsy by the env parser.
+tuning_advice:
+  summary: Enable VLLM_SLEEP_WHEN_IDLE=1 when using Netloader or when NPU memory is contended during idle periods, accepting
+    added wake-up latency.
+  suggested_values:
+  - scenario: Using Netloader with HCCL connections on Ascend NPU
+    value: 1
+    reason: vllm-ascend Netloader docs recommend VLLM_SLEEP_WHEN_IDLE=1 to mitigate unstable or slow connections/transmissions.
+  - scenario: Latency-sensitive serving with steady traffic and no memory contention
+    value: 0
+    reason: Avoid wake-up latency penalty when memory is not a constraint and requests are frequent.
+  caveats:
+  - First request after idle incurs wake-up/reload latency.
+  - Pair with adequate --gpu-memory-utilization to leave headroom for HCCL buffers.
+  quick_guide: Set VLLM_SLEEP_WHEN_IDLE=1 for Netloader/memory-constrained idle scenarios; leave 0 for latency-critical steady
+    traffic.
+analysis_date: '2026-10-27'

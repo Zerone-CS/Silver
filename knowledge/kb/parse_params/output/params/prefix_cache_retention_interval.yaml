@@ -1,0 +1,133 @@
+name: --prefix-cache-retention-interval
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:148
+- vllm/engine/arg_utils.py:1290
+- vllm/engine/arg_utils.py:542
+- vllm/v1/core/kv_cache_coordinator.py:34
+- vllm/v1/core/kv_cache_utils.py:1671
+- vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:138
+- vllm_ascend/patch/platform/patch_kv_cache_utils.py:630
+- vllm_ascend/models/deepseek_v41/cache_config.py:273
+value_type: int
+default: 0
+valid_choices: non-negative integer that is a multiple of the scheduler block size, or None (dense retention)
+cli_example: --prefix-cache-retention-interval 0
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter controls how densely sliding-window and Mamba (linear-attention)
+
+  prefix-cache checkpoints are retained. It only affects KV cache groups whose spec
+
+  is SlidingWindowSpec or MambaSpec (see _validate_prefix_cache_retention_interval in
+
+  vllm/v1/core/kv_cache_coordinator.py:34). Full-attention and chunked-local groups
+
+  always cache densely and ignore it.
+
+
+  Mechanism: "with value 0 (default) only \"semantic\" checkpoints are retained (latest"
+
+  replay boundary and shared-prefix junctions). Positive values additionally retain
+
+  periodic checkpoints every N tokens, and None retains checkpoints densely. Denser
+
+  retention means more prefix-cache hits on repeated prompts (lower prefill latency,
+
+  higher throughput for prefix-sharing workloads) but consumes more KV cache blocks
+
+  for the retained checkpoints, reducing the number of blocks available for active
+
+  sequences (memory pressure). Sparser retention (0) frees blocks but may miss
+
+  prefix hits, forcing recomputation of sliding-window/Mamba state.
+
+
+  Ascend specifics: "vllm-ascend does NOT override the value itself but re-plumbs it."
+
+  In vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:138 the coordinator
+
+  reads the interval from envs_vllm.VLLM_PREFIX_CACHE_RETENTION_INTERVAL (not the
+
+  CacheConfig field directly) and re-runs upstream validation
+
+  (_validate_prefix_cache_retention_interval) against the scheduler block size and
+
+  kv_cache_config. In vllm_ascend/patch/platform/patch_kv_cache_utils.py:630 and
+
+  vllm_ascend/models/deepseek_v41/cache_config.py:273 the value is propagated into
+
+  the Ascend-specific KVCacheConfig for DeepSeek-V4.1 / GLM5-Next hybrid layouts.
+
+  So on Ascend the effective value flows through the env var path, and the
+
+  DeepSeek-V4.1 four-slot hybrid cache honors it. The Ascend e2e test
+
+  (tests/e2e/pull_request/four_card/test_kimi_k3.py:393) sets it to None to force
+
+  dense retention so a 1536-token hybrid-cache page is created, confirming that the
+
+  default sparse policy can skip checkpoints and change hit behavior.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:148
+  context: CacheConfig field definition with default 0, ge=0, docstring describing 0/positive/None semantics
+- file: vllm/engine/arg_utils.py:1290
+  context: CLI flag registration in CacheConfig argument group
+- file: vllm/v1/core/kv_cache_coordinator.py:34
+  context: _validate_prefix_cache_retention_interval validates non-negative and multiple of scheduler_block_size, and rejects
+    non-zero on models without sliding-window/Mamba groups
+- file: vllm/v1/core/kv_cache_utils.py:1671
+  context: Propagated into KVCacheConfig for attention-free, GLM5-Next, and default layouts
+- file: vllm_ascend/patch/platform/patch_kv_cache_coordinator.py:138
+  context: Ascend coordinator reads interval from envs_vllm.VLLM_PREFIX_CACHE_RETENTION_INTERVAL and re-validates
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:630
+  context: Ascend DeepSeek-V4.1 KVCacheConfig carries prefix_cache_retention_interval from cache_config
+- file: vllm_ascend/models/deepseek_v41/cache_config.py:273
+  context: DeepSeek-V4.1 four-slot hybrid cache config propagates the interval
+related_parameters:
+- name: --enable-prefix-caching
+  relation: Retention only matters when prefix caching is enabled; without it no checkpoints are retained
+- name: --block-size
+  relation: Positive retention interval must be a multiple of the scheduler block size
+- name: --mamba-cache-mode
+  relation: Governs Mamba cache behavior; retention applies to Mamba cache groups
+- name: --enable-mamba-fine-grained-prefix-cache
+  relation: Related fine-grained Mamba prefix-cache toggle affecting checkpoint granularity
+- name: --prefix-match-unit
+  relation: Both are prefix-caching implementation details excluded from the compute-graph hash
+constraints:
+- The value must be non-negative; negative values raise a ValueError.
+- A positive value must be an exact multiple of the scheduler block size, otherwise a ValueError is raised.
+- On a model with no sliding-window or Mamba KV cache group, setting a non-zero value raises a ValueError; only 0 (or None)
+  is accepted.
+- The parameter only applies to sliding-window and Mamba cache groups; full-attention and chunked-local groups ignore it.
+tuning_advice:
+  summary: Keep the default 0 for most workloads; use None or a block-size-multiple positive interval only for sliding-window/Mamba
+    models with heavy prefix reuse.
+  suggested_values:
+  - scenario: General serving, no strong prefix reuse, or full-attention-only models
+    value: 0
+    reason: Default sparse policy retains only semantic checkpoints, minimizing KV cache block consumption and preserving
+      concurrency.
+  - scenario: Sliding-window/Mamba hybrid models with heavy repeated-prefix workloads (e.g. multi-turn chat, RAG)
+    value: unset
+    reason: Dense retention maximizes prefix-cache hit rate, cutting prefill recomputation latency at the cost of more retained
+      blocks.
+  - scenario: Balanced tradeoff on hybrid models with moderate prefix reuse
+    value: 2048
+    reason: A positive interval that is a multiple of the scheduler block size retains periodic checkpoints, balancing hit
+      rate against block usage.
+  caveats:
+  - Verify the value is a multiple of --block-size or startup will fail with a ValueError.
+  - On Ascend confirm the value is propagated via VLLM_PREFIX_CACHE_RETENTION_INTERVAL to the patched coordinator.
+  - Monitor KV cache block utilization; dense retention can starve active sequences of blocks under high concurrency.
+  quick_guide: Leave at 0 unless you run a sliding-window/Mamba model with heavy prefix reuse, then try None or a block-size-multiple
+    interval.
+analysis_date: '2026-10-27'

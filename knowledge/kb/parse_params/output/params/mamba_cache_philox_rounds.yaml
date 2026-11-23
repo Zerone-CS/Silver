@@ -1,0 +1,88 @@
+name: --mamba-cache-philox-rounds
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1026
+- vllm/engine/arg_utils.py:752
+- vllm/engine/arg_utils.py:2544
+value_type: int
+default: 0
+valid_choices: non-negative integer; 0 means use the Triton default
+cli_example: --mamba-cache-philox-rounds 0
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter controls the number of Philox PRNG rounds used for stochastic
+
+  rounding when writing the Mamba SSM state cache. It is only meaningful when
+
+  --enable-mamba-cache-stochastic-rounding is set (MambaConfig.enable_stochastic_rounding).
+
+  In vllm/engine/arg_utils.py:2544 the value is only copied into
+
+  mamba_config.stochastic_rounding_philox_rounds when it is truthy (non-zero),
+
+  so the default 0 leaves the Triton kernel default in place. The rounds value
+
+  feeds the Triton stochastic-rounding kernel that generates random numbers per
+
+  cache write; higher round counts increase the arithmetic cost of that kernel
+
+  (more PRNG mixing operations per element) and therefore add latency to the
+
+  Mamba cache update path, which runs on every decode step for Mamba/hybrid
+
+  models. On Ascend NPU, Mamba SSM kernels are executed through the Triton
+
+  backend (MambaBackendEnum.TRITON default) compiled via CANN; the extra PRNG
+
+  rounds translate into additional vector ALU work in the compiled kernel. The
+
+  effect is bounded and only touches the cache-write path, not the main matmul
+
+  or attention compute, so overall throughput impact is small. No vllm-ascend
+
+  override of this parameter was found in the provided context; vllm-ascend does
+
+  not appear to patch MambaConfig.stochastic_rounding_philox_rounds.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1026
+  context: CLI argument registration under the MambaConfig argument group, mapped to stochastic_rounding_philox_rounds
+- file: vllm/engine/arg_utils.py:752
+  context: EngineArgs field mamba_cache_philox_rounds defaulting to MambaConfig.stochastic_rounding_philox_rounds
+- file: vllm/engine/arg_utils.py:2544
+  context: Overrides mamba_config.stochastic_rounding_philox_rounds only when the CLI value is non-zero
+related_parameters:
+- name: --enable-mamba-cache-stochastic-rounding
+  relation: This parameter has no effect unless stochastic rounding is enabled; it tunes the PRNG quality of that feature.
+- name: --mamba-backend
+  relation: Stochastic rounding PRNG rounds apply to the Triton Mamba backend kernel path.
+- name: --mamba-ssu-algorithm
+  relation: Part of the same MambaConfig group; affects the SSM state update kernel that consumes the cache writes.
+constraints:
+- The parameter only takes effect when --enable-mamba-cache-stochastic-rounding is enabled.
+- A value of 0 means the Triton kernel default is used and no override is applied.
+- The value is only propagated to the Mamba config when it is non-zero (truthy).
+tuning_advice:
+  summary: Leave at 0 (Triton default) unless stochastic rounding quality is insufficient; only relevant for Mamba/hybrid
+    models with stochastic rounding enabled.
+  suggested_values:
+  - scenario: Default deployment; stochastic rounding disabled or default quality acceptable
+    value: 0
+    reason: Uses the Triton kernel default and avoids extra PRNG compute in the Mamba cache-write path.
+  - scenario: Mamba/hybrid model with stochastic rounding enabled and accuracy concerns
+    value: 10
+    reason: A modest increase in Philox rounds improves randomness quality of stochastic rounding with limited added latency
+      on the cache-write kernel.
+  caveats:
+  - Only set this when --enable-mamba-cache-stochastic-rounding is enabled; otherwise it is ignored.
+  - Benchmark decode latency after increasing rounds, since the cost is paid on every decode step for Mamba models.
+  - Changing the value recompiles the Triton stochastic-rounding kernel on Ascend, adding one-time warmup cost.
+  quick_guide: Keep at 0 unless you need higher-quality stochastic rounding for a Mamba model; then try a small non-zero value
+    and measure decode latency.
+analysis_date: '2026-10-27'

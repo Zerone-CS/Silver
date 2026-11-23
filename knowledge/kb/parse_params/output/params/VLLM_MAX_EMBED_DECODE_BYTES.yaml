@@ -1,0 +1,94 @@
+name: VLLM_MAX_EMBED_DECODE_BYTES
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1022
+- vllm/envs.py:85
+- vllm/envs.py:2321
+- vllm/utils/sparse_utils.py:59
+value_type: int
+default: 2147483648
+valid_choices: Any non-negative integer byte count; 0 disables the limit
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This is a security/robustness guard, not a performance knob. In
+
+  vllm/utils/sparse_utils.py:safe_to_dense(), the env var is read as
+
+  `max_bytes = envs.VLLM_MAX_EMBED_DECODE_BYTES`; if `max_bytes > 0`, the code
+
+  computes `dense_bytes = tensor.numel() * tensor.element_size()` and raises
+
+  VLLMValidationError before calling `tensor.to_dense()` when the declared dense
+
+  size exceeds the limit. The check itself is O(1) (numel * element_size) and
+
+  happens on the request/preprocessing path (prompt_embeds, image_embeds,
+
+  audio_embeds, video_embeds), not in the model forward loop, so it does not
+
+  affect steady-state token throughput or decode latency. Its only runtime
+
+  relevance is memory safety: "it prevents a client-supplied sparse tensor with a"
+
+  huge declared shape from materializing a multi-GiB dense allocation on the
+
+  host (CPU) before the tensor ever reaches the NPU. On Ascend this matters
+
+  because host memory pressure can stall the engine process that also drives
+
+  HCCL/CANN, but the parameter does not change NPU compute or HBM usage.
+
+  vllm-ascend does not define or override this variable; it is inherited
+
+  unchanged from upstream vLLM (it is listed in the env-var passthrough set at
+
+  vllm/envs.py:2321 so it propagates to worker processes).
+
+  '
+usage_locations:
+- file: vllm/utils/sparse_utils.py:59
+  context: Reads envs.VLLM_MAX_EMBED_DECODE_BYTES and rejects oversized sparse tensors before to_dense()
+- file: vllm/envs.py:1022
+  context: Environment variable definition with default 2147483648 (2 GiB)
+- file: vllm/envs.py:85
+  context: Type annotation / default declaration in the envs module
+- file: vllm/envs.py:2321
+  context: Listed in the set of env vars propagated to worker processes
+related_parameters:
+- name: VLLM_MAX_AUDIO_DECODE_BYTES
+  relation: Sibling decode-size guard for audio PCM allocation; same defensive pattern
+- name: VLLM_MAX_IMAGE_PIXELS
+  relation: Sibling decode-size guard for image raster allocation
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Upstream limit on downloaded media size, complementary to embedding densification limit
+constraints:
+- The value must be a non-negative integer number of bytes; a value of 0 disables the limit entirely.
+- If a client-supplied embedding payload's declared dense size exceeds this limit, the request is rejected with VLLMValidationError
+  before any allocation occurs.
+tuning_advice:
+  summary: Leave at the 2 GiB default unless you legitimately serve very large prompt_embeds; never set to 0 in untrusted
+    deployments.
+  suggested_values:
+  - scenario: Default / untrusted multi-tenant serving
+    value: 2147483648
+    reason: Default 2 GiB blocks memory-amplification attacks while covering a 128K-token float32 embedding at hidden_size
+      4096.
+  - scenario: Serving very long prompt_embeds or large hidden_size models on Ascend
+    value: 4294967296
+    reason: Raise to 4 GiB if legitimate embeddings exceed 2 GiB dense size; keep the guard enabled rather than disabling
+      it.
+  - scenario: Fully trusted internal batch jobs with pre-validated embeddings
+    value: 0
+    reason: Disabling removes the O(1) check overhead, but only acceptable when all embedding payloads are trusted.
+  caveats:
+  - Do not set to 0 on any endpoint reachable by untrusted clients — it re-enables the sparse-tensor memory-amplification
+    vector.
+  - Raising the limit increases worst-case host memory a single request can allocate, which can pressure the engine process
+    on Ascend nodes with limited CPU RAM.
+  quick_guide: Keep the 2 GiB default; raise only for legitimately huge embeddings, never disable in untrusted setups.
+analysis_date: '2026-10-27'

@@ -1,0 +1,76 @@
+name: VLLM_V1_USE_OUTLINES_CACHE
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1529
+- vllm/envs.py:194
+- vllm/v1/structured_output/utils.py:300
+value_type: bool
+default: false
+valid_choices: 0 or 1 (string compared to '1'; any other value is treated as false)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var only affects the structured-output (guided decoding) path in vLLM v1.
+
+  In vllm/v1/structured_output/utils.py:get_outlines_cache(), when the flag is set to
+
+  "1", vLLM uses an OutlinesDiskCache (unbounded on-disk cache) instead of an
+
+  in-memory LRUCache(maxsize=128). The cache stores compiled outlines_core index
+
+  objects keyed by grammar/schema, so repeated requests with the same structured
+
+  output constraint can skip re-compilation of the FSM/index, reducing per-request
+
+  CPU latency for guided decoding. When disabled (default), only the last 128
+
+  compiled grammars are kept in memory; cache misses trigger recompilation.
+
+  This is a CPU-side, host-memory/disk concern and does not touch NPU kernels,
+
+  HCCL, or CANN compilation. On Ascend NPU the model execution path is unaffected;
+
+  only the structured-output preprocessing latency changes. No vllm-ascend override
+
+  of this parameter was found in the provided context, so upstream behavior applies.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1529
+  context: Env var definition; parsed as os.environ.get(...) == '1'
+- file: vllm/envs.py:194
+  context: 'Type stub declaration VLLM_V1_USE_OUTLINES_CACHE: bool = False'
+- file: vllm/v1/structured_output/utils.py:300
+  context: get_outlines_cache() selects OutlinesDiskCache vs LRUCache(maxsize=128)
+related_parameters:
+- name: --guided-decoding-backend
+  relation: Outlines cache is only exercised when the outlines backend is used for structured output
+- name: --structured-outputs-config
+  relation: Structured output feature must be enabled for this cache to matter
+constraints:
+- The value must be the exact string '1' to enable the cache; any other value (including 'true') is treated as disabled.
+- The outlines cache is unbounded and on-disk, so it must not be enabled in environments with potentially malicious or untrusted
+  clients.
+- The cache is only relevant when structured/guided decoding with the outlines backend is in use; it has no effect otherwise.
+tuning_advice:
+  summary: Enable only for trusted, repeated structured-output workloads to cut guided-decoding recompilation latency; leave
+    off otherwise.
+  suggested_values:
+  - scenario: Trusted server serving many requests with a small set of repeated JSON schemas/regex grammars
+    value: '1'
+    reason: Disk cache persists compiled outlines indexes across requests and restarts, avoiding repeated FSM compilation
+      and reducing per-request CPU latency.
+  - scenario: Public-facing or multi-tenant deployment, or workloads with diverse/unique grammars
+    value: '0'
+    reason: Default in-memory LRU(128) cache avoids unbounded disk growth and the security risk of caching untrusted client
+      grammars.
+  caveats:
+  - Monitor disk usage when enabled; the cache is unbounded.
+  - Only affects structured-output preprocessing latency, not NPU inference throughput.
+  quick_guide: Set VLLM_V1_USE_OUTLINES_CACHE=1 only for trusted, schema-repetitive guided-decoding workloads; otherwise keep
+    default 0.
+analysis_date: '2026-10-27'

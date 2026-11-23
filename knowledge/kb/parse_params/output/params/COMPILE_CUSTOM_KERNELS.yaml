@@ -1,0 +1,97 @@
+name: COMPILE_CUSTOM_KERNELS
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:51
+- setup.py:329
+- setup.py:400
+- vllm_ascend/worker/worker.py:134
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via int(); any other value raises ValueError)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'COMPILE_CUSTOM_KERNELS is a build-time switch in vllm-ascend that controls whether the
+
+  Ascend custom kernels (ACLNN custom-ops and C++ extensions) are compiled and installed.
+
+  In setup.py:400, when the flag is truthy the build runs the `build_aclnn` command first
+
+  (compiling ACLNN custom ops) and then the standard build_ext; in setup.py:329, build_extensions
+
+  returns immediately if the flag is False, so no .so extensions are produced. The compiled
+
+  custom ops are the Ascend-native fused kernels (e.g. rotary embedding, fusion ops, ATB
+
+  extensions) that replace generic/fallback implementations. Without them, vllm-ascend falls
+
+  back to slower generic paths or fails to function correctly, directly degrading decode/prefill
+
+  latency and throughput. The worker (vllm_ascend/worker/worker.py:134) only emits a warning
+
+  when the flag is False, but the docstring explicitly states that "in most scenarios, without
+
+  custom kernels, vllm-ascend will not function correctly." The release notes (release_notes.md:1768)
+
+  confirm that from a certain release onward vLLM Ascend only works with custom ops built, and
+
+  the env was effectively removed/forced on. This is a build-time parameter: it does not change
+
+  per-request runtime behavior directly, but determines whether the high-performance kernel
+
+  implementations are present at all, hence high impact on latency/throughput.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py:51
+  context: 'Defines the env var accessor: bool(int(os.getenv(''COMPILE_CUSTOM_KERNELS'', ''1''))), default True.'
+- file: setup.py:329
+  context: build_extensions() returns early (skips compiling C++ extensions) when COMPILE_CUSTOM_KERNELS is False.
+- file: setup.py:400
+  context: run() only invokes build_aclnn (ACLNN custom-ops build) when COMPILE_CUSTOM_KERNELS is truthy.
+- file: vllm_ascend/worker/worker.py:134
+  context: NPUWorker.__init__ logs a warning if COMPILE_CUSTOM_KERNELS is False, noting vllm-ascend may not function correctly.
+related_parameters:
+- name: MAX_JOBS
+  relation: Controls the number of parallel compile threads used when building custom kernels; only relevant when COMPILE_CUSTOM_KERNELS=1.
+- name: CMAKE_BUILD_TYPE
+  relation: Build type (Release/Debug/RelWithDebugInfo) for the custom kernel compilation; only relevant when COMPILE_CUSTOM_KERNELS=1.
+- name: SOC_VERSION
+  relation: Ascend chip version used during custom kernel package building; required for correct compilation.
+- name: VLLM_ASCEND_ENABLE_BATCH_MEMCPY
+  relation: Another build-time flag passed to CMake; only takes effect when custom kernels are compiled.
+constraints:
+- COMPILE_CUSTOM_KERNELS must be either '0' or '1'; any other value causes int() to raise ValueError at env access time.
+- Setting COMPILE_CUSTOM_KERNELS=0 skips building ACLNN custom-ops and C++ extensions, and vllm-ascend will not function correctly
+  in most runtime scenarios.
+- This option should only be set to False for UT scenarios in an environment without an NPU; do not set it to False in other
+  scenarios.
+- Features such as batch invariance (VLLM_BATCH_INVARIANT=1) and sleep mode require building vllm-ascend from source with
+  COMPILE_CUSTOM_KERNELS=1.
+tuning_advice:
+  summary: Keep COMPILE_CUSTOM_KERNELS=1 (the default) for all production and performance runs; only set it to 0 for CPU-only/UT
+    builds without an NPU.
+  suggested_values:
+  - scenario: Production inference / performance tuning on Ascend NPU
+    value: '1'
+    reason: Enables compilation of ACLNN custom-ops and C++ extensions, providing the Ascend-native fused kernels required
+      for correct and high-performance operation.
+  - scenario: Building from source to use batch invariance or sleep mode
+    value: '1'
+    reason: Docs state these features require building vllm-ascend from source with COMPILE_CUSTOM_KERNELS=1.
+  - scenario: CPU-only build verification / UT without an NPU
+    value: '0'
+    reason: Skips custom kernel compilation so the package can be built and tested in an environment without an NPU; not intended
+      for runtime.
+  caveats:
+  - Do not set to 0 in any runtime scenario; vllm-ascend will warn and likely fail or run with degraded performance.
+  - Requires gcc, cmake, and a valid SOC_VERSION to build custom kernels; ensure the toolchain is installed before building.
+  - Rebuild/reinstall is required after changing this value; it cannot be toggled at runtime.
+  quick_guide: Leave COMPILE_CUSTOM_KERNELS unset (defaults to 1) for all real deployments; use 0 only for NPU-less CPU builds/UT.
+analysis_date: '2026-10-27'

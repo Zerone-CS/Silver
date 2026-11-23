@@ -1,0 +1,80 @@
+name: VLLM_TRITON_USE_TD
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:630
+- vllm/envs.py:93
+- vllm/v1/attention/backends/triton_attn.py:535
+- vllm/v1/attention/ops/triton_unified_attention.py:1034
+- vllm/model_executor/layers/fused_moe/utils.py:639
+- vllm/model_executor/layers/fused_moe/utils.py:660
+- vllm/triton_utils/tensor_descriptor.py:6
+value_type: bool
+default: null
+valid_choices:
+- unset (None) — auto-select per platform
+- 1 — force tensor-descriptor path on
+- 0 — force tensor-descriptor path off
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "VLLM_TRITON_USE_TD is a tri-state override (unset/1/0) that controls whether the\nTriton unified-attention\
+  \ kernel and the Triton fused-MoE kernel use tensor\ndescriptors (TD) for Q/K/V loads and output stores, and for the MoE\
+  \ A-load\ngather path. It is read in three places:\n  - \"vllm/v1/attention/backends/triton_attn.py:539-543 — when unset,\
+  \ use_td is\"\n    auto-selected as current_platform.is_xpu(); otherwise the override wins.\n  - \"vllm/model_executor/layers/fused_moe/utils.py:660\
+  \ (resolve_moe_use_td) —\"\n    same tri-state logic; unset auto-selects XPU only.\n  - \"vllm/triton_utils/tensor_descriptor.py:6\
+  \ (use_tensor_descriptor) — same.\"\nThe TD path lowers to hardware 2D block reads (PTX tile::gather4 / tcgen05 TMEM\non\
+  \ Blackwell, or XPU block reads). On Ascend NPU, current_platform.is_xpu() is\nFalse and current_platform.is_cuda() is False,\
+  \ so the auto-selected default is\nTD OFF. The non-TD branch is dead-code-eliminated at Triton compile time, so\nthere is\
+  \ zero overhead when TD is off. Therefore on Ascend this parameter has\nno effect unless explicitly forced to 1, and forcing\
+  \ it to 1 is not supported\nbecause the underlying hardware instructions (tile::gather4 / tcgen05) do not\nexist on Da Vinci\
+  \ NPUs. The Triton attention/MoE kernels themselves are not the\nprimary Ascend execution path (Ascend uses its own attention\
+  \ backends and\nfused MoE implementations), so this parameter is effectively inert on Ascend.\nImpact is low: \"it only\
+  \ matters for A/B benchmarking of the TD path on XPU/CUDA.\"\n"
+usage_locations:
+- file: vllm/v1/attention/backends/triton_attn.py:539
+  context: Reads envs.VLLM_TRITON_USE_TD to set self.use_td; unset auto-selects XPU only.
+- file: vllm/model_executor/layers/fused_moe/utils.py:668
+  context: resolve_moe_use_td tri-state resolver; unset returns current_platform.is_xpu().
+- file: vllm/triton_utils/tensor_descriptor.py:11
+  context: use_tensor_descriptor helper; unset falls back to current_platform.is_xpu().
+- file: vllm/v1/attention/ops/triton_unified_attention.py:1034
+  context: Assertion message references VLLM_TRITON_USE_TD=0 as the fix when query layout is non-contiguous.
+- file: vllm/model_executor/layers/fused_moe/fused_moe.py:853
+  context: Warns and disables TD for a MoE launch when K is not a multiple of BLOCK_SIZE_K.
+related_parameters:
+- name: VLLM_USE_TRITON_FLASH_ATTN
+  relation: Selects whether the Triton attention backend (which consumes this TD flag) is used at all.
+- name: VLLM_USE_TRITON_MOE
+  relation: Selects whether the Triton fused-MoE kernel (which consumes this TD flag) is used.
+constraints:
+- Valid values are only the strings '1' (force on) and '0' (force off); any other value (including empty) is treated as unset/auto.
+- Forcing VLLM_TRITON_USE_TD=1 on hardware that cannot compile the TD path (e.g. Hopper sm90 or Ascend NPU) fails at kernel
+  compilation/ptxas.
+- The TD Q/O path requires contiguous query and output heads (q.stride(1) == head_size and out.stride(1) == head_size); otherwise
+  an assertion fires and the message advises setting VLLM_TRITON_USE_TD=0.
+- The TD MoE path requires the reduction dimension K to be a multiple of BLOCK_SIZE_K; otherwise TD is automatically disabled
+  for that launch.
+tuning_advice:
+  summary: Leave VLLM_TRITON_USE_TD unset on Ascend NPU; it has no effect because the TD path is auto-disabled and unsupported
+    on Da Vinci hardware.
+  suggested_values:
+  - scenario: Default Ascend NPU deployment
+    value: unset
+    reason: Auto-selection resolves to TD off on Ascend (not XPU/CUDA), and the non-TD branch is dead-code-eliminated, so
+      there is no overhead and no benefit to setting it.
+  - scenario: Debugging a Triton attention assertion about non-contiguous query layout
+    value: '0'
+    reason: The assertion message in triton_unified_attention.py explicitly recommends VLLM_TRITON_USE_TD=0 to fall back to
+      the pointer path.
+  caveats:
+  - Do not set VLLM_TRITON_USE_TD=1 on Ascend; the TD path requires hardware instructions unavailable on Da Vinci NPUs and
+    will fail to compile.
+  - This parameter is irrelevant unless you are running the Triton attention or Triton fused-MoE kernels, which are not the
+    primary Ascend execution path.
+  quick_guide: Leave unset on Ascend; only set to 0 to work around a Triton TD assertion.
+analysis_date: '2026-10-27'

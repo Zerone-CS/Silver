@@ -1,0 +1,103 @@
+name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1593
+- vllm_ascend/ascend_config.py:1616
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:335
+value_type: int
+default: 256
+valid_choices: Any integer > 0
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'dynamic_max_step is an Ascend-only (vllm-ascend) tuning knob for the DyntraLB
+
+  dynamic load-balancing mode. It is defined in DyntraLBConfig
+
+  (vllm_ascend/ascend_config.py:1593) and read in
+
+  DyntraLBDPEngineCoreProc._init_data_parallel
+
+  (vllm_ascend/patch/platform/patch_dyntra_lb_core.py:335), where it is stored as
+
+  self._lb_dynamic_max_step. In dynamic mode, DyntraLB stays inactive until a newly
+
+  added request exceeds long_req_block_threshold; once activated, it keeps
+
+  re-planning request placement across DP ranks until dynamic_max_step consecutive
+
+  active engine steps pass without another newly added long request, at which point
+
+  balancing is disabled again. The value therefore controls how long the
+
+  load-balancing planner keeps running after the last long request arrives.
+
+  A larger value keeps the planner active longer, allowing more rebalancing of
+
+  KV-cache blocks across DP ranks (reducing per-rank load imbalance / bubble and
+
+  improving decode throughput under skewed workloads), but each active step incurs
+
+  the planner''s cross-rank workload-collection and plan-generation overhead
+
+  (all-gather of per-rank block data, plan computation, request pause/admission
+
+  changes), which adds latency and can cause request pausing. A smaller value
+
+  stops balancing sooner, reducing planner overhead but potentially leaving
+
+  imbalance unaddressed. The parameter has no effect when dyntra_lb_config.enabled
+
+  is false or when mode is "static".
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1593
+  context: Field definition with default 256 in DyntraLBConfig.
+- file: vllm_ascend/ascend_config.py:1616
+  context: model_validator raises ValueError if dynamic_max_step <= 0.
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:335
+  context: Read into self._lb_dynamic_max_step during DP engine core init; used to bound active dynamic-balancing steps.
+- file: tests/ut/patch/platform/test_patch_dyntra_lb_core.py:150
+  context: Unit test sets dynamic_max_step=256 and asserts it is logged.
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Master switch; dynamic_max_step has no effect unless enabled is true.
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: dynamic_max_step only applies when mode is "dynamic"; ignored in "static" mode.
+- name: additional_config.scheduler_config.dyntra_lb_config.long_req_block_threshold
+  relation: Defines the long-request trigger that activates dynamic balancing; dynamic_max_step counts active steps after
+    the last such trigger.
+- name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+  relation: Determines whether imbalance is large enough to modify scheduling during active steps.
+- name: additional_config.scheduler_config.dyntra_lb_config.start_step
+  relation: Earliest step at which a plan can be generated; dynamic balancing cannot start before it.
+constraints:
+- dynamic_max_step must be greater than 0; a value <= 0 raises a ValueError during config validation.
+tuning_advice:
+  summary: Keep the default 256 for most dynamic-mode deployments; increase it for long, skewed workloads that benefit from
+    sustained rebalancing, and decrease it if planner overhead or request pausing hurts latency.
+  suggested_values:
+  - scenario: Default / general dynamic-mode production use
+    value: 256
+    reason: Documented default; balances rebalancing benefit against planner overhead for typical request distributions.
+  - scenario: Long-running, highly skewed decode workloads where DP-rank imbalance persists
+    value: 512
+    reason: Keeps the planner active longer so more KV-block rebalancing can occur, reducing per-rank bubble and improving
+      decode throughput.
+  - scenario: Latency-sensitive workloads where planner overhead or request pausing is observed
+    value: 128
+    reason: Stops dynamic balancing sooner, reducing cross-rank workload-collection and plan-generation overhead per step.
+  caveats:
+  - Has no effect unless dyntra_lb_config.enabled is true and mode is "dynamic".
+  - Tune jointly with long_req_block_threshold and bubble_threshold; a very small bubble_threshold can cause frequent request
+    pausing.
+  - Disable enable_diagnostics before measuring performance, as it adds verbose logging overhead.
+  quick_guide: Leave at 256; raise toward 512 for sustained rebalancing on skewed long workloads, lower toward 128 if planner
+    overhead hurts latency.
+analysis_date: '2026-10-27'

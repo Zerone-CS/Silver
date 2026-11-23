@@ -1,0 +1,108 @@
+name: --mm-encoder-tp-mode
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/multimodal.py:170
+- vllm/engine/arg_utils.py:1398
+- vllm/engine/arg_utils.py:607
+- vllm/config/model.py:405
+- vllm/v1/worker/encoder_cudagraph.py:178
+- vllm_ascend/models/glm5next/model.py:983
+- vllm_ascend/models/minimax_m3/minimax_m3_vl.py:217
+value_type: str
+default: weights
+valid_choices:
+- weights
+- data
+cli_example: --mm-encoder-tp-mode data
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter selects how the multimodal encoder (vision/audio tower) is parallelized\nacross tensor-parallel\
+  \ ranks. It is defined upstream in vllm/config/multimodal.py:170\n(MultiModalConfig.mm_encoder_tp_mode, type MMEncoderTPMode,\
+  \ default \"weights\") and\nsurfaced as the CLI flag in vllm/engine/arg_utils.py:1398.\n\n- \"\\\"weights\\\" (default):\
+  \ the encoder weights are sharded across TP ranks (standard TP).\"\n  Each rank holds 1/TP of the tower weights and participates\
+  \ in every forward pass.\n  This reduces per-rank encoder memory but every rank must run the full encoder\n  computation\
+  \ for every input, so encoder compute is replicated across ranks.\n\n- \"\\\"data\\\": the full encoder weights are replicated\
+  \ on every TP rank, and the batched\"\n  input data is split across ranks so each rank processes a disjoint slice of the\n\
+  \  batch in parallel (batch-level DP). This is NOT request-level DP (that is\n  --data-parallel-size). It is only honored\
+  \ on a per-model basis: models must opt in\n  (e.g. upstream cosmos3_edge.py:546 sets supports_encoder_tp_data = True and\
+  \ reads\n  multimodal_config.mm_encoder_tp_mode == \"data\" at line 566; cohere_compass.py:1357\n  does the same). If the\
+  \ encoder does not support DP, it falls back to \"weights\".\n\nOn Ascend, vllm-ascend models read this field directly to\
+  \ decide the encoder data\npath: \"vllm_ascend/models/glm5next/model.py:983 and\"\nvllm_ascend/models/minimax_m3/minimax_m3_vl.py:217\
+  \ both set\nself.use_data_parallel = multimodal_config.mm_encoder_tp_mode == \"data\". This toggles\nthe vision tower's\
+  \ data-parallel code path (input splitting + full-weight replication)\nversus the weight-sharded path.\n\nPerformance mechanism:\
+  \ \"\\\"data\\\" trades memory for encoder latency/throughput. Because\"\nfull weights are replicated on each rank, per-rank\
+  \ encoder memory increases (roughly\nTP× the sharded footprint), which competes with KV cache and can cause OOM under tight\n\
+  --kv-cache-memory-bytes / --gpu-memory-utilization budgets. In exchange, encoder\nprefill for a batch of images/videos is\
+  \ split across ranks, reducing encoder latency\nand improving throughput for multimodal-heavy workloads. The choice also\
+  \ feeds the\nencoder ACL/CUDA graph manager: vllm/v1/worker/encoder_cudagraph.py:178 sets\nself.use_dp only when mm_encoder_tp_mode\
+  \ == \"data\" AND tensor_parallel_size > 1, so\nthe DP graph-capture path is only active under that combination. The value\
+  \ is part of\nthe multimodal config hash (vllm/config/multimodal.py:470), so changing it invalidates\ncompiled/graph caches\
+  \ and triggers recompilation.\n"
+usage_locations:
+- file: vllm/config/multimodal.py:170
+  context: Field definition and docstring describing weights vs data semantics and per-model fallback.
+- file: vllm/engine/arg_utils.py:1398
+  context: CLI flag registration under MultiModalConfig argument group.
+- file: vllm/v1/worker/encoder_cudagraph.py:178
+  context: Sets use_dp for encoder graph manager only when mode == data and TP > 1.
+- file: vllm_ascend/models/glm5next/model.py:983
+  context: Ascend GLM5Next vision model sets use_data_parallel from mm_encoder_tp_mode == data.
+- file: vllm_ascend/models/minimax_m3/minimax_m3_vl.py:217
+  context: Ascend MiniMax-M3-VL sets use_data_parallel from mm_encoder_tp_mode == data.
+- file: vllm/model_executor/models/cosmos3_edge.py:566
+  context: 'Upstream model opt-in: supports_encoder_tp_data and use_data_parallel flag.'
+related_parameters:
+- name: --tensor-parallel-size
+  relation: DP encoder path (use_dp) only activates when TP > 1; with TP=1 weights and data are equivalent.
+- name: --data-parallel-size
+  relation: Request-level DP; distinct from the batch-level encoder DP enabled by mm_encoder_tp_mode=data.
+- name: --limit-mm-per-prompt
+  relation: Controls how many images/videos per prompt feed the encoder; larger batches benefit more from data mode.
+- name: --kv-cache-memory-bytes
+  relation: Replicated encoder weights in data mode consume memory that would otherwise go to KV cache.
+- name: --gpu-memory-utilization
+  relation: Higher encoder memory footprint in data mode interacts with this budget and can cause OOM.
+- name: --mm-encoder-only
+  relation: Encoder-only disaggregated deployments are the primary use case where encoder TP mode matters.
+constraints:
+- The value must be one of "weights" or "data" (MMEncoderTPMode enum); other values are rejected at config parsing.
+- The "data" mode is only honored on a per-model basis; if the encoder does not support data parallelism it silently falls
+  back to "weights".
+- The encoder data-parallel graph path (use_dp) is only enabled when mm_encoder_tp_mode is "data" AND tensor_parallel_size
+  is greater than 1.
+tuning_advice:
+  summary: Use "data" for multimodal-heavy workloads on models that support encoder DP to cut encoder latency, but watch memory;
+    keep "weights" for text-only or memory-constrained deployments.
+  suggested_values:
+  - scenario: Multimodal (image/video) serving on a model that supports encoder data parallelism, TP > 1
+    value: data
+    reason: Splits encoder batch across TP ranks for parallel processing, reducing encoder prefill latency and improving multimodal
+      throughput; recommended in vllm-ascend Kimi-K2.5 and Dots3-Note docs.
+  - scenario: Text-only workload or --language-model-only
+    value: weights
+    reason: Encoder is not loaded/used, so the default weight-sharded mode avoids unnecessary weight replication and memory
+      overhead.
+  - scenario: Memory-constrained deployment (tight --kv-cache-memory-bytes or high --gpu-memory-utilization)
+    value: weights
+    reason: Weight-sharded mode keeps only 1/TP of encoder weights per rank, preserving memory for KV cache and avoiding OOM.
+  - scenario: TP=1 single-card deployment
+    value: weights
+    reason: With tensor_parallel_size=1 the data-parallel encoder path is not activated (use_dp requires TP > 1), so data
+      mode provides no benefit.
+  caveats:
+  - Verify the target model actually supports encoder DP (supports_encoder_tp_data); otherwise the flag silently falls back
+    to weights.
+  - Data mode replicates full encoder weights per rank — monitor NPU memory and reduce --max-num-batched-tokens or KV cache
+    if OOM occurs.
+  - Changing this flag invalidates the multimodal config hash and triggers graph recompilation; set it once at deployment
+    time.
+  - Do not confuse encoder batch-level DP with --data-parallel-size request-level DP.
+  quick_guide: Set --mm-encoder-tp-mode data for multimodal models that support encoder DP with TP>1; otherwise leave the
+    default weights.
+analysis_date: '2026-10-27'

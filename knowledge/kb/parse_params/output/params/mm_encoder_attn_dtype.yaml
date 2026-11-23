@@ -1,0 +1,103 @@
+name: --mm-encoder-attn-dtype
+type: cli
+category: quantization
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:187
+- vllm/engine/arg_utils.py:611
+- vllm/engine/arg_utils.py:1405
+- vllm/model_executor/layers/attention/mm_encoder_attention.py:392
+- vllm/model_executor/models/vision.py:139
+value_type: str
+default: null
+valid_choices:
+- fp8
+- null
+cli_example: --mm-encoder-attn-dtype fp8
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter only affects the multimodal (ViT) encoder attention path, not the
+
+  language-model decode/prefill path that dominates throughput on Ascend NPU.
+
+  In vllm upstream, setting it to "fp8" enables FP8 quantization of ViT encoder
+
+  attention Q/K/V via `_init_fp8_state()` in
+
+  vllm/model_executor/layers/attention/mm_encoder_attention.py:392. The FP8 path is
+
+  gated on specific backends: "ROCM_AITER_FA (ROCm MI300/MI350) or FLASHINFER with"
+
+  cuDNN >= 9.17.1 on Blackwell (SM 100+). Any other backend raises ValueError
+
+  (mm_encoder_attention.py:414-427). On Ascend NPU, the attention backend is neither
+
+  ROCM_AITER_FA nor FLASHINFER-cuDNN, so the FP8 ViT path is not reachable — the
+
+  parameter has no runtime effect on Ascend. Additionally, `get_fp8_padded_hidden_size`
+
+  (vision.py:139) only pads head_dim when FP8 is enabled, so on Ascend the default
+
+  (None) path is taken and no padding/quantization overhead is incurred. Because the
+
+  ViT encoder is a small fraction of total compute for typical VLM serving and the
+
+  FP8 path is unsupported on Ascend, the performance impact is low (effectively none
+
+  on Ascend, low on supported GPU backends).
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:187
+  context: 'Field definition: Literal[''fp8''] | None, docstring describes FP8 ViT attention via FlashInfer cuDNN backend.'
+- file: vllm/config/multimodal.py:310
+  context: 'Validator: fp8 scale path/save path require mm_encoder_attn_dtype == ''fp8''.'
+- file: vllm/model_executor/layers/attention/mm_encoder_attention.py:392
+  context: _init_fp8_state gates FP8 enablement on mm_encoder_attn_dtype == 'fp8' and backend support.
+- file: vllm/model_executor/models/vision.py:139
+  context: get_fp8_padded_hidden_size returns padded hidden size only when FP8 enabled.
+- file: vllm/engine/arg_utils.py:1405
+  context: CLI argument registration under MultiModalConfig group.
+related_parameters:
+- name: --mm-encoder-attn-backend
+  relation: FP8 ViT attention requires a specific backend (ROCM_AITER_FA or FLASHINFER cuDNN); other backends raise ValueError.
+- name: --mm-encoder-fp8-scale-path
+  relation: Only valid when --mm-encoder-attn-dtype=fp8; provides static per-layer scales.
+- name: --mm-encoder-fp8-scale-save-path
+  relation: Only valid when --mm-encoder-attn-dtype=fp8 and no scale path (dynamic scaling).
+- name: --mm-encoder-fp8-scale-save-margin
+  relation: Safety margin applied when auto-saving dynamic scales; only relevant with fp8.
+constraints:
+- The only accepted value is 'fp8' (or unset/None); other strings are rejected by the Literal type.
+- --mm-encoder-fp8-scale-path and --mm-encoder-fp8-scale-save-path require --mm-encoder-attn-dtype to be 'fp8', otherwise
+  a ValueError is raised.
+- --mm-encoder-fp8-scale-save-path cannot be combined with --mm-encoder-fp8-scale-path (saving requires dynamic scaling).
+- On CUDA, FP8 ViT attention requires the FlashInfer cuDNN backend with cuDNN >= 9.17.1 on Blackwell (SM 100) or newer; Hopper
+  and earlier are not supported.
+- On ROCm, FP8 ViT attention requires the ROCM_AITER_FA backend on MI300/MI350 (gfx942/gfx950) with an AITER build providing
+  flash_attn_varlen_fp8_pertensor_func.
+- Any attention backend other than ROCM_AITER_FA or FLASHINFER raises ValueError when fp8 is requested.
+tuning_advice:
+  summary: Leave unset on Ascend NPU; only use 'fp8' on supported GPU backends (Blackwell FlashInfer cuDNN or MI300/MI350
+    AITER) to accelerate ViT encoder attention.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: unset
+    reason: FP8 ViT attention is not supported on Ascend; the backend check raises ValueError and the path is unreachable,
+      so leaving it unset avoids errors and has no performance downside.
+  - scenario: NVIDIA Blackwell (SM 100+) with FlashInfer cuDNN >= 9.17.1
+    value: fp8
+    reason: Enables FP8 ViT encoder attention, reducing encoder latency and memory for VLM workloads.
+  - scenario: AMD MI300/MI350 with AITER
+    value: fp8
+    reason: Enables FP8 ViT attention via ROCM_AITER_FA backend for encoder speedup.
+  caveats:
+  - Do not set this on Ascend — it will not accelerate anything and may trigger a backend-support ValueError.
+  - Pair with --mm-encoder-fp8-scale-path for static scaling or --mm-encoder-fp8-scale-save-path for dynamic scaling calibration.
+  - Verify the encoder attention backend supports FP8 before enabling; otherwise the engine fails at init.
+  quick_guide: On Ascend leave --mm-encoder-attn-dtype unset; only enable 'fp8' on Blackwell/AITER GPU backends for ViT encoder
+    speedup.
+analysis_date: '2026-10-27'

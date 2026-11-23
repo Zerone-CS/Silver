@@ -1,0 +1,111 @@
+name: --stream-interval
+type: cli
+category: scheduling
+scope: vllm
+source_file:
+- vllm/config/scheduler.py:195
+- vllm/engine/arg_utils.py:766
+- vllm/engine/arg_utils.py:1647
+- vllm/engine/arg_utils.py:2449
+- vllm/v1/engine/async_llm.py:159
+- vllm/v1/engine/llm_engine.py:100
+- vllm/v1/engine/output_processor.py:153
+- vllm/v1/engine/output_processor.py:193
+- vllm/entrypoints/openai/chat_completion/protocol.py:512
+value_type: int
+default: 1
+valid_choices: integer >= 1
+cli_example: --stream-interval 10
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--stream-interval is defined in vLLM upstream SchedulerConfig (vllm/config/scheduler.py:195,
+
+  Field(default=1, ge=1)) and flows through EngineArgs (arg_utils.py:766) into SchedulerConfig
+
+  (arg_utils.py:2449). It is consumed purely on the frontend/output side: it is passed to
+
+  OutputProcessor (vllm/v1/engine/async_llm.py:159, vllm/v1/engine/llm_engine.py:100) and stored
+
+  per-request in RequestState (output_processor.py:153, 193) where it controls how many generated
+
+  tokens are accumulated before a streamed chunk is emitted to the client. It does NOT affect the
+
+  model forward pass, scheduler token budgeting, KV cache, or NPU kernel execution. Therefore on
+
+  Ascend NPU it has no effect on device compute or memory; its only effect is on host-side
+
+  detokenization/streaming overhead and perceived token latency. A larger value batches multiple
+
+  tokens per streamed chunk, reducing per-chunk host overhead (detokenization, HTTP/SSE writes,
+
+  Python object churn) and can slightly improve end-to-end throughput for streaming clients, at
+
+  the cost of coarser streaming granularity (higher time-to-first-visible-token granularity).
+
+  No vllm-ascend override of this parameter was found in the provided context; vllm-ascend does
+
+  not patch SchedulerConfig.stream_interval, so upstream behavior applies unchanged on Ascend.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:195
+  context: SchedulerConfig field definition with default=1, ge=1 and docstring describing streaming buffer size
+- file: vllm/engine/arg_utils.py:1647
+  context: CLI argument registration --stream-interval in the SchedulerConfig argument group
+- file: vllm/engine/arg_utils.py:2449
+  context: Passed into SchedulerConfig construction from EngineArgs
+- file: vllm/v1/engine/async_llm.py:159
+  context: Passed to OutputProcessor for async engine
+- file: vllm/v1/engine/llm_engine.py:100
+  context: Passed to OutputProcessor for sync LLM engine
+- file: vllm/v1/engine/output_processor.py:193
+  context: Stored as RequestState.stream_interval controlling chunk emission cadence
+- file: vllm/entrypoints/openai/chat_completion/protocol.py:512
+  context: Per-request override field; raises server value, clamped up, ignored for non-streaming
+related_parameters:
+- name: --max-num-seqs
+  relation: Higher concurrency amplifies host-side streaming overhead, making a larger stream-interval more beneficial
+- name: --async-scheduling
+  relation: Async scheduling reduces engine-side gaps; stream-interval only affects frontend chunk emission, complementary
+- name: stream (request-level)
+  relation: stream_interval only applies to streaming requests; ignored for non-streaming (FINAL_ONLY) requests
+constraints:
+- --stream-interval must be an integer greater than or equal to 1 (Field(ge=1)).
+- The per-request stream_interval field can only raise the server's --stream-interval; values below the server setting are
+  clamped up to it.
+- stream_interval is ignored for non-streaming requests (output_kind FINAL_ONLY).
+- The first and last chunks of a streamed response are always sent immediately regardless of stream_interval.
+tuning_advice:
+  summary: 'Leave at the default 1 for lowest token latency; raise it (e.g. 8-16) only for high-concurrency
+
+    streaming serving where host-side detokenization/SSE overhead is measurable. It does not affect
+
+    Ascend NPU compute, so it is a frontend-only knob.
+
+    '
+  suggested_values:
+  - scenario: Interactive chat / low-latency streaming (default)
+    value: 1
+    reason: Sends each token immediately for smoothest perceived streaming; host overhead is negligible at low concurrency.
+  - scenario: High-concurrency streaming serving where host CPU/SSE overhead is a bottleneck
+    value: 10
+    reason: Batches multiple tokens per streamed chunk, reducing per-chunk detokenization and HTTP write overhead, slightly
+      improving throughput.
+  - scenario: Benchmarking raw engine throughput (non-streaming or throughput-focused)
+    value: 1
+    reason: Non-streaming requests ignore stream_interval; keep default to avoid confusion and rely on engine-side batching
+      for throughput.
+  caveats:
+  - This parameter does not touch the NPU forward pass, KV cache, or HCCL communication; tuning it will not change device-side
+    performance on Ascend.
+  - Larger values increase the granularity of streamed output, making token-by-token display feel chunkier and increasing
+    time-to-first-visible-token for the first batch.
+  - Per-request stream_interval can only increase, never decrease, the server-level value; setting a large server default
+    forces all streaming clients to coarser chunks.
+  - No vllm-ascend override exists for this parameter, so upstream vLLM semantics apply unchanged on Ascend NPU.
+  quick_guide: Keep --stream-interval 1 for interactive latency; raise to ~10 only if host-side streaming overhead limits
+    high-concurrency throughput.
+analysis_date: '2026-10-27'

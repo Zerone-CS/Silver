@@ -1,0 +1,114 @@
+name: --per-request-spec-decode-metrics
+type: cli
+category: observability
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1539
+- vllm/engine/arg_utils.py:679
+- vllm/config/observability.py:48
+- vllm/config/vllm.py:1515
+- vllm/v1/core/sched/scheduler.py:102
+value_type: str
+default: none
+valid_choices:
+- none
+- summary
+- detailed
+cli_example: --per-request-spec-decode-metrics summary
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls per-request speculative-decoding acceptance bookkeeping in the
+
+  vLLM v1 scheduler. In vllm/v1/core/sched/scheduler.py:102 the scheduler stores
+
+  `self.spec_decode_metrics_level = observability_config.per_request_spec_decode_metrics`.
+
+  When set to "summary", the scheduler maintains a per-request accumulator that buckets
+
+  accepted draft counts (mean acceptance length, draft acceptance rate, and a
+
+  step-by-draft-length histogram). When set to "detailed", it additionally records
+
+  ordered per-step accepted/proposed arrays (one entry per verify step), as exercised by
+
+  tests/v1/core/test_scheduler.py:1689 (`per_step_accepted`, `per_step_drafted`,
+
+  `num_spec_steps`). This is pure CPU-side Python bookkeeping in the scheduler loop plus
+
+  a small amount of extra data attached to the response body under
+
+  `metrics.speculative_decoding`. It does not touch the NPU model execution path, does
+
+  not change kernel dispatch, does not allocate device memory, and does not alter
+
+  scheduling decisions. The overhead is therefore a small per-verify-step Python cost
+
+  (list appends / counter updates) and a slightly larger response payload, which can
+
+  marginally increase scheduler CPU time and serialization cost at very high request
+
+  rates. On Ascend NPU this is identical to upstream vLLM: no vllm-ascend override of
+
+  this parameter was found in the provided context, and the Ascend worker/runner paths
+
+  do not read it. Because the scheduler is often the CPU bottleneck in high-throughput
+
+  NPU serving, the "detailed" level''s per-step list growth is the only realistic
+
+  performance concern, and it is bounded by the number of verify steps per request.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1539
+  context: CLI argument registration under the ObservabilityConfig argument group.
+- file: vllm/engine/arg_utils.py:679
+  context: EngineArgs field typed Literal['none','summary','detailed'] defaulting to ObservabilityConfig value.
+- file: vllm/config/observability.py:48
+  context: ObservabilityConfig field definition and docstring describing summary vs detailed semantics.
+- file: vllm/config/vllm.py:1515
+  context: 'Validation: raises ValueError if set to non-''none'' without speculative decoding enabled.'
+- file: vllm/v1/core/sched/scheduler.py:102
+  context: Scheduler reads the level into spec_decode_metrics_level to drive per-request accumulation.
+related_parameters:
+- name: --speculative-config
+  relation: 'Required dependency: the flag raises ValueError unless speculative decoding is configured.'
+- name: --disable-log-stats
+  relation: 'Independent: per-request metrics are reported regardless of aggregate log-stats setting.'
+- name: --num-speculative-tokens
+  relation: Determines the number of draft tokens per verify step, which bounds the size of per-step arrays in 'detailed'
+    mode.
+- name: --kv-cache-metrics
+  relation: Sibling observability flag with its own sampling-based overhead; both add scheduler-side bookkeeping.
+constraints:
+- Setting --per-request-spec-decode-metrics to 'summary' or 'detailed' without enabling speculative decoding via --speculative-config
+  raises a ValueError at config validation.
+- Metrics are only reported for single-sequence requests (n == 1), mirroring the timing metrics; multi-sequence requests get
+  no per-request spec-decode metrics.
+- The flag has no effect unless speculative decoding is enabled.
+- The response field shape is experimental and may change in a future release.
+tuning_advice:
+  summary: Leave at 'none' for production throughput; use 'summary' for spec-decode acceptance debugging and 'detailed' only
+    for short offline analysis runs.
+  suggested_values:
+  - scenario: Production serving with speculative decoding enabled
+    value: none
+    reason: Avoids any per-request scheduler bookkeeping and keeps response payloads minimal; aggregate vllm:spec_decode_*
+      Prometheus metrics still provide acceptance visibility.
+  - scenario: Debugging draft acceptance rate / mean acceptance length per request
+    value: summary
+    reason: Adds mean acceptance length, draft acceptance rate, and step-by-draft-length histogram with only small per-request
+      overhead.
+  - scenario: Offline analysis of per-verify-step acceptance patterns
+    value: detailed
+    reason: Records ordered per-step accepted/proposed arrays needed to diagnose step-level acceptance, at the cost of larger
+      responses and more scheduler CPU work.
+  caveats:
+  - Must be combined with --speculative-config or startup fails with a ValueError.
+  - Only single-sequence (n == 1) requests report these metrics.
+  - Prefer 'summary' over 'detailed' when serving live traffic on Ascend to limit scheduler CPU overhead.
+  quick_guide: Keep 'none' in production; use 'summary' to inspect spec-decode acceptance, 'detailed' only for offline step-level
+    analysis.
+analysis_date: '2026-10-27'

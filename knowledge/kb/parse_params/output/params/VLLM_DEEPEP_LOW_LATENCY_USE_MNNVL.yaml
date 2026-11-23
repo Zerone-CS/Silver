@@ -1,0 +1,73 @@
+name: VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1946
+- vllm/envs.py:282
+- vllm/distributed/device_communicators/all2all.py:326
+value_type: bool
+default: false
+valid_choices: 0 or 1 (boolean via int(os.getenv(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var is read only in vllm upstream (vllm/envs.py:1946) and consumed solely by
+
+  DeepEPLLAll2AllManager._make_all2all_kwargs in vllm/distributed/device_communicators/all2all.py:326,
+
+  where it is passed as the `allow_mnnvl` kwarg to the deep_ep.Buffer constructor for the
+
+  low-latency DeepEP all-to-all path. MNNVL (multi-node NVLink) is an NVIDIA GB200-class
+
+  interconnect feature; it lets the internode_ll kernel use NVLink instead of RDMA across
+
+  nodes, reducing dispatch/combine latency for MoE expert-parallel communication.
+
+  On Ascend NPU there is no NVLink/MNNVL fabric — inter-node communication goes through
+
+  HCCL over RDMA/RoCE, and vllm-ascend does not use the deep_ep library or this code path
+
+  (no occurrence of VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL in vllm-ascend). Therefore the flag
+
+  has no runtime effect on Ascend; it is a no-op. It is included here only for completeness
+
+  because it is a communication-related env var, but it does not change Ascend latency,
+
+  throughput, or memory.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1946
+  context: Definition of the env var with default 0 (disabled).
+- file: vllm/envs.py:282
+  context: 'Type annotation declaration VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL: bool = False.'
+- file: vllm/distributed/device_communicators/all2all.py:326
+  context: Passed as allow_mnnvl to deep_ep.Buffer for the low-latency all-to-all manager.
+related_parameters:
+- name: VLLM_DEEPEP_BUFFER_SIZE_MB
+  relation: Same DeepEP low-latency buffer construction path (num_nvl_bytes).
+- name: VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE
+  relation: Sibling DeepEP interconnect-selection flag for high-throughput mode.
+- name: VLLM_ALL2ALL_BACKEND
+  relation: Selects whether the DeepEP all-to-all manager (which reads this flag) is used at all.
+constraints:
+- Only has an effect when the DeepEP all-to-all backend is selected and low-latency mode is active; otherwise it is ignored.
+- MNNVL requires NVIDIA GB200-class multi-node NVLink hardware; on systems without MNNVL fabric the flag has no effect.
+- Has no effect on Ascend NPU because vllm-ascend does not use the deep_ep library or this code path.
+tuning_advice:
+  summary: NVIDIA-only DeepEP MNNVL flag; leave unset on Ascend NPU as it has no effect.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1 or v2 worker)
+    value: '0'
+    reason: vllm-ascend does not use deep_ep/MNNVL; the flag is a no-op and should remain at its default of 0.
+  - scenario: NVIDIA GB200-class system using DeepEP low-latency MoE all-to-all (reference only, not Ascend)
+    value: '1'
+    reason: Enables MNNVL for the internode_ll kernel to reduce cross-node dispatch/combine latency, per the upstream comment.
+  caveats:
+  - Do not expect any latency or throughput change on Ascend from this variable.
+  - For Ascend inter-node communication tuning, focus on HCCL configuration rather than DeepEP flags.
+  quick_guide: Ignore on Ascend — it only affects NVIDIA DeepEP MNNVL and is a no-op on NPU.
+analysis_date: '2026-10-27'

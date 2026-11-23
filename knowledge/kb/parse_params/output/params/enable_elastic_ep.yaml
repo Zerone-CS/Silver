@@ -1,0 +1,121 @@
+name: --enable-elastic-ep
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:217
+- vllm/engine/arg_utils.py:1211
+- vllm/engine/arg_utils.py:517
+- vllm/engine/arg_utils.py:2365
+- vllm/config/parallel.py:886
+- vllm/config/vllm.py:2864
+- vllm/v1/engine/coordinator.py:92
+- vllm/v1/engine/core_client.py:587
+- vllm/v1/engine/utils.py:460
+- vllm_ascend/platform.py:1001
+- vllm_ascend/platform.py:1616
+- vllm_ascend/distributed/eplb/eplb_state.py:404
+- vllm_ascend/patch/platform/patch_engram_config.py:39
+value_type: bool
+default: false
+valid_choices: true or false (store_true style boolean flag)
+cli_example: --enable-elastic-ep
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: "Elastic EP enables elastic expert parallelism using stateless NCCL groups for DP/EP,\nallowing DP ranks to\
+  \ be added/removed at runtime (scale up/down) while keeping a single\nAPI server and core client. On the upstream side it\
+  \ changes several runtime paths:\n- \"vllm/v1/engine/coordinator.py:92 forces local_only_eng=False so the DP coordinator\"\
+  \n  publishes/subscribes over the network rather than local-only ZMQ, adding inter-process\n  (and potentially inter-node)\
+  \ coordination overhead.\n- \"vllm/v1/engine/core_client.py:587 enables ZMQ ROUTER socket handover so a re-added\"\n  engine\
+  \ can replace a dead connection — a correctness mechanism, not a throughput win.\n- \"vllm/v1/engine/utils.py:460 creates\
+  \ a TCP store for coordination when elastic EP is on.\"\n- \"vllm/config/parallel.py:886 requires enable_eplb=True and forbids\
+  \ PP>1 and external/hybrid\"\n  DP load balancing, so it is tightly coupled to EPLB (expert load balancing) which itself\n\
+  \  adds load-collection and expert-rearrangement overhead.\nOn Ascend, vllm-ascend does NOT implement elastic EP itself;\
+  \ instead it adds hard\nrestrictions that neutralize or reject combinations:\n- \"vllm_ascend/platform.py:1001 raises ValueError\
+  \ when async EPLB (which Ascend forces on)\"\n  is combined with elastic EP — so on Ascend the required enable_eplb path\
+  \ is incompatible\n  with elastic EP in the validated configuration.\n- \"vllm_ascend/platform.py:1616 rejects elastic EP\
+  \ for Ascend Engram (DeepSeek V4.1).\"\n- \"vllm_ascend/patch/platform/patch_engram_config.py:39/41 rejects dp_shared_memory\
+  \ and\"\n  embedding_across_dp with elastic EP.\n- \"vllm_ascend/distributed/eplb/eplb_state.py:404 disables the \\\"fresh\
+  \ recorded load\\\" gating\"\n  when elastic EP is on, meaning rearrange() proceeds without the freshness check — extra\n\
+  \  all-reduce/collective work per rearrange cycle.\nNet effect on Ascend: \"enabling this flag does not deliver a throughput\
+  \ benefit on its own;\"\nit mainly relaxes DP topology rigidity at the cost of extra coordination collectives and\nis blocked\
+  \ by several Ascend-specific validations. Performance impact is therefore medium\n(indirect, via coordination overhead and\
+  \ EPLB coupling) rather than a direct kernel-level\nspeedup.\n"
+usage_locations:
+- file: vllm/config/parallel.py:886
+  context: 'Validation: requires enable_eplb=True, forbids PP>1 and external/hybrid DP LB; async EPLB requires NIXL.'
+- file: vllm/config/vllm.py:2864
+  context: Elastic EP is listed as unsupported for the V2 model runner path.
+- file: vllm/v1/engine/coordinator.py:92
+  context: Forces local_only_eng=False so DP coordinator uses network ZMQ addresses.
+- file: vllm/v1/engine/core_client.py:587
+  context: Enables ZMQ ROUTER input socket handover for re-added engines.
+- file: vllm/v1/engine/utils.py:460
+  context: Creates a TCP coordination store for elastic DP.
+- file: vllm_ascend/platform.py:1001
+  context: 'Raises ValueError: async EPLB not supported with elastic EP on Ascend.'
+- file: vllm_ascend/platform.py:1616
+  context: Ascend Engram rejects elastic EP (requires TP=1/2/4/8, PP=DCP=1).
+- file: vllm_ascend/distributed/eplb/eplb_state.py:404
+  context: Disables fresh-load gating in rearrange() when elastic EP is enabled.
+- file: vllm_ascend/patch/platform/patch_engram_config.py:39
+  context: Rejects dp_shared_memory and embedding_across_dp with elastic EP.
+related_parameters:
+- name: --enable-eplb
+  relation: 'Required dependency: elastic EP raises ValueError unless enable_eplb=True.'
+- name: --elastic-ep-max-dp-size
+  relation: Companion parameter bounding the max DP size supported by elastic EP.
+- name: --data-parallel-external-lb
+  relation: 'Mutually exclusive: elastic EP raises NotImplementedError with external LB.'
+- name: --data-parallel-hybrid-lb
+  relation: 'Mutually exclusive: elastic EP raises NotImplementedError with hybrid LB.'
+- name: --pipeline-parallel-size
+  relation: Must be 1; elastic EP rejects PP>1.
+- name: eplb_config.use_async
+  relation: On Ascend, async EPLB (forced on) is incompatible with elastic EP (platform.py:1001).
+- name: engram_config.dp_shared_memory
+  relation: Incompatible with elastic EP (patch_engram_config.py:39).
+- name: engram_config.embedding_across_dp
+  relation: Incompatible with elastic EP when DP>1 (patch_engram_config.py:41).
+constraints:
+- Elastic EP requires --enable-eplb to be set; otherwise ParallelConfig raises ValueError.
+- Elastic EP is not supported with pipeline parallelism; --pipeline-parallel-size must be 1.
+- Elastic EP is not compatible with --data-parallel-external-lb or --data-parallel-hybrid-lb (raises NotImplementedError).
+- Elastic EP with async EPLB requires NIXL to be available upstream.
+- On Ascend, async EPLB is not supported with elastic EP and raises ValueError (vllm_ascend/platform.py:1001).
+- On Ascend, elastic EP is rejected for Ascend Engram (DeepSeek V4.1) models.
+- On Ascend, dp_shared_memory and embedding_across_dp cannot be combined with elastic EP.
+- Elastic EP is listed as unsupported for the V2 model runner path (vllm/config/vllm.py:2864).
+tuning_advice:
+  summary: 'Only enable elastic EP when you genuinely need runtime DP scale up/down on Ascend; it
+
+    adds coordination overhead and is blocked by several Ascend validations, so it is not a
+
+    throughput optimization.
+
+    '
+  suggested_values:
+  - scenario: Static DP/EP deployment with fixed rank count (most Ascend production cases)
+    value: false
+    reason: Elastic EP adds ZMQ handover, TCP coordination store, and extra EPLB collectives without throughput benefit when
+      ranks never change.
+  - scenario: Need to add/remove DP ranks at runtime with EPLB on Ascend
+    value: true
+    reason: Required to enable elastic DP scaling, but must be paired with --enable-eplb and PP=1, and must avoid async EPLB
+      on Ascend.
+  - scenario: Ascend Engram (DeepSeek V4.1) or dp_shared_memory/embedding_across_dp workloads
+    value: false
+    reason: vllm-ascend explicitly rejects elastic EP for these configurations.
+  caveats:
+  - On Ascend, async EPLB is forced on and is incompatible with elastic EP (platform.py:1001), so the required enable_eplb
+    path may fail validation.
+  - Elastic EP disables the fresh-load gating in Ascend EPLB rearrange(), causing extra collective work per rearrange cycle.
+  - Elastic EP is not supported by the V2 model runner path; use the V1 path if you need it.
+  - Elastic EP requires a single API server and core client; external/hybrid DP load balancing is not allowed.
+  - Enabling elastic EP forces the DP coordinator to use network ZMQ addresses, adding inter-process coordination latency.
+  quick_guide: Leave --enable-elastic-ep off unless you need runtime DP scaling; on Ascend it is blocked by async EPLB and
+    Engram validations.
+analysis_date: '2026-10-27'

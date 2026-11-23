@@ -1,0 +1,81 @@
+name: pooler.logit_mean
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/model_executor/layers/pooler/seqwise/poolers.py:131
+- vllm/model_executor/layers/pooler/tokwise/poolers.py:138
+- vllm/model_executor/models/config.py:534
+value_type: float
+default: null
+valid_choices: any float; None disables mean subtraction
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'logit_mean is a scalar calibration constant used only in the classification
+
+  pooler head (ClassifierPoolerHead / TokenClassifierPoolerHead). It is read
+
+  once at pooler construction time from model_config.pooler_config.logit_mean
+
+  (seqwise/poolers.py:131, tokwise/poolers.py:138) and stored on the head. At
+
+  inference it participates in a per-logit affine transform
+
+  activation((logit - logit_mean) / logit_sigma) applied to the small
+
+  classification output tensor (num_labels wide), not to hidden states or KV
+
+  cache. The arithmetic is a single elementwise subtract over a tiny tensor,
+
+  so its runtime cost is negligible relative to the transformer forward pass.
+
+  It does not affect memory allocation, batching, scheduling, or communication.
+
+  No vllm-ascend override or Ascend-specific code path references this field;
+
+  it is a pure upstream vLLM model-config value. The only notable behavior is
+
+  the JinaVLForSequenceClassificationConfig default injection (config.py:534)
+
+  which sets logit_mean=2.65 when unset — a correctness/calibration default,
+
+  not a performance lever.
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/pooler/seqwise/poolers.py:131
+  context: Passed into ClassifierPoolerHead for sequence classification pooling
+- file: vllm/model_executor/layers/pooler/tokwise/poolers.py:138
+  context: Passed into TokenClassifierPoolerHead for token classification pooling
+- file: vllm/model_executor/models/config.py:534
+  context: JinaVL config sets logit_mean=2.65 if None
+related_parameters:
+- name: pooler.logit_sigma
+  relation: Companion scale factor in the same affine calibration activation((logit - logit_mean) / logit_sigma)
+- name: pooler.activation
+  relation: Activation function applied after the affine transform; logit_mean only matters when a classifier activation is
+    used
+- name: pooler.pooling_type
+  relation: Determines whether the seqwise or tokwise classifier head (and thus this field) is used
+constraints:
+- logit_mean only has an effect for classification models that use a classifier pooler head; it is ignored for embedding/reward
+  pooling.
+- If logit_mean is None, no mean subtraction is applied unless a model config (e.g. JinaVL) injects a default value.
+tuning_advice:
+  summary: Set logit_mean only to match the model's calibration; it has negligible performance impact on Ascend NPU.
+  suggested_values:
+  - scenario: Default / no calibration metadata available
+    value: unset
+    reason: Leaving it None avoids unintended score shifts; performance is unaffected either way.
+  - scenario: JinaVL sequence classification
+    value: 2.65
+    reason: Upstream JinaVL config injects 2.65 when unset; keep this for correct calibrated scores.
+  caveats:
+  - This is a correctness/calibration parameter, not a performance knob; changing it does not improve throughput or latency
+    on Ascend.
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM on NPU.
+  quick_guide: Leave logit_mean at its model-provided default; it does not affect Ascend performance.
+analysis_date: '2026-10-27'

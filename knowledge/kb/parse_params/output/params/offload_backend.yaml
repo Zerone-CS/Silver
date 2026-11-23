@@ -1,0 +1,101 @@
+name: --offload-backend
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/offload.py:83
+- vllm/engine/arg_utils.py:1338
+- vllm/engine/arg_utils.py:2616
+- vllm/model_executor/offloader/base.py:144
+- vllm_ascend/model_executor/offloader/base.py:17
+value_type: str
+default: auto
+valid_choices:
+- auto
+- uva
+- prefetch
+cli_example: --offload-backend prefetch
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "This parameter selects the model-weight offloading strategy, which directly\ntrades NPU HBM footprint for\
+  \ CPU memory and transfer overhead.\n\nUpstream vLLM (vllm/model_executor/offloader/base.py:141-177) dispatches on\noffload_backend:\n\
+  - \"\\\"auto\\\": picks \\\"prefetch\\\" if prefetch.offload_group_size > 0, else \\\"uva\\\" if\"\n  uva.cpu_offload_gb\
+  \ > 0, else NoopOffloader (no offload, no overhead).\n- \"\\\"prefetch\\\": constructs PrefetchOffloader with group_size/num_in_group/\"\
+  \n  prefetch_step/offload_params, mode=\"cpu\" — group-based async layer prefetch\n  from host memory, overlapping H2D copies\
+  \ with compute.\n- \"\\\"uva\\\": constructs UVAOffloader with cpu_offload_max_bytes derived from\"\n  cpu_offload_gb —\
+  \ zero-copy UVA mapping of weights, avoiding explicit copies\n  but relying on host-memory access latency during compute.\n\
+  - \"anything else: NoopOffloader.\"\n\nvllm-ascend OVERRIDES this dispatch in vllm_ascend/model_executor/offloader/\nbase.py:11-28\
+  \ (create_offloader). The Ascend version:\n- \"returns NoopOffloader when offload_config is None;\"\n- \"returns AscendPrefetchOffloader\
+  \ ONLY when backend == \\\"prefetch\\\";\"\n- \"returns NoopOffloader for EVERY other value, including \\\"uva\\\" and \\\
+  \"auto\\\".\"\nThis means on Ascend, \"uva\" and \"auto\" are effectively no-ops for weight\noffloading — the UVA zero-copy\
+  \ path is NOT implemented in vllm-ascend. Only\nthe explicit \"prefetch\" backend activates AscendPrefetchOffloader (mode=\"\
+  cpu\"),\nwhich reduces NPU HBM usage by keeping weights in host memory and prefetching\ngroups of layers onto the NPU, at\
+  \ the cost of H2D transfer bandwidth and\npotential compute stalls if prefetch_step is too small.\n\nBecause \"auto\" resolves\
+  \ to NoopOffloader on Ascend even when offload_group_size\n> 0 (the Ascend create_offloader does not replicate the upstream\
+  \ auto-selection\nlogic), users who set --offload-group-size without explicitly setting\n--offload-backend prefetch will\
+  \ silently get NO offloading on Ascend. This is\nthe single most important Ascend-specific caveat for this parameter.\n"
+usage_locations:
+- file: vllm/config/offload.py:83
+  context: OffloadConfig.offload_backend field definition with auto/uva/prefetch semantics
+- file: vllm/config/offload.py:97
+  context: validate_offload_config model_validator enforces prefetch constraints and warns on conflicting backends
+- file: vllm/engine/arg_utils.py:1338
+  context: CLI argument registration for --offload-backend
+- file: vllm/engine/arg_utils.py:2616
+  context: EngineArgs.create_engine_config builds OffloadConfig from CLI value
+- file: vllm/model_executor/offloader/base.py:144
+  context: Upstream create_offloader dispatches auto/prefetch/uva to concrete offloaders
+- file: vllm_ascend/model_executor/offloader/base.py:17
+  context: Ascend create_offloader only honors 'prefetch'; all other values return NoopOffloader
+related_parameters:
+- name: --offload-group-size
+  relation: Prefetch backend activation trigger; on Ascend must be paired with explicit --offload-backend prefetch (auto does
+    not select it)
+- name: --offload-num-in-group
+  relation: Prefetch tuning; must be <= offload_group_size
+- name: --offload-prefetch-step
+  relation: Prefetch tuning; must be >= 1 when prefetch is active
+- name: --offload-params
+  relation: Selects which weight tensors are offloaded under prefetch backend
+- name: --cpu-offload-gb
+  relation: UVA backend activation trigger; ignored on Ascend since UVA offloader is not implemented
+- name: --cpu-offload-params
+  relation: UVA backend parameter selection; ignored on Ascend
+constraints:
+- offload_num_in_group must be less than or equal to offload_group_size when offload_backend is 'prefetch' or offload_group_size
+  > 0.
+- offload_prefetch_step must be at least 1 when prefetch offloading is enabled (offload_backend='prefetch' or offload_group_size
+  > 0).
+- On Ascend, only offload_backend='prefetch' activates weight offloading; 'uva' and 'auto' both resolve to NoopOffloader.
+- Setting offload_backend='uva' while prefetch fields are set emits a warning that prefetch settings will be ignored.
+- Setting offload_backend='prefetch' while cpu_offload_gb > 0 emits a warning that UVA settings will be ignored.
+- Setting offload_backend='auto' with both UVA and prefetch fields active emits a warning that prefetch will be selected (upstream
+  only; on Ascend auto selects nothing).
+tuning_advice:
+  summary: On Ascend, always set --offload-backend prefetch explicitly (auto is a no-op) and tune group size / prefetch step
+    to overlap H2D copies with compute.
+  suggested_values:
+  - scenario: Model weights exceed NPU HBM and you want to free HBM for KV cache on Ascend
+    value: prefetch
+    reason: Only 'prefetch' activates AscendPrefetchOffloader in vllm_ascend/model_executor/offloader/base.py; 'auto' and
+      'uva' return NoopOffloader and save no memory.
+  - scenario: No offloading desired (default behavior)
+    value: auto
+    reason: With no offload_group_size and no cpu_offload_gb set, auto resolves to NoopOffloader on both upstream and Ascend,
+      adding zero overhead.
+  - scenario: Upstream GPU (CUDA) deployment wanting zero-copy weight offload
+    value: uva
+    reason: Upstream UVAOffloader maps weights via UVA; note this path is NOT available on Ascend.
+  caveats:
+  - Do not rely on --offload-backend auto to pick prefetch on Ascend — it will silently do nothing even if --offload-group-size
+    is set.
+  - Pair --offload-backend prefetch with a sensible --offload-prefetch-step (>= 1) so weight prefetch overlaps compute; too
+    small a step causes NPU stalls.
+  - Ensure --offload-num-in-group <= --offload-group-size or OffloadConfig validation raises ValueError.
+  - UVA-related flags (--cpu-offload-gb, --cpu-offload-params) are inert on Ascend; do not expect memory savings from them.
+  quick_guide: On Ascend use --offload-backend prefetch (auto/uva are no-ops); on GPU auto/uva/prefetch all work.
+analysis_date: '2026-10-27'

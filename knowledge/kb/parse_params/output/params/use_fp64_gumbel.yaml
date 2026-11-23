@@ -1,0 +1,107 @@
+name: --use-fp64-gumbel
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:269
+- vllm/engine/arg_utils.py:564
+- vllm/engine/arg_utils.py:919
+- vllm/engine/arg_utils.py:1848
+- vllm/v1/sample/ops/topk_topp_sampler.py:104
+- vllm/v1/sample/ops/topk_topp_sampler.py:170
+- vllm/v1/sample/sampler.py:65
+- vllm/v1/sample/rejection_sampler.py:76
+- vllm/v1/sample/rejection_sampler.py:104
+- tests/e2e/pull_request/one_card/test_gumbel_sampling.py:607
+- tests/ut/patch/worker/test_patch_v2_gumbel.py:50
+value_type: bool
+default: false
+valid_choices: true / false
+cli_example: --use-fp64-gumbel
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Upstream vLLM defines use_fp64_gumbel in ModelConfig (vllm/config/model.py:269) and threads it
+
+  through EngineArgs (arg_utils.py:564, 919, 1848) into the v1 Sampler (vllm/v1/sample/sampler.py:65),
+
+  TopKTopPSampler (topk_topp_sampler.py:104) and RejectionSampler (rejection_sampler.py:76, 104).
+
+  When enabled, the native sampling path calls random_sample(probs, generators, self.use_fp64_gumbel)
+
+  (topk_topp_sampler.py:170), which performs the Gumbel-max / exponential-race draw in FP64 instead
+
+  of FP32. On Ascend NPU this only affects the small per-request sampling step (a draw over the
+
+  vocab dimension), not the model forward pass or attention. FP64 arithmetic on Ascend Da Vinci
+
+  cores is emulated/less efficient than FP32, so the sampling kernel becomes slower, but because
+
+  sampling is a tiny fraction of total decode latency the end-to-end impact is small. The parameter
+
+  is explicitly listed in ModelConfig''s ignored_factors for the computation-graph hash
+
+  (vllm/config/model.py:445), so toggling it does not invalidate compiled graphs / cudagraph capture.
+
+  vllm-ascend does not define or override this parameter; it only appears in Ascend tests
+
+  (tests/e2e/pull_request/one_card/test_gumbel_sampling.py:607 and
+
+  tests/ut/patch/worker/test_patch_v2_gumbel.py:50) where speculator.use_fp64_gumbel is set to False
+
+  to exercise the Ascend-native categorical_sample / gumbel_sample dispatch. The Ascend speculator
+
+  (DSparkSpeculator._sample_logits) reads use_fp64_gumbel as an instance attribute and routes to the
+
+  Ascend categorical_sample implementation, so the flag influences which sampling kernel variant is
+
+  used but does not change the model compute path.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:269
+  context: ModelConfig field definition with docstring describing FP64 vs FP32 Gumbel sampling tradeoff
+- file: vllm/engine/arg_utils.py:919
+  context: CLI argument registration --use-fp64-gumbel
+- file: vllm/engine/arg_utils.py:1848
+  context: Passed into ModelConfig construction
+- file: vllm/v1/sample/sampler.py:65
+  context: Sampler stores use_fp64_gumbel and forwards to TopKTopPSampler
+- file: vllm/v1/sample/ops/topk_topp_sampler.py:170
+  context: forward_native passes use_fp64_gumbel to random_sample
+- file: vllm/v1/sample/rejection_sampler.py:104
+  context: RejectionSampler registers warmup for _sample_recovered_tokens with use_fp64_gumbel
+- file: tests/e2e/pull_request/one_card/test_gumbel_sampling.py:607
+  context: Ascend e2e test sets speculator.use_fp64_gumbel = False to exercise Ascend gumbel_sample
+- file: tests/ut/patch/worker/test_patch_v2_gumbel.py:50
+  context: Ascend v2 patch unit test sets use_fp64_gumbel = False for DSpark speculator dispatch
+related_parameters:
+- name: --seed
+  relation: Sampling randomness source; FP64 Gumbel changes precision of the random draw derived from the seed
+- name: --logprobs-mode
+  relation: Both are constructor args of TopKTopPSampler/Sampler; logprobs_mode selects the sampling forward path
+- name: --speculative-config
+  relation: RejectionSampler reads use_fp64_gumbel for recovered-token sampling during spec decode
+constraints:
+- The value must be a boolean (true/false); it is a plain bool ModelConfig field with no range validation.
+- Enabling it only affects the sampling step; it has no effect on model forward, attention, or KV cache behavior.
+tuning_advice:
+  summary: Leave disabled for maximum throughput on Ascend NPU; enable only when FP64 sampling fidelity is required and the
+    sampling overhead is acceptable.
+  suggested_values:
+  - scenario: Default high-throughput serving on Ascend NPU
+    value: false
+    reason: FP32 sampling is faster on Ascend Da Vinci cores and the sampling step is a tiny fraction of decode latency; FP64
+      offers no throughput benefit.
+  - scenario: Workloads requiring exact lower-tail sampling events (correctness-sensitive RL/debugging)
+    value: true
+    reason: FP64 preserves lower-tail sampling events that FP32 uniform/exponential draws can truncate, at the cost of a slower
+      sampling kernel.
+  caveats:
+  - Applies to both v1-ascend and v2-ascend paths; vllm-ascend does not override the flag, so upstream semantics hold.
+  - Do not expect a large latency change; the impact is confined to the per-request sampling draw.
+  - Toggling does not invalidate compiled graphs because it is in ignored_factors.
+  quick_guide: Keep --use-fp64-gumbel off unless you need FP64 sampling fidelity; it only slows the sampling step on Ascend.
+analysis_date: '2026-10-27'

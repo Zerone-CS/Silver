@@ -1,0 +1,68 @@
+name: profiler.proton_hook
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:398
+value_type: str
+default: null
+valid_choices: Optional string; documented value 'triton' adds Triton launch metadata
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'proton_hook is a Proton profiler configuration field consumed only by the
+
+  ProtonProfilerWrapper in vllm/profiler/wrapper.py (line 398: self._hook =
+
+  profiler_config.proton_hook). It is passed to the Triton Proton profiler to
+
+  attach launch metadata (e.g. ''triton'') to profiling sessions. It has no
+
+  definition or usage anywhere in vllm-ascend, so it is not overridden on
+
+  Ascend. Its only runtime effect is within the profiling path: when profiling
+
+  is active, the hook adds metadata collection overhead to Triton kernel
+
+  launches, which can slightly increase latency during the profiled window.
+
+  When profiling is disabled (the default), this parameter is never read and
+
+  has zero runtime impact. It does not affect throughput or memory in normal
+
+  serving.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:398
+  context: ProtonProfilerWrapper reads profiler_config.proton_hook into self._hook for the Triton Proton profiler session
+related_parameters:
+- name: profiler
+  relation: Parent config; proton_hook is only used when profiler is set to 'proton'
+- name: profiler.proton_backend
+  relation: Sibling Proton setting; hook metadata is collected alongside the selected backend
+- name: profiler.proton_mode
+  relation: Sibling Proton setting controlling profiling mode; hook applies within the active session
+constraints:
+- proton_hook only takes effect when the profiler is set to 'proton' and a Triton installation with triton.profiler support
+  is available.
+- The Proton profiler raises a RuntimeError if Triton with triton.profiler support is not installed.
+tuning_advice:
+  summary: Leave proton_hook unset for normal serving; only set it to 'triton' when you need Triton launch metadata during
+    a Proton profiling session.
+  suggested_values:
+  - scenario: Normal inference serving without profiling
+    value: unset
+    reason: The parameter is never read when profiling is disabled, so leaving it unset avoids any overhead.
+  - scenario: Proton profiling of Triton kernel launches
+    value: triton
+    reason: Adds Triton launch metadata to the Proton profile, useful for attributing kernel launches during profiling.
+  caveats:
+  - This parameter has no effect on Ascend unless the Proton profiler path is active; vllm-ascend does not override it.
+  - Enabling the hook adds metadata collection overhead to Triton launches, slightly increasing latency during the profiled
+    window only.
+  - Requires a Triton installation with triton.profiler support, otherwise a RuntimeError is raised.
+  quick_guide: Only set proton_hook to 'triton' while profiling with Proton; otherwise leave it unset.
+analysis_date: '2026-10-27'

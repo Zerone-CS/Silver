@@ -1,0 +1,105 @@
+name: additional_config.eplb_config.stair_config.load_risk_quantile
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:197
+- vllm_ascend/ascend_config.py:219
+- vllm_ascend/ascend_config.py:231
+- vllm_ascend/ascend_config.py:245
+value_type: float
+default: 0.75
+valid_choices: float strictly greater than 0.5 and strictly less than 1.0 (finite)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'load_risk_quantile is a tuning knob of the MRv2 STAIR expert-parallel load-balancing
+
+  policy in vllm-ascend (vllm_ascend/ascend_config.py, StairConfig). It is a one-sided
+
+  standard-normal quantile that is converted to a z-score via
+
+  NormalDist().inv_cdf(self.load_risk_quantile) (the z_score property, line 229-231).
+
+  That z-score is used to compute mean-plus-deviation expert and rank risk, i.e. how
+
+  pessimistic the balancer is about load spikes when deciding replica counts and expert
+
+  placement. A higher quantile yields a larger z-score, so the risk estimate weights
+
+  tail/peak load more heavily, biasing the planner toward more replicas and more
+
+  aggressive rebalancing; a lower quantile (closer to 0.5) yields a smaller z-score and
+
+  a more mean-driven, conservative plan. Because the resulting plan changes expert
+
+  placement and replica counts across ranks, it indirectly affects per-rank compute
+
+  balance, all-to-all/HCCL communication volume, and therefore decode throughput and
+
+  tail latency on Ascend NPU. The effect is indirect (it does not itself allocate memory
+
+  or set parallelism), hence medium impact. It only matters when the MRv2 STAIR EPLB
+
+  policy is active; otherwise it is inert.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:219
+  context: 'Field definition load_risk_quantile: float = 0.75 inside StairConfig'
+- file: vllm_ascend/ascend_config.py:229
+  context: z_score property converts the quantile to a z-score via NormalDist().inv_cdf for mean-plus-deviation risk
+- file: vllm_ascend/ascend_config.py:244
+  context: model_validator enforces 0.5 < load_risk_quantile < 1 and finiteness
+- file: tests/ut/test_ascend_config.py:215
+  context: Unit test overriding load_risk_quantile to 0.9 and checking z_score equals NormalDist().inv_cdf(0.9)
+related_parameters:
+- name: additional_config.eplb_config.stair_config.load_window_bins
+  relation: Controls the load window that feeds the risk statistics; the quantile is applied to the same load samples.
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Hysteresis threshold that decides whether a rebalance is triggered; interacts with the risk-driven plan.
+- name: additional_config.eplb_config.stair_config.absolute_balance_threshold
+  relation: Absolute balance trigger; combined with the risk estimate to decide rebalancing.
+- name: additional_config.eplb_config.stair_config.replica_search_num_stages
+  relation: Replica search consumes the risk-ordered expert groups derived from the z-score.
+- name: additional_config.eplb_config.stair_config.replica_search_beam_size
+  relation: Beam size of the replica search that operates on risk-ordered candidates.
+constraints:
+- load_risk_quantile must be strictly greater than 0.5 and strictly less than 1.0, otherwise a ValueError is raised.
+- load_risk_quantile must be a finite number; NaN or infinity is rejected.
+- STAIR numeric fields must not be booleans; passing true/false raises a ValueError.
+tuning_advice:
+  summary: 'Keep the default 0.75 for most workloads; raise toward 0.85-0.95 when expert load is
+
+    bursty/skewed to make the STAIR planner more tail-risk aware, and lower toward
+
+    0.6-0.7 when load is stable to avoid over-replication and excess rebalancing.
+
+    '
+  suggested_values:
+  - scenario: Stable, near-uniform expert load (low variance across ranks)
+    value: 0.65
+    reason: A smaller z-score keeps the plan mean-driven, avoiding unnecessary extra replicas and rebalancing churn that would
+      add HCCL transfer overhead.
+  - scenario: Default / general-purpose MoE serving
+    value: 0.75
+    reason: Default value; balanced tradeoff between tail-risk protection and rebalancing cost.
+  - scenario: Bursty or highly skewed expert load (hot experts, imbalanced routing)
+    value: 0.9
+    reason: Higher quantile increases the z-score, weighting peak load more heavily so the planner provisions more replicas
+      and balances hot experts, reducing straggler ranks and tail latency.
+  - scenario: Extreme tail-risk protection with abundant spare NPU memory for replicas
+    value: 0.95
+    reason: Approaches the upper bound (must stay < 1.0); maximizes peak-load weighting at the cost of more replicas and more
+      frequent rebalancing.
+  caveats:
+  - Only takes effect when the MRv2 STAIR EPLB policy is enabled; otherwise the value is inert.
+  - Higher values increase replica counts and rebalancing aggressiveness, which raises cross-rank/cross-node expert transfer
+    (HCCL) volume and memory for replicas.
+  - Values must stay strictly below 1.0; 1.0 or above raises a ValueError at config validation.
+  - Interacts with relative_balance_threshold and absolute_balance_threshold — tune them together to avoid excessive rebalancing.
+  quick_guide: Default 0.75; raise to 0.85-0.95 for bursty/skewed expert load, lower to ~0.65 for stable load.
+analysis_date: '2026-10-27'

@@ -1,0 +1,71 @@
+name: profiler.torch_profiler_with_flops
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:212
+- vllm/profiler/wrapper.py:252
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag is passed directly to torch.profiler.profile(with_flops=...) in
+
+  vllm/profiler/wrapper.py:252. When enabled, PyTorch''s profiler computes FLOPs for
+
+  each profiled operator, which requires additional per-op bookkeeping and, on some
+
+  backends, extra kernel/operator analysis during the profiling window. This adds
+
+  overhead only while the profiler is active (during the active_iterations window),
+
+  increasing trace collection latency and trace size/memory. It does NOT affect
+
+  steady-state inference throughput when profiling is disabled. On Ascend NPU, FLOPs
+
+  computation relies on PyTorch operator metadata; for custom Ascend/CANN kernels the
+
+  FLOPs estimate may be unavailable or inaccurate, so the added cost may yield little
+
+  useful data. No vllm-ascend override of this parameter was found; it is consumed
+
+  purely by the upstream torch profiler wrapper.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:212
+  context: Logged in debug output of profiler config (record_shapes, profile_memory, with_stack, with_flops).
+- file: vllm/profiler/wrapper.py:252
+  context: Passed as with_flops to torch.profiler.profile(), enabling FLOPs counting during profiling.
+related_parameters:
+- name: profiler.torch_profiler_record_shapes
+  relation: Both are torch.profiler options; record_shapes is often needed for meaningful FLOPs attribution.
+- name: profiler.torch_profiler_with_stack
+  relation: Sibling torch.profiler option adding per-op overhead; combined they increase trace cost.
+- name: profiler.torch_profiler_with_memory
+  relation: Sibling torch.profiler option; enabling multiple options compounds profiling overhead.
+- name: profiler.active_iterations
+  relation: Determines how many iterations FLOPs counting overhead is incurred.
+constraints:
+- Only takes effect when the torch profiler is enabled (profiler config set to torch).
+- FLOPs values for Ascend custom/CANN operators may be missing or inaccurate since PyTorch relies on operator metadata for
+  FLOPs estimation.
+tuning_advice:
+  summary: Leave disabled unless you specifically need FLOPs attribution; enable only for short profiling windows.
+  suggested_values:
+  - scenario: Normal profiling for latency/throughput analysis
+    value: false
+    reason: Avoids extra per-op FLOPs bookkeeping overhead and larger traces; not needed for timing analysis.
+  - scenario: Compute-bound analysis needing FLOPs per operator (GPU-like ops)
+    value: true
+    reason: Provides FLOPs attribution, but expect incomplete data for Ascend custom kernels; use with small active_iterations.
+  caveats:
+  - FLOPs data for Ascend CANN custom operators may be unavailable or inaccurate.
+  - Combined with record_shapes/with_stack/with_memory, profiling overhead compounds significantly.
+  quick_guide: Keep false unless you need FLOPs; if enabled, profile only a few active iterations.
+analysis_date: '2026-10-27'

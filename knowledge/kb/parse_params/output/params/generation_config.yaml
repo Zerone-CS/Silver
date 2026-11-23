@@ -1,0 +1,113 @@
+name: --generation-config
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:330
+- vllm/engine/arg_utils.py:723
+- vllm/engine/arg_utils.py:946
+- vllm/v1/engine/input_processor.py:55
+- vllm/v1/engine/input_processor.py:373
+- vllm/entrypoints/openai/chat_completion/serving.py:176
+- vllm/entrypoints/openai/completion/serving.py:84
+- vllm_ascend/models/gemma4_mm.py:178
+value_type: str
+default: auto
+valid_choices: auto | vllm | <folder path to a generation config>
+cli_example: --generation-config vllm
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This parameter selects where the model's generation_config.json is loaded from\n(vllm/config/model.py:330).\
+  \ It does not touch the NPU compute path directly, but\nit changes the default SamplingParams applied to every request,\
+  \ which in turn\naffects runtime behavior:\n\n1. In vLLM v1, InputProcessor.__init__ calls\n   model_config.try_get_generation_config()\
+  \ once (vllm/v1/engine/input_processor.py:55)\n   and stores the resulting dict as self.generation_config_fields. On every\
+  \ request,\n   process_inputs calls sampling_params.update_from_generation_config(...)\n   (vllm/v1/engine/input_processor.py:373),\
+  \ merging fields such as max_new_tokens,\n   temperature, top_p, stop_token_ids, suppress_tokens, etc. into the request's\n\
+  \   SamplingParams. So the value of this flag determines the default sampling\n   behavior (e.g. max_tokens cap, stop tokens)\
+  \ that the scheduler sees.\n\n2. The OpenAI serving layers read mc.generation_config to decide whether to\n   honor a server-wide\
+  \ max_tokens override\n   (vllm/entrypoints/openai/chat_completion/serving.py:176,\n    vllm/entrypoints/openai/completion/serving.py:84).\
+  \ When generation_config is\n   a folder path (not \"auto\"/\"vllm\"), the model's max_new_tokens becomes a\n   server-wide\
+  \ output-token cap; when it is \"auto\" or \"vllm\", only\n   override_generation_config.max_new_tokens is used. A smaller\
+  \ max_tokens cap\n   reduces decode steps per request, which directly reduces NPU decode time and\n   KV-cache growth, so\
+  \ it can raise throughput at the cost of shorter outputs.\n\n3. On Ascend, vllm_ascend/models/gemma4_mm.py:178 calls\n \
+  \  vllm_config.model_config.try_get_generation_config() to read\n   suppress_tokens from the loaded generation config. This\
+  \ is a model-side\n   post-processing hook (token suppression) that runs on the NPU output logits;\n   it is a per-step\
+  \ O(vocab) mask operation, negligible compared to the model\n   forward, but it does mean the loaded generation config influences\
+  \ the\n   sampling path on Ascend for Gemma4 multimodal models.\n\nNet effect: \"this is a configuration/behavioral parameter,\
+  \ not a kernel or\"\nmemory-layout parameter. It does not change graph capture, HCCL, or KV-cache\nallocation. Its performance\
+  \ impact is indirect and small — it can shift\neffective max_tokens / stop conditions, which changes decode length and thus\n\
+  latency/throughput, but it does not alter the per-token cost of the NPU\nforward pass. Hence \"low\".\n"
+usage_locations:
+- file: vllm/config/model.py:330
+  context: Field definition and docstring for generation_config (default 'auto').
+- file: vllm/engine/arg_utils.py:723
+  context: EngineArgs field bound to ModelConfig.generation_config.
+- file: vllm/engine/arg_utils.py:946
+  context: CLI registration of --generation-config in the ModelConfig argument group.
+- file: vllm/v1/engine/input_processor.py:55
+  context: Loads generation config fields once at InputProcessor init.
+- file: vllm/v1/engine/input_processor.py:373
+  context: Per-request merge of generation config into SamplingParams.
+- file: vllm/entrypoints/openai/chat_completion/serving.py:176
+  context: Decides server-wide max_tokens override based on generation_config value.
+- file: vllm/entrypoints/openai/completion/serving.py:84
+  context: Same max_tokens override logic for the completions endpoint.
+- file: vllm_ascend/models/gemma4_mm.py:178
+  context: Ascend Gemma4 multimodal model reads suppress_tokens from the loaded generation config.
+related_parameters:
+- name: --override-generation-config
+  relation: Merged with the loaded generation config when --generation-config is 'auto'; when 'vllm', only the override dict
+    is used.
+- name: --max-model-len
+  relation: If generation config sets max_new_tokens, it caps output tokens independently of max_model_len; the effective
+    per-request limit is the smaller of the two.
+- name: --tokenizer
+  relation: SamplingParams.update_from_tokenizer is applied after update_from_generation_config, so tokenizer-derived stop
+    tokens can interact with generation-config stop tokens.
+- name: --hf-config-path
+  relation: Both are model-metadata loading paths; generation config is resolved relative to the model path unless a folder
+    is given.
+constraints:
+- The value must be either the literal string 'auto', the literal string 'vllm', or a valid folder path containing a generation
+  config; any other string is treated as a folder path and will fail to load if the folder does not exist.
+- When set to 'vllm', no generation config is loaded from the model and vLLM built-in defaults are used.
+- When set to 'auto', the generation config is loaded from the model path; if the model has no generation_config.json, vLLM
+  defaults are used.
+- If max_new_tokens is specified in the loaded generation config, it becomes a server-wide limit on the number of output tokens
+  for all requests.
+tuning_advice:
+  summary: 'Use ''vllm'' when you want deterministic vLLM defaults and to avoid the model''s
+
+    generation_config.json silently capping output length or injecting stop tokens;
+
+    use ''auto'' (default) when you want the model''s published sampling defaults.
+
+    '
+  suggested_values:
+  - scenario: Benchmarking or accuracy evaluation where you want vLLM defaults and no model-imposed max_tokens cap
+    value: vllm
+    reason: Skips loading the model's generation_config.json, so no server-wide max_new_tokens cap or model-specific stop/suppress
+      tokens are injected; this is the value used in vllm-ascend e2e tests (e.g. tests/e2e/pull_request/one_card/model_runner_v2/test_qwen3_8B.py:82)
+      and recommended in the Dots3-Note tutorial.
+  - scenario: Production serving where you want the model's published sampling defaults (temperature, top_p, stop tokens)
+    value: auto
+    reason: Loads generation_config.json from the model path and merges it into every request's SamplingParams via update_from_generation_config;
+      matches the model author's intended defaults.
+  - scenario: You need a server-wide output-token cap to bound decode latency on NPU
+    value: <folder path containing generation_config.json with max_new_tokens>
+    reason: When generation_config is a folder path (not 'auto'/'vllm'), the OpenAI serving layer uses the loaded max_tokens
+      as a server-wide override (serving.py:176/84), capping decode steps and reducing NPU decode time and KV-cache growth.
+  caveats:
+  - Setting 'auto' with a model whose generation_config.json contains a small max_new_tokens will silently cap all request
+    outputs, which can look like a throughput win but truncates responses.
+  - On Ascend, vllm_ascend/models/gemma4_mm.py:178 reads suppress_tokens from the loaded generation config; switching to 'vllm'
+    disables that model-side token suppression for Gemma4 multimodal models.
+  - This parameter does not change graph capture, HCCL, or KV-cache allocation; do not expect it to move NPU throughput materially
+    beyond its effect on effective max_tokens/stop conditions.
+  - The generation config is loaded once at engine/InputProcessor init, so changing it requires a server restart.
+  quick_guide: Use 'vllm' for benchmarks/eval to avoid model-imposed caps; use 'auto' for production to honor the model's
+    published sampling defaults.
+analysis_date: '2026-10-27'

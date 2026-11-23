@@ -1,0 +1,92 @@
+name: ASCEND_A3_ENABLE
+type: env
+category: hardware
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/DeepSeek-V3.2.md:418
+- docs/source/tutorials/models/GLM4.x.md:397
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (unset means disabled)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'ASCEND_A3_ENABLE is not defined or read anywhere in the vllm or vllm-ascend
+
+  Python source code (no definition or usage site was found in either repo).
+
+  It appears only in vllm-ascend deployment tutorials (DeepSeek-V3.2.md and
+
+  GLM4.x.md) where it is exported alongside other Ascend/CANN environment
+
+  variables (ASCEND_AGGREGATE_ENABLE, ASCEND_TRANSPORT_PRINT, ACL_OP_INIT_MODE,
+
+  HCCL_BUFFSIZE, HCCL_OP_EXPANSION_MODE). This strongly suggests it is consumed
+
+  by the underlying CANN/HCCL runtime or the Mooncake transport layer to select
+
+  the A3 (Atlas A3 super-node) hardware topology path, rather than by vLLM
+
+  itself. Because the flag is not referenced in vLLM/vllm-ascend code, its
+
+  direct effect on vLLM scheduling, batching, or memory allocation is
+
+  negligible; any performance effect is indirect, coming from the CANN/HCCL
+
+  runtime choosing A3-specific communication kernels and topology-aware
+
+  collective algorithms. On A3 super-node deployments this can improve
+
+  inter-node collective throughput and reduce latency for large-scale
+
+  disaggregated prefill/decode (PD) setups, but the parameter itself does not
+
+  change vLLM-level behavior.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/DeepSeek-V3.2.md:418
+  context: Exported in DeepSeek-V3.2 PD-disaggregated deployment script alongside ASCEND_AGGREGATE_ENABLE and ACL_OP_INIT_MODE
+- file: docs/source/tutorials/models/GLM4.x.md:397
+  context: Exported in GLM4.x multi-node deployment script with HCCL_OP_EXPANSION_MODE=AIV and Mooncake transport
+related_parameters:
+- name: ASCEND_AGGREGATE_ENABLE
+  relation: Co-exported in the same deployment scripts; both are Ascend runtime/topology flags
+- name: ACL_OP_INIT_MODE
+  relation: Co-exported; both configure CANN operator initialization behavior
+- name: HCCL_OP_EXPANSION_MODE
+  relation: Co-exported; both influence HCCL collective communication behavior
+- name: HCCL_BUFFSIZE
+  relation: Co-exported; HCCL buffer sizing interacts with A3 topology communication
+constraints:
+- This variable is not read by vLLM or vllm-ascend Python code, so setting it has no effect on vLLM-level behavior; it only
+  matters if the underlying CANN/HCCL runtime recognizes it.
+- It should only be enabled on Atlas A3 super-node hardware; enabling it on non-A3 hardware may cause the runtime to select
+  an incompatible topology path.
+tuning_advice:
+  summary: 'Set ASCEND_A3_ENABLE=1 only when deploying on Atlas A3 super-node hardware
+
+    with multi-node PD-disaggregated serving; leave it unset otherwise.
+
+    '
+  suggested_values:
+  - scenario: Multi-node PD-disaggregated deployment on Atlas A3 super-node (DeepSeek-V3.2, GLM4.x)
+    value: '1'
+    reason: Matches the official vllm-ascend tutorials which export ASCEND_A3_ENABLE=1 for A3 deployments to let the CANN/HCCL
+      runtime use A3-specific topology-aware communication.
+  - scenario: Single-node or non-A3 (A2/Atlas 800) deployments
+    value: '0'
+    reason: The flag is not referenced in vLLM/vllm-ascend code and only applies to A3 topology; leaving it unset avoids selecting
+      an incompatible runtime path.
+  caveats:
+  - Not defined or read in vllm or vllm-ascend source; its effect (if any) is entirely within the CANN/HCCL runtime, so it
+    cannot be tuned from vLLM config.
+  - In the tutorials it is always paired with ASCEND_AGGREGATE_ENABLE=1, ACL_OP_INIT_MODE=1, and HCCL_BUFFSIZE=256; changing
+    it in isolation may not reproduce the documented performance.
+  - Because it is undocumented in code, verify actual effect via HCCL/transport logs (ASCEND_TRANSPORT_PRINT=1) rather than
+    assuming a vLLM-level speedup.
+  quick_guide: Export ASCEND_A3_ENABLE=1 only on Atlas A3 super-node multi-node deployments; otherwise leave unset.
+analysis_date: '2026-10-27'

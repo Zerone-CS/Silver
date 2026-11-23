@@ -1,0 +1,79 @@
+name: HCCL_HOST_SOCKET_PORT_RANGE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/GLM5.3-Flash.md:870
+value_type: str
+default: <computed>
+valid_choices: Port range string in the form '<start>-<end>' (e.g. '60000-60100'); must be a valid, non-overlapping TCP port
+  window
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'HCCL_HOST_SOCKET_PORT_RANGE is a CANN/HCCL runtime environment variable, not a
+
+  vLLM or vllm-ascend code parameter. It is not defined or read anywhere in the
+
+  vllm or vllm-ascend source trees (no definition or usage sites found); it is
+
+  consumed by the underlying HCCL library when establishing host-side sockets for
+
+  collective communication setup. Its effect on runtime performance is indirect:
+
+  it does not change the steady-state throughput of collective ops, but a
+
+  misconfigured or overlapping port range can cause HCCL host socket bind
+
+  conflicts across DP ranks/engines sharing a node, which manifests as slow or
+
+  blocked engine startup (and in the worst case startup failure). The vllm-ascend
+
+  GLM5.3-Flash tutorial documents the recommended practice of reserving a
+
+  disjoint 100-port window per DP rank (starting at 60000 + rank * 100) on the
+
+  Decode role so that HCCL host-side sockets do not silently share ports across
+
+  ranks. Because it only affects connection establishment / startup rather than
+
+  the hot inference path, the performance impact is low.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:870
+  context: Documented as reserving a disjoint 100-port window per DP rank (60000 + rank * 100) on Decode to prevent HCCL host-side
+    socket port sharing across ranks that can block engine startup.
+related_parameters:
+- name: HCCL_NPU_SOCKET_PORT_RANGE
+  relation: Companion HCCL socket port range variable; both are set together to reserve disjoint port windows per DP rank.
+- name: HCCL_IF_IP
+  relation: Must select the service network used by the configured node IPs; socket interface variables must be consistent
+    with it.
+- name: VLLM_HOST_IP
+  relation: Advertises the IP peers use to reach each engine for KV transfer; must be consistent with the chosen HCCL interface/network.
+constraints:
+- The port range must be a valid TCP port window and must not overlap with port ranges assigned to other DP ranks or other
+  engines sharing the same node.
+- When multiple engines or DP ranks share a node, each must be given a disjoint port window (e.g. 60000 + rank * 100) to avoid
+  HCCL host socket bind conflicts.
+- The selected ports must be allowed by the host firewall, otherwise HCCL connection setup will fail.
+tuning_advice:
+  summary: Reserve a disjoint 100-port window per DP rank/engine on shared nodes to avoid HCCL host socket conflicts during
+    startup.
+  suggested_values:
+  - scenario: Multiple DP ranks or engines sharing one node (Decode role, per GLM5.3-Flash guide)
+    value: 60000 + rank * 100 to 60000 + rank * 100 + 99
+    reason: The vllm-ascend GLM5.3-Flash tutorial reserves a disjoint 100-port window per DP rank starting at 60000 + rank
+      * 100 so HCCL host-side sockets do not silently share ports across ranks.
+  - scenario: Single engine per node with no port contention
+    value: 60000-60100
+    reason: A single fixed 100-port window is sufficient when no other engine/rank competes for the same ports.
+  caveats:
+  - Set HCCL_HOST_SOCKET_PORT_RANGE together with HCCL_NPU_SOCKET_PORT_RANGE to keep host and NPU socket windows disjoint.
+  - Ensure the chosen ports are open in the host firewall and consistent with HCCL_IF_IP / VLLM_HOST_IP network selection.
+  - This is a startup-reliability knob, not a throughput knob; do not expect latency/throughput gains from tuning it.
+  quick_guide: Give each DP rank/engine a unique 100-port window (60000 + rank*100) when sharing a node.
+analysis_date: '2026-10-27'

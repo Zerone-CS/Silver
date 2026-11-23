@@ -1,0 +1,97 @@
+name: --master-port
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:284
+- vllm/engine/arg_utils.py:1062
+- vllm/engine/arg_utils.py:2351
+- vllm_ascend/distributed/weight_transfer/hccl_engine.py:35
+value_type: int
+default: 29501
+valid_choices: 1-65535 (valid TCP port range)
+cli_example: --master-port 29501
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--master-port sets ParallelConfig.master_port (default 29501), the TCP port used by the
+
+  distributed master (rank 0) for multi-node distributed inference when
+
+  --distributed-executor-backend is mp. It is passed through EngineArgs.create_engine_config
+
+  into ParallelConfig (vllm/engine/arg_utils.py:2351) and consumed during torch.distributed
+
+  process-group bootstrap (gloo/HCCL rendezvous) on Ascend. The port value itself does not
+
+  change compute throughput or memory; it only affects whether the rendezvous succeeds and
+
+  how quickly workers connect. A wrong/occupied port causes startup failure or retries
+
+  (latency), not steady-state performance degradation. On Ascend, the same master address/port
+
+  pair is also used by vllm-ascend''s HCCL weight-transfer engine
+
+  (vllm_ascend/distributed/weight_transfer/hccl_engine.py:35,165) where master_port is part of
+
+  HCCLWeightTransferInitInfo and passed to _stateless_init_process_group for the trainer-worker
+
+  HCCL group. There is no vllm-ascend override of the default value; the Ascend docs
+
+  (pipeline_parallel.md, GLM5.2.md) simply require identical --master-addr/--master-port on all
+
+  nodes and show --master-port 7060 in a PP2 multi-node example.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:284
+  context: ParallelConfig.master_port field definition with docstring for mp multi-node inference
+- file: vllm/engine/arg_utils.py:1062
+  context: CLI argument registration in ParallelConfig argument group
+- file: vllm/engine/arg_utils.py:2351
+  context: Passed into ParallelConfig during engine config construction
+- file: vllm_ascend/distributed/weight_transfer/hccl_engine.py:165
+  context: master_port used to init stateless HCCL process group for weight transfer
+- file: examples/offline_external_launcher.py:246
+  context: 'Ascend example: get_open_port() for single node, args.master_port for multi-node'
+related_parameters:
+- name: --master-addr
+  relation: Companion address; must point to the rank-0 node and be identical across nodes
+- name: --nnodes
+  relation: Multi-node count; master-port is only meaningful when nnodes > 1
+- name: --node-rank
+  relation: Each node must have a unique rank 0..nnodes-1 while sharing the same master-port
+- name: --distributed-executor-backend
+  relation: master-port applies when backend is mp (not ray)
+- name: --data-parallel-rpc-port
+  relation: Separate DP RPC port (default 29550); must not collide with master-port
+constraints:
+- The value must be a valid TCP port in the range 1-65535.
+- All nodes in a multi-node mp deployment must use identical --master-addr and --master-port values.
+- The port must be free on the master node; an occupied port causes distributed initialization to fail.
+- master-port only takes effect for multi-node distributed inference when --distributed-executor-backend is mp.
+tuning_advice:
+  summary: Pick a free, firewall-open port and keep it identical across all nodes; it affects startup reliability, not steady-state
+    throughput.
+  suggested_values:
+  - scenario: Single-node deployment
+    value: 29501
+    reason: Default is fine; the port is unused for single-node runs and vllm-ascend examples auto-select a free port via
+      get_open_port().
+  - scenario: Multi-node PP/TP with mp executor (e.g. PP2 across two nodes)
+    value: 7060
+    reason: vllm-ascend GLM5.2 doc uses --master-port 7060 with --distributed-executor-backend mp; any free port works as
+      long as all nodes match.
+  - scenario: Port collision with data-parallel RPC
+    value: 29511
+    reason: Avoid clashing with --data-parallel-rpc-port (default 29550) and other services by choosing a distinct free port.
+  caveats:
+  - A wrong or occupied master-port causes startup hangs/retries (latency), not steady-state slowdown; it does not change
+    tokens/sec or memory once running.
+  - On Ascend the same master address/port is reused by the HCCL weight-transfer engine, so ensure the port is reachable from
+    the trainer and all workers.
+  - Ensure the chosen port is open through any firewall/security group between nodes, otherwise HCCL/gloo rendezvous will
+    time out.
+  quick_guide: Set a free, firewall-open port identical on all nodes; default 29501 is fine for single-node.
+analysis_date: '2026-10-27'

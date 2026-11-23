@@ -1,0 +1,95 @@
+name: speculative.draft_model_config
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm_ascend/platform.py:1733
+- vllm_ascend/worker/model_runner_v1.py:778
+- vllm_ascend/worker/v2/spec_decode/__init__.py:47
+- vllm_ascend/ascend_forward_context.py:148
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:560
+- vllm/v1/spec_decode/llm_base_proposer.py:83
+- vllm/v1/worker/gpu/spec_decode/__init__.py:18
+value_type: dict
+default: null
+valid_choices: A ModelConfig object (or dict of ModelConfig overrides such as hf_config) describing the draft/speculative
+  model; null when no draft model is used
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "draft_model_config is the resolved ModelConfig of the speculative draft model (eagle/MTP/dflash/dspark/extract_hidden_states).\n\
+  It is not a tunable scalar but the object that determines the entire draft-model execution path, so it has high\nperformance\
+  \ impact on Ascend NPU:\n- \"In vllm_ascend/worker/v2/spec_decode/__init__.py:47 the draft model's `architectures` field\
+  \ selects which Ascend\"\n  speculator is instantiated (AscendDFlash2Speculator vs AscendDFlashSpeculator), directly changing\
+  \ the draft loop\n  implementation and its latency.\n- \"In vllm_ascend/worker/model_runner_v1.py:778-813 the draft hf_config\
+  \ (eagle_config.use_aux_hidden_state,\"\n  dspark_target_layer_ids / target_layer_ids) decides whether auxiliary hidden\
+  \ states are passed to the draft model,\n  which changes the hidden-state buffer size and the amount of data copied per\
+  \ step (memory + latency).\n- \"In vllm_ascend/ascend_forward_context.py:148 the draft model's `draft_moe_quant_type` is\
+  \ read to select the MoE\"\n  communication method for the draft model, affecting HCCL communication cost of the draft forward\
+  \ pass.\n- \"In vllm_ascend/platform.py:1733 the draft model's `use_mla` and head configuration are validated against\"\n\
+  \  decode/prefill context parallelism; an incompatible draft config raises at startup.\n- \"In vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:560\
+  \ the draft model's `num_hidden_layers`\"\n  determines how many draft KV-cache layers must be transferred over the KV connector,\
+  \ affecting PD-disaggregation\n  transfer bandwidth and memory.\n- \"Upstream (vllm/v1/spec_decode/llm_base_proposer.py:83-108)\
+  \ the draft model's hidden_size / inputs_embeds_size\"\n  size the hidden-state buffers used every speculative step, so\
+  \ a larger draft model increases per-step memory and\n  latency.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1733
+  context: Validates draft model MLA/head config against decode/prefill context parallel size; raises if incompatible
+- file: vllm_ascend/worker/model_runner_v1.py:778
+  context: Reads draft hf_config eagle_config.use_aux_hidden_state to decide aux hidden-state passing
+- file: vllm_ascend/worker/model_runner_v1.py:808
+  context: Reads draft hf_config architectures/model_type to detect Qwen3 GQA dspark draft
+- file: vllm_ascend/worker/v2/spec_decode/__init__.py:47
+  context: Selects Ascend DFlash2 vs DFlash speculator based on draft architectures
+- file: vllm_ascend/ascend_forward_context.py:148
+  context: Reads draft_moe_quant_type to select MoE communication method for draft model
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:560
+  context: Uses draft hf_config.num_hidden_layers to size draft KV-cache transfer
+- file: vllm/v1/spec_decode/llm_base_proposer.py:83
+  context: Upstream base proposer reads draft hidden_size/inputs_embeds_size to size buffers
+related_parameters:
+- name: speculative_config.method
+  relation: Determines which draft model / speculator is used and how draft_model_config is interpreted
+- name: speculative_config.num_speculative_tokens
+  relation: Number of draft tokens per step; interacts with draft model size for latency/throughput
+- name: speculative_config.draft_tensor_parallel_size
+  relation: Draft TP size validated against draft model head config in platform.py
+- name: decode_context_parallel_size
+  relation: Draft model GQA/MQA head config must be compatible with DCP size
+- name: prefill_context_parallel_size
+  relation: Draft model head config validated against PCP size
+- name: enable_eplb
+  relation: Draft MoE model can be registered into EPLB state (upstream eplb_utils)
+constraints:
+- When decode-context-parallel-size > 1 and the draft model is not MLA, the draft model's GQA/MQA head configuration must
+  be compatible with the decode/prefill context parallel sizes or startup raises an error.
+- Dynamic speculative decoding (num_speculative_tokens_per_batch_size) cannot be combined with decode context parallelism
+  on vLLM Ascend.
+- For the extract_hidden_states method, the draft model config must set eagle_aux_hidden_state_layer_ids or initialization
+  raises a ValueError.
+- For DSpark prefix caching, a loaded draft model configuration is required or a ValueError is raised.
+- Elastic EP is not supported together with a draft model.
+tuning_advice:
+  summary: Choose the smallest draft model that still yields acceptable acceptance rate; keep draft head config compatible
+    with context-parallel settings and avoid unnecessary aux hidden-state passing.
+  suggested_values:
+  - scenario: MTP / eagle3 on Ascend with default TP and no context parallelism
+    value: Use the model's built-in MTP/eagle draft head (draft_model_config left to the model default)
+    reason: Built-in draft heads are smallest and avoid extra KV-cache transfer and buffer overhead.
+  - scenario: extract_hidden_states method
+    value: '{"hf_config": {"eagle_aux_hidden_state_layer_ids": [2, 18, 34]}}'
+    reason: Documented example; layer ids must be set or initialization fails, and num_speculative_tokens must be 1.
+  - scenario: Decode context parallelism enabled (decode-context-parallel-size > 1)
+    value: Use an MLA draft model or a draft head config compatible with the DCP/PCP sizes
+    reason: Non-MLA draft models are validated against GQA/MQA head-sharding rules and raise if incompatible.
+  caveats:
+  - Verify the draft model architectures string matches the intended Ascend speculator to avoid unexpected draft-loop implementations.
+  - On PD-disaggregation, draft num_hidden_layers directly increases KV transfer volume; prefer shallow draft models.
+  - Do not combine dynamic speculative decoding with decode context parallelism on Ascend.
+  quick_guide: Pick the smallest compatible draft model, set required hf_config fields (e.g. eagle_aux_hidden_state_layer_ids),
+    and keep it consistent with your context-parallel and KV-transfer setup.
+analysis_date: '2026-10-27'

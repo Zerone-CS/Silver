@@ -1,0 +1,88 @@
+name: VLLM_KIMI_K3_SHARD_SP_SHARED_EXPERT
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:1589
+- vllm/envs.py:211
+- vllm/models/kimi_k3/nvidia/model.py:146
+- vllm/models/kimi_k3/nvidia/model.py:222
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via int(), any non-zero int is truthy)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag is read only in vllm/models/kimi_k3/nvidia/model.py (shard_sequence_parallel_mlp and
+
+  KimiMLP). It is a Kimi-K3-only, NVIDIA-path (SM100/NVLink) optimization: when enabled and the
+
+  MLP is under sequence parallelism, the dense/shared-expert MLP weights are TP-sharded instead of
+
+  replicated. The forward then all-gathers the full token set, computes a partial, and
+
+  reduce-scatters. This trades weight bandwidth and resident memory for two extra collectives per
+
+  layer, and per the envs.py comment it "only wins at low token counts" and is "intended for decode
+
+  instances in a P/D disaggregated deployment, not for prefill or unified serving."
+
+  There is NO reference to this env var anywhere in vllm-ascend, and the only implementation lives
+
+  in the nvidia model path (vllm/models/kimi_k3/nvidia/model.py). On Ascend NPU the Kimi-K3 model
+
+  would use a different (ascend) model implementation, so this flag has no effect on Ascend runtime
+
+  performance. It is included here for completeness because it is a real upstream env var, but it
+
+  does not influence Ascend NPU latency, throughput, or memory.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1589
+  context: Environment variable definition, default 0 (disabled).
+- file: vllm/envs.py:211
+  context: 'Type annotation VLLM_KIMI_K3_SHARD_SP_SHARED_EXPERT: bool = False.'
+- file: vllm/models/kimi_k3/nvidia/model.py:146
+  context: shard_sequence_parallel_mlp reads envs.VLLM_KIMI_K3_SHARD_SP_SHARED_EXPERT to gate TP-sharding of the SP MLP.
+- file: vllm/models/kimi_k3/nvidia/model.py:222
+  context: KimiMLP docstring describing the shard-vs-replicate trade-off controlled by this flag.
+related_parameters:
+- name: VLLM_KIMI_K3_GEMM_RS
+  relation: Related Kimi-K3 sequence-parallel collective optimization; both target SP row-parallel/MLP paths.
+- name: VLLM_KIMI_K3_GEMM_AR
+  relation: Related Kimi-K3 GEMM-AR kernel flag; same NVLink-domain requirement family.
+constraints:
+- Only takes effect when sequence parallelism is active for the MLP (use_sequence_parallel must be true).
+- Only takes effect when the MLP is marked eligible (can_shard_sequence_parallel) and the flag is enabled.
+- Requires tensor-parallel size greater than 1.
+- Requires both intermediate_size and hidden_size to be divisible by the tensor-parallel size.
+- This is a Kimi-K3-only flag implemented in the NVIDIA model path; it has no effect on Ascend NPU.
+tuning_advice:
+  summary: 'No Ascend tuning needed — this flag only affects the NVIDIA Kimi-K3 model path and is a no-op
+
+    on Ascend NPU. On NVIDIA it is a decode-only, P/D-disaggregated optimization.
+
+    '
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: 0
+    reason: The flag is not referenced in vllm-ascend and only gates the nvidia Kimi-K3 MLP path, so it has no runtime effect
+      on Ascend; leave at default.
+  - scenario: NVIDIA Kimi-K3 decode instance in P/D disaggregated serving with SP MoE
+    value: 1
+    reason: Shards the replicated dense/shared-expert MLP weights across TP, reducing weight bandwidth and resident memory
+      at low token counts.
+  - scenario: NVIDIA Kimi-K3 prefill or unified serving
+    value: 0
+    reason: The two extra collectives per layer outweigh the weight-bandwidth savings at high token counts; the envs.py comment
+      explicitly says it is not for prefill or unified serving.
+  caveats:
+  - Enabling adds two collectives (all-gather + reduce-scatter) per layer, which only pays off at low token counts (decode).
+  - Requires intermediate_size and hidden_size divisible by TP size, otherwise sharding is silently skipped.
+  - No effect on Ascend NPU — do not expect any latency/throughput/memory change from setting this on vllm-ascend.
+  quick_guide: 'Ascend: ignore (no-op). NVIDIA Kimi-K3 decode-only: set to 1; otherwise leave 0.'
+analysis_date: '2026-10-27'

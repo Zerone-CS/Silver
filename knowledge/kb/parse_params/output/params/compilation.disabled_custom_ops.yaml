@@ -1,0 +1,86 @@
+name: compilation.disabled_custom_ops
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/model_executor/custom_op.py:189
+- vllm/model_executor/hw_agnostic/custom_op.py:163
+value_type: list[str]
+default: <computed>
+valid_choices: Any subset of registered CustomOp class names (e.g. rms_norm, silu_and_mul, rotary_embedding, fused_moe, unified_attention)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'compilation.disabled_custom_ops is a runtime-populated set on CompilationConfig that records
+
+  which CustomOp subclasses have been disabled (i.e. their `enabled()` returned False or they
+
+  were not force-enabled). It is written by CustomOp.dispatch_forward() in
+
+  vllm/model_executor/custom_op.py:189 (and the hw-agnostic variant at
+
+  vllm/model_executor/hw_agnostic/custom_op.py:163) whenever `enabled = self._enforce_enable or
+
+  self.enabled()` evaluates to False. When an op is disabled, dispatch_forward returns
+
+  `self.maybe_compile(self.forward_native, enable=compile_native)` instead of the platform
+
+  forward (forward_cuda / forward_oot). On Ascend, vllm-ascend registers its own OOT custom ops
+
+  (forward_oot) for many kernels; if such an op is disabled, execution falls back to the
+
+  PyTorch-native reference implementation, which is typically much slower (no fused NPU kernel,
+
+  more memory traffic, extra eager torch ops). The set itself is bookkeeping used by the
+
+  compilation config to track enabled/disabled ops; the performance effect comes from the
+
+  dispatch decision it records. Disabling a hot op (e.g. rms_norm, silu_and_mul, rotary_embedding,
+
+  fused_moe) directly increases per-token latency and reduces throughput on NPU. The set is
+
+  populated automatically from each op''s `enabled()` method, so users normally do not set it
+
+  directly; it reflects the outcome of op enablement logic.
+
+  '
+usage_locations:
+- file: vllm/model_executor/custom_op.py:189
+  context: dispatch_forward records the op name into disabled_custom_ops when the op is not enabled, then falls back to maybe_compile(forward_native).
+- file: vllm/model_executor/hw_agnostic/custom_op.py:163
+  context: hw-agnostic CustomOp dispatch records disabled ops and falls back to forward_native when not enabled.
+related_parameters:
+- name: compilation.enabled_custom_ops
+  relation: Complementary set; an op is recorded in exactly one of enabled_custom_ops or disabled_custom_ops depending on
+    its enabled() result.
+- name: compilation.level
+  relation: Controls whether torch.compile / graph compilation is active; interacts with maybe_compile fallback path for disabled
+    ops.
+- name: compilation.compile_native
+  relation: Passed as compile_native to dispatch_forward; determines whether the native fallback of a disabled op is itself
+    compiled.
+constraints:
+- This set is populated automatically by CustomOp.dispatch_forward from each op's enabled() result; it is not intended to
+  be set directly by users.
+- An op name appears in disabled_custom_ops only when its enabled() returns False and it is not force-enabled via _enforce_enable.
+tuning_advice:
+  summary: Do not set this directly; instead ensure Ascend OOT custom ops remain enabled so hot kernels use fused NPU implementations
+    rather than the slower PyTorch-native fallback.
+  suggested_values:
+  - scenario: Default Ascend deployment (v1 and v2 workers)
+    value: <leave unset; let enabled() populate it>
+    reason: The set is derived from op enablement; forcing entries disables fused NPU kernels and degrades latency/throughput.
+  - scenario: Debugging numerical issues in a specific fused op
+    value: '["<op_name>"]'
+    reason: Temporarily disabling a single op forces the native reference path to isolate correctness bugs, at a performance
+      cost.
+  caveats:
+  - Disabling hot ops (rms_norm, silu_and_mul, rotary_embedding, fused_moe) on Ascend removes fused NPU kernels and significantly
+    increases latency.
+  - vllm-ascend registers OOT custom ops via forward_oot; disabling them routes to forward_native, which is not NPU-optimized.
+  - The set is bookkeeping populated at dispatch time; manually editing it may not match actual dispatch behavior.
+  quick_guide: Leave compilation.disabled_custom_ops unset; keep Ascend custom ops enabled for best NPU performance.
+analysis_date: '2026-10-27'

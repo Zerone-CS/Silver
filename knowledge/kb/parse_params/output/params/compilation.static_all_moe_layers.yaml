@@ -1,0 +1,79 @@
+name: compilation.static_all_moe_layers
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/forward_context.py:234
+- vllm/model_executor/layers/fused_moe/runner/moe_runner.py:68
+- vllm_ascend/spec_decode/utils.py:247
+- vllm_ascend/model_loader/rfork/rfork_loader.py:259
+- vllm_ascend/model_loader/netloader/netloader.py:319
+value_type: list[str]
+default: <computed>
+valid_choices: A list of MoE layer name strings, populated at model construction time by register_layer_for_moe_forward_op;
+  not user-settable directly.
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: "This is an internal registry (not a user-facing knob) that collects the names of all MoE\nlayers in the model.\
+  \ It is populated in vLLM upstream by\nregister_layer_for_moe_forward_op (moe_runner.py:68), which appends each MoE layer\
+  \ prefix\nto compilation_config.static_all_moe_layers alongside registering it in\nstatic_forward_context.\n\nIts only runtime\
+  \ performance-relevant use in upstream is in create_forward_context\n(forward_context.py:234): when compilation_config.fast_moe_cold_start\
+  \ is True, the\nall_moe_layers list is passed into ForwardContext so the fused-MoE path can iterate MoE\nlayers directly\
+  \ (e.g. for cold-start / fast MoE dispatch). When fast_moe_cold_start is\nFalse, all_moe_layers is set to None and this\
+  \ list has no runtime effect. Thus the list\nitself does not change kernel behavior; it only enables an optimization gated\
+  \ by\nfast_moe_cold_start.\n\nOn Ascend, vllm-ascend does not override the semantics of this list for performance; it\n\
+  only reads/snapshots it for correctness during model (re)loading:\n- \"vllm_ascend/spec_decode/utils.py:247 copies static_all_moe_layers\
+  \ from the target\"\n  compilation config into the draft (eager) compilation config so that model layers that\n  consult\
+  \ the registry still see it even when compilation is disabled for the draft model.\n- \"vllm_ascend/model_loader/rfork/rfork_loader.py:259\
+  \ and\"\n  vllm_ascend/model_loader/netloader/netloader.py:319 snapshot and restore the list so\n  that a failed/fallback\
+  \ model load does not corrupt the shared MoE registry.\nThese are correctness/robustness paths, not throughput paths, so\
+  \ the direct Ascend\nperformance impact is low.\n"
+usage_locations:
+- file: vllm/forward_context.py:234
+  context: Reads static_all_moe_layers into ForwardContext.all_moe_layers only when fast_moe_cold_start is enabled.
+- file: vllm/model_executor/layers/fused_moe/runner/moe_runner.py:68
+  context: Appends each MoE layer prefix to static_all_moe_layers during MoE layer registration.
+- file: vllm_ascend/spec_decode/utils.py:247
+  context: Copies static_all_moe_layers into the draft compilation config for eager spec-decode context.
+- file: vllm_ascend/model_loader/rfork/rfork_loader.py:259
+  context: Snapshots static_all_moe_layers before model construction to allow clean fallback restore.
+- file: vllm_ascend/model_loader/netloader/netloader.py:319
+  context: Snapshots static_all_moe_layers so fallback preserves existing target MoE layers.
+related_parameters:
+- name: compilation.fast_moe_cold_start
+  relation: Gates whether static_all_moe_layers is actually consumed at runtime in create_forward_context; if False the list
+    is ignored.
+- name: compilation.static_forward_context
+  relation: Populated together with static_all_moe_layers during MoE layer registration; both are snapshotted/restored together
+    by vllm-ascend loaders.
+- name: compilation.mode
+  relation: When compilation is disabled (CompilationMode.NONE) for the draft model, vllm-ascend still copies static_all_moe_layers
+    so layers can consult the registry.
+constraints:
+- static_all_moe_layers is an internal registry populated automatically at model construction; it is not a user-settable CLI/config
+  option.
+- A MoE layer name must not already exist in static_forward_context when registered, otherwise a duplicate-layer ValueError
+  is raised.
+- The list is only consumed at runtime when compilation.fast_moe_cold_start is enabled; otherwise it has no effect on forward
+  execution.
+tuning_advice:
+  summary: Do not tune this internal registry directly; control MoE cold-start behavior via compilation.fast_moe_cold_start
+    instead.
+  suggested_values:
+  - scenario: Default MoE model serving on Ascend
+    value: <leave as auto-populated>
+    reason: The list is filled automatically by MoE layer registration; no manual configuration is needed or supported.
+  - scenario: Enabling fast MoE cold-start optimization
+    value: <leave as auto-populated>
+    reason: Set compilation.fast_moe_cold_start=True to make create_forward_context consume static_all_moe_layers; the list
+      itself should remain auto-populated.
+  caveats:
+  - Do not manually edit static_all_moe_layers; vllm-ascend loaders rely on its exact contents for fallback restore.
+  - Setting fast_moe_cold_start=False makes this list irrelevant at runtime, so any perceived benefit disappears.
+  quick_guide: Leave static_all_moe_layers auto-populated; toggle compilation.fast_moe_cold_start to control whether it is
+    used.
+analysis_date: '2026-10-27'

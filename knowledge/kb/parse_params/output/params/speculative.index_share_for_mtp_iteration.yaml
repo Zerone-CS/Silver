@@ -1,0 +1,100 @@
+name: speculative.index_share_for_mtp_iteration
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm_ascend/spec_decode/eagle_proposer.py:__init__ (reads draft_model_config.hf_config.index_share_for_mtp_iteration)
+- tests/ut/spec_decode/test_eagle_proposer.py:4209
+- tests/config/test_speculative_draft_hf_overrides.py:185
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a nested speculative-decoding option that controls whether the DeepSeek Sparse MLA
+
+  MTP (multi-token prediction) draft layers reuse the top-K sparse attention indices computed
+
+  in the first MTP iteration for subsequent iterations, instead of recomputing them each step.
+
+  In vllm-ascend v1, AscendEagleProposer.__init__ reads the flag from the draft model''s HF
+
+  config via getattr(..., "index_share_for_mtp_iteration", False) and stores it as
+
+  self._share_mtp_indices (see test_init_mtp_indices_flag). When True, the proposer''s
+
+  maybe_share_topk_indices path reuses the first step''s sparse indices across MTP iterations,
+
+  eliminating redundant top-K index selection / gather work in the sparse MLA attention of the
+
+  draft model. This reduces per-iteration compute and memory traffic in the draft forward pass,
+
+  lowering speculative-decode latency and improving accepted-token throughput. When False (the
+
+  default), indices are recomputed every iteration, which is more accurate but costs extra
+
+  compute. The upstream vLLM side exposes the same flag through
+
+  speculative_config.draft_model_config.hf_config.index_share_for_mtp_iteration (see
+
+  test_mtp_index_share_override), so the value can be set via --speculative-config overrides
+
+  or the draft model''s HF config. The effect is only realized for DeepSeek Sparse MLA MTP
+
+  models; for dense models or non-sparse MTP the flag has no effect.
+
+  '
+usage_locations:
+- file: vllm_ascend/spec_decode/eagle_proposer.py:__init__
+  context: Reads index_share_for_mtp_iteration from draft_model_config.hf_config into self._share_mtp_indices (default False).
+- file: vllm_ascend/spec_decode/eagle_proposer.py:maybe_share_topk_indices
+  context: When _share_mtp_indices is True, reuses first-step top-K sparse indices across MTP iterations.
+- file: tests/ut/spec_decode/test_eagle_proposer.py:4209
+  context: Unit test verifying the flag is read and defaults to False when unset.
+- file: tests/config/test_speculative_draft_hf_overrides.py:185
+  context: Upstream test verifying the override resolves to the expected hf_config value.
+related_parameters:
+- name: speculative_config.num_speculative_tokens
+  relation: More MTP iterations amplify the benefit of index reuse; the flag only matters when num_speculative_tokens > 1.
+- name: speculative_config.draft_model_config
+  relation: The flag is read from the draft model's hf_config; it is a property of the draft (MTP) model.
+- name: speculative_config.method
+  relation: Only relevant for MTP/eagle-style speculative methods with sparse MLA draft layers.
+constraints:
+- The flag only takes effect for DeepSeek Sparse MLA MTP draft models; for dense or non-sparse MTP models it has no effect.
+- The value is read from the draft model's Hugging Face config (index_share_for_mtp_iteration); if unset it defaults to False.
+- Index reuse assumes the sparse top-K indices remain valid across MTP iterations; enabling it on models not designed for
+  index sharing may degrade acceptance accuracy.
+tuning_advice:
+  summary: 'Enable index_share_for_mtp_iteration for DeepSeek Sparse MLA MTP speculative decoding on
+
+    Ascend to cut redundant top-K index computation across MTP iterations, reducing draft
+
+    latency; leave it off for dense/non-sparse models where it has no effect.
+
+    '
+  suggested_values:
+  - scenario: DeepSeek Sparse MLA MTP draft model, latency-sensitive serving (v1-ascend)
+    value: true
+    reason: Reuses first-step top-K sparse indices across MTP iterations, removing redundant index selection/gather work and
+      lowering speculative-decode latency.
+  - scenario: Dense or non-sparse MTP draft model
+    value: false
+    reason: The flag has no effect on non-sparse MTP; leaving it False avoids confusion and any accuracy risk.
+  - scenario: Accuracy-critical workloads where acceptance rate matters more than latency
+    value: false
+    reason: Recomputing indices each iteration is more accurate; disable reuse if acceptance rate drops.
+  caveats:
+  - Only meaningful for DeepSeek Sparse MLA MTP models; on other models it is a no-op.
+  - Index reuse trades a small amount of draft accuracy for speed; monitor speculative acceptance rate after enabling.
+  - Set via the draft model's HF config or --speculative-config overrides; vllm-ascend v1 reads it in AscendEagleProposer.__init__
+    and defaults to False when absent.
+  quick_guide: Set true for DeepSeek Sparse MLA MTP to reuse top-K indices across MTP iterations and reduce draft latency;
+    false otherwise.
+analysis_date: '2026-10-27'

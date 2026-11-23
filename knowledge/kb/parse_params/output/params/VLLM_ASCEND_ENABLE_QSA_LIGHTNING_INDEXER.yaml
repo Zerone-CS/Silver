@@ -1,0 +1,72 @@
+name: VLLM_ASCEND_ENABLE_QSA_LIGHTNING_INDEXER
+type: env
+category: model
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/Qwen3.8-Flash-Next.md:155
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (unset disables the fused path)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This environment variable is not present in the provided vllm or vllm-ascend source
+
+  context (no definition or usage site was found in the extracted code). It is documented
+
+  only in the Qwen3.8-Flash-Next tutorial, where setting it to 1 "enables the fused QSA
+
+  Lightning Indexer path". The QSA Lightning Indexer is a model-specific fused operator
+
+  path for the Qwen3.8-Flash-Next architecture. Enabling it replaces the unfused
+
+  indexer computation with a fused Ascend kernel, which reduces kernel launch overhead
+
+  and intermediate memory traffic during attention/indexer computation, thereby lowering
+
+  per-token latency and improving decode throughput. Because the exact code path could
+
+  not be verified from source, the impact is assessed as medium (model-specific fused
+
+  operator, affects latency/throughput of the indexer sub-computation rather than global
+
+  scheduling or memory allocation).
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/Qwen3.8-Flash-Next.md:155
+  context: Documented as enabling the fused QSA Lightning Indexer path for Qwen3.8-Flash-Next
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_QSA_E3V
+  relation: Companion fused-operator toggle for the QSA Expand E3 path; typically enabled together in the same deployment
+- name: --quantization ascend
+  relation: The validated deployment uses the Ascend W8A8 checkpoint; the fused indexer path is documented in that context
+- name: --tensor-parallel-size
+  relation: Validated on A3 single-DP TP8 topology; fused operator behavior may depend on TP sharding
+constraints:
+- Only meaningful for models that implement the QSA Lightning Indexer (e.g. Qwen3.8-Flash-Next); on other models the flag
+  has no effect.
+- The variable is not defined in the analyzed vllm/vllm-ascend source context, so its exact validation behavior cannot be
+  confirmed; treat it as model-specific and version-specific.
+tuning_advice:
+  summary: Enable only for Qwen3.8-Flash-Next deployments to use the fused QSA Lightning Indexer kernel and reduce indexer
+    latency.
+  suggested_values:
+  - scenario: Serving Qwen3.8-Flash-Next with the Ascend W8A8 checkpoint on A3 TP8
+    value: '1'
+    reason: Documented validated configuration enables the fused QSA Lightning Indexer path, reducing kernel overhead and
+      intermediate memory traffic in the indexer computation.
+  - scenario: Any other model or an unvalidated quantization/topology combination
+    value: '0'
+    reason: The fused path is model-specific and only documented as validated for Qwen3.8-Flash-Next; leaving it disabled
+      avoids undefined behavior on unsupported models.
+  caveats:
+  - Verify numerical accuracy against the unfused path after enabling.
+  - Pair with VLLM_ASCEND_ENABLE_QSA_E3V=1 as in the documented deployment if the model uses the E3 path.
+  - Confirm the flag exists in your installed vllm-ascend version; it was not found in the analyzed source context.
+  quick_guide: Set VLLM_ASCEND_ENABLE_QSA_LIGHTNING_INDEXER=1 only when serving Qwen3.8-Flash-Next with the validated Ascend
+    W8A8 configuration.
+analysis_date: '2026-10-27'

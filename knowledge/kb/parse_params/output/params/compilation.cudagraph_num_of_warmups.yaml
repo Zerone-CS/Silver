@@ -1,0 +1,90 @@
+name: compilation.cudagraph_num_of_warmups
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:1786
+- vllm_ascend/platform.py:1276
+- vllm/v1/worker/gpu_model_runner.py:6948
+value_type: int
+default: 1
+valid_choices: non-negative integer (0 disables warmup runs before capture)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter controls how many dummy forward passes are executed before
+
+  CUDA/ACL graph capture for each batch descriptor. In upstream vLLM
+
+  (vllm/v1/worker/gpu_model_runner.py:6948), `_warmup_and_capture` reads
+
+  `self.compilation_config.cudagraph_num_of_warmups` and runs `_dummy_run`
+
+  that many times before recording the graph; if num_warmups > 0 it also
+
+  calls `torch.accelerator.synchronize()` to drain auxiliary streams before
+
+  capture. Warmup runs are NOT part of steady-state inference — they only
+
+  affect startup/capture time (one-time cost) and, indirectly, capture
+
+  correctness (allocator/workspace stabilization). They do not change
+
+  per-token latency or throughput during serving.
+
+  On Ascend, vllm_ascend/platform.py:1276 unconditionally sets
+
+  `compilation_config.cudagraph_num_of_warmups = 1` inside the platform''s
+
+  config-adjustment path (before `_set_cudagraph_sizes()`), overriding any
+
+  user-supplied value. So on Ascend NPU the effective value is always 1
+
+  regardless of what the user configures. The only runtime effect is a
+
+  single extra dummy run per captured batch size during ACL graph capture,
+
+  which slightly increases startup time and transient memory during capture
+
+  but has no measurable impact on steady-state serving performance.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:1276
+  context: vllm-ascend platform forcibly sets cudagraph_num_of_warmups = 1 before recomputing cudagraph sizes, overriding
+    user config.
+- file: vllm/config/vllm.py:1786
+  context: Upstream VllmConfig sets cudagraph_num_of_warmups = 1 when not in eager mode.
+- file: vllm/v1/worker/gpu_model_runner.py:6948
+  context: GPU model runner reads the value to determine number of dummy runs before graph capture.
+related_parameters:
+- name: compilation.cudagraph_mode
+  relation: Warmups only occur when cudagraph_mode is not NONE; if enforce_eager disables graphs, warmups are irrelevant.
+- name: compilation.cudagraph_capture_sizes
+  relation: Warmup runs are performed per capture size; more capture sizes means more total warmup dummy runs.
+- name: compilation.max_cudagraph_capture_size
+  relation: Determines the set of capture sizes, indirectly scaling total warmup work.
+- name: model_config.enforce_eager
+  relation: When enforce_eager is true, cudagraph_mode is set to NONE and warmups have no effect.
+constraints:
+- On Ascend NPU, vllm-ascend overrides this value to 1 in platform.py, so any user-configured value is ignored.
+- Warmup runs only take effect when cudagraph_mode is not NONE and enforce_eager is false.
+- The value must be a non-negative integer; 0 disables warmup runs before capture.
+tuning_advice:
+  summary: On Ascend NPU this parameter is forced to 1 by vllm-ascend and cannot be tuned; on upstream GPU keep the default
+    of 1.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: 1
+    reason: vllm_ascend/platform.py:1276 unconditionally sets it to 1; user values are ignored, so leave it at default.
+  - scenario: Upstream GPU reference deployment
+    value: 1
+    reason: Default of 1 provides a single warmup to stabilize allocator/workspace before capture with minimal startup overhead.
+  caveats:
+  - Do not attempt to tune this on Ascend — the value is overwritten during platform config adjustment.
+  - Increasing warmups only lengthens graph capture/startup time; it does not improve steady-state throughput or latency.
+  quick_guide: Leave at default 1; on Ascend it is hard-coded and has no tuning effect.
+analysis_date: '2026-10-27'

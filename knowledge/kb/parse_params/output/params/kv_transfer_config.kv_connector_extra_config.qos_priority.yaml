@@ -1,0 +1,91 @@
+name: kv_transfer_config.kv_connector_extra_config.qos_priority
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/utils/utils.py:23
+value_type: int
+default: 0
+valid_choices: integer in [0, 4] (larger = higher priority); booleans are not accepted
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'qos_priority sets the QoS priority of the KV-cache transfer channel used by the
+
+  Ascend KV Pool / PD-disaggregation path. It is not a vLLM upstream parameter; it is
+
+  consumed by vllm-ascend in inject_qos() (vllm_ascend/distributed/kv_transfer/utils/utils.py:23),
+
+  which validates the value (must be an int in [0, 4]) and merges it into the
+
+  ASCEND_GLOBAL_RESOURCE_CONFIG JSON under comm_resource_config.qos (QOS_KEY). This env
+
+  var is then passed to HIXL, which uses it to create the communication channel for
+
+  KV transfer. With the HIXL Client/Server transport, the endpoint that initiates the
+
+  connection supplies the channel QoS and the peer creates its channel with that value:
+
+  in Pull mode the Decoder''s qos_priority is used (READ from prefiller), in Push mode
+
+  the Prefiller''s qos_priority is used (WRITE to decoder). A higher QoS priority makes
+
+  the KV-transfer traffic more likely to be scheduled ahead of lower-priority traffic
+
+  on the shared Ascend interconnect (HCCS/RoCE/UBOE), reducing KV-transfer latency and
+
+  jitter during PD disaggregation, which in turn lowers decode-side time-to-first-token
+
+  and improves end-to-end throughput under contention. It does not change memory usage
+
+  or compute; its effect is on transfer scheduling priority, hence medium impact.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:23
+  context: inject_qos() validates qos in [0,4] and merges it into ASCEND_GLOBAL_RESOURCE_CONFIG under comm_resource_config.qos
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:34
+  context: Warns and overrides an existing comm_resource_config.qos from ASCEND_GLOBAL_RESOURCE_CONFIG with the kv_connector_extra_config
+    value
+related_parameters:
+- name: ASCEND_GLOBAL_RESOURCE_CONFIG
+  relation: qos_priority is merged into this env var's comm_resource_config.qos field; other fields are preserved
+- name: kv_transfer_config.kv_connector
+  relation: Only effective for Mooncake-based connectors (MooncakeConnectorV1, MooncakeHybridConnector, MooncakeLayerwiseConnector)
+    and AscendStoreConnector
+- name: kv_transfer_config.kv_connector_extra_config.backend
+  relation: Supported by both mooncake and memcache backends
+constraints:
+- qos_priority must be an integer in the range [0, 4]; non-integer or out-of-range values raise a ValueError and cause fast
+  startup failure.
+- Booleans are not accepted as qos_priority values.
+- ASCEND_GLOBAL_RESOURCE_CONFIG, if set, must be a valid JSON object or startup fails.
+- The effective QoS for a connection comes from the initiator (Decoder in Pull mode, Prefiller in Push mode); configuring
+  only the passive endpoint does not override the initiator's channel QoS.
+tuning_advice:
+  summary: Set qos_priority on the transfer initiator (Decoder for Pull, Prefiller for Push) to a value that reflects the
+    desired KV-transfer priority, typically 1-2 for balanced PD disaggregation.
+  suggested_values:
+  - scenario: Default / no contention on the Ascend interconnect
+    value: 0
+    reason: Default priority; sufficient when KV transfer does not compete with other traffic.
+  - scenario: Standard PD disaggregation with Mooncake connectors (Pull mode)
+    value: 1
+    reason: Documented default P/D QoS; set on the Decoder (initiator) to give KV reads modest priority.
+  - scenario: Latency-sensitive decode under fabric contention
+    value: 2
+    reason: Higher priority reduces KV-transfer latency and jitter, lowering decode TTFT, while leaving headroom below the
+      maximum.
+  - scenario: Critical KV transfer path where transfer latency dominates
+    value: 4
+    reason: Maximum priority; use only when KV transfer must preempt other traffic, as it may starve lower-priority workloads.
+  caveats:
+  - Configure qos_priority on the initiator side only; the passive endpoint's value is ignored for that connection.
+  - Invalid values (non-integer, out of [0,4], booleans) cause startup failure — validate before deployment.
+  - Overriding an existing ASCEND_GLOBAL_RESOURCE_CONFIG qos emits a WARN; ensure this is intentional.
+  quick_guide: Set qos_priority (0-4) in the initiator's kv_connector_extra_config to prioritize KV transfer; 1 is the P/D
+    default, raise to 2-4 only under fabric contention.
+analysis_date: '2026-10-27'

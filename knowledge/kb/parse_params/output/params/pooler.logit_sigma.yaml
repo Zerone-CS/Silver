@@ -1,0 +1,74 @@
+name: pooler.logit_sigma
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/model_executor/layers/pooler/seqwise/poolers.py:132
+- vllm/model_executor/layers/pooler/tokwise/poolers.py:139
+value_type: float
+default: null
+valid_choices: any positive float; None disables sigma scaling
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'logit_sigma is a scalar calibration constant used only in the classifier
+
+  pooler head (ClassifierPoolerHead / TokenClassifierPoolerHead). It is read
+
+  from model_config.pooler_config and passed to the head constructor in
+
+  vllm/model_executor/layers/pooler/seqwise/poolers.py:132 and
+
+  vllm/model_executor/layers/pooler/tokwise/poolers.py:139. At runtime it
+
+  participates in a single elementwise affine transform on the classification
+
+  logits: "activation((logit - logit_mean) / logit_sigma). This is a per-logit"
+
+  scalar division applied after the pooling head, so its cost is negligible
+
+  relative to the transformer forward pass and pooling reduction. It does not
+
+  affect memory allocation, batching, scheduling, KV cache, or communication.
+
+  No definition or override exists in vllm-ascend, so behavior on Ascend NPU is
+
+  identical to upstream vLLM (pure post-processing math, no NPU-specific path).
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/pooler/seqwise/poolers.py:132
+  context: Passed to ClassifierPoolerHead for sequence classification pooling
+- file: vllm/model_executor/layers/pooler/tokwise/poolers.py:139
+  context: Passed to TokenClassifierPoolerHead for token classification pooling
+related_parameters:
+- name: pooler.logit_mean
+  relation: 'Used together in the same affine calibration: (logit - logit_mean) / logit_sigma'
+- name: pooler.activation
+  relation: The scaled logits are fed through the resolved classifier activation function
+- name: pooler.pooling_type
+  relation: Determines which pooler head (seqwise vs tokwise) consumes logit_sigma
+constraints:
+- logit_sigma only takes effect for classification/embedding pooling models that build a classifier pooler head; it has no
+  effect on generation-only models.
+- model_config.pooler_config must be set for classification pooling, otherwise a ValueError is raised before logit_sigma is
+  read.
+- logit_sigma must be a non-zero numeric value when provided, since it is used as a divisor; None disables the sigma scaling
+  step.
+tuning_advice:
+  summary: Set logit_sigma only to match the calibration used during model training; it has negligible performance impact
+    on Ascend NPU.
+  suggested_values:
+  - scenario: Model trained with Platt scaling / affine calibration
+    value: <training-time sigma value>
+    reason: Use the exact sigma from training to reproduce calibrated probabilities; any other value distorts outputs.
+  - scenario: Model without calibration or when unsure
+    value: unset
+    reason: Leaving it None disables sigma scaling and preserves raw logits, avoiding unintended output distortion.
+  caveats:
+  - Do not tune logit_sigma for performance; it only affects classification output values.
+  - Ensure logit_sigma is non-zero to avoid division issues.
+  quick_guide: Leave logit_sigma at its default (None) unless your model was trained with a specific calibration sigma.
+analysis_date: '2026-10-27'

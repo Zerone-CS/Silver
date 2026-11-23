@@ -1,0 +1,111 @@
+name: compilation.pass_config.enable_sp
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:1677-1698
+- vllm/config/vllm.py:1877-1896
+- vllm/config/compilation.py:1227-1244
+- vllm/config/compilation.py:1547-1564
+- vllm/compilation/passes/pass_manager.py:161-164
+- vllm/v1/worker/gpu_model_runner.py:3494-3500
+- vllm/v1/worker/gpu_model_runner.py:4012-4020
+- vllm/v1/worker/utils.py:749-775
+- vllm_ascend/ascend_config.py:944-948
+- vllm_ascend/worker/model_runner_v1.py:6349-6360
+- vllm_ascend/worker/model_runner_v1.py:6588-6594
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "enable_sp enables the SequenceParallelismPass (and, if fuse_gemm_comms is set, the\nAsyncTPPass) in vLLM's\
+  \ compilation pass manager (vllm/compilation/passes/pass_manager.py:161-164).\nOn GPU this shards the token dimension across\
+  \ TP ranks for the RMSNorm/residual regions and\nfuses the all-reduce with the norm, reducing per-rank activation work and\
+  \ communication volume.\n\nOn Ascend the effect is different and largely indirect:\n- \"vllm-ascend reads this flag in AscendConfig\
+  \ (vllm_ascend/ascend_config.py:944-948) to compute\"\n  `enable_sp_by_pass`, which is only true when the model is NOT in\
+  \ enforce_eager mode and\n  enable_sp is set. This gates Ascend-specific SP-by-pass behavior.\n- \"In the v1 Ascend model\
+  \ runner (vllm_ascend/worker/model_runner_v1.py:6349-6360),\"\n  `_should_align_cudagraph_capture_sizes()` returns true\
+  \ when FULL decode cudagraph mode is\n  active AND (DSA-CP or enable_sp() or pass_config.enable_sp). This forces cudagraph\
+  \ capture\n  sizes to be aligned to LCM(TP, query_len), which changes the set of captured graph shapes and\n  therefore\
+  \ memory footprint and decode latency (more/larger graphs = more HBM for graph\n  capture, but stable CP/SP dispatch).\n\
+  - \"`update_pass_config()` (model_runner_v1.py:6588-6594) temporarily overrides\"\n  pass_config.enable_sp with the result\
+  \ of `enable_sp(vllm_config)` during a context, meaning\n  the effective value seen by the runner may differ from the user-set\
+  \ value.\n- \"Upstream, enable_sp forces full-graph compilation (splitting_ops cleared, cudagraph_mode\"\n  promoted to\
+  \ FULL) and pads num_tokens to a multiple of TP, which adds padding overhead but\n  enables collective fusion.\n\nNet: \"\
+  on Ascend, SP is documented as unavailable for all current model categories in the v0.23.0\"\nsupport matrix, so the primary\
+  \ observable effect is on cudagraph capture-size alignment and\npass-config gating rather than a direct throughput win.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:944-948
+  context: Computes enable_sp_by_pass from enforce_eager and pass_config.enable_sp
+- file: vllm_ascend/worker/model_runner_v1.py:6349-6360
+  context: Gates cudagraph capture-size alignment to LCM(TP, query_len) for CP/SP dispatch
+- file: vllm_ascend/worker/model_runner_v1.py:6588-6594
+  context: Temporarily overrides pass_config.enable_sp with enable_sp(vllm_config)
+- file: vllm/config/vllm.py:1677-1698
+  context: Auto-enables SP when fuse_gemm_comms set; disables when TP==1; computes sp_min_token_num
+- file: vllm/config/vllm.py:1877-1896
+  context: Warns if not in VLLM_COMPILE mode; forces +rms_norm custom op under PP
+- file: vllm/config/compilation.py:1227-1244
+  context: Clears splitting_ops and promotes cudagraph_mode to FULL when SP enabled
+- file: vllm/config/compilation.py:1547-1564
+  context: Aligns cudagraph sizes to max(query_len, TP) for spec-decode + SP
+- file: vllm/compilation/passes/pass_manager.py:161-164
+  context: Adds SequenceParallelismPass and AsyncTPPass to the pass list
+- file: vllm/v1/worker/gpu_model_runner.py:3494-3500
+  context: Pads num_scheduled_tokens to a multiple of TP when SP enabled
+- file: vllm/v1/worker/utils.py:749-775
+  context: is_residual_scattered_for_sp asserts full-graph compilation and TP-multiple padding
+related_parameters:
+- name: compilation.pass_config.fuse_gemm_comms
+  relation: Setting fuse_gemm_comms forces enable_sp=True; AsyncTPPass only added when both are set
+- name: compilation.pass_config.sp_min_token_num
+  relation: Auto-computed from hidden_size, TP size and dtype when enable_sp is on and value is None
+- name: tensor_parallel_size
+  relation: SP requires TP>1; auto-disabled when TP==1. Also determines token padding multiple
+- name: compilation.cudagraph_mode
+  relation: SP forces FULL cudagraph mode and clears splitting_ops when use_inductor_graph_partition is off
+- name: compilation.splitting_ops
+  relation: Cleared to empty list when SP is enabled (full-graph compilation required)
+- name: enforce_eager
+  relation: Ascend enable_sp_by_pass requires enforce_eager to be false
+- name: additional_config.enable_flashcomm1
+  relation: Docs recommend migrating from SP to FlashComm1 on Ascend
+constraints:
+- Sequence parallelism requires tensor_parallel_size > 1; it is automatically disabled (and fuse_gemm_comms cleared) when
+  TP==1.
+- Sequence parallelism requires full-graph compilation; when use_inductor_graph_partition is off, splitting_ops is cleared
+  and cudagraph_mode is promoted to FULL.
+- When SP is enabled, num_tokens must be a multiple of tensor_parallel_size; the runner pads tokens accordingly and asserts
+  this invariant.
+- With speculative decoding, cudagraph capture sizes must be a multiple of both (num_speculative_tokens + 1) and tensor_parallel_size,
+  otherwise a ValueError is raised.
+- SP only takes effect in VLLM_COMPILE compilation mode; other modes emit a warning that SP is running in the wrong compile
+  mode.
+- On Ascend, enable_sp_by_pass is only active when enforce_eager is false.
+tuning_advice:
+  summary: On Ascend, prefer FlashComm1 over enable_sp; only enable SP when you specifically need the cudagraph-size alignment
+    path and are on a supported model/version.
+  suggested_values:
+  - scenario: Default Ascend deployment (v0.23.0+, any current model category)
+    value: false
+    reason: Docs mark SP unavailable for all current model categories; FlashComm1 is the recommended replacement.
+  - scenario: Migrating a v0.18.0 deployment that relied on SP
+    value: false
+    reason: Switch to additional_config.enable_flashcomm1 instead of enable_sp per release notes.
+  - scenario: GPU/upstream reference or experimental Ascend SP validation with TP>1 and full-graph compile
+    value: true
+    reason: Enables SequenceParallelismPass and cudagraph-size alignment; requires TP>1 and VLLM_COMPILE mode.
+  caveats:
+  - Do not enable together with enforce_eager on Ascend — enable_sp_by_pass will be false and SP has no effect.
+  - 'Watch HBM usage after enabling: cudagraph capture-size alignment to LCM(TP, query_len) can grow the captured graph set.'
+  - If using speculative decoding, ensure num_speculative_tokens+1 and TP are compatible or a ValueError will be raised.
+  quick_guide: Leave enable_sp off on Ascend; use additional_config.enable_flashcomm1 for sequence-parallel-style communication
+    optimization.
+analysis_date: '2026-10-27'

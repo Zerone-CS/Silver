@@ -1,0 +1,101 @@
+name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:1093
+- vllm/envs.py:1097
+- vllm/config/model.py:2530
+- tests/e2e/conftest.py:532
+- tests/e2e/conftest.py:684
+- tests/e2e/pull_request/four_card/test_profiling_chunk_performance.py:61
+value_type: bool
+default: false
+valid_choices: 'boolean-like string: ''1'' or ''true'' (case-insensitive, stripped) enables; anything else disables'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: 'This env var is a safety gate, not a tuning knob per se. In vllm/config/model.py
+
+  (_get_and_verify_max_len), when the user-specified --max-model-len exceeds the
+
+  derived max length from the model''s config.json (max_position_embeddings or
+
+  model_max_length), vLLM raises a ValueError unless VLLM_ALLOW_LONG_MAX_MODEL_LEN
+
+  is truthy. When enabled, it only downgrades the error to a warning and returns the
+
+  larger max_model_len. The performance effect is indirect but real on Ascend:
+
+  max_model_len directly drives KV-cache sizing (block allocation, gpu_memory_utilization
+
+  budget) and the attention kernel''s sequence-length handling. A larger max_model_len
+
+  increases the KV cache footprint per sequence, reduces the number of concurrent
+
+  sequences that fit in HBM, and can lower throughput; it also enables longer-context
+
+  requests whose prefill latency scales with sequence length. On Ascend, exceeding the
+
+  model''s trained position range (RoPE) produces NaN logits, and absolute-position
+
+  models can trigger out-of-bounds accesses — the upstream warning explicitly notes
+
+  these failure modes (CUDA wording, but the RoPE NaN issue applies equally to NPU).
+
+  vllm-ascend does not override this env var in library code; it only sets it to "1"
+
+  in e2e test harnesses (tests/e2e/conftest.py, test_profiling_chunk_performance.py)
+
+  to allow long-context test scenarios (e.g. max_model_len=70000).
+
+  '
+usage_locations:
+- file: vllm/envs.py:1097
+  context: Defines the env var; parses '1'/'true' (case-insensitive) as enabled, default '0'.
+- file: vllm/config/model.py:2530
+  context: In _get_and_verify_max_len, gates whether exceeding derived max_model_len raises ValueError or only warns.
+- file: tests/e2e/conftest.py:532
+  context: vllm-ascend e2e RemotePDServer sets VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 for long-context tests.
+- file: tests/e2e/conftest.py:684
+  context: vllm-ascend e2e RemoteEPDServer sets VLLM_ALLOW_LONG_MAX_MODEL_LEN=1.
+- file: tests/e2e/pull_request/four_card/test_profiling_chunk_performance.py:61
+  context: vllm-ascend profiling-chunk TTFT test patches env to allow max_model_len=70000.
+related_parameters:
+- name: --max-model-len
+  relation: This env var only matters when --max-model-len exceeds the model config's derived max length; it permits that
+    override.
+- name: --gpu-memory-utilization
+  relation: Larger max_model_len increases KV cache demand, interacting with the memory budget set by gpu-memory-utilization.
+- name: --max-num-seqs
+  relation: A larger max_model_len reduces how many sequences fit in KV cache, effectively constraining achievable concurrency.
+constraints:
+- Without VLLM_ALLOW_LONG_MAX_MODEL_LEN=1, specifying --max-model-len greater than the model's derived max length (or model_max_length)
+  raises a ValueError and aborts startup.
+- Enabling it does not make the model actually support longer positions; if the model uses RoPE, positions beyond the trained
+  range produce NaN outputs.
+- For models using absolute position encoding, positions beyond the derived max length can cause out-of-bounds memory access.
+tuning_advice:
+  summary: Only enable when the model truly supports longer context (e.g. rope-scaling/YaRN configured) and you must exceed
+    the config-derived max length; otherwise leave it off.
+  suggested_values:
+  - scenario: Standard deployment within the model's trained context window
+    value: '0'
+    reason: Keeps the safety check active so misconfigured --max-model-len fails fast instead of producing NaN/garbage on
+      NPU.
+  - scenario: Long-context model with rope-scaling (e.g. Qwen2.5-1M) needing max_model_len beyond config.json
+    value: '1'
+    reason: Required to bypass the ValueError; pair with correct rope_scaling so positions stay within the extended trained
+      range.
+  - scenario: vllm-ascend e2e / profiling tests with max_model_len=70000
+    value: '1'
+    reason: Test harnesses set this to allow long-context scenarios; mirrors tests/e2e/conftest.py behavior.
+  caveats:
+  - Enabling without proper rope-scaling yields NaN logits on Ascend NPU for positions beyond the trained range.
+  - Larger max_model_len shrinks KV cache headroom and concurrency; re-tune --gpu-memory-utilization and --max-num-seqs accordingly.
+  - Verify output quality on long prompts after enabling; the warning is easy to miss in logs.
+  quick_guide: Set VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 only if the model supports the longer context; otherwise leave it unset.
+analysis_date: '2026-10-27'

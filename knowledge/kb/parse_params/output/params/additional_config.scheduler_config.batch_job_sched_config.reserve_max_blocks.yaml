@@ -1,0 +1,82 @@
+name: additional_config.scheduler_config.batch_job_sched_config.reserve_max_blocks
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1531
+- vllm_ascend/ascend_config.py:1543
+value_type: int
+default: 8
+valid_choices: positive integer (> 0)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'reserve_max_blocks is a field of BatchJobSchedConfig (vllm_ascend/ascend_config.py:1521),
+
+  the configuration for the Ascend batch-job-aware scheduler. It caps the maximum number of
+
+  KV-cache blocks that the scheduler may reserve as a safety buffer for tracked batch jobs.
+
+  The batch-job-aware scheduler uses this reserve to hold back KV blocks so that incoming
+
+  jobs (especially long-decode jobs) are not starved of KV cache when the pool is nearly full.
+
+  The reserve interacts with reserve_margin_blocks (extra margin added to the reserve) and
+
+  low_available_tokens_threshold (which decides whether long or short decode jobs are
+
+  prioritised). A larger reserve_max_blocks keeps more KV blocks out of the general free pool,
+
+  which can reduce the number of concurrently running sequences (lower throughput / higher
+
+  queueing) but protects against KV-cache exhaustion and preemption for multi-job workloads.
+
+  A smaller value frees more blocks for normal scheduling (higher throughput) but increases
+
+  the risk of preemption or admission stalls when many jobs compete for KV cache. The effect
+
+  is only active when enabled=true; otherwise the whole batch-job scheduler is bypassed and
+
+  this parameter has no runtime effect. This is an Ascend-specific scheduler extension
+
+  (not present in upstream vLLM), so there is no upstream override to reconcile.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1531
+  context: Field definition with default 8 in BatchJobSchedConfig dataclass.
+- file: vllm_ascend/ascend_config.py:1543
+  context: model_validator enforces reserve_max_blocks > 0, raising ValueError otherwise.
+related_parameters:
+- name: additional_config.scheduler_config.batch_job_sched_config.enabled
+  relation: Master switch; reserve_max_blocks only takes effect when enabled=true.
+- name: additional_config.scheduler_config.batch_job_sched_config.reserve_margin_blocks
+  relation: Extra margin added to the KV reserve; combined with reserve_max_blocks determines total reserved blocks.
+- name: additional_config.scheduler_config.batch_job_sched_config.low_available_tokens_threshold
+  relation: Determines long vs short decode prioritisation, which interacts with how the reserve is consumed.
+- name: additional_config.scheduler_config.batch_job_sched_config.max_jobs
+  relation: Number of tracked jobs; more jobs may need a larger reserve to avoid starvation.
+constraints:
+- reserve_max_blocks must be a positive integer (> 0); a value of 0 or negative raises ValueError at config validation.
+tuning_advice:
+  summary: Keep the reserve small by default; increase only when multi-job KV-cache starvation or preemption is observed.
+  suggested_values:
+  - scenario: Single job / low concurrency, throughput-priority
+    value: 4
+    reason: Minimal reserve frees more KV blocks for normal scheduling, maximising concurrent sequences and throughput.
+  - scenario: Default multi-job serving
+    value: 8
+    reason: Default balances KV-cache protection against throughput loss for typical batch-job workloads.
+  - scenario: Many concurrent jobs with long decodes, preemption observed
+    value: 16
+    reason: Larger reserve protects long-decode jobs from KV-cache starvation and preemption at the cost of some throughput.
+  caveats:
+  - Has no effect unless batch_job_sched_config.enabled is set to true.
+  - Setting too high reduces the free KV block pool, lowering the number of concurrently running sequences and throughput.
+  - Setting too low can cause KV-cache exhaustion, preemption, or admission stalls under multi-job load.
+  - This is an Ascend-specific scheduler extension; it does not exist in upstream vLLM.
+  quick_guide: Leave at 8 unless you see KV-cache preemption across jobs, then raise it modestly (e.g. 16).
+analysis_date: '2026-10-27'

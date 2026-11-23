@@ -1,0 +1,91 @@
+name: --kv-quant-dtype
+type: cli
+category: quantization
+scope: vllm-ascend
+source_file:
+- vllm_ascend/quantization/configs/modelslim_config.py:848
+- vllm_ascend/worker/model_runner_v1.py:5851
+- vllm_ascend/worker/v2/attn_utils.py:1625
+value_type: str
+default: <computed>
+valid_choices: string dtype name (e.g. int8, float8_e4m3fn, fp8, mxfp8); resolved per-layer via quant_config.get_kv_quant_dtype
+cli_example: --kv-quant-dtype <dtype>
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: '--kv-quant-dtype controls the dtype used to view/allocate the KV cache tensors on Ascend.
+
+  In vllm-ascend the actual per-layer KV cache dtype is resolved by
+
+  AscendModelSlimConfig.get_kv_quant_dtype() (modelslim_config.py:848), which is called from
+
+  the v1 worker (model_runner_v1.py:5851) and the v2 worker (attn_utils.py:1625) when
+
+  enable_fa_quant() is true. The returned dtype is used to .view() the raw KV cache tensor
+
+  (k_cache = raw_k_tensor.view(k_cache_dtype).view(k_shape)), so it directly determines the
+
+  bytes-per-element of the KV cache: "int8/fp8 halves the KV cache footprint versus fp16/bf16,"
+
+  which increases the number of cacheable blocks and thus max concurrency and throughput.
+
+  For MLA models (model_config.use_mla) only the K cache is quantized (returns
+
+  (quant_dtype, ori_dtype)), while for GQA both K and V are quantized. The quant dtype is
+
+  chosen as float8_e4m3fn when the hardware supports FP8_ATTENTION, otherwise int8. Quantized
+
+  KV cache also enables faster attention kernels (lower memory bandwidth per token), reducing
+
+  decode latency. The release notes state KV cache quantization dtype configuration was
+
+  unified through --kv-quant-dtype (PR #15514).
+
+  '
+usage_locations:
+- file: vllm_ascend/quantization/configs/modelslim_config.py:848
+  context: get_kv_quant_dtype resolves per-layer K/V cache dtype from fa_quant config; returns fp8/int8 for quantized layers,
+    original dtype otherwise
+- file: vllm_ascend/worker/model_runner_v1.py:5851
+  context: v1 worker views raw KV cache tensors with the resolved quant dtype when enable_fa_quant is set
+- file: vllm_ascend/worker/v2/attn_utils.py:1625
+  context: v2 worker resolves K/V dtype for AscendMLAAttentionSpec when SFA disabled and fa_quant enabled
+related_parameters:
+- name: --kv-cache-dtype
+  relation: Companion/overlapping setting; --kv-cache-dtype mxfp8 selects the C8-MXFP cache path, while --kv-quant-dtype unifies
+    the per-layer quant dtype resolution
+- name: fa_quant_type / enable_fa_quant
+  relation: KV quant dtype is only applied when FA quantization is enabled in the modelslim quant config
+- name: --quantization
+  relation: Must select a modelslim/Ascend quantization config that provides get_kv_quant_dtype
+constraints:
+- KV quant dtype is only applied when FA quantization is enabled (enable_fa_quant) and the layer is a FA-quant layer; otherwise
+  the original cache dtype is used.
+- For MLA models only the K cache is quantized; the V cache keeps the model dtype.
+- The quant dtype resolves to float8_e4m3fn only if the current hardware profile supports FP8_ATTENTION, otherwise int8 is
+  used.
+- C8-MXFP models do not reach the get_kv_quant_dtype hook; their cache dtype comes from the rebuilt fp8 spec in get_kv_cache_spec.
+tuning_advice:
+  summary: Enable quantized KV cache dtype (int8/fp8) to cut KV memory and boost concurrency/throughput, validating accuracy
+    first.
+  suggested_values:
+  - scenario: Memory-bound long-context serving on FP8-capable Ascend hardware
+    value: float8_e4m3fn
+    reason: Halves KV cache bytes vs fp16, allowing more blocks and higher batch concurrency; FP8 attention kernels reduce
+      decode bandwidth.
+  - scenario: Hardware without FP8_ATTENTION support
+    value: int8
+    reason: get_kv_quant_dtype falls back to int8 when FP8_ATTENTION is unsupported, still halving KV memory.
+  - scenario: Accuracy-critical workloads
+    value: model dtype (no KV quant)
+    reason: Leaving FA quantization disabled keeps the original cache dtype, avoiding quantization error.
+  caveats:
+  - Requires a modelslim quant config with FA quantization enabled; otherwise the flag has no effect on cache dtype.
+  - MLA models only quantize K, so savings are partial.
+  - Benchmark accuracy (perplexity/eval) after enabling, as int8/fp8 KV can shift outputs.
+  quick_guide: Use --kv-quant-dtype int8/fp8 with FA quantization enabled to shrink KV cache and raise throughput; verify
+    accuracy.
+analysis_date: '2026-10-27'

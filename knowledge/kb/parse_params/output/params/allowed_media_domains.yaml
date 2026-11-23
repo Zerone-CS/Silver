@@ -1,0 +1,100 @@
+name: --allowed-media-domains
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:201
+- vllm/engine/arg_utils.py:449
+- vllm/engine/arg_utils.py:892
+- vllm/engine/arg_utils.py:1830
+- vllm/entrypoints/chat_utils.py:638
+- vllm/entrypoints/chat_utils.py:1050
+- vllm/entrypoints/launchers/run_batch.py:511
+value_type: list[str]
+default: null
+valid_choices: Any list of hostname strings (e.g. ['example.com', 'cdn.example.org']); None disables the restriction
+cli_example: --allowed-media-domains example.com cdn.example.org
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is a security/validation control, not a compute-path knob. It is
+
+  read from ModelConfig.allowed_media_domains (vllm/config/model.py:201) and passed
+
+  through EngineArgs (arg_utils.py:449, 1830) into the multimodal content parser.
+
+  At request time, MultiModalContentParser._connector (chat_utils.py:1046-1051) loads
+
+  the media connector with allowed_media_domains, and download_bytes_from_url
+
+  (run_batch.py:511-523) performs a hostname membership check before fetching an
+
+  HTTP/HTTPS media URL. The check itself is a trivial O(n) list lookup on the parsed
+
+  hostname and adds negligible CPU overhead. Its only indirect latency effect is that
+
+  it gates whether a remote media fetch is attempted at all: "a rejected URL raises"
+
+  VLLMValidationError early (before the network download), which can actually save
+
+  latency versus downloading disallowed media. It does not touch NPU kernels, HCCL,
+
+  CANN compilation, KV cache, or scheduling. vllm-ascend does not override or
+
+  reference this parameter anywhere in the provided context, so behavior on Ascend
+
+  NPU is identical to upstream vLLM. The parameter is explicitly listed in
+
+  ModelConfig.compute_hash''s ignored_factors (model.py:439), confirming it does not
+
+  affect the computation graph or any compiled/captured execution path.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:201
+  context: 'Field definition and docstring: only media URLs belonging to these domains are allowed for multimodal inputs.'
+- file: vllm/engine/arg_utils.py:892
+  context: CLI argument registration under the ModelConfig argument group.
+- file: vllm/engine/arg_utils.py:1830
+  context: Passed from EngineArgs into ModelConfig construction.
+- file: vllm/entrypoints/chat_utils.py:638
+  context: MultiModalItemTracker exposes allowed_media_domains from model config.
+- file: vllm/entrypoints/chat_utils.py:1050
+  context: Media connector is loaded with allowed_media_domains for request-time media parsing.
+- file: vllm/entrypoints/launchers/run_batch.py:511
+  context: Hostname membership check before downloading HTTP/HTTPS media; raises VLLMValidationError on mismatch.
+related_parameters:
+- name: --allowed-local-media-path
+  relation: Sibling media-access security control; governs local filesystem media reads while this governs remote URL domains.
+- name: --media-io-kwargs
+  relation: Both are forwarded to the media connector when loading it (chat_utils.py:1046-1051).
+- name: VLLM_MEDIA_CONNECTOR
+  relation: Env var selecting the media connector implementation that receives allowed_media_domains.
+- name: VLLM_MEDIA_URL_ALLOW_REDIRECTS
+  relation: Controls redirect following for media downloads; interacts with domain restriction semantics.
+constraints:
+- 'Only HTTP/HTTPS media URLs are subject to the domain restriction; data: URLs are explicitly exempt and always permitted.'
+- The check compares the parsed URL hostname against the list entries exactly, so entries must be bare hostnames (e.g. example.com)
+  rather than full URLs or schemes.
+- When the parameter is None (default), no domain restriction is applied and any HTTP/HTTPS media URL is fetched.
+- A media URL whose hostname is not in the list causes a VLLMValidationError to be raised for that request.
+tuning_advice:
+  summary: Set this only for security hardening of multimodal URL inputs; it has no meaningful performance tuning value on
+    Ascend NPU.
+  suggested_values:
+  - scenario: Production multimodal serving exposed to untrusted clients
+    value:
+    - your-trusted-cdn.example.com
+    reason: Restricts remote media fetches to known hosts, preventing SSRF-style abuse; the hostname check is cheap and does
+      not affect NPU performance.
+  - scenario: Trusted internal environment or benchmarking
+    value: unset
+    reason: Leaving it unset disables the restriction and avoids any per-request validation, keeping the media path minimal
+      for throughput/latency benchmarking.
+  caveats:
+  - Do not expect any throughput or latency improvement from this flag; it is purely a validation gate.
+  - 'Entries must be bare hostnames, not full URLs; data: URLs bypass the check entirely.'
+  - Applies identically on Ascend NPU since vllm-ascend does not modify it.
+  quick_guide: Use --allowed-media-domains only to whitelist trusted media hosts; it does not affect Ascend NPU performance.
+analysis_date: '2026-10-27'

@@ -1,0 +1,74 @@
+name: structured_outputs.disable_any_whitespace
+type: nested
+category: other
+scope: vllm
+source_file:
+- vllm/v1/structured_output/backend_xgrammar.py:40
+- vllm/v1/structured_output/backend_guidance.py:92
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag is consumed only by the structured-output backends in vLLM upstream
+
+  (vllm/v1/structured_output/backend_xgrammar.py:40 and backend_guidance.py:92).
+
+  It is passed into the grammar serialization/compilation step
+
+  (serialize_guidance_grammar for guidance, and the xgrammar grammar compiler for
+
+  xgrammar). When True, the compiled grammar forbids whitespace tokens between JSON
+
+  fields, which slightly shrinks the set of allowed tokens at each decoding step and
+
+  can reduce the number of generated tokens (no whitespace tokens emitted). This
+
+  yields a marginal latency/throughput benefit because fewer tokens are decoded and
+
+  the grammar mask is marginally tighter. It does NOT change NPU compute, memory
+
+  allocation, HCCL communication, or scheduling. vllm-ascend does not define or
+
+  override this parameter; it only appears in an e2e test
+
+  (tests/e2e/pull_request/one_card/test_guided_decoding.py:79,113) where it is set
+
+  to True with the xgrammar backend. The effect is therefore identical to upstream
+
+  GPU behavior and is limited to the structured-output decoding path.
+
+  '
+usage_locations:
+- file: vllm/v1/structured_output/backend_xgrammar.py:40
+  context: Reads structured_outputs_config.disable_any_whitespace into the xgrammar backend for grammar compilation.
+- file: vllm/v1/structured_output/backend_guidance.py:92
+  context: Reads the flag and forwards it to serialize_guidance_grammar for the guidance backend.
+- file: tests/e2e/pull_request/one_card/test_guided_decoding.py:79
+  context: vllm-ascend e2e test sets disable_any_whitespace=True with xgrammar backend for guided JSON decoding.
+related_parameters:
+- name: structured_outputs.backend
+  relation: Only xgrammar and guidance backends honor this flag; other backends ignore it.
+- name: structured_outputs.disable_additional_properties
+  relation: Sibling JSON-schema option passed alongside it into guidance grammar serialization.
+constraints:
+- This option is only supported by the xgrammar and guidance structured-output backends; other backends ignore it.
+- It only affects JSON/structured-output generation; it has no effect on unconstrained text generation.
+tuning_advice:
+  summary: Enable disable_any_whitespace=True with the xgrammar backend to emit compact JSON and slightly reduce decoded tokens.
+  suggested_values:
+  - scenario: Guided JSON decoding where compact output is acceptable and minimal token count is desired
+    value: true
+    reason: Forbids whitespace tokens between JSON fields, reducing generated tokens and marginally improving latency/throughput.
+  - scenario: When human-readable or model-natural JSON formatting is preferred
+    value: false
+    reason: Allows whitespace between fields; output remains valid JSON but uses more tokens.
+  caveats:
+  - Only effective with xgrammar or guidance backends; ignored otherwise.
+  - Benefit is small and limited to structured-output decoding; no NPU-level impact.
+  quick_guide: Use True with xgrammar for compact JSON; otherwise leave default.
+analysis_date: '2026-10-27'

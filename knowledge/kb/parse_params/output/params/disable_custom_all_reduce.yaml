@@ -1,0 +1,102 @@
+name: --disable-custom-all-reduce
+type: cli
+category: communication
+scope: both
+source_file:
+- vllm/config/parallel.py:214
+- vllm/engine/arg_utils.py:1248
+- vllm/engine/arg_utils.py:585
+- vllm/v1/worker/gpu_worker.py:1531
+- vllm/v1/worker/cpu_worker.py:107
+value_type: bool
+default: false
+valid_choices: true or false (store_true flag; presence of flag sets it to true)
+cli_example: --disable-custom-all-reduce
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'In upstream vLLM, this flag controls whether the custom all-reduce kernel is used
+
+  for tensor-parallel collectives. It is read in
+
+  vllm/v1/worker/gpu_worker.py:1531 via `set_custom_all_reduce(not
+
+  parallel_config.disable_custom_all_reduce)`, which toggles the global custom
+
+  all-reduce switch before `init_distributed_environment` runs. When enabled
+
+  (default, flag absent), vLLM uses its own CUDA custom all-reduce kernel for
+
+  small-message TP all-reduce, which is faster than NCCL for latency-sensitive
+
+  decode steps. Setting the flag forces fallback to NCCL.
+
+  On Ascend NPU, the custom all-reduce kernel is a CUDA-specific implementation
+
+  (custom_all_reduce.cuh / pynccl) and is not applicable — vllm-ascend uses HCCL
+
+  (Huawei Collective Communication Library) for all collectives. The provided
+
+  context shows no vllm-ascend override of this parameter, and no Ascend code path
+
+  that consumes it to select a kernel. Therefore on Ascend the flag has no effect
+
+  on the actual collective implementation: "HCCL is used regardless. Its only"
+
+  observable effect is that it is recorded in usage telemetry
+
+  (vllm/v1/utils.py:746) and printed in the config string
+
+  (vllm/config/vllm.py:2623). Because the custom all-reduce path is effectively
+
+  inert on Ascend, the runtime performance impact is low — it neither speeds up
+
+  nor slows down HCCL collectives.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:214
+  context: ParallelConfig field definition with docstring 'Disable the custom all-reduce kernel and fall back to NCCL.'
+- file: vllm/engine/arg_utils.py:1248
+  context: CLI argument registration in the parallel argument group.
+- file: vllm/engine/arg_utils.py:585
+  context: EngineArgs field defaulting to ParallelConfig.disable_custom_all_reduce.
+- file: vllm/v1/worker/gpu_worker.py:1531
+  context: set_custom_all_reduce(not parallel_config.disable_custom_all_reduce) toggles the global custom all-reduce switch
+    before distributed init.
+- file: vllm/v1/worker/cpu_worker.py:107
+  context: CPU worker unconditionally forces disable_custom_all_reduce = True.
+- file: vllm/config/speculative.py:1760
+  context: Draft parallel config inherits disable_custom_all_reduce from the target parallel config.
+- file: vllm/config/parallel.py:848
+  context: Listed in ignored_factors for DP config hashing (does not affect DP topology hash).
+related_parameters:
+- name: --tensor-parallel-size
+  relation: Custom all-reduce only matters when TP > 1; with TP=1 no all-reduce collective is performed.
+- name: --enforce-eager
+  relation: Custom all-reduce is typically used in CUDA graph capture; eager mode may bypass it.
+- name: --distributed-executor-backend
+  relation: Determines how workers are launched; custom all-reduce availability depends on the worker/device backend.
+constraints:
+- The flag is a boolean store_true switch; it takes no value argument.
+- On the CPU backend the worker unconditionally sets disable_custom_all_reduce to True regardless of this flag.
+- The custom all-reduce kernel is a CUDA-specific implementation and is not used on Ascend NPU, where HCCL handles collectives.
+tuning_advice:
+  summary: On Ascend NPU this flag is effectively a no-op for performance since HCCL is always used; leave it at its default
+    (unset).
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker) with TP > 1
+    value: false
+    reason: Custom all-reduce is CUDA-specific and not used on Ascend; HCCL handles collectives regardless, so leaving the
+      flag unset keeps default behavior with no downside.
+  - scenario: Debugging collective communication issues on Ascend
+    value: true
+    reason: Setting the flag is harmless on Ascend and can be used to explicitly document that no custom all-reduce path is
+      expected, though it does not change the actual HCCL backend.
+  caveats:
+  - Do not expect any performance change from this flag on Ascend NPU; it does not switch between HCCL and any custom kernel.
+  - On the CPU backend the flag is forced to True by the worker, so it cannot be used to enable custom all-reduce there.
+  quick_guide: Leave --disable-custom-all-reduce unset on Ascend; it has no runtime effect because HCCL is always used.
+analysis_date: '2026-10-27'

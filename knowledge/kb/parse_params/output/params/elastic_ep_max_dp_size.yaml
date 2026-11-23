@@ -1,0 +1,88 @@
+name: --elastic-ep-max-dp-size
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1214
+- vllm/engine/arg_utils.py:518
+- vllm/config/parallel.py:219
+- vllm/config/parallel.py:441
+value_type: int
+default: null
+valid_choices: integer >= 1 (Field(ge=1)); None allowed when elastic EP is not enabled
+cli_example: --elastic-ep-max-dp-size 8
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- throughput
+impact_detail: "This parameter only takes effect when --enable-elastic-ep is set (ParallelConfig.enable_elastic_ep).\nIt defines\
+  \ the upper bound on the data-parallel size that elastic EP can scale to at runtime.\nIts performance effect is indirect\
+  \ and mostly about memory pre-allocation:\n- \"In vllm/distributed/eplb/eplb_state.py:381-392, when enable_elastic_ep is\
+  \ true, the EPLB\"\n  physical_expert_capacity is computed as num_local_physical_experts * elastic_ep_max_dp_size *\n  ep_group.world_size\
+  \ / data_parallel_size, and the physical_to_logical_map tensor is padded to\n  that capacity. A larger value therefore increases\
+  \ the size of the EPLB mapping tensors and\n  related bookkeeping memory, even if the cluster never actually scales that\
+  \ far.\n- \"In vllm/distributed/device_communicators/all2all.py:422-435 (NIXL EP path), max_num_ep_ranks is\"\n  scaled\
+  \ by elastic_ep_max_dp_size / data_parallel_size, which feeds Buffer.get_rdma_size_hint and\n  thus the RDMA buffer allocation\
+  \ size. A larger value reserves more communication buffer memory.\n- \"In vllm/v1/engine/core_client.py:1714, the value\
+  \ is only used as a guard: prepare_elastic_ep\"\n  raises ValueError if the requested new_data_parallel_size exceeds elastic_ep_max_dp_size.\n\
+  On Ascend NPU, elastic EP with stateless NCCL groups and the NIXL/DeepEP all2all backends is not\nthe primary supported\
+  \ path (vllm-ascend uses HCCL and its own all2all/MC2 implementations), and no\nvllm-ascend override of this parameter was\
+  \ found in the provided context. Therefore on Ascend this\nparameter has at most a low, indirect memory effect and no direct\
+  \ throughput/latency impact unless\nelastic EP is actually enabled and supported.\n"
+usage_locations:
+- file: vllm/config/parallel.py:219
+  context: Field definition with ge=1 validation and docstring 'Maximum data parallel size supported by elastic expert parallelism.'
+- file: vllm/config/parallel.py:441
+  context: field_validator _skip_none_validation allows None when initialization is delayed
+- file: vllm/engine/arg_utils.py:1214
+  context: CLI argument registration in the parallel argument group
+- file: vllm/v1/engine/core_client.py:1714
+  context: 'Guard in prepare_elastic_ep: raises ValueError if new_data_parallel_size exceeds elastic_ep_max_dp_size'
+- file: vllm/distributed/eplb/eplb_state.py:384
+  context: Used to compute physical_expert_capacity and pad physical_to_logical_map when elastic EP is enabled
+- file: vllm/distributed/device_communicators/all2all.py:424
+  context: 'NIXL EP: scales max_num_ep_ranks, affecting RDMA buffer size hint'
+- file: vllm/model_executor/layers/fused_moe/layer.py:351
+  context: Propagated into FusedMoEConfig.elastic_ep_max_dp_size for MoE kernels
+related_parameters:
+- name: --enable-elastic-ep
+  relation: Master switch; elastic_ep_max_dp_size is only meaningful when this is enabled
+- name: --data-parallel-size
+  relation: Current DP size; elastic_ep_max_dp_size must be >= the target scale-up DP size
+- name: --data-parallel-backend
+  relation: Elastic EP scaling requires the ray DP backend (asserted in core_client.py)
+- name: --enable-eplb
+  relation: EPLB state uses elastic_ep_max_dp_size to size physical expert capacity
+- name: --eplb-config
+  relation: num_redundant_experts interacts with elastic scaling computation
+- name: --all2all-backend
+  relation: NIXL EP backend uses this value to size RDMA buffers
+constraints:
+- The value must be an integer greater than or equal to 1.
+- The value may be None only when elastic EP initialization is delayed; otherwise it must be set.
+- Elastic EP scaling requires the ray data-parallel backend; scaling is not supported with the mp backend.
+- The target data parallel size at scale-up must not exceed elastic_ep_max_dp_size, otherwise a ValueError is raised.
+- Scaling down is bounded below by the point where logical experts no longer fit in the fixed physical experts per engine.
+tuning_advice:
+  summary: Only relevant when elastic EP is enabled; set it to the maximum DP size you actually plan to scale to, not higher,
+    to avoid unnecessary memory pre-allocation.
+  suggested_values:
+  - scenario: Elastic EP disabled (default, typical Ascend deployment)
+    value: unset
+    reason: The parameter is unused unless --enable-elastic-ep is set; leaving it unset avoids any extra EPLB/RDMA buffer
+      sizing.
+  - scenario: Elastic EP enabled with ray DP backend, planning to scale from 4 to 8 DP ranks
+    value: 8
+    reason: Must be at least the maximum target DP size; setting exactly 8 avoids over-allocating EPLB mapping tensors and
+      NIXL buffers beyond what is needed.
+  - scenario: Elastic EP enabled but only running at fixed DP size
+    value: 4
+    reason: Set equal to the current --data-parallel-size to minimize pre-allocated capacity while still allowing the guard
+      check to pass.
+  caveats:
+  - Verify that vllm-ascend actually supports elastic EP on your NPU setup before relying on this parameter; the upstream
+    elastic EP path depends on NCCL/NIXL which are not the Ascend communication stack.
+  - Over-sizing this value increases memory reserved for EPLB state and all2all buffers without throughput benefit.
+  quick_guide: Leave unset unless using --enable-elastic-ep; then set it to the maximum DP size you will scale to.
+analysis_date: '2026-10-27'

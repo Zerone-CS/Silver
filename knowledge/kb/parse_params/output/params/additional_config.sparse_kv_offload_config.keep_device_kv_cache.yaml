@@ -1,0 +1,88 @@
+name: additional_config.sparse_kv_offload_config.keep_device_kv_cache
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1696
+- vllm_ascend/ascend_config.py:1742
+- vllm_ascend/worker/worker.py:528
+- vllm_ascend/worker/model_runner_v1.py:5294
+- vllm_ascend/worker/v2/attn_utils.py:1150
+- vllm_ascend/attention/sfa_kv_offload.py:179
+- vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:134
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "keep_device_kv_cache controls whether the sparse KV offload path still allocates the full\ndevice (NPU HBM)\
+  \ KV cache in addition to the host DRAM pool. It is read in several places:\n\n1. Memory planning (vllm_ascend/worker/worker.py:528):\
+  \ the value is passed into\n   plan_sparse_kv_offload_memory(). When false, the planner can drop the device KV cache\n \
+  \  allocation entirely, freeing HBM that would otherwise be consumed by the paged KV cache.\n   This is the primary mechanism\
+  \ by which sparse KV offload increases achievable sequence\n   length / batch size — the whole point of the feature. When\
+  \ true, the device KV cache is\n   still allocated, so the HBM savings (and thus the extra sequence length / batch capacity)\n\
+  \   are lost.\n2. KV cache tensor allocation (vllm_ascend/worker/model_runner_v1.py:5294 and\n   vllm_ascend/worker/v2/attn_utils.py:1150):\
+  \ the flag is forwarded to\n   allocate_kv_cache_tensors_for_sparse_kv_offload(), which decides whether to also allocate\n\
+  \   device-resident K/V tensors alongside the host pool. With true, extra NPU tensors are\n   allocated, increasing HBM\
+  \ footprint.\n3. Topk buffer sizing (sparse_kv_offload_manager.py:134): when true, max_num_topk_rows is\n   raised to max(max_num_topk_rows,\
+  \ request_rows) to accommodate the legacy sparse-copy path\n   that may address a resident row per query token. This enlarges\
+  \ the NPU topk_buffer_k/v\n   allocations (max_num_topk_rows * topk_buffer_size * dim * 2 bytes), consuming more HBM.\n\
+  4. Prefill/mixed batch handling (sfa_kv_offload.py:179, sparse_kv_offload_manager.py:1283):\n   when false, receiving a\
+  \ prefill/mixed batch raises RuntimeError; when true, the\n   prefill->CPU D2H staging path is enabled (colocate debug).\
+  \ This is a correctness/debug\n   gate, not a throughput path.\n\nNet effect: \"false is the production setting that maximizes\
+  \ HBM savings and thus throughput\"\n(larger batch/sequence capacity). true is a debug-only mode for PD-colocate scenarios\
+  \ that\nkeeps the full device KV cache, negating the memory benefit and adding topk buffer overhead.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1742
+  context: 'Validation: warns that keep_device_kv_cache=true still allocates device KV cache and cannot improve sequence length/batch
+    size; only for PD-colocate debugging.'
+- file: vllm_ascend/worker/worker.py:528
+  context: Passed to plan_sparse_kv_offload_memory to compute the final KV block budget.
+- file: vllm_ascend/worker/model_runner_v1.py:5294
+  context: 'v1 worker: forwarded to allocate_kv_cache_tensors_for_sparse_kv_offload for per-layer KV tensor allocation.'
+- file: vllm_ascend/worker/v2/attn_utils.py:1150
+  context: 'v2 worker: forwarded to allocate_kv_cache_tensors_for_sparse_kv_offload for host/device KV allocation.'
+- file: vllm_ascend/attention/sfa_kv_offload.py:179
+  context: Raises RuntimeError on prefill/mixed batch when keep_device_kv_cache is false.
+- file: vllm_ascend/distributed/kv_transfer/sparse_kv_offload/sparse_kv_offload_manager.py:134
+  context: Enlarges max_num_topk_rows (and thus topk buffer HBM) when true.
+related_parameters:
+- name: additional_config.sparse_kv_offload_config.enabled
+  relation: Master switch; keep_device_kv_cache only takes effect when sparse KV offload is enabled.
+- name: additional_config.sparse_kv_offload_config.topk_buffer_size
+  relation: When keep_device_kv_cache=true, max_num_topk_rows is enlarged, multiplying topk buffer HBM usage.
+- name: additional_config.sparse_kv_offload_config.dram_size_per_dp_GB
+  relation: Host DRAM pool size; combined with device KV cache decision in memory planner.
+- name: additional_config.sparse_kv_offload_config.fused_op_type
+  relation: fused_copy_sfa prefill copy path (sfa_kv_offload.py:964) only runs when keep_device_kv_cache=true.
+- name: kv_transfer_config
+  relation: When keep_device_kv_cache=false, sparse KV offload requires PD-disaggregated decode (kv consumer) node.
+constraints:
+- When keep_device_kv_cache is false, sparse KV offload requires a PD-disaggregated deployment and can only run on the decode
+  (kv consumer) node; otherwise an AssertionError is raised.
+- When keep_device_kv_cache is false, receiving a prefill or mixed batch raises a RuntimeError; only decode requests are accepted.
+- Sparse KV offload (and thus this flag) requires a sparse attention model with index_topk; it does not support compress models,
+  context parallel, or pipeline parallel.
+- Sparse KV offload with DSpark speculative decoding requires the V2 model runner when keep_device_kv_cache is false.
+tuning_advice:
+  summary: Keep keep_device_kv_cache=false in production to maximize HBM savings and throughput; set true only for PD-colocate
+    debugging.
+  suggested_values:
+  - scenario: Production PD-disaggregated decode node
+    value: false
+    reason: Allows the memory planner to drop the device KV cache, freeing HBM for larger batch/sequence capacity — the intended
+      benefit of sparse KV offload.
+  - scenario: Single-node PD-colocate debugging (prefill+decode on same node)
+    value: true
+    reason: Required to accept prefill/mixed batches and enable the prefill->CPU D2H staging path; only for debugging, not
+      production.
+  caveats:
+  - true negates the memory benefit and adds topk buffer HBM overhead; do not use in production.
+  - false requires a PD-disaggregated decode node; a prefill/mixed batch will raise RuntimeError.
+  quick_guide: Leave false for production throughput; set true only when debugging PD-colocate with prefill on the same node.
+analysis_date: '2026-10-27'

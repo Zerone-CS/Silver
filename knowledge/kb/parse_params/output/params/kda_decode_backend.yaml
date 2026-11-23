@@ -1,0 +1,92 @@
+name: --kda-decode-backend
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1791
+- vllm/engine/arg_utils.py:793
+- vllm/models/kimi_k3/nvidia/kda.py:215
+- vllm/models/kimi_k3/nvidia/kda.py:668
+value_type: str
+default: null
+valid_choices:
+- auto
+- native
+- flashinfer
+- triton
+cli_example: --kda-decode-backend auto
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter selects the decode-time kernel backend for KDA (Kimi Delta Attention)
+
+  layers in the Kimi K3 model family. It is defined in upstream vLLM
+
+  (vllm/engine/arg_utils.py:1791) with choices auto/native/flashinfer/triton and is
+
+  consumed in vllm/models/kimi_k3/nvidia/kda.py:668 via
+
+  additional_config.get("kda_decode_backend", "auto"), then resolved by
+
+  resolve_kda_decode_backend (kda.py:215). The resolver picks "native" (fused CUDA
+
+  kernel) when is_fused_kda_decode_supported() returns true, otherwise falls back to
+
+  flashinfer or triton. The chosen backend determines which decode kernel runs per
+
+  token step, so it can affect per-step decode latency and throughput for KDA models.
+
+  However, all of the referenced kernels (native fused, flashinfer, triton) are
+
+  CUDA-specific implementations under vllm/models/kimi_k3/nvidia/. No vllm-ascend
+
+  source in the provided context references kda_decode_backend, and there is no
+
+  Ascend-native KDA decode kernel path shown. On Ascend NPU this parameter therefore
+
+  has no demonstrated effect on the runtime path — the KDA decode backend selection
+
+  is a CUDA-only code path. Impact is rated low because it only matters for KDA
+
+  models and only on CUDA; on Ascend it is effectively inert.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1791
+  context: CLI argument definition with choices auto/native/flashinfer/triton, default None
+- file: vllm/engine/arg_utils.py:793
+  context: EngineArgs dataclass field kda_decode_backend typed as Literal[...] | None
+- file: vllm/models/kimi_k3/nvidia/kda.py:668
+  context: Reads additional_config['kda_decode_backend'] (default 'auto') and calls resolve_kda_decode_backend
+- file: vllm/models/kimi_k3/nvidia/kda.py:215
+  context: resolve_kda_decode_backend validates choice and selects native/flashinfer/triton based on hardware support
+related_parameters:
+- name: --kda-prefill-backend
+  relation: Sibling parameter selecting the KDA prefill backend; together they control KDA kernel selection
+- name: --additional-config
+  relation: kda_decode_backend is read from additional_config dict at runtime (kda.py:668)
+- name: --spec-tokens
+  relation: num_spec is passed to resolve_kda_decode_backend; native fused decode requires no speculation (num_spec=0)
+constraints:
+- The value must be one of auto, native, flashinfer, or triton; any other value raises ValueError in resolve_kda_decode_backend.
+- Selecting native requires a supported CUDA architecture, bfloat16 activations and convolution state, float32 recurrent state,
+  head_dim=128, convolution width 4, and no speculation; otherwise a RuntimeError is raised.
+- This parameter only applies to KDA (Kimi K3) models; it has no effect on other model architectures.
+tuning_advice:
+  summary: Leave at default (auto) on Ascend; this parameter only affects CUDA KDA decode kernels and has no Ascend NPU implementation.
+  suggested_values:
+  - scenario: Running on Ascend NPU (any KDA/Kimi K3 model)
+    value: auto
+    reason: No Ascend-native KDA decode kernel exists in the provided source; the parameter is a CUDA-only path, so the default
+      auto is the safe choice and avoids errors.
+  - scenario: Running on CUDA GPU with supported KDA decode hardware
+    value: auto
+    reason: auto selects the fused native kernel when supported, giving the best decode latency, and falls back to flashinfer/triton
+      otherwise.
+  caveats:
+  - Do not force native on Ascend or unsupported CUDA hardware — it raises a RuntimeError.
+  - This parameter has no measurable effect on Ascend NPU runtime; do not expect tuning gains from it.
+  quick_guide: Keep --kda-decode-backend at auto; it is a CUDA-only KDA decode selector with no Ascend NPU effect.
+analysis_date: '2026-10-27'

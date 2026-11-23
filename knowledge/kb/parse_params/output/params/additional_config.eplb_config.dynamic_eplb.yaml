@@ -1,0 +1,145 @@
+name: additional_config.eplb_config.dynamic_eplb
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:288
+- vllm_ascend/ascend_config.py:324
+- vllm_ascend/ascend_config.py:698
+- vllm_ascend/worker/model_runner_v1.py:577
+- vllm_ascend/distributed/parallel_state.py:167
+- vllm_ascend/eplb/core/eplb_utils.py:83
+- vllm_ascend/patch/platform/patch_fused_moe.py:139
+- vllm_ascend/ops/fused_moe/routed_experts.py:66
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'dynamic_eplb enables legacy (Model Runner V1) dynamic Expert Parallelism Load
+
+  Balancing on Ascend. When true, model_runner_v1.py:577-596 sets up a full EPLB
+
+  runtime: "a multiprocessing Manager shared dict, an EplbProcess launched as a"
+
+  separate process, a D2DExpertWeightLoader, and an EplbUpdator. This background
+
+  process periodically collects per-expert heat (every expert_heat_collection_interval
+
+  forward iterations) and computes a new expert placement, which is then applied by
+
+  D2D (device-to-device) weight movement. The mechanism directly improves MoE
+
+  throughput by rebalancing skewed expert load across EP ranks, reducing the
+
+  straggler effect where hot experts bottleneck the all-to-all/GMM path.
+
+  parallel_state.py:167 additionally creates a dedicated "dynamic_eplb" HCCL
+
+  process group used for the rebalancing communication. patch_fused_moe.py:139-147
+
+  forces enable_eplb=True and propagates num_redundant_experts into the upstream
+
+  FusedMoE factory so redundant expert weight slots are allocated at load time,
+
+  increasing per-rank weight memory proportional to num_redundant_experts.
+
+  eplb_utils.py:83-114 uses dynamic_eplb to decide whether to build a redundant
+
+  global placement (generate_global_placement) instead of a static linear expert
+
+  map. The rebalancing itself adds CPU/communication overhead (algorithm_execution_interval
+
+  bounds the worker''s CPU task window) and D2D weight copies that can transiently
+
+  stall MoE layers, so it trades some steady-state overhead for better load balance.
+
+  Note: "routed_experts.py:66 explicitly disables dynamic_eplb under Model Runner V2"
+
+  (self.dynamic_eplb = False if use_v2_model_runner), and docs state MRv2 rejects
+
+  legacy dynamic_eplb entirely — so this parameter only has effect on MRv1.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:288
+  context: Field definition, default False.
+- file: vllm_ascend/ascend_config.py:324
+  context: Validator asserts DYNAMIC_EPLB or EXPERT_MAP_RECORD env var is set when dynamic_eplb is true.
+- file: vllm_ascend/ascend_config.py:698
+  context: Rejects combination with enable_force_eplb for MoE models.
+- file: vllm_ascend/ascend_config.py:997
+  context: Counts num_redundant_experts toward the 512-expert limit for hierarchy MC2 comm.
+- file: vllm_ascend/worker/model_runner_v1.py:577
+  context: Initializes EplbProcess, D2DExpertWeightLoader, EplbUpdator and heat collection stage.
+- file: vllm_ascend/distributed/parallel_state.py:167
+  context: Creates the dedicated dynamic_eplb HCCL process group.
+- file: vllm_ascend/eplb/core/eplb_utils.py:83
+  context: Selects redundant global placement vs static linear expert map.
+- file: vllm_ascend/patch/platform/patch_fused_moe.py:139
+  context: Forces enable_eplb and propagates num_redundant_experts into FusedMoE factory.
+- file: vllm_ascend/ops/fused_moe/routed_experts.py:66
+  context: Disabled under Model Runner V2.
+related_parameters:
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: Number of redundant expert slots allocated when dynamic_eplb is enabled; drives extra weight memory and rebalancing
+    headroom.
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: Controls how often expert heat is collected for rebalancing decisions.
+- name: additional_config.eplb_config.algorithm_execution_interval
+  relation: Bounds the CPU window for the EPLB worker to compute a new placement.
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: Selects the rebalancing algorithm (0=Random,1=DefaultEplb,2=SwiftBalanceEplb,3=FlashLB).
+- name: additional_config.eplb_config.eplb_heat_collection_stage
+  relation: Restricts heat collection to all/prefill/decode stages.
+- name: additional_config.eplb_config.expert_map_record_path
+  relation: Setting it implicitly forces dynamic_eplb=True (recording mode).
+- name: additional_config.eplb_config.expert_map_path
+  relation: Static EPLB alternative; mutually exclusive usage mode with dynamic rebalancing.
+- name: additional_config.enable_force_eplb
+  relation: Mutually exclusive with dynamic_eplb for MoE models.
+- name: DYNAMIC_EPLB
+  relation: Env var safety guard required to be true (or EXPERT_MAP_RECORD=true) when dynamic_eplb is enabled.
+- name: additional_config.mc2_comm_alg
+  relation: When hierarchy, num_redundant_experts from dynamic_eplb counts toward the 512-expert cap.
+constraints:
+- dynamic_eplb requires the environment variable DYNAMIC_EPLB=true (or EXPERT_MAP_RECORD=true); otherwise startup raises an
+  assertion error.
+- dynamic_eplb cannot be combined with enable_force_eplb for MoE models; doing so raises a ValueError.
+- dynamic_eplb only takes effect under Model Runner V1; Model Runner V2 rejects legacy dynamic_eplb and forces it off.
+- EPLB requires expert parallelism; with ep_size == 1 an assertion fails (EPLB must be used in expert parallelism).
+- When mc2_comm_alg is hierarchy, logical experts plus num_redundant_experts must not exceed 512.
+- Setting expert_map_record_path implicitly sets dynamic_eplb to true.
+tuning_advice:
+  summary: 'Enable dynamic_eplb only on Model Runner V1 MoE deployments with expert
+
+    parallelism and skewed expert load, together with DYNAMIC_EPLB=true and a
+
+    sensible num_redundant_experts; leave it off for MRv2 or balanced workloads.
+
+    '
+  suggested_values:
+  - scenario: MRv1 MoE with EP>1 and imbalanced expert routing (e.g. large batch serving)
+    value: true
+    reason: Dynamic rebalancing reduces straggler effect on hot experts, improving MoE throughput; requires DYNAMIC_EPLB=true.
+  - scenario: Model Runner V2 deployment
+    value: false
+    reason: MRv2 rejects legacy dynamic_eplb and forces it off; use upstream --eplb-config async EPLB instead.
+  - scenario: Small EP or balanced workload / latency-sensitive single-stream
+    value: false
+    reason: Rebalancing overhead (extra process, D2D weight copies, dedicated HCCL group) outweighs benefit when load is already
+      balanced.
+  caveats:
+  - Enabling dynamic_eplb allocates redundant expert weight slots (num_redundant_experts), increasing per-rank NPU memory.
+  - The EPLB background process and D2D weight movement add CPU and communication overhead; tune expert_heat_collection_interval
+    and algorithm_execution_interval to the workload.
+  - A dedicated dynamic_eplb HCCL process group is created, adding communicator resources.
+  - Docs recommend SwiftBalanceEplb (eplb_policy_type=2) as the current default policy.
+  - Setting expert_map_record_path silently turns dynamic_eplb on, which may surprise users intending only to record a map.
+  quick_guide: 'MRv1 MoE with EP>1 and skewed load: set dynamic_eplb=true plus DYNAMIC_EPLB=true; otherwise leave false.'
+analysis_date: '2026-10-27'

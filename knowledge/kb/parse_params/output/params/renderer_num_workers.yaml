@@ -1,0 +1,100 @@
+name: --renderer-num-workers
+type: cli
+category: other
+scope: vllm
+source_file:
+- vllm/config/model.py:375
+- vllm/engine/arg_utils.py:620
+- vllm/engine/arg_utils.py:969
+- vllm/renderers/base.py:111
+- vllm/renderers/hf.py:1012
+- vllm/entrypoints/llm.py:366
+value_type: int
+default: 1
+valid_choices: positive integer (>= 1); values > 1 only take effect on the async renderer path (vllm serve / AsyncLLM)
+cli_example: --renderer-num-workers 4
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter controls the size of the ThreadPoolExecutor created in
+
+  vllm/renderers/base.py:111-112 (`pool_workers = config.model_config.renderer_num_workers;
+
+  self._executor = ThreadPoolExecutor(max_workers=pool_workers)`). That executor is used by
+
+  `make_async` to offload blocking tokenizer operations (`_tokenize_prompt_async`,
+
+  `_async_tokenizer_decode`) and, in vllm/renderers/hf.py:1006-1013, chat-template application
+
+  (`_apply_chat_template_async`). It also sizes the HF tokenizer''s internal thread pool via
+
+  `maybe_make_thread_pool(self.tokenizer, renderer_num_workers + 1)`.
+
+
+  On Ascend NPU this is a pure CPU-side (host) preprocessing knob: it parallelizes tokenization,
+
+  chat template rendering, and multimodal preprocessing across concurrent requests in the
+
+  OpenAI-compatible API server. It does NOT touch the NPU compute path, HCCL communication,
+
+  KV-cache, or model execution — those are governed by vLLM/vllm-ascend engine and parallel
+
+  configs. Therefore its impact on NPU throughput/latency is indirect and typically small: it
+
+  only matters when host-side rendering is a bottleneck (e.g. high request concurrency, slow
+
+  tokenizers, heavy chat templates, or multimodal preprocessing). When the NPU is the bottleneck
+
+  (the common case for LLM decode), increasing this value yields little to no gain.
+
+
+  Note the offline `LLM` entrypoint uses the synchronous renderer path and processes prompts
+
+  serially, so this setting has no effect there (vllm/entrypoints/llm.py:366 emits a warning).
+
+  No vllm-ascend override of this parameter was found in the provided context; it is an upstream
+
+  vLLM-only knob.
+
+  '
+usage_locations:
+- file: vllm/renderers/base.py:111
+  context: Sizes the ThreadPoolExecutor used to offload tokenization/decode via make_async
+- file: vllm/renderers/hf.py:1012
+  context: Sizes the HF tokenizer thread pool as renderer_num_workers + 1; also offloads chat template application
+- file: vllm/config/model.py:843
+  context: 'Validation: raises ValueError if > 1 with mm processor cache enabled for pooling models'
+- file: vllm/entrypoints/llm.py:366
+  context: Warns that offline LLM entrypoint ignores this setting (synchronous renderer path)
+related_parameters:
+- name: --mm-processor-cache-gb
+  relation: 'Mutually constrained for pooling models: renderer-num-workers > 1 requires mm-processor-cache-gb = 0'
+- name: --runner
+  relation: runner_type == 'pooling' triggers the multimodal cache thread-safety restriction
+- name: --skip-tokenizer-init
+  relation: When tokenizer init is skipped, tokenization offload is not exercised
+constraints:
+- For pooling models, --renderer-num-workers greater than 1 cannot be combined with a nonzero --mm-processor-cache-gb; the
+  server raises a ValueError because the multimodal processor cache is not thread-safe.
+- The value must be a positive integer (>= 1); it is used directly as ThreadPoolExecutor max_workers.
+tuning_advice:
+  summary: Leave at default 1 unless host-side tokenization/chat-template/multimodal rendering is a measured bottleneck under
+    high concurrency; then raise modestly (e.g. 2-4) on the vllm serve path.
+  suggested_values:
+  - scenario: Standard LLM serving where NPU compute is the bottleneck (default)
+    value: 1
+    reason: Host rendering is rarely the bottleneck for LLM decode; the default avoids extra thread overhead and keeps behavior
+      simple.
+  - scenario: High-concurrency OpenAI-compatible server with slow tokenizers or heavy chat templates
+    value: 4
+    reason: Parallelizes tokenization and chat-template rendering across concurrent requests, reducing host-side latency when
+      rendering is a measured bottleneck.
+  - scenario: Multimodal serving with heavy preprocessing under high concurrency (non-pooling models)
+    value: 4
+    reason: Offloads multimodal preprocessing across worker threads; keep mm-processor-cache-gb at 0 for pooling models to
+      satisfy the thread-safety constraint.
+  caveats: []
+  quick_guide: Keep default 1; only raise to 2-4 on vllm serve if host-side rendering is a proven bottleneck.
+analysis_date: '2026-10-27'

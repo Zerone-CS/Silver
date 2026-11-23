@@ -1,0 +1,129 @@
+name: --gpu-memory-utilization
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/cache.py:103
+- vllm/engine/arg_utils.py:1270
+- vllm/engine/arg_utils.py:2100
+- vllm_ascend/worker/worker.py:455
+- vllm_ascend/worker/worker.py:577
+- vllm_ascend/_310p/worker_310p.py:131
+- vllm_ascend/_310p/worker_310p.py:173
+value_type: float
+default: 0.92
+valid_choices: float in range (0, 1] (Field(gt=0, le=1))
+cli_example: --gpu-memory-utilization 0.92
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: 'This parameter is the primary knob controlling how much NPU HBM is reserved for the
+
+  vLLM instance, and therefore how much memory is left for the KV cache. On Ascend it is
+
+  read in vllm_ascend/worker/worker.py:455 (and the 310P variant worker_310p.py:173) as
+
+  `requested_memory = init_snapshot.total_memory * gpu_memory_utilization`. If the free
+
+  memory at startup is less than this requested amount, the worker raises a ValueError and
+
+  the engine fails to start (worker.py:456-466). During `determine_available_memory`
+
+  (worker.py:557), the worker runs `profile_run()` under `memory_profiling` and computes
+
+  the KV cache budget as `requested_memory - non_kv_cache_memory` (minus non-torch memory
+
+  cleared by empty_cache). A higher value therefore directly increases the number of KV
+
+  cache blocks, which raises the maximum concurrency the scheduler can admit and reduces
+
+  preemption/recompute — improving throughput and tail latency (TPOT). A lower value
+
+  shrinks the KV cache, causing earlier preemption and lower achievable batch size.
+
+  On 310P (worker_310p.py:131-142) the available KV cache is additionally halved
+
+  (`// 2`) to reserve workspace, and in RC mode it is computed from host memory
+
+  (`psutil.virtual_memory()`), so the effective KV cache is much smaller than the nominal
+
+  fraction suggests. The parameter is ignored entirely when `--kv-cache-memory-bytes` is
+
+  set (worker.py:572-587 logs "This does not respect the gpu_memory_utilization config").
+
+  It also gates CUDA/NPU graph capture for Mamba models: if max_num_seqs exceeds available
+
+  Mamba blocks, vLLM raises and suggests increasing gpu_memory_utilization
+
+  (vllm/config/compilation.py:1535-1542).
+
+  '
+usage_locations:
+- file: vllm_ascend/worker/worker.py:455
+  context: Computes requested_memory = total_memory * gpu_memory_utilization and raises if free memory is insufficient
+- file: vllm_ascend/worker/worker.py:577
+  context: 'determine_available_memory: KV cache budget derived from requested_memory; skipped when kv_cache_memory_bytes
+    is set'
+- file: vllm_ascend/_310p/worker_310p.py:131
+  context: '310P: available KV cache halved for workspace; RC mode uses host memory'
+- file: vllm_ascend/_310p/worker_310p.py:173
+  context: '310P: requested_memory = total_memory * gpu_memory_utilization, RC mode overrides free_memory with host available'
+- file: vllm/config/cache.py:103
+  context: Field definition with default 0.92 and gt=0, le=1 validation
+- file: vllm/engine/arg_utils.py:2100
+  context: Passed into CacheConfig construction
+- file: vllm/config/compilation.py:1541
+  context: Error message suggests increasing gpu_memory_utilization when Mamba blocks are insufficient for graph capture
+related_parameters:
+- name: --kv-cache-memory-bytes
+  relation: 'Mutually exclusive in effect: when set, gpu_memory_utilization is ignored for KV cache sizing'
+- name: --max-model-len
+  relation: Larger max_model_len needs more KV cache per request; may require higher gpu_memory_utilization or triggers auto-fit
+    reduction
+- name: --max-num-seqs
+  relation: Concurrency is bounded by KV cache blocks derived from this parameter; Mamba graph capture requires enough blocks
+    for max_num_seqs
+- name: --block-size
+  relation: KV cache block granularity affects how the memory budget translates into block count
+- name: --enable-prefix-caching
+  relation: Prefix caching consumes KV cache; higher utilization leaves more room for cached prefixes
+constraints:
+- The value must be strictly greater than 0 and less than or equal to 1 (Field(gt=0, le=1)).
+- At startup, free NPU memory must be at least total_memory * gpu_memory_utilization, otherwise the worker raises a ValueError
+  and the engine fails to start.
+- When --kv-cache-memory-bytes is set, gpu_memory_utilization has no effect on KV cache sizing.
+- For Mamba models with full graph capture, max_num_seqs must not exceed the number of Mamba cache blocks, which is derived
+  from this parameter; otherwise graph capture raises an error.
+tuning_advice:
+  summary: Raise gpu_memory_utilization to maximize KV cache and throughput, but leave headroom for HCCL buffers and other
+    processes to avoid startup OOM.
+  suggested_values:
+  - scenario: Single vLLM instance per NPU, standard dense/MoE serving (v1 and v2 workers)
+    value: 0.92
+    reason: Default value; balances large KV cache with headroom for HCCL buffers and runtime workspace, as used in the DeepSeek-R1
+      tutorial.
+  - scenario: High-concurrency serving where KV cache capacity is the bottleneck
+    value: 0.95
+    reason: Leaves more memory for KV cache, reducing preemption and improving throughput/TPOT, provided no other process
+      shares the NPU.
+  - scenario: Multiple vLLM instances sharing one NPU
+    value: 0.5
+    reason: Per-instance limit; split the fraction across instances to avoid startup free-memory check failure.
+  - scenario: 310P device (RC mode or standard)
+    value: 0.8
+    reason: 310P halves available KV cache for workspace and RC mode shares host memory; a lower fraction avoids OOM with
+      default settings.
+  - scenario: Netloader / HCCL-heavy deployments
+    value: 0.85
+    reason: Reserve extra on-chip memory for HCCL connection buffers (~200MB) as recommended in the Netloader doc.
+  caveats:
+  - If startup fails with 'Free memory ... is less than desired GPU memory utilization', lower this value or free memory used
+    by other processes.
+  - If you set --kv-cache-memory-bytes, this parameter is ignored for KV cache sizing.
+  - Watch 'GPU KV cache usage' approaching 100% as a signal to increase this value or reduce max-num-seqs/max-model-len.
+  quick_guide: Use 0.92 by default; raise toward 0.95 for max KV cache on a dedicated NPU, lower to 0.8 or below on 310P or
+    shared/NPU-heavy setups.
+analysis_date: '2026-10-27'

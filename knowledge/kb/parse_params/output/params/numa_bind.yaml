@@ -1,0 +1,114 @@
+name: --numa-bind
+type: cli
+category: hardware
+scope: both
+source_file:
+- vllm/config/parallel.py:293
+- vllm/engine/arg_utils.py:485
+- vllm/engine/arg_utils.py:1073
+- vllm/utils/numa_utils.py:250
+- vllm/utils/numa_utils.py:330
+- vllm/v1/engine/core.py:1304
+- vllm/v1/executor/multiproc_executor.py:913
+- vllm_ascend/platform.py:889
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --numa-bind
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'Upstream vLLM: "--numa-bind enables NUMA-aware CPU/memory pinning of GPU worker"
+
+  subprocesses. When set, vllm/utils/numa_utils.py resolves a NUMA node per GPU
+
+  (_get_numa_node, auto-detected via get_auto_numa_nodes or explicit
+
+  --numa-bind-nodes) and a CPU list per GPU (_get_cpu_binding, from
+
+  --numa-bind-cpus or PCT priority cores on PCT-capable Xeons). Workers are then
+
+  pinned via numactl --membind/--cpunodebind, keeping host-side work (tokenization,
+
+  scheduling, sampling, CPU-side KV/block management) on memory local to the GPU''s
+
+  NUMA node. This reduces cross-socket memory latency and cache misses, improving
+
+  steady-state throughput and tail latency. It also triggers
+
+  numa_utils.log_current_affinity_state in EngineCoreProc (v1/engine/core.py:1304)
+
+  and WorkerProc (v1/executor/multiproc_executor.py:913) for observability.
+
+  Ascend override (vllm_ascend/platform.py:889): vllm-ascend does NOT support
+
+  GPU-to-NUMA topology detection. When --numa-bind is set, the platform check
+
+  resets parallel_config.numa_bind to False and instead injects
+
+  additional_config["enable_cpu_binding"] = True, delegating to the Ascend-native
+
+  CPU binding implementation (topo-affinity core allocation computed from NPU
+
+  topology / global logical NPU IDs). So on Ascend the flag does not perform
+
+  numactl-based NUMA binding; it acts as a switch that turns on Ascend''s own
+
+  CPU-core binding, which still affects host-side scheduling latency and
+
+  throughput by pinning worker threads to NPU-local CPU cores.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:889
+  context: Ascend platform check resets numa_bind to False and sets additional_config enable_cpu_binding=True
+- file: vllm/config/parallel.py:293
+  context: ParallelConfig.numa_bind field definition and docstring
+- file: vllm/utils/numa_utils.py:250
+  context: Resolves NUMA node per GPU; raises if topology undetectable
+- file: vllm/utils/numa_utils.py:330
+  context: Resolves CPU binding list per GPU (PCT cores or explicit cpus)
+- file: vllm/v1/engine/core.py:1304
+  context: Logs current affinity state in EngineCoreProc when numa_bind enabled
+- file: vllm/v1/executor/multiproc_executor.py:913
+  context: Logs current affinity state in WorkerProc when numa_bind enabled
+related_parameters:
+- name: --numa-bind-nodes
+  relation: Provides explicit per-GPU NUMA node list; ignored on Ascend (auto topo-affinity used instead)
+- name: --numa-bind-cpus
+  relation: Provides explicit per-GPU CPU lists; ignored on Ascend
+- name: --additional-config
+  relation: On Ascend, --numa-bind is converted into additional_config enable_cpu_binding=true
+- name: --device-ids
+  relation: Determines visible GPU/NPU set that binding lists must cover
+constraints:
+- On Ascend NPU, --numa-bind does not perform GPU-to-NUMA binding; it is silently converted to additional_config enable_cpu_binding=true.
+- If --numa-bind is set upstream without --numa-bind-nodes and GPU-to-NUMA topology cannot be auto-detected, vLLM raises a
+  RuntimeError.
+- The number of entries in --numa-bind-nodes and --numa-bind-cpus must cover every visible GPU, otherwise a ValueError is
+  raised for out-of-range GPU index.
+- --numa-bind-nodes must be non-empty and contain only non-negative integers when provided.
+- --numa-bind-cpus must be non-empty when provided.
+tuning_advice:
+  summary: On Ascend, use --numa-bind as a switch to enable Ascend-native CPU-core binding for host-side worker threads; it
+    is converted to additional_config enable_cpu_binding=true.
+  suggested_values:
+  - scenario: Ascend NPU deployment with host-side CPU contention or multi-NPU per node
+    value: true
+    reason: Enables Ascend topo-affinity CPU binding, pinning worker threads to NPU-local cores to reduce cross-NUMA memory
+      latency and improve throughput/latency stability.
+  - scenario: Single-NPU or already-isolated CPU environment
+    value: false
+    reason: Binding gains are marginal when CPU contention is low; leaving it off avoids potential conflicts with container
+      cpuset limits.
+  caveats:
+  - Do not rely on --numa-bind-nodes/--numa-bind-cpus on Ascend; they are ignored and binding is computed automatically.
+  - 'Prefer setting additional_config {"enable_cpu_binding": true} directly for clarity, since --numa-bind is just converted
+    to it on Ascend.'
+  - Check the logged affinity state after startup to confirm binding took effect and does not conflict with container cpuset
+    restrictions.
+  quick_guide: On Ascend, --numa-bind is auto-converted to additional_config enable_cpu_binding=true; enable it when host
+    CPU contention affects throughput.
+analysis_date: '2026-10-27'

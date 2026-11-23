@@ -1,0 +1,88 @@
+name: HCCL_SO_PATH
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:69
+- vllm_ascend/utils.py:608
+- vllm_ascend/distributed/device_communicators/pyhccl_wrapper.py:192
+value_type: str
+default: null
+valid_choices: Any valid filesystem path to a libhccl.so shared library; if unset, falls back to 'libhccl.so' resolved via
+  the dynamic loader after importing torch
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'HCCL_SO_PATH only controls which libhccl.so shared object is loaded by the pyhccl
+
+  communicator backend. In vllm_ascend/utils.py:find_hccl_library(), if the env var is
+
+  set it is returned verbatim; otherwise, when torch.version.cann is not None, the
+
+  literal string "libhccl.so" is used and resolved by ctypes/the dynamic loader.
+
+  HCCLLibrary.__init__ (pyhccl_wrapper.py:177) then ctypes.CDLL-loads that path and
+
+  caches the loaded library and its exported function table in class-level dicts
+
+  (path_to_library_cache / path_to_dict_mapping), so the load happens once per path.
+
+  This is a library-resolution/loading concern, not a runtime tuning knob: it does not
+
+  change collective algorithm selection, buffer sizes, or communication scheduling.
+
+  Its only performance relevance is indirect — pointing at a mismatched or
+
+  non-optimized HCCL build (wrong CANN version, debug build, or a library that fails
+
+  to load) can degrade or break collective communication (all-reduce/all-gather)
+
+  latency and throughput, or cause a hard failure at communicator init. When the
+
+  default resolution works, setting this variable has no measurable runtime effect.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py:69
+  context: Declares HCCL_SO_PATH env var, lazily read via env_variables mapping; default None.
+- file: vllm_ascend/utils.py:608
+  context: find_hccl_library() returns HCCL_SO_PATH if set, else 'libhccl.so' when torch.version.cann is present, else raises
+    ValueError.
+- file: vllm_ascend/distributed/device_communicators/pyhccl_wrapper.py:192
+  context: HCCLLibrary loads the resolved so_file via ctypes.CDLL and caches it; error message instructs user to set HCCL_SO_PATH
+    on load failure.
+related_parameters:
+- name: ASCEND_HOME_PATH
+  relation: CANN toolkit home; the default libhccl.so is normally found under this installation's library path.
+- name: LD_LIBRARY_PATH
+  relation: When HCCL_SO_PATH is unset, 'libhccl.so' is resolved through the dynamic loader search path.
+constraints:
+- If HCCL_SO_PATH is unset and torch.version.cann is None, find_hccl_library() raises ValueError('HCCL only supports Ascend
+  NPU backends.').
+- The path must point to a loadable libhccl.so compatible with the current platform and CANN version, otherwise ctypes.CDLL
+  raises and communicator initialization fails.
+tuning_advice:
+  summary: Leave unset in standard CANN installs; only set it to explicitly select a specific libhccl.so when the default
+    resolution picks the wrong library.
+  suggested_values:
+  - scenario: Standard CANN toolkit installation where libhccl.so is discoverable
+    value: <unset>
+    reason: Default resolution to 'libhccl.so' via the dynamic loader works and avoids pinning a stale path.
+  - scenario: Multiple CANN versions installed or default loader picks wrong libhccl.so
+    value: /usr/local/Ascend/ascend-toolkit/latest/lib64/libhccl.so
+    reason: Explicitly points pyhccl backend at the intended HCCL build matching the active CANN version.
+  - scenario: Custom/optimized HCCL build for a specific NPU topology
+    value: /opt/custom-hccl/lib64/libhccl.so
+    reason: Allows using a vendor-tuned HCCL library that may improve collective communication performance.
+  caveats:
+  - This is a library-resolution knob, not a runtime tuning parameter; it does not change collective algorithms or buffer
+    sizes.
+  - Pointing at a libhccl.so built for a different CANN version or platform can cause load failures or degraded collective
+    performance.
+  - The library is cached per path in HCCLLibrary class dicts, so changing the env var after first load has no effect within
+    the same process.
+  quick_guide: Leave HCCL_SO_PATH unset unless the default libhccl.so resolution fails or selects the wrong library.
+analysis_date: '2026-10-27'

@@ -1,0 +1,68 @@
+name: kernel.linear_backend_per_quant
+type: nested
+category: quantization
+scope: vllm
+source_file:
+- vllm/model_executor/kernels/linear/__init__.py:244
+value_type: dict
+default: null
+valid_choices: 'dict mapping quantization scheme name (str) to linear backend name (str), e.g. {"nvfp4_w4a16": "humming"}'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vLLM-upstream kernel configuration field (part of kernel_config) that
+
+  provides per-quantization-scheme overrides for the linear backend selection. In
+
+  vllm/model_executor/kernels/linear/__init__.py:244, _get_linear_backend() reads
+
+  config.kernel_config.linear_backend_per_quant and, if an override exists for the
+
+  given quantization scheme, returns it (logging once) instead of the global
+
+  config.kernel_config.linear_backend. The chosen backend determines which linear
+
+  (GEMM) kernel implementation is dispatched for quantized layers, which can affect
+
+  per-layer compute latency and throughput. However, no definition or usage of this
+
+  parameter was found in vllm-ascend, and the referenced backends (e.g. "humming",
+
+  "nvfp4_w4a16") are NVIDIA-oriented quantization/kernel schemes. On Ascend NPU,
+
+  linear layers are dispatched through vllm-ascend''s own quantized linear methods
+
+  (Ascend-native ACLNN/CANN kernels), so this upstream override has no practical
+
+  effect on Ascend runtime performance. Impact is therefore low on Ascend.
+
+  '
+usage_locations:
+- file: vllm/model_executor/kernels/linear/__init__.py:244
+  context: Reads linear_backend_per_quant overrides and returns the per-quant backend if present, else falls back to linear_backend
+related_parameters:
+- name: kernel.linear_backend
+  relation: Global fallback backend used when no per-quant override matches
+- name: quantization
+  relation: The quantization scheme string is the key used to look up an override
+constraints:
+- Overrides only take effect when the quantization scheme string exactly matches a key in the dict.
+- If no override matches the current quantization scheme, the global linear_backend value is used.
+tuning_advice:
+  summary: Leave unset on Ascend NPU; this upstream per-quant backend override does not affect Ascend linear kernel dispatch.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any quantization)
+    value: unset
+    reason: vllm-ascend does not consume this field and uses its own quantized linear kernels, so overriding it provides no
+      benefit.
+  - scenario: Upstream GPU reference / non-Ascend
+    value: '{"nvfp4_w4a16": "humming"}'
+    reason: Example from the field hint showing how to select a specific backend for a given quantization scheme on supported
+      hardware.
+  caveats:
+  - Do not expect this setting to alter Ascend performance; verify kernel selection via vllm-ascend quant method logs instead.
+  quick_guide: Ignore on Ascend — it only affects upstream GPU linear backend selection.
+analysis_date: '2026-10-27'

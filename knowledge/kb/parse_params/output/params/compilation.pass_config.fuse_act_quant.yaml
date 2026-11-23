@@ -1,0 +1,75 @@
+name: compilation.pass_config.fuse_act_quant
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/passes/pass_manager.py:197
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag gates the ActivationQuantFusionPass in vLLM''s post-grad compilation
+
+  pipeline (vllm/compilation/passes/pass_manager.py:197-203). When enabled, the
+
+  pass fuses the SiluMul activation with a following quantization op (e.g. FP8
+
+  quant) into a single kernel, eliminating an intermediate tensor materialization
+
+  and a separate kernel launch. On ROCm with AITER enabled it additionally adds
+
+  RocmAiterSiluMulFp8GroupQuantFusionPass. This is a vLLM-upstream (GPU) graph
+
+  optimization pass. No definition or usage of fuse_act_quant was found in the
+
+  vllm-ascend repo, and no Ascend-specific override or monkey-patch was found in
+
+  the provided context. On Ascend NPU, vLLM''s torch.compile / Inductor fusion
+
+  passes are not the primary execution path — vllm-ascend relies on CANN graph
+
+  compilation and its own AscendC kernels, so this upstream pass has little to no
+
+  effect on Ascend runtime. Its impact is therefore low and limited to any
+
+  upstream compile path that might be exercised.
+
+  '
+usage_locations:
+- file: vllm/compilation/passes/pass_manager.py:197
+  context: Conditionally appends ActivationQuantFusionPass (and ROCm AITER variant) to the post-grad pass list.
+- file: tests/compile/passes/test_pass_manager.py:77
+  context: Toggled to verify pass manager UUID changes when pass config changes.
+- file: tests/compile/passes/test_silu_mul_quant_fusion.py:315
+  context: Enables the pass in a test config to validate SiluMul+quant fusion.
+related_parameters:
+- name: compilation.pass_config.fuse_norm_quant
+  relation: Sibling fusion pass flag; both gate post-grad fusion passes in the same pass manager.
+- name: compilation.pass_config.enable_fusion
+  relation: Master switch that must be enabled for individual fusion passes to be added.
+- name: compilation_config.mode
+  relation: Fusion passes only run under VLLM_COMPILE compilation mode.
+constraints:
+- The pass is only added when compilation mode is VLLM_COMPILE (torch.compile path); it has no effect in eager mode.
+- The ROCm AITER SiluMul+FP8 group-quant variant is only added when ROCm AITER is enabled; on Ascend this branch is never
+  taken.
+tuning_advice:
+  summary: Leave at default on Ascend; this upstream fusion pass has negligible effect on NPU runtime.
+  suggested_values:
+  - scenario: Default Ascend NPU deployment
+    value: true
+    reason: Keep the upstream default; the pass is inert on the Ascend CANN path and disabling it yields no measurable gain.
+  - scenario: Debugging compile-time issues or pass conflicts
+    value: false
+    reason: Disable to isolate whether the SiluMul+quant fusion pass is causing compilation problems, at the cost of a possible
+      extra kernel on GPU reference paths.
+  caveats:
+  - Do not expect throughput gains on Ascend from this flag; focus tuning on vllm-ascend-specific knobs instead.
+  - This flag only matters for the upstream torch.compile path, not the Ascend CANN graph path.
+  quick_guide: Keep default true on Ascend; it has minimal NPU impact.
+analysis_date: '2026-10-27'

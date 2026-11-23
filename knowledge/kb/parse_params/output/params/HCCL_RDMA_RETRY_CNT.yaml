@@ -1,0 +1,73 @@
+name: HCCL_RDMA_RETRY_CNT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/utils/utils.py:92
+value_type: int
+default: '7'
+valid_choices: positive integer (retry count); no explicit upper bound enforced in code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'HCCL_RDMA_RETRY_CNT is read only in get_transfer_timeout_value() in
+
+  vllm_ascend/distributed/kv_transfer/utils/utils.py. It is used together with
+
+  HCCL_RDMA_TIMEOUT to compute a KV-transfer timeout value:
+
+  timeout = (4.096 * 2**HCCL_RDMA_TIMEOUT) * HCCL_RDMA_RETRY_CNT // 1000 + 3000 (ms).
+
+  This computed value is a timeout threshold for KV cache transfer (disaggregated
+
+  prefill/decode KV transfer over HCCL/RDMA), not a hot-path compute parameter.
+
+  It does not affect steady-state throughput or per-token latency; it only affects
+
+  how long the transfer layer waits before declaring a failure. A larger retry count
+
+  increases the tolerated transfer stall time (more resilience to transient RDMA
+
+  errors) at the cost of longer failure detection latency; a smaller value fails
+
+  faster but may abort transfers prematurely under transient congestion. Note that
+
+  ASCEND_TRANSFER_TIMEOUT, if set, takes precedence and bypasses this computation
+
+  entirely.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/utils/utils.py:92
+  context: Read via os.getenv to compute KV-transfer timeout in get_transfer_timeout_value()
+related_parameters:
+- name: HCCL_RDMA_TIMEOUT
+  relation: Multiplied together (4.096 * 2**HCCL_RDMA_TIMEOUT) * HCCL_RDMA_RETRY_CNT to derive the transfer timeout
+- name: ASCEND_TRANSFER_TIMEOUT
+  relation: If set (non-empty), overrides the computed value and HCCL_RDMA_RETRY_CNT is ignored
+constraints:
+- The value must be parseable as an integer; a non-integer string will raise a ValueError when int() is applied.
+- If ASCEND_TRANSFER_TIMEOUT is set to a non-empty value, HCCL_RDMA_RETRY_CNT has no effect on the computed timeout.
+tuning_advice:
+  summary: Leave at default unless KV transfers over RDMA are flaky; increase to tolerate transient errors, or set ASCEND_TRANSFER_TIMEOUT
+    directly for explicit control.
+  suggested_values:
+  - scenario: Stable RDMA fabric, default behavior
+    value: 7
+    reason: Default value; provides reasonable retry tolerance without excessive failure-detection delay.
+  - scenario: Transient RDMA errors / congested fabric causing spurious KV-transfer aborts
+    value: 10
+    reason: Higher retry count extends tolerated stall time, reducing premature transfer failures under transient congestion.
+  - scenario: Fast-fail desired (quick detection of genuine transfer failures)
+    value: 3
+    reason: Lower retry count shortens the computed timeout so failures surface faster, at the cost of less resilience to
+      transient errors.
+  caveats:
+  - Prefer setting ASCEND_TRANSFER_TIMEOUT to an explicit millisecond value when you need precise control; it overrides this
+    parameter.
+  - Because the timeout scales with 2**HCCL_RDMA_TIMEOUT, coordinate changes to HCCL_RDMA_RETRY_CNT with HCCL_RDMA_TIMEOUT
+    to avoid excessively long timeouts.
+  quick_guide: Keep default 7; raise only if RDMA KV transfers fail transiently, or set ASCEND_TRANSFER_TIMEOUT instead.
+analysis_date: '2026-10-27'

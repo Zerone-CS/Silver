@@ -1,0 +1,90 @@
+name: additional_config.scheduler_config.dyntra_lb_config.start_step
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1589
+- vllm_ascend/ascend_config.py:1601
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:331
+value_type: int
+default: 250
+valid_choices: integer >= 0; when end_step != -1, must be strictly less than end_step
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'start_step is the first completed engine-step snapshot from which the DyntraLB
+
+  (dynamic load balancing) planner is allowed to generate a plan for the next step.
+
+  It is read in vllm_ascend/patch/platform/patch_dyntra_lb_core.py:331 inside
+
+  DyntraLBDPEngineCoreProc._init_data_parallel, where it is stored as
+
+  self._lb_start_step and later used to gate whether the planner runs on a given
+
+  completed step. DyntraLB is an Ascend-only DP (data-parallel) load-balancing
+
+  feature that reduces DP bubbles by rebalancing KV-cache blocks across DP ranks
+
+  when a rank-load imbalance exceeds bubble_threshold. Because the planner only
+
+  activates after start_step, this parameter controls how many engine steps run
+
+  with the default (unbalanced) scheduling before balancing kicks in. A larger
+
+  start_step delays balancing (more warm-up steps with potential DP bubbles, but
+
+  avoids rebalancing during startup/compilation transients); a smaller start_step
+
+  enables balancing earlier (better steady-state throughput under skewed load, but
+
+  may rebalance during warm-up when load estimates are noisy). It does not affect
+
+  memory footprint directly; its effect is on throughput/latency via DP bubble
+
+  reduction. The parameter has no effect unless dyntra_lb_config.enabled is True.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1589
+  context: Field definition with default 250 in DyntraLBConfig.
+- file: vllm_ascend/ascend_config.py:1601
+  context: Validator raises ValueError if start_step < 0; also cross-checked against end_step.
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:331
+  context: Assigned to self._lb_start_step in DyntraLBDPEngineCoreProc._init_data_parallel to gate planner activation.
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Master switch; start_step has no effect unless enabled is True.
+- name: additional_config.scheduler_config.dyntra_lb_config.end_step
+  relation: Exclusive upper bound; when set (!= -1) it must be greater than start_step.
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: start_step/end_step interval applies in both static and dynamic modes.
+- name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+  relation: Imbalance threshold that determines whether a plan is generated once start_step is reached.
+- name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+  relation: In dynamic mode, bounds how long balancing stays active after activation.
+constraints:
+- start_step must be greater than or equal to 0.
+- When end_step is not -1, end_step must be strictly greater than start_step.
+- start_step only takes effect when dyntra_lb_config.enabled is True.
+tuning_advice:
+  summary: Keep the default 250 for production; lower it only for short diagnostic runs or when DP imbalance appears early.
+  suggested_values:
+  - scenario: Production long-running decode with DP imbalance
+    value: 250
+    reason: Default value lets warm-up/compilation transients settle before balancing activates, avoiding noisy early rebalancing.
+  - scenario: Short diagnostic/validation run in static mode
+    value: 0
+    reason: Docs recommend start_step=0 for short diagnostic runs so DyntraLB is actually exercised within the run.
+  - scenario: Workload where DP imbalance appears immediately after warm-up
+    value: 50
+    reason: Lower start_step activates balancing sooner to reduce DP bubbles earlier, at the cost of some warm-up noise.
+  caveats:
+  - Only meaningful when dyntra_lb_config.enabled is True.
+  - Must remain strictly less than end_step when end_step is set.
+  - Do not use static mode in production; use dynamic mode with the default interval.
+  quick_guide: Leave start_step at 250 for production; set to 0 only for short diagnostic runs.
+analysis_date: '2026-10-27'

@@ -1,0 +1,73 @@
+name: ASCEND_HOME_PATH
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/envs.py:66
+- vllm_ascend/worker/worker.py:219
+- vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/add_rms_norm_bias.py:197
+value_type: str
+default: /usr/local/Ascend/ascend-toolkit/latest
+valid_choices: any valid filesystem path to a CANN toolkit installation
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "ASCEND_HOME_PATH points to the CANN toolkit installation directory. It is read in two\ndistinct places in\
+  \ vllm-ascend:\n\n1. Compilation path (vllm_ascend/_cann_ops_custom/.../dynamic/*.py): the custom AscendC\n   operator build\
+  \ scripts (e.g. add_rms_norm_bias.py, chunk_fwd_o_vllm.py, compressor.py)\n   read ASCEND_HOME_PATH to build the `-I` include\
+  \ paths for the AscendC compiler\n   (toolkit_path + \"/<arch>-linux/asc/atcos\" and toolkit_path + \"/pkg_inc/op_common/\"\
+  ).\n   If unset, they fall back to os.path.realpath(\"/usr/local/Ascend/latest/\"). This only\n   affects whether custom\
+  \ kernels compile correctly at build time — it does not change\n   runtime kernel execution speed once compiled.\n\n2. Runtime\
+  \ worker path (vllm_ascend/worker/worker.py:219): on SIGTERM/SIGINT the worker\n   calls uninstall_static_kernel(), which\
+  \ reads os.environ[\"ASCEND_HOME_PATH\"] directly\n   (KeyError if unset) to locate opp/static_kernel/ai_core/uninstall.sh\
+  \ and run it in a\n   background subprocess. This is a shutdown-time cleanup action, not a hot-path operation.\n\nNeither\
+  \ usage sits on the inference hot path (no per-token or per-batch effect), so the\ndirect performance impact on throughput/latency/memory\
+  \ is negligible. The only indirect\neffect is that a wrong path can cause custom-kernel compilation to fail or link against\n\
+  the wrong CANN headers, which would prevent the optimized AscendC kernels from being used\nat all — a correctness/build\
+  \ concern rather than a runtime tuning knob.\n"
+usage_locations:
+- file: vllm_ascend/envs.py:66
+  context: Declares ASCEND_HOME_PATH env var accessor (default None, docstring default /usr/local/Ascend/ascend-toolkit/latest)
+- file: vllm_ascend/worker/worker.py:219
+  context: Reads os.environ['ASCEND_HOME_PATH'] in uninstall_static_kernel() to locate and run the static-kernel uninstall
+    script on shutdown
+- file: vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/add_rms_norm_bias.py:197
+  context: Builds AscendC compiler include paths from ASCEND_HOME_PATH (falls back to /usr/local/Ascend/latest/)
+- file: vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/dynamic/chunk_fwd_o_vllm.py:203
+  context: Same include-path construction for the chunk_fwd_o custom op build
+related_parameters:
+- name: SOC_VERSION
+  relation: Both are build-time CANN configuration; SOC_VERSION selects the target chip while ASCEND_HOME_PATH locates the
+    toolkit
+- name: COMPILE_CUSTOM_KERNELS
+  relation: When custom kernels are compiled, ASCEND_HOME_PATH is used to resolve AscendC include paths
+- name: HCCL_SO_PATH
+  relation: Sibling CANN-related env var; HCCL_SO_PATH locates the HCCL library while ASCEND_HOME_PATH locates the toolkit
+    root
+constraints:
+- The path must point to a valid CANN toolkit installation containing pkg_inc/op_common and the <arch>-linux/asc/atcos directories,
+  otherwise custom AscendC kernel compilation will fail.
+- vllm_ascend/worker/worker.py reads os.environ['ASCEND_HOME_PATH'] directly (not via the envs accessor), so if it is unset
+  the shutdown handler can raise KeyError.
+tuning_advice:
+  summary: Set ASCEND_HOME_PATH explicitly to your actual CANN toolkit install directory to ensure custom AscendC kernels
+    compile against the correct headers.
+  suggested_values:
+  - scenario: Standard CANN installation via the default installer
+    value: /usr/local/Ascend/ascend-toolkit/latest
+    reason: Matches the documented default and the typical CANN install layout; ensures build scripts and the shutdown handler
+      resolve the same toolkit.
+  - scenario: Custom or versioned CANN install (e.g. multiple toolkits side by side)
+    value: /usr/local/Ascend/ascend-toolkit/8.0.RC3
+    reason: Pin to the exact toolkit version to avoid the 'latest' symlink pointing at an unexpected CANN release during custom-kernel
+      compilation.
+  caveats:
+  - Ensure the path contains pkg_inc/op_common and <arch>-linux/asc/atcos; otherwise AscendC custom op builds will fail.
+  - Because worker.py reads os.environ directly, always export ASCEND_HOME_PATH in the environment rather than relying on
+    the envs.py default of None.
+  - This is a build/cleanup-time setting; do not expect runtime throughput changes from tuning it.
+  quick_guide: Export ASCEND_HOME_PATH to your CANN toolkit root (default /usr/local/Ascend/ascend-toolkit/latest) before
+    building or running vllm-ascend.
+analysis_date: '2026-10-27'

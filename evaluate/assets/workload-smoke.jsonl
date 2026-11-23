@@ -1,0 +1,2 @@
+{"request_id":"smoke-1","prompt_text":"请用一句话解释矩阵乘法。","output_tokens":16,"arrival_offset_ms":null}
+{"request_id":"smoke-2","prompt_text":"请计算 2 加 3。","output_tokens":8,"arrival_offset_ms":null}

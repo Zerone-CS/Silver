@@ -1,0 +1,118 @@
+name: additional_config.scheduler_config.profiling_chunk_config.enabled
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1482
+- vllm_ascend/ascend_config.py:509
+- vllm_ascend/ascend_config.py:718
+- vllm_ascend/ascend_config.py:730
+- vllm_ascend/platform.py:1071
+- vllm_ascend/patch/platform/patch_engine_core.py:51
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag enables Dynamic Chunked Pipeline Parallel (CPP) on Ascend NPU. When true,
+
+  vllm-ascend patches EngineCore.__init__ via _apply_profiling_patches()
+
+  (vllm_ascend/patch/platform/patch_engine_core.py:51) so the scheduler dynamically
+
+  computes per-step prefill chunk sizes from profiling data instead of using a fixed
+
+  --max-num-batched-tokens chunk. This directly reduces pipeline bubbles in PP>1
+
+  prefill: "the doc states TTFT of CPP is very sensitive to --max-num-batched-tokens"
+
+  (used as the initial chunk size), and dynamic sizing avoids both computational waste
+
+  (chunk too large) and reduced operator efficiency (chunk too small). The e2e test
+
+  test_profiling_chunk_performance.py measures TTFT on 64k-token prefill with PP=2,
+
+  TP=2, confirming the parameter''s primary effect is on prefill latency (TTFT) and
+
+  pipeline throughput. When enabled, min_chunk is clamped to max_num_batched_tokens
+
+  if larger (ascend_config.py:718-729), and the config is validated to require PP>1.
+
+  The parameter itself does not change memory footprint directly, but the chunk sizing
+
+  it controls affects activation memory per step.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:718
+  context: Clamps profiling_chunk_config.min_chunk to max_num_batched_tokens when enabled and min_chunk exceeds it
+- file: vllm_ascend/ascend_config.py:730
+  context: Raises ValueError if enabled and pipeline_parallel_size <= 1
+- file: vllm_ascend/ascend_config.py:738
+  context: Raises ValueError if enabled together with enable_balance_scheduling
+- file: vllm_ascend/patch/platform/patch_engine_core.py:51
+  context: Applies profiling patches to EngineCore.__init__ when enabled
+- file: vllm_ascend/platform.py:1071
+  context: Requires v2 model runner when combined with async_scheduling
+- file: vllm_ascend/platform.py:1105
+  context: Rejects combination with DyntraLB
+- file: vllm_ascend/worker/v2/spec_decode/pcp_utils.py:60
+  context: Reads enabled flag to build draft additional_config with profiling disabled for draft model
+related_parameters:
+- name: --pipeline-parallel-size
+  relation: Must be > 1; CPP requires pipeline parallelism
+- name: --max-num-batched-tokens
+  relation: Serves as initial chunk size for dynamic calculation; min_chunk is clamped to it
+- name: profiling_chunk_config.min_chunk
+  relation: Lower bound of dynamic chunk; clamped to max_num_batched_tokens
+- name: profiling_chunk_config.smooth_factor
+  relation: Smoothing factor for dynamic prediction, must be in (0, 1]
+- name: profiling_chunk_config.need_timing
+  relation: Defaults to enabled value; ignored (set False) when enabled is False
+- name: profiling_chunk_config.max_fit_chunk
+  relation: Number of chunk-time data points for online calibration; must be > 5
+- name: scheduler_config.enable_balance_scheduling
+  relation: Mutually exclusive with profiling_chunk_config
+- name: scheduler_config.dyntra_lb_config.enabled
+  relation: Mutually exclusive with profiling_chunk_config
+- name: scheduler_config.async_scheduling
+  relation: Requires v2 model runner (VLLM_USE_V2_MODEL_RUNNER=1) when combined
+- name: --enable-chunked-prefill
+  relation: Required alongside CPP on the P node
+constraints:
+- profiling_chunk_config.enabled requires --pipeline-parallel-size greater than 1, otherwise startup raises ValueError.
+- profiling_chunk_config.enabled cannot be combined with scheduler_config.enable_balance_scheduling; startup raises ValueError.
+- profiling_chunk_config.enabled cannot be combined with DyntraLB (scheduler_config.dyntra_lb_config.enabled); startup raises
+  ValueError.
+- When profiling_chunk_config.enabled is combined with async_scheduling, the v2 model runner (VLLM_USE_V2_MODEL_RUNNER=1)
+  must be used, otherwise startup raises ValueError.
+- profiling_chunk_config.smooth_factor must be in the range (0, 1.0].
+- profiling_chunk_config.min_chunk must be positive.
+- profiling_chunk_config.max_fit_chunk must be greater than 5 (at least 30 data points recommended for fitting).
+- If need_timing is set True while enabled is False, need_timing is forced to False with a warning.
+- Unknown keys in additional_config are rejected (extra=forbid), so typos fail fast.
+tuning_advice:
+  summary: Enable CPP only for PP>1 prefill-heavy workloads, and tune --max-num-batched-tokens first, then smooth_factor.
+  suggested_values:
+  - scenario: Long-sequence prefill (e.g. 128k) with PP=2 on the P node
+    value: true
+    reason: Dynamic chunk sizing reduces pipeline bubbles and TTFT; docs recommend --max-num-batched-tokens 32768 as initial
+      chunk for 128k sequences.
+  - scenario: Decode-only or PD-disaggregated D node
+    value: false
+    reason: CPP requires PP>1 and targets prefill; D nodes run without pipeline parallelism and focus on low-latency decoding.
+  - scenario: Deployment using balance scheduling or DyntraLB
+    value: false
+    reason: These scheduling modes are mutually exclusive with profiling_chunk_config and startup will fail.
+  caveats:
+  - First optimize with a fixed chunk size (search space [8192, 16384, 24576, 32768]) before enabling dynamic chunking.
+  - Set --max-num-batched-tokens to 2-4x the optimal fixed chunk size when enabling CPP.
+  - Ensure min_chunk is smaller than --max-num-batched-tokens to avoid silent clamping.
+  - If combined with async scheduling, set VLLM_USE_V2_MODEL_RUNNER=1.
+  - Run warmup requests so online calibration (need_timing) stabilizes before measuring TTFT.
+  quick_guide: Enable only on PP>1 prefill nodes; tune --max-num-batched-tokens first, then smooth_factor.
+analysis_date: '2026-10-27'

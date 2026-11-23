@@ -1,0 +1,96 @@
+name: VLLM_MEDIA_CACHE
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:960
+- vllm/envs.py:74
+- vllm/multimodal/media/connector.py:204
+- vllm/entrypoints/chat_utils.py:1044
+- vllm/entrypoints/chat_utils.py:1225
+value_type: str
+default: ''
+valid_choices: Any writable directory path; empty string disables caching
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_MEDIA_CACHE is an opt-in on-disk cache for media (images/video/audio)
+
+  fetched from URLs during multimodal inference. It is read only in
+
+  vllm/multimodal/media/connector.py (MediaConnector.__init__): if the env var
+
+  is non-empty, the connector creates the directory, verifies writability with a
+
+  temp file, and stores _media_cache_dir / _media_cache_max_bytes /
+
+  _media_cache_ttl_secs. When set, repeated fetches of the same media URL can be
+
+  served from local disk instead of re-downloading over HTTP, reducing
+
+  request-side latency for multimodal workloads with repeated media. It does NOT
+
+  affect NPU compute, KV cache, HCCL communication, or model execution — the
+
+  cache lives entirely in the API-server / input-processing path. The connector
+
+  is lazily loaded (cached_property in chat_utils.py) so text-only requests never
+
+  touch it. vllm-ascend does not override or reference this parameter; it is
+
+  purely an upstream vLLM feature. Impact on Ascend NPU runtime is therefore
+
+  indirect and low: "it can shave network I/O latency for multimodal serving but"
+
+  has no effect on token throughput or NPU memory.
+
+  '
+usage_locations:
+- file: vllm/envs.py:960
+  context: Defines VLLM_MEDIA_CACHE env var, default empty string (caching disabled)
+- file: vllm/multimodal/media/connector.py:204
+  context: MediaConnector reads env var, creates/validates cache dir, sets max size and TTL
+- file: vllm/entrypoints/chat_utils.py:1044
+  context: Sync parser lazily loads connector (which probes VLLM_MEDIA_CACHE) only when media present
+- file: vllm/entrypoints/chat_utils.py:1225
+  context: Async parser lazily loads connector, deferring cache probe until media request
+- file: vllm/envs.py:2311
+  context: Listed in compile_factors ignored_factors so it does not invalidate torch.compile cache
+related_parameters:
+- name: VLLM_MEDIA_CACHE_MAX_SIZE_MB
+  relation: Maximum cache size in MB; LRU eviction when exceeded (default 5120)
+- name: VLLM_MEDIA_CACHE_TTL_HOURS
+  relation: TTL in hours for cached entries (default 24)
+- name: VLLM_MEDIA_CONNECTOR
+  relation: Selects the media connector implementation that reads this cache setting
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Caps single remote download size; bounds what gets cached
+constraints:
+- An empty string (the default) disables media caching entirely.
+- The configured path must be creatable and writable; if directory creation or the writability probe fails, caching is silently
+  not enabled.
+- This parameter only affects media fetched from URLs; local file paths and base64 media are not cached.
+tuning_advice:
+  summary: 'Enable VLLM_MEDIA_CACHE only for multimodal serving workloads that repeatedly
+
+    fetch the same remote media URLs; it reduces network I/O latency but has no
+
+    effect on Ascend NPU compute, throughput, or memory.
+
+    '
+  suggested_values:
+  - scenario: Multimodal serving with repeated remote image/video URLs
+    value: /var/cache/vllm/media
+    reason: Serving repeated media from local disk avoids re-downloading over HTTP, cutting input-processing latency.
+  - scenario: Text-only LLM serving or one-shot unique media
+    value: unset
+    reason: Caching provides no benefit and adds disk I/O; leave disabled (default).
+  caveats:
+  - No effect on NPU compute, KV cache, HCCL, or token throughput — purely an API-server-side I/O optimization.
+  - Cache directory must be writable; on failure caching is silently disabled without error.
+  - Pair with VLLM_MEDIA_CACHE_MAX_SIZE_MB and VLLM_MEDIA_CACHE_TTL_HOURS to bound disk usage and staleness.
+  - Not referenced or overridden by vllm-ascend; behavior is identical to upstream vLLM on Ascend.
+  quick_guide: Set to a writable dir only for repeated remote-media multimodal workloads; otherwise leave empty.
+analysis_date: '2026-10-27'

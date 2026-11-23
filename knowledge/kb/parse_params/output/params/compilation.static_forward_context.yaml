@@ -1,0 +1,101 @@
+name: compilation.static_forward_context
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:3381
+- vllm_ascend/worker/model_runner_v1.py:1020
+- vllm_ascend/worker/model_runner_v1.py:2435
+- vllm_ascend/worker/v2/model_runner.py:429
+- vllm_ascend/worker/v2/model_runner.py:451
+- vllm_ascend/worker/v2/utils.py:106
+- vllm_ascend/_310p/model_runner_310p.py:684
+- vllm_ascend/_310p/model_runner_310p.py:725
+- vllm_ascend/_310p/worker/v2/model_runner.py:693
+- vllm_ascend/_310p/worker/v2/model_runner.py:792
+value_type: dict
+default: <computed>
+valid_choices: dict mapping layer name (str) to layer object (Attention/FusedMOE/linear-attn/etc.)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "static_forward_context is a runtime registry (dict) populated during model\nconstruction: \"each attention/MoE/linear-attention\
+  \ layer registers itself under\"\nits layer name so that code outside the model forward pass can reach the layer\nobjects\
+  \ (and their bound kv_cache tensors). It is not a user-tunable knob but a\ndata structure whose contents drive several Ascend\
+  \ hot paths:\n- KV cache binding: \"bind_kv_cache(kv_caches, static_forward_context, ...) walks\"\n  this map to attach\
+  \ allocated KV tensors to each layer (vllm_ascend/_310p/\n  model_runner_310p.py:725, _310p/worker/v2/model_runner.py:792).\
+  \ The map's\n  completeness directly determines whether KV memory is correctly bound.\n- \"Mamba/linear-attention state\
+  \ copy: v1 model_runner_v1.py:1020 and :2435 pass\"\n  static_forward_context into mamba_utils.preprocess_mamba/postprocess_mamba_align\n\
+  \  so the copy kernels can locate per-layer state buffers. This runs every decode\n  step under mamba_cache_mode=\"align\"\
+  , so lookups here are on the critical path.\n- \"KDA state copy plan (v2): initialize_kda_state_copy(static_forward_context,\"\
+  \n  max_num_seqs) at v2/model_runner.py:429 precomputes copy plans once at init.\n- \"KVPP runtime (v2): KVPPRuntime.create_from_kv_cache\
+  \ consumes the map at\"\n  v2/model_runner.py:451.\n- \"Sparse-KV offload (v2): iterates static_forward_context.values()\
+  \ to find\"\n  AscendSFAKVOffloadImpl layers (v2/model_runner.py:467).\n- 310P linear-attn spec recovery: \"v2/_310p/model_runner.py:693\
+  \ iterates the map\"\n  to restore linear_attn KV specs.\nBecause the map is built once and read many times, its size (number\
+  \ of layers)\nand correctness affect per-step latency (dict lookups, iteration) and memory\n(it holds references to layer\
+  \ objects and their KV tensors, keeping them alive).\nIt is not directly settable by the user; it is derived from the model\n\
+  architecture and compilation config.\n"
+usage_locations:
+- file: vllm_ascend/worker/model_runner_v1.py:1020
+  context: 'v1: passes static_forward_context to mamba_utils.postprocess_mamba_align for per-layer state copy'
+- file: vllm_ascend/worker/model_runner_v1.py:2435
+  context: 'v1: passes static_forward_context to mamba_utils.preprocess_mamba during input prep'
+- file: vllm_ascend/worker/v2/model_runner.py:429
+  context: 'v2: initialize_kda_state_copy consumes the map to build KDA state copy plans'
+- file: vllm_ascend/worker/v2/model_runner.py:451
+  context: 'v2: KVPPRuntime.create_from_kv_cache consumes the map'
+- file: vllm_ascend/worker/v2/model_runner.py:467
+  context: 'v2: iterates map values to find AscendSFAKVOffloadImpl layers for fused copy'
+- file: vllm_ascend/worker/v2/utils.py:106
+  context: 'v2: reads forward_context[name].kv_cache to zero ring pages for dummy graph requests'
+- file: vllm_ascend/_310p/model_runner_310p.py:725
+  context: '310P: bind_kv_cache attaches KV tensors to layers via the map'
+- file: vllm_ascend/_310p/worker/v2/model_runner.py:693
+  context: '310P v2: iterates map to restore linear_attn KV specs'
+- file: vllm_ascend/_310p/worker/v2/model_runner.py:792
+  context: '310P v2: bind_kv_cache uses the map'
+- file: vllm/config/vllm.py:3381
+  context: 'upstream: get_layers_from_vllm_config reads the map to resolve layers by type'
+related_parameters:
+- name: compilation_config
+  relation: static_forward_context is a field of CompilationConfig; populated during model init
+- name: cudagraph_mode
+  relation: Graph capture and KV binding rely on the map being fully populated before capture
+- name: mamba_cache_mode
+  relation: align/all modes pass static_forward_context into mamba pre/postprocess kernels
+- name: kv_cache_config
+  relation: bind_kv_cache uses the map to attach KV tensors; layer names must match kv_cache_groups
+- name: sparse_kv_offload_config.use_fused_copy_sfa
+  relation: v2 iterates the map to locate AscendSFAKVOffloadImpl layers when fused copy is enabled
+constraints:
+- Layer names in static_forward_context must be unique; registering a duplicate name raises ValueError (e.g. sparse_swa.py:96).
+- Every layer name referenced by kv_cache_groups must exist in static_forward_context for bind_kv_cache to attach KV tensors
+  correctly.
+- The map must be fully populated before KV cache binding, graph capture, and prefill execution; v2 explicitly publishes sealed
+  plans before warmup/capture.
+- This is a runtime-derived structure, not a user-settable CLI/config value; users cannot directly assign it.
+tuning_advice:
+  summary: Not a user-tunable knob; ensure the model registers all layers correctly and avoid stale entries to keep KV binding
+    and per-step lookups correct and cheap.
+  suggested_values:
+  - scenario: Standard dense/MoE model on 910B (v1 or v2)
+    value: <computed by model init>
+    reason: The map is auto-populated; do not attempt to set it. Verify via get_layers_from_vllm_config that all attention/MoE
+      layers are present.
+  - scenario: Hybrid Mamba/linear-attention model with mamba_cache_mode='align'
+    value: <computed>
+    reason: Ensure all mamba layers register in the map so preprocess/postprocess_mamba can locate state buffers; missing
+      entries break state copy.
+  - scenario: 310P deployment with linear-attention layers
+    value: <computed>
+    reason: 310P v2 recovers linear_attn KV specs by iterating the map; confirm linear_attn layers are registered to avoid
+      dropped KV specs.
+  caveats:
+  - Do not manually mutate static_forward_context; it is managed by model construction and KV binding.
+  - Watch NPU memory if layers are re-created (e.g. profiling teardown) — stale references in the map can retain KV tensors.
+  quick_guide: Leave it alone — it is auto-built; just ensure the model registers every layer so KV binding and Mamba state
+    copy work.
+analysis_date: '2026-10-27'

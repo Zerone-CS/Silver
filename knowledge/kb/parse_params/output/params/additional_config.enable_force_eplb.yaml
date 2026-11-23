@@ -1,0 +1,102 @@
+name: additional_config.enable_force_eplb
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:583
+- vllm_ascend/ascend_config.py:434
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'enable_force_eplb is a vllm-ascend-only switch declared in AscendConfig
+
+  (vllm_ascend/ascend_config.py:583, default False) and documented in the
+
+  AscendConfig docstring example dict (line 434). It is a boolean user-input
+
+  switch parsed from --additional-config JSON with lax bool coercion and
+
+  extra="forbid" validation. The name indicates it forces Expert Parallel
+
+  Load Balancing (EPLB) behavior for MoE models on Ascend NPU. EPLB rebalances
+
+  expert placement across ranks to even out token load per expert, which
+
+  directly affects MoE decode/prefill throughput and tail latency: hot experts
+
+  on one rank become the critical path while other ranks idle. Forcing EPLB
+
+  (rather than letting it be triggered dynamically) makes the rebalancing
+
+  active regardless of the dynamic_eplb heuristic, so the expert-to-rank
+
+  mapping is periodically recomputed. This trades some rebalancing overhead
+
+  (expert map recompute + weight redistribution / all-to-all reshuffle) for
+
+  more even per-rank token distribution. The exact runtime effect depends on
+
+  the eplb_config sub-config (dynamic_eplb, num_redundant_experts,
+
+  expert_heat_collection_interval, algorithm_execution_interval,
+
+  eplb_policy_type). No direct usage site was found in the provided context,
+
+  so the precise code path that consumes enable_force_eplb is not visible here;
+
+  the impact assessment is based on the parameter name, its placement among
+
+  MoE/EPLB-related switches, and the adjacent eplb_config block.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:583
+  context: 'Field declaration enable_force_eplb: bool = False in AscendConfig user-input switches.'
+- file: vllm_ascend/ascend_config.py:434
+  context: Listed in the AscendConfig docstring example additional-config dict with default false.
+related_parameters:
+- name: eplb_config.dynamic_eplb
+  relation: Dynamic EPLB toggle; enable_force_eplb forces EPLB behavior independent of the dynamic heuristic.
+- name: eplb_config.num_redundant_experts
+  relation: Number of redundant expert replicas used by EPLB to absorb hot-expert load.
+- name: eplb_config.expert_heat_collection_interval
+  relation: Controls how often expert load heat is collected to drive rebalancing.
+- name: eplb_config.algorithm_execution_interval
+  relation: Controls how often the EPLB placement algorithm runs.
+- name: eplb_config.eplb_policy_type
+  relation: Selects the EPLB placement policy applied when rebalancing.
+- name: enable_shared_expert_dp
+  relation: Related MoE/EP parallel switch affecting expert distribution.
+constraints:
+- enable_force_eplb must be a boolean; AscendConfig uses extra="forbid", so unknown or misspelled keys in --additional-config
+  raise an error.
+- enable_force_eplb only has meaning for MoE models with expert parallelism; for dense models it has no effect.
+- Forcing EPLB requires a valid eplb_config (e.g. num_redundant_experts, policy) to be meaningful; without redundant experts
+  there is nothing to rebalance.
+tuning_advice:
+  summary: Enable enable_force_eplb only for MoE models with skewed expert load and configured redundant experts; leave off
+    for dense models or balanced workloads.
+  suggested_values:
+  - scenario: Large MoE model with EP and observed hot-expert imbalance
+    value: true
+    reason: Forcing EPLB evens per-rank token load, reducing tail latency and improving MoE throughput when expert load is
+      skewed.
+  - scenario: Dense (non-MoE) model or MoE with already balanced load
+    value: false
+    reason: No load-balancing benefit; avoids unnecessary expert-map recompute and redistribution overhead.
+  - scenario: MoE model without redundant experts configured
+    value: false
+    reason: Without num_redundant_experts there is nothing to rebalance, so forcing EPLB only adds overhead.
+  caveats:
+  - Pair with a sensible eplb_config (num_redundant_experts > 0, reasonable heat-collection and algorithm-execution intervals)
+    for the switch to be effective.
+  - Monitor latency during rebalancing windows; increase algorithm_execution_interval if redistribution causes spikes.
+  - Confirm the switch is actually consumed in your vllm-ascend version, since no usage site was found in the provided context.
+  quick_guide: Set enable_force_eplb=true only for MoE+EP deployments with skewed expert load and redundant experts configured.
+analysis_date: '2026-10-27'

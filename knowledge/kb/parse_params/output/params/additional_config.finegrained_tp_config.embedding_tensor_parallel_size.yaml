@@ -1,0 +1,102 @@
+name: additional_config.finegrained_tp_config.embedding_tensor_parallel_size
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1339
+- vllm_ascend/ascend_config.py:1421
+- vllm_ascend/distributed/parallel_state.py:200
+- vllm_ascend/utils.py:986
+- vllm_ascend/ops/vocab_parallel_embedding.py:116
+value_type: int
+default: 0
+valid_choices: Non-negative integer; 0 disables fine-grained embedding TP. When > 0 it must divide data_parallel_size and
+  the model must be a MoE model.
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This is a vllm-ascend-only parameter (defined in FinegrainedTPConfig, vllm_ascend/ascend_config.py:1339).
+
+  It sets a custom tensor-parallel size for the token embedding layer, independent of the global
+
+  tensor_parallel_size. When > 0, embedding_tp_enable() (vllm_ascend/utils.py:986) returns True and
+
+  init_ascend_model_parallel creates a dedicated "emtp" process group of that size
+
+  (vllm_ascend/distributed/parallel_state.py:200-210, _EMBED_TP). The embedding weight is then sharded
+
+  across this group instead of the default TP group, as routed by the VocabParallelPlan logic in
+
+  vllm_ascend/ops/vocab_parallel_embedding.py. This changes how the embedding lookup is partitioned:
+
+  a larger embedding TP spreads the (often very large) vocab embedding table across more ranks,
+
+  reducing per-rank embedding memory and the per-rank gather/reduce work, at the cost of an extra
+
+  collective over the emtp group. Because the embedding is memory-heavy for large-vocab models, this
+
+  can meaningfully reduce per-rank HBM pressure and improve throughput in DP-heavy MoE deployments.
+
+  It also affects weight-loading identity resolution (rfork/identity.py:278) since content becomes
+
+  sharded across DP.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1339
+  context: Field definition in FinegrainedTPConfig pydantic dataclass, default 0.
+- file: vllm_ascend/ascend_config.py:1421
+  context: Logged as enabled when > 0; validated to divide data_parallel_size and require MoE model.
+- file: vllm_ascend/distributed/parallel_state.py:200
+  context: Read to create the "emtp" embedding TP process group when > 0.
+- file: vllm_ascend/utils.py:986
+  context: embedding_tp_enable() returns True when this value > 0, gating embedding sharding.
+- file: vllm_ascend/ops/vocab_parallel_embedding.py:116
+  context: Raises ValueError if combined with PCP embedding weight sharding.
+- file: vllm_ascend/model_loader/rfork/identity.py:278
+  context: Contributes to content_sharded detection for weight-loading seed resolution.
+related_parameters:
+- name: additional_config.finegrained_tp_config.lmhead_tensor_parallel_size
+  relation: Sibling fine-grained TP field; both shard vocab-parallel layers and share the same MoE/DP-divisibility constraints.
+- name: additional_config.finegrained_tp_config.oproj_tensor_parallel_size
+  relation: Sibling field; oproj/mlp have stricter preconditions (TP==1, graph mode, PD decode node) that embedding does not.
+- name: additional_config.finegrained_tp_config.mlp_tensor_parallel_size
+  relation: Sibling field with the same stricter preconditions as oproj.
+- name: data_parallel_size
+  relation: embedding_tensor_parallel_size must divide data_parallel_size when > 0.
+- name: tensor_parallel_size
+  relation: Embedding TP is independent of global TP; unlike oproj/mlp it is not restricted to TP==1.
+- name: prefill_context_parallel_size
+  relation: Mutually exclusive with PCP embedding weight sharding (enable_pcp_embedding_lmhead_weight_sharding).
+constraints:
+- embedding_tensor_parallel_size must be non-negative; negative values raise ValueError.
+- The fine-grained TP sizes can only be enabled for MoE models; setting this > 0 on a dense model raises AssertionError.
+- When embedding_tensor_parallel_size > 0, it must evenly divide data_parallel_size, otherwise an AssertionError is raised.
+- PCP embedding weight sharding cannot be combined with finegrained_tp_config.embedding_tensor_parallel_size; enabling both
+  raises ValueError.
+tuning_advice:
+  summary: Enable a dedicated embedding TP size on large-vocab MoE models to shard the embedding table across DP ranks and
+    cut per-rank HBM, ensuring it divides data_parallel_size.
+  suggested_values:
+  - scenario: Large-vocab MoE model with DP > 1 and embedding table dominating per-rank memory
+    value: 2
+    reason: Shards the embedding across 2 DP ranks, halving per-rank embedding memory; must divide data_parallel_size.
+  - scenario: DP-heavy MoE deployment where embedding memory is the bottleneck
+    value: <a divisor of data_parallel_size>
+    reason: Any value > 0 that divides data_parallel_size is valid; larger values spread the embedding table further across
+      ranks.
+  - scenario: Default / dense model / no embedding memory pressure
+    value: 0
+    reason: 0 disables fine-grained embedding TP; required for dense models and avoids extra emtp collectives.
+  caveats:
+  - Only valid for MoE models; dense models raise AssertionError.
+  - The value must divide data_parallel_size or initialization fails.
+  - Cannot be combined with PCP embedding weight sharding (prefill_context_parallel_size > 1 with PCP sharding enabled).
+  - Introduces an extra emtp process group and collective over that group, adding communication overhead.
+  - Unlike oproj/mlp, embedding TP is not restricted to tensor_parallel_size == 1 or graph mode, but still requires DP divisibility.
+  quick_guide: Set to a divisor of data_parallel_size (e.g. 2) on large-vocab MoE models to shard the embedding table; leave
+    0 otherwise.
+analysis_date: '2026-10-27'

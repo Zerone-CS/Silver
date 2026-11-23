@@ -1,0 +1,83 @@
+name: additional_config.rejection_sampler_config.posterior_threshold
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:350
+- vllm_ascend/ascend_config.py:355
+- vllm_ascend/sample/rejection_sampler.py:448
+value_type: float
+default: 0.95
+valid_choices: (0, 1]
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'posterior_threshold is an Ascend-only parameter (defined in vllm_ascend/ascend_config.py
+
+  RejectionSamplerConfig, no upstream vLLM equivalent). It is read in
+
+  vllm_ascend/sample/rejection_sampler.py:448 via
+
+  get_ascend_config().rejection_sampler_config.posterior_threshold and used only when
+
+  entropy verify is active (enable_entropy_verify=True). Per the docs, the effective
+
+  acceptance threshold is min(exp(-entropy * posterior_alpha), posterior_threshold):
+
+  posterior_threshold caps the entropy-adjusted acceptance threshold. A higher cap means
+
+  more draft tokens are accepted during speculative decoding, which raises the acceptance
+
+  rate and thus the number of tokens produced per target-model forward pass — improving
+
+  throughput and reducing effective latency per token. It does not change memory footprint
+
+  or the kernel dispatch path itself; it only changes the numeric threshold fed into the
+
+  entropy-verify acceptance computation. Because it only takes effect when entropy verify
+
+  is enabled, its impact is conditional (medium rather than high).
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:350
+  context: Field definition with default 0.95 in RejectionSamplerConfig pydantic dataclass
+- file: vllm_ascend/ascend_config.py:355
+  context: 'model_validator range check: must be in (0, 1]'
+- file: vllm_ascend/sample/rejection_sampler.py:448
+  context: Read as float and used in entropy-verify acceptance threshold computation
+related_parameters:
+- name: additional_config.rejection_sampler_config.enable_entropy_verify
+  relation: posterior_threshold only has effect when entropy verify is enabled
+- name: additional_config.rejection_sampler_config.posterior_alpha
+  relation: Together they define effective threshold min(exp(-entropy * posterior_alpha), posterior_threshold); alpha controls
+    entropy sensitivity, threshold caps the result
+- name: additional_config.rejection_sampler_config.enable_block_verify
+  relation: Alternative verification mode; block verify uses joint cumulative-probability verification instead of the entropy-adjusted
+    threshold
+constraints:
+- posterior_threshold must be in the open-closed interval (0, 1]; values outside raise a ValueError at config init.
+- posterior_threshold has no effect unless enable_entropy_verify is set to true.
+tuning_advice:
+  summary: Keep the default 0.95 for balanced quality; lower it toward 0.8-0.9 if output quality degrades, raise toward 0.98-1.0
+    only when maximizing speculative acceptance/throughput is the priority.
+  suggested_values:
+  - scenario: Quality-sensitive workloads (default, recommended starting point)
+    value: 0.95
+    reason: Default value provides a balanced trade-off between acceptance rate and sampling precision.
+  - scenario: Throughput-first, tolerant of slight precision loss
+    value: 0.98
+    reason: Higher cap allows more draft tokens to be accepted under entropy verify, increasing tokens per target forward
+      pass.
+  - scenario: Quality-first, conservative acceptance
+    value: 0.85
+    reason: Lower cap tightens the acceptance threshold, reducing acceptance rate but preserving output fidelity.
+  caveats:
+  - Must be paired with enable_entropy_verify=true to have any effect.
+  - Tune together with posterior_alpha; increasing both aggressively compounds precision loss.
+  - Values must stay within (0, 1] or config initialization fails.
+  quick_guide: Leave at 0.95 unless entropy verify is enabled; raise toward 0.98 for throughput, lower toward 0.85 for quality.
+analysis_date: '2026-10-27'

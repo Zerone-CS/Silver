@@ -1,0 +1,66 @@
+name: profiler.active_iterations
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:235
+- vllm/profiler/wrapper.py:243
+value_type: int
+default: 5
+valid_choices: positive integer (>= 1)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only takes effect when a PyTorch profiler schedule is created, which
+
+  happens only if profiler_config.warmup_iterations > 0 or profiler_config.wait_iterations > 0
+
+  (see vllm/profiler/wrapper.py:230). It is passed as the `active` argument to
+
+  torch.profiler.schedule() (line 235) and only controls how many iterations the profiler
+
+  actively records trace data for. It does NOT change model execution, kernel selection,
+
+  memory allocation, or HCCL communication behavior on Ascend NPU. Its only runtime cost is
+
+  the overhead of the profiler itself (tracing/recording) during those active iterations,
+
+  which is a diagnostic overhead, not a steady-state performance characteristic. No
+
+  vllm-ascend override or monkey-patch of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:235
+  context: Passed as `active` to torch.profiler.schedule() when warmup_iterations or wait_iterations > 0
+- file: vllm/profiler/wrapper.py:243
+  context: Logged in the 'Profiler schedule configured' info message
+related_parameters:
+- name: profiler.warmup_iterations
+  relation: A schedule (and thus active_iterations) is only created if warmup_iterations > 0 or wait_iterations > 0
+- name: profiler.wait_iterations
+  relation: A schedule (and thus active_iterations) is only created if warmup_iterations > 0 or wait_iterations > 0
+constraints:
+- active_iterations only has an effect when profiler.warmup_iterations or profiler.wait_iterations is greater than 0; otherwise
+  no profiler schedule is created and this value is ignored.
+- active_iterations must be a positive integer (>= 1) to be a valid torch.profiler.schedule active window.
+tuning_advice:
+  summary: Keep active_iterations small (3-5) and only relevant when profiling with a schedule; it has no steady-state performance
+    effect.
+  suggested_values:
+  - scenario: Quick single-shot profiling of a few steady-state iterations
+    value: 3
+    reason: Minimizes profiler tracing overhead while capturing enough iterations for a representative trace.
+  - scenario: Default profiling run
+    value: 5
+    reason: Default value balances trace completeness against profiling overhead.
+  - scenario: Detailed trace capture for debugging
+    value: 10
+    reason: Captures more iterations for analysis at the cost of higher profiling overhead during those iterations.
+  caveats:
+  - Only effective when profiler.warmup_iterations or profiler.wait_iterations > 0; otherwise ignored.
+  - Profiling overhead applies only to the active window, not to normal inference.
+  quick_guide: Leave at default 5; only tune when profiling with a schedule and keep it small.
+analysis_date: '2026-10-27'

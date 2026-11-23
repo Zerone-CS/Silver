@@ -1,0 +1,92 @@
+name: compilation.pass_config.fuse_attn_quant
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/config/compilation.py:1157
+- vllm/config/compilation.py:1265
+- vllm/compilation/passes/pass_manager.py:221
+value_type: bool
+default: false
+valid_choices: true
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'fuse_attn_quant is an upstream vLLM Inductor compilation pass flag. When enabled, it
+
+  registers AttnQuantFusionPass and MLAAttnQuantFusionPass in PostGradPassManager
+
+  (vllm/compilation/passes/pass_manager.py:221-223), which fuse the custom Attention /
+
+  MLAAttention op with the following quantization op into a single fused kernel, reducing
+
+  kernel launch overhead and intermediate memory traffic on CUDA.
+
+  It also changes graph partitioning: "in set_splitting_ops_for_v1 (compilation.py:1157),"
+
+  when fuse_attn_quant is True and use_inductor_graph_partition is off, splitting_ops is
+
+  set to an empty list via set_splitting_ops_for_attn_fusion (compilation.py:1265), and
+
+  cudagraph_mode is forced to FULL if it was piecewise. This means attention ops are no
+
+  longer split out of the compiled graph.
+
+  On Ascend NPU, this parameter has no meaningful effect: the AttnQuantFusionPass and
+
+  MLAAttnQuantFusionPass are CUDA/Inductor-specific fusion passes that target CUDA
+
+  attention + quant kernels. vllm-ascend does not define or reference fuse_attn_quant
+
+  anywhere in its source, and the Ascend attention backends (AscendAttentionBackend,
+
+  AscendMLABackend) are not the custom ops these passes match. Additionally, vllm-ascend
+
+  typically runs in eager mode or with its own graph capture path, so the Inductor
+
+  pass pipeline where these passes are registered is not exercised. Therefore the
+
+  parameter does not affect Ascend runtime latency, throughput, or memory in practice.
+
+  '
+usage_locations:
+- file: vllm/config/compilation.py:1157
+  context: set_splitting_ops_for_v1 checks fuse_attn_quant to decide whether to empty splitting_ops for attention fusion
+- file: vllm/config/compilation.py:1265
+  context: set_splitting_ops_for_attn_fusion asserts fuse_attn_quant and forces cudagraph_mode to FULL when piecewise
+- file: vllm/compilation/passes/pass_manager.py:221
+  context: Registers AttnQuantFusionPass and MLAAttnQuantFusionPass when fuse_attn_quant is enabled
+related_parameters:
+- name: compilation_config.cudagraph_mode
+  relation: When fuse_attn_quant is enabled without inductor graph partition, cudagraph_mode is forced to FULL if it was PIECEWISE
+- name: compilation_config.splitting_ops
+  relation: fuse_attn_quant=True sets splitting_ops to empty list; splitting_ops must not contain attention ops
+- name: compilation_config.use_inductor_graph_partition
+  relation: The attention-fusion splitting behavior only applies when use_inductor_graph_partition is False
+- name: compilation_config.mode
+  relation: Only takes effect when mode is VLLM_COMPILE; otherwise splitting_ops is set to empty and returns early
+constraints:
+- fuse_attn_quant only takes effect when compilation mode is VLLM_COMPILE; in other modes the function returns early without
+  applying attention fusion.
+- When fuse_attn_quant is True, splitting_ops must not contain attention ops, otherwise an assertion error is raised.
+- When fuse_attn_quant is True and use_inductor_graph_partition is off, cudagraph_mode is forced to FULL if it was piecewise,
+  which may be incompatible with attention backends that do not support cudagraph.
+tuning_advice:
+  summary: Leave fuse_attn_quant disabled on Ascend NPU; it is a CUDA/Inductor-specific attention+quant fusion pass with no
+    effect in vllm-ascend.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: vllm-ascend does not reference fuse_attn_quant and its attention backends are not matched by the CUDA AttnQuantFusionPass/MLAAttnQuantFusionPass,
+      so enabling it provides no benefit and may trigger cudagraph_mode forcing to FULL.
+  caveats:
+  - Enabling fuse_attn_quant forces cudagraph_mode to FULL when piecewise cudagraphs were requested and use_inductor_graph_partition
+    is off, which can break attention backends that do not support cudagraph.
+  - The fusion passes target CUDA custom attention ops; on Ascend the Inductor pass pipeline is generally not exercised, so
+    the flag is effectively a no-op.
+  - This parameter is defined only in upstream vLLM; vllm-ascend does not override or document it.
+  quick_guide: Keep fuse_attn_quant at its default false on Ascend NPU.
+analysis_date: '2026-10-27'

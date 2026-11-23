@@ -1,0 +1,652 @@
+[
+  {
+    "name": "kv_events.endpoint",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_FP8_PADDING",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CPU_ATTN_SPLIT_KV",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CPU_CI_ENV",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CPU_INT4_W4A8",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_MOE_PADDING",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_SKINNY_GEMM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_events.replay_endpoint",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_events.buffer_steps",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_XLA_CACHE_PATH",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_SHUFFLE_KV_CACHE_LAYOUT",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_DEEPEP_V2_ALLOW_HYBRID_MODE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_events.hwm",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_events.max_queue_size",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_XLA_CHECK_RECOMPILATION",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_DEEPEP_V2_PREFER_OVERLAP",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--dp-routing-config",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.flex_attn_block_m",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.suffix_decoding_min_token_prob",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "pooler.returned_token_ids",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "ec_transfer.ec_buffer_device",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_XLA_USE_SPMD",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "ec_transfer.ec_buffer_size",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "ec_transfer.ec_role",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ASSETS_CACHE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CUDART_SO_PATH",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_USE_NCCL_SYMM_MEM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "ec_transfer.ec_ip",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "ec_transfer.ec_port",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.minimax_m3_msa_decode_backend",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.pass_config.fuse_qk_norm_rope_kvcache",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--ubatch-size",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.flex_attn_q_block_size",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_COMMIT",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_WSL2_ENABLE_PIN_MEMORY",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.pass_config.rope_kvcache_fusion_max_token_num",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_MARLIN_INPUT_DTYPE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_LORA_DISABLE_PDL",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ENABLE_CUDA_COMPATIBILITY",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.flex_attn_kv_block_size",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--endpoint",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CUDA_COMPATIBILITY_PATH",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.encoder_cudagraph_token_budgets",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.encoder_cudagraph_max_vision_items_per_batch",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--trusted-host",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_B12X_MOE_FP4_FORCE_A16",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.encoder_cudagraph_max_frames_per_batch",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.code_revision",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.pass_config.fi_allreduce_fusion_max_size_mb",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_SKIP_MODEL_NAME_VALIDATION",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_DEEPEPLL_NVFP4_DISPATCH",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_MAIN_CUDA_VERSION",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_XPU_USE_SAMPLER_KERNEL",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_USE_DEEP_GEMM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "compilation.inductor_passes",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.mla_prefill_backend",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_USE_DEEP_GEMM_TMA_ALIGNED_SCALES",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--host",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--port",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_USE_PRECOMPILED_RUST",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_SKIP_PRECOMPILED_VERSION_SUFFIX",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_DOCKER_BUILD_CONTEXT",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_BUILD_COMMIT",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_KIMI_K3_GEMM_AR",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.use_trtllm_attention",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_BUILD_PIPELINE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_BLOCKSCALE_FP8_GEMM_FLASHINFER",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_IMAGE_TAG",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--enable-flashinfer-autotune",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.suffix_decoding_max_cached_requests",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_KEEP_ALIVE_ON_ENGINE_DEATH",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_USE_FLASHINFER_MOE_INT4",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_FLASHINFER_AUTOTUNE_SKIP_OPS",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.suffix_decoding_max_spec_factor",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.disable_flashinfer_q_quantization",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.download_dir",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.d2rh_zmq_port",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.safetensors_prefetch_num_threads",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.d2rh_scheduler_ready_port",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.safetensors_prefetch_block_size",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.d2rh_transfer_workers",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.model_loader_extra_config",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.d2rh_log_full_block_map",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.device",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.d2rh_host_cache_hash_source",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.ignore_patterns",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.tls_config",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--use-replayssm",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.use_tqdm_on_load",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.draft_load_config.pt_load_map_location",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "speculative.dspark_draft_topk",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.save_decode_cache",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_CUSTOM_AR",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_LINEAR",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer_config.kv_connector_extra_config.h2d_stagger_us",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_LINEAR_HIPBMM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_QUICK_REDUCE_QUANTIZATION",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_MOE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_QUICK_REDUCE_CAST_BF16_TO_FP16",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "profiler.proton_mode",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_SLEEP_MEM_CHUNK_SIZE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_QUICK_REDUCE_MAX_SIZE_BYTES_MB",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_AITER_MOE_DISPATCH_POLICY",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--models",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_MOE_SITUV2_A8W4",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_QUICK_REDUCE_MIN_SIZE_BYTES_MB",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_RMSNORM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_QUICK_REDUCE_QUANTIZATION_MIN_SIZE_KB",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_MLA",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_AITER_MLA_ASM_PADDING",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "kv_transfer.kv_ip",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "attention.hisparse_config.eager_host_mirror",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_MHA",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_TRITON_ROPE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_HAS_FLASHINFER_CUBIN",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "profiler.proton_graph_attribution",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--worker_address",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_USE_FLASHINFER_SAMPLER",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_FP8BMM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_FP8_MFMA_PAGE_ATTN",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_FP4BMM",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "--timeout",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CPU_KVCACHE_SPACE",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_CPU_OMP_THREADS_BIND",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY",
+    "performance_impact": "none",
+    "status": "ok"
+  },
+  {
+    "name": "VLLM_ROCM_USE_AITER_TRITON_GEMM",
+    "performance_impact": "none",
+    "status": "ok"
+  }
+]

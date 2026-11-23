@@ -1,0 +1,73 @@
+name: --no-enable-prefix-caching
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1282
+- vllm/config/cache.py:130
+value_type: bool
+default: false
+valid_choices: boolean flag (store_true / store_false pair with --enable-prefix-caching)
+cli_example: --no-enable-prefix-caching
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This is the negated form of the upstream vLLM `--enable-prefix-caching` flag\n(argparse `BooleanOptionalAction`\
+  \ / `store_false` pair). It sets\n`cache_config.enable_prefix_caching = False`, which disables the automatic\nprefix caching\
+  \ (APC) block-hash reuse path in the KV cache manager.\n\nMechanism on Ascend NPU:\n- \"When prefix caching is ENABLED (default\
+  \ in vLLM v1), the scheduler computes\"\n  block hashes for each request's prompt tokens and reuses already-computed KV\n\
+  \  blocks across requests sharing a common prefix. This directly reduces the\n  number of prefill tokens that must be executed\
+  \ on the NPU, lowering TTFT and\n  freeing compute for decode — a large throughput win for workloads with shared\n  system\
+  \ prompts / multi-turn chat / RAG with common context.\n- \"When DISABLED via `--no-enable-prefix-caching`, every request's\
+  \ full prompt\"\n  is re-prefilled from scratch. On Ascend this means more prefill FLOPs on the\n  Da Vinci AI cores, higher\
+  \ TTFT, and lower effective throughput for\n  prefix-sharing workloads. It does NOT change KV cache memory capacity\n  allocation\
+  \ (num_gpu_blocks is still computed from available HBM), but it\n  removes the block-reuse bookkeeping and the hash computation\
+  \ overhead.\n- \"vllm-ascend does not define its own version of this flag; it consumes the\"\n  upstream `CacheConfig.enable_prefix_caching`\
+  \ field. The Ascend KV cache\n  manager (block pool / attention backend) honors this flag through the\n  standard vLLM cache\
+  \ config path. No Ascend-specific override of the default\n  was found in the provided context.\n\nThe vllm-ascend docs\
+  \ explicitly use `--no-enable-prefix-caching` in two\nscenarios: \"(1) the DFlash speculative decoding example on model\
+  \ runner V2,\"\nand (2) the DeepSeek-R1 / DeepSeek-V3.1 tutorials, where it is described as\n\"prefix caching is disabled;\
+  \ to enable it, remove this option\" — implying the\ndefault is enabled and disabling is an explicit opt-out.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1282
+  context: Argparse definition of the --enable-prefix-caching / --no-enable-prefix-caching boolean pair feeding CacheConfig.
+- file: vllm/config/cache.py:130
+  context: CacheConfig.enable_prefix_caching field consumed by the KV cache manager and scheduler.
+- file: vllm/v1/core/kv_cache_manager.py
+  context: Block-hash based prefix reuse path gated on enable_prefix_caching.
+- file: tests/v1/sample/test_logprobs_e2e.py:19
+  context: Upstream test passes --no_enable_prefix_caching to disable APC for prompt-logprobs correctness.
+related_parameters:
+- name: --enable-prefix-caching
+  relation: Positive form of the same flag; --no-enable-prefix-caching is its negation.
+- name: --gpu-memory-utilization
+  relation: Determines KV cache block count; prefix caching reuses those blocks, so the two interact on memory pressure.
+- name: --max-model-len
+  relation: Longer contexts increase the benefit of prefix reuse.
+- name: --speculative-config
+  relation: vllm-ascend DFlash example on model runner V2 pairs --no-enable-prefix-caching with speculative decoding.
+constraints:
+- This flag is the negated form of --enable-prefix-caching; specifying both is contradictory and the last one parsed wins.
+- Disabling prefix caching removes cross-request KV reuse, so workloads relying on shared prefixes will re-prefill every request.
+tuning_advice:
+  summary: Keep prefix caching enabled (omit this flag) for prefix-sharing workloads; only disable it for correctness/debug
+    or specific speculative-decoding configs that require it.
+  suggested_values:
+  - scenario: Chat / RAG / multi-turn serving with shared system prompts (v1 and v2 workers)
+    value: omit the flag (prefix caching enabled)
+    reason: APC reuses KV blocks across requests, cutting prefill FLOPs on the NPU and lowering TTFT and raising throughput.
+  - scenario: DFlash speculative decoding on model runner V2 (per vllm-ascend docs)
+    value: --no-enable-prefix-caching
+    reason: The documented DFlash V2 example disables prefix caching; follow the documented configuration.
+  - scenario: Correctness testing / prompt-logprobs validation
+    value: --no-enable-prefix-caching
+    reason: Upstream tests disable APC to avoid prefix-reuse effects on prompt logprobs.
+  caveats:
+  - Disabling prefix caching is a throughput/TTFT regression for shared-prefix workloads on Ascend; do not disable it as a
+    performance optimization.
+  - It does not reduce KV cache memory usage; block count is still governed by --gpu-memory-utilization.
+  quick_guide: Leave prefix caching on unless a specific config (e.g. DFlash V2) or correctness test requires disabling it.
+analysis_date: '2026-10-27'

@@ -1,0 +1,90 @@
+name: additional_config.combine_quant_mode
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:591
+- vllm_ascend/ops/fused_moe/token_dispatcher.py:276
+value_type: int
+default: 0
+valid_choices:
+- 0
+- 2
+- 3
+- 4
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "combine_quant_mode is an Ascend-only additional_config field (Literal[0, 2, 3, 4], default 0)\ndefined in\
+  \ vllm_ascend/ascend_config.py:591. It is consumed in\nvllm_ascend/ops/fused_moe/token_dispatcher.py:get_combine_mc_kwargs\
+  \ (line 279-287), where it\noverrides the quant_mode passed to the MC2 combine stage of the fused MoE path\n(torch_npu.npu_moe_distribute_combine_v2).\
+  \ The resolution order is:\n1) if combine_quant_mode is non-zero, quant_mode = combine_quant_mode (forces the value\n  \
+  \ regardless of the model's quant_type);\n2) else if comm_quant_mode is not None, use it;\n3) else if quant_type == QuantType.W8A8MXFP,\
+  \ quant_mode = 4;\n4) else quant_mode = 0.\nThe quant_mode controls the communication data type/precision of the combine\
+  \ (all-to-all\nreturn) stage in the MC2 fused MoE operator. A non-zero mode (e.g. 4 = MXFP float8_e4m3\ncommunication quantization)\
+  \ reduces the bytes transferred over HCCL during the combine\nstage, lowering communication latency and bandwidth pressure\
+  \ and thus improving MoE\nthroughput on multi-rank deployments. It also affects memory footprint of the communication\n\
+  buffers. Because it forces the mode regardless of the model's own quant_type, it can be used\nto enable low-precision communication\
+  \ even for non-MXFP (e.g. NONE) quantized models, but\ndoing so changes numerical precision of the combine stage and may\
+  \ degrade accuracy if the\noperator/hardware does not support that mode for the given data.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:591
+  context: Field definition as Literal[0, 2, 3, 4] with default 0; comment states non-zero forces MC2 combine comm quant_mode
+    regardless of model quant_type.
+- file: vllm_ascend/ops/fused_moe/token_dispatcher.py:276
+  context: get_combine_mc_kwargs reads get_ascend_config().combine_quant_mode and overrides quant_mode for npu_moe_distribute_combine_v2
+    when non-zero.
+- file: tests/ut/ops/test_token_dispatcher.py:348
+  context: Unit test verifying combine_quant_mode=4 forces quant_mode even for QuantType.NONE.
+- file: tests/ut/test_ascend_config.py:2020
+  context: Tests for default 0, whitelist acceptance (0,2,4), rejection of int strings and non-integers.
+related_parameters:
+- name: enable_fused_mc2
+  relation: combine_quant_mode only takes effect on the fused MC2 combine path (dispatch-FFN-combine / MegaMoe); if the fused
+    MC2 path is disabled the setting has no effect.
+- name: mc2_comm_alg
+  relation: Both tune the MC2 communication stage; mc2_comm_alg selects the communication algorithm while combine_quant_mode
+    selects the combine-stage communication quantization.
+- name: quant_type (model quantization config)
+  relation: combine_quant_mode overrides the quant_type-derived default (W8A8MXFP -> 4, otherwise 0) when non-zero.
+constraints:
+- combine_quant_mode must be one of the integer values 0, 2, 3, or 4; any other value raises a validation error.
+- Integer strings such as "4" (e.g. from JSON parsing) are rejected rather than coerced, so the value must be a real integer.
+- Non-integer values such as "true" are rejected rather than silently coerced.
+- Unknown keys in additional_config are rejected (extra="forbid"), so a typo in the key name fails fast.
+- The value is passed as comm_quant_mode to torch_npu.npu_moe_distribute_combine_v2, so it must be within the valid range
+  accepted by that operator.
+tuning_advice:
+  summary: 'Leave combine_quant_mode at 0 (default) to let the model''s quant_type decide the combine
+
+    communication precision; set it to 4 only when you want to force low-precision (MXFP
+
+    float8_e4m3) communication on the fused MC2 combine path to cut HCCL bandwidth and latency,
+
+    and verify accuracy afterwards.
+
+    '
+  suggested_values:
+  - scenario: Default / accuracy-sensitive deployments
+    value: 0
+    reason: Uses the model's own quant_type (W8A8MXFP -> 4, otherwise 0), preserving the intended numerical precision of the
+      combine stage.
+  - scenario: W8A8MXFP quantized MoE model on A5 with fused MC2 enabled
+    value: 4
+    reason: Matches the default MXFP communication quantization, reducing combine-stage communication bytes and latency.
+  - scenario: Non-MXFP (e.g. NONE) quantized MoE model where you want to force low-precision combine communication
+    value: 4
+    reason: Forces quant_mode=4 regardless of quant_type, lowering HCCL combine bandwidth; validate accuracy since precision
+      is reduced.
+  caveats:
+  - Only effective when the fused MC2 path is active (enable_fused_mc2); otherwise the value is ignored.
+  - Forcing a non-zero mode on a model whose quant_type does not natively support it may cause precision degradation or operator
+    errors.
+  - Must be a real integer (0/2/3/4); JSON-parsed strings like "4" are rejected.
+  quick_guide: Keep 0 by default; set 4 to force MXFP float8_e4m3 combine communication on fused MC2 MoE paths and re-check
+    accuracy.
+analysis_date: '2026-10-27'

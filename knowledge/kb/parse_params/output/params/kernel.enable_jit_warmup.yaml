@@ -1,0 +1,97 @@
+name: kernel.enable_jit_warmup
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/model_executor/warmup/kernel_warmup.py:170
+- vllm/v1/attention/backends/flash_attn.py:664
+- vllm/v1/attention/backends/mla/prefill/flash_attn.py:376
+- vllm/v1/attention/ops/dcp.py:1478
+- vllm/model_executor/layers/attention/mla_attention.py:639
+- vllm/model_executor/layers/attention/mla_attention.py:719
+- vllm/model_executor/layers/sparse_attn_indexer.py:896
+- vllm/models/deepseek_v4/amd/mtp.py:130
+- vllm/models/deepseek_v4/attention.py:371
+value_type: bool
+default: true
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This is a vLLM-upstream kernel_config field (vllm.config.kernel_config.enable_jit_warmup).
+
+  It is NOT defined or referenced anywhere in vllm-ascend source; all usage sites found are
+
+  in vllm upstream (v1 attention backends, MLA attention, sparse indexer, DeepSeek V4 model
+
+  code, and the central kernel_warmup() driver). When True, kernel_warmup() in
+
+  vllm/model_executor/warmup/kernel_warmup.py:170-188 invokes worker.model_runner.jit_warmup_registry.warmup(),
+
+  which triggers JIT compilation of registered Triton/CuteDSL kernels (e.g. FA4 dense attention,
+
+  FA4 MLA prefill, DCP correct-attn-cp-out, compressed slot mapping, pack/unpack seq, MTP RMSNorm,
+
+  SWA indices) BEFORE the first real request. This moves one-time JIT compile cost from the
+
+  first inference step into the startup/warmup phase, reducing first-token latency (TTFT) spikes
+
+  and avoiding per-request recompilation stalls. It does not change steady-state throughput or
+
+  memory footprint. On Ascend NPU, these specific kernels (FA4, CuteDSL, DeepGEMM-based sparse
+
+  indexer, Triton pack/unpack) are CUDA/GPU-specific and are not exercised by the Ascend attention
+
+  backends, so the flag has essentially no runtime effect on Ascend hardware — it only affects
+
+  the GPU reference path. The warmup is wrapped in try/except that re-raises on failure, so a
+
+  broken JIT warmup will abort startup rather than silently degrade.
+
+  '
+usage_locations:
+- file: vllm/model_executor/warmup/kernel_warmup.py:170
+  context: 'Central driver: reads enable_jit_warmup and calls jit_warmup_registry.warmup() during kernel warmup, logging elapsed
+    time.'
+- file: vllm/v1/attention/backends/flash_attn.py:664
+  context: Registers FA4 dense attention kernel warmup for gemma4 model types when fa_version == 4.
+- file: vllm/v1/attention/backends/mla/prefill/flash_attn.py:376
+  context: Registers FA4 MLA prefill kernel warmup when flash_attn version is 4.
+- file: vllm/v1/attention/ops/dcp.py:1478
+  context: Registers correct-attn-cp-out kernel warmup for DCP when not using a2a comm backend.
+- file: vllm/model_executor/layers/attention/mla_attention.py:639
+  context: Registers compressed-slot-mapping / prepare-uniform-decode / build-prefill-chunk-metadata kernels for sparse MLA
+    backends.
+- file: vllm/model_executor/layers/attention/mla_attention.py:719
+  context: Registers convert-req-index-to-global-index kernel warmup in bind_kv_cache for sparse MLA backends.
+- file: vllm/model_executor/layers/sparse_attn_indexer.py:896
+  context: Registers pack/unpack seq Triton kernels and DCP topk candidate kernels for sparse attention indexer.
+- file: vllm/models/deepseek_v4/amd/mtp.py:130
+  context: Registers fused MTP input RMSNorm and MTP shared-head RMSNorm kernel warmup.
+- file: vllm/models/deepseek_v4/attention.py:371
+  context: Registers compute-prefill-metadata and compute-SWA-indices-and-lens kernel warmup.
+related_parameters:
+- name: compilation_config.cudagraph_mode
+  relation: Both are startup-time compilation/warmup knobs; kernel_warmup runs before cudagraph capture sizes are processed.
+- name: kernel_config.sparse_indexer_topk_backend
+  relation: Sibling field in kernel_config; selects the topk backend whose kernels may be JIT-warmed.
+constraints:
+- If JIT kernel warmup raises an exception, kernel_warmup re-raises it and aborts server startup rather than continuing.
+- The flag only triggers warmup for kernels that have been registered via register_warmup(); unregistered kernels are unaffected.
+tuning_advice:
+  summary: Leave at default on Ascend; it only warms GPU-specific JIT kernels and has no measurable Ascend runtime effect.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: false
+    reason: The warmed kernels are CUDA/GPU-specific and unused by vllm-ascend backends, so disabling avoids wasted startup
+      work with no latency penalty.
+  - scenario: GPU reference path using FA4 / sparse MLA / DeepSeek V4 kernels
+    value: true
+    reason: Pre-compiles registered kernels during warmup to avoid first-request TTFT spikes and recompilation stalls.
+  caveats:
+  - Do not expect throughput or memory changes on Ascend from this flag; it only shifts one-time compile cost.
+  - A failing JIT warmup aborts startup, so keep it disabled on Ascend where the kernels are not applicable.
+  quick_guide: On Ascend this flag is effectively a no-op; keep default or disable to skip irrelevant GPU JIT warmup.
+analysis_date: '2026-10-27'

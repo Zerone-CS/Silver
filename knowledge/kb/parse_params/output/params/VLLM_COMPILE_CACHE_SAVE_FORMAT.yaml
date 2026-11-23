@@ -1,0 +1,70 @@
+name: VLLM_COMPILE_CACHE_SAVE_FORMAT
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:2033
+- vllm/envs.py:299
+- vllm/config/compilation.py:475
+- vllm/config/compilation.py:481
+value_type: str
+default: binary
+valid_choices:
+- binary
+- unpacked
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "This env var only controls the on-disk serialization format of the torch.compile\n(Inductor) cache artifacts,\
+  \ not the compilation itself or the runtime kernels.\nIt is read once at import time into envs.VLLM_COMPILE_CACHE_SAVE_FORMAT\
+  \ and used\nas the default_factory for CompilationConfig.compile_cache_save_format\n(vllm/config/compilation.py:474-482).\
+  \ The value is consumed by the compile cache\nwriter/loader (torch._inductor codecache / FxGraphCache) when persisting compiled\n\
+  graph artifacts to cache_dir.\n- \"\\\"binary\\\": artifacts are written as a single binary blob. This is multiprocess\"\
+  \n  safe, so multiple `vllm serve` workers (e.g. TP/DP ranks) can share one cache\n  directory without corruption. Faster\
+  \ to write/read as one file and avoids\n  per-file directory traversal, which slightly reduces cold-start compile-cache\n\
+  \  I/O overhead.\n- \"\\\"unpacked\\\": artifacts are written as an expanded directory tree. This is NOT\"\n  multiprocess\
+  \ safe (race conditions with concurrent processes) and produces many\n  small files, which is slower on most filesystems.\
+  \ Its only benefit is human\n  inspection/debugging of Inductor's generated code (allows setting breakpoints).\nOn Ascend\
+  \ NPU, torch.compile/Inductor is used by vllm-ascend's compilation path\n(VLLM_COMPILE mode) to generate graph code; the\
+  \ cache format affects only the\npersistence layer, not the generated NPU kernels or HCCL behavior. Hence the\nruntime throughput/latency\
+  \ of the model is essentially unaffected; only\ncold-start cache I/O and multi-process safety are impacted. No vllm-ascend\n\
+  override of this env var was found in the provided context.\n"
+usage_locations:
+- file: vllm/envs.py:2033
+  context: Definition of the env var with choices binary/unpacked, default binary.
+- file: vllm/envs.py:299
+  context: Type annotation Literal['binary','unpacked'] = 'binary'.
+- file: vllm/config/compilation.py:475
+  context: CompilationConfig.compile_cache_save_format default_factory reads envs.VLLM_COMPILE_CACHE_SAVE_FORMAT.
+- file: vllm/config/compilation.py:481
+  context: Docstring describing binary (multiprocess safe) vs unpacked (debug only, not multiprocess safe).
+related_parameters:
+- name: compilation_config.cache_dir
+  relation: The directory where the cache is stored; the save format determines how artifacts are laid out inside it.
+- name: compilation_config.compile_cache_save_format
+  relation: The config field whose default is populated from this env var; setting the field directly overrides the env var.
+- name: compilation_config.mode
+  relation: Only relevant when compilation is enabled (VLLM_COMPILE / mode 3); has no effect in eager mode.
+- name: VLLM_DISABLE_COMPILATION_CACHE
+  relation: If the compile cache is disabled, the save format is irrelevant.
+constraints:
+- The value must be one of 'binary' or 'unpacked'; any other value raises an error via env_with_choices.
+- The 'unpacked' format is not multiprocess safe and must not be used when multiple vllm serve processes share the same compile
+  cache directory.
+tuning_advice:
+  summary: Keep the default 'binary' for production; use 'unpacked' only for single-process debugging of Inductor output.
+  suggested_values:
+  - scenario: Production serving, especially multi-rank TP/DP sharing a compile cache directory
+    value: binary
+    reason: Multiprocess safe and faster single-file I/O; avoids cache corruption and reduces cold-start overhead.
+  - scenario: Single-process debugging/inspection of generated Inductor code on Ascend
+    value: unpacked
+    reason: Expands the cache into a directory tree so generated code can be viewed and breakpoints set; only safe with one
+      process.
+  caveats:
+  - Do not use 'unpacked' when multiple vllm serve processes share the same cache_dir.
+  - This parameter does not affect steady-state NPU throughput or latency; do not expect runtime speedups from changing it.
+  quick_guide: Leave as 'binary' unless you need to inspect Inductor output in a single-process debug run.
+analysis_date: '2026-10-27'

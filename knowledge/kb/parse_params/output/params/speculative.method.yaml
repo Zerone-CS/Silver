@@ -1,0 +1,130 @@
+name: speculative.method
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/speculative.py:387
+- vllm/engine/arg_utils.py:1701
+- vllm_ascend/spec_decode/__init__.py:41
+- vllm_ascend/worker/model_runner_v1.py:756
+- vllm_ascend/worker/v2/spec_decode/__init__.py:32
+- vllm_ascend/worker/v2/pp_transport.py:94
+- vllm_ascend/worker/v2/pcp_manager.py:244
+- vllm_ascend/ascend_config.py:102
+value_type: str
+default: null
+valid_choices:
+- ngram
+- ngram_gpu
+- suffix
+- medusa
+- eagle
+- eagle3
+- mtp
+- dspark
+- dflash
+- draft_model
+- extract_hidden_states
+cli_example: --spec-method <method>
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "speculative.method selects which speculative decoding proposer/speculator is\ninstantiated, and this choice\
+  \ fundamentally determines the decode-time\nperformance profile on Ascend NPU.\n\nv1-ascend path: \"vllm_ascend/worker/model_runner_v1.py:772\
+  \ calls\"\nget_spec_decode_method(self.speculative_config.method, ...), which dispatches\nin vllm_ascend/spec_decode/__init__.py:41\
+  \ to a concrete Ascend proposer:\nngram -> AscendNgramProposer, ngram_gpu -> AscendNgramProposerNPU,\nsuffix -> AscendSuffixDecodingProposer,\
+  \ medusa -> AscendMedusaProposer,\ndspark -> AscendDSparkProposer, mtp (gemma4) -> AscendGemma4Proposer,\neagle/eagle3/mtp\
+  \ -> AscendEagleProposer (or AscendStep3p5MTPProposer /\nAscendMultiKVCacheGroupMTPProposer for special MTP variants),\n\
+  dflash -> AscendDflashProposer/AscendDflash2Proposer,\ndraft_model -> AscendDraftModelProposer,\nextract_hidden_states ->\
+  \ AscendExtractHiddenStatesProposer.\nEach proposer has a different compute cost per decode step (draft forward\npasses,\
+  \ n-gram lookups, hidden-state extraction), so the method directly\nchanges per-token latency and achievable throughput.\
+  \ The method also sets\nself.decode_token_per_req = 1 + num_speculative_tokens (model_runner_v1.py:753),\nwhich scales the\
+  \ query length of every decode attention call — a direct\nlatency/throughput lever. For eagle3/extract_hidden_states/dspark\
+  \ the method\nadditionally toggles use_aux_hidden_state_outputs (model_runner_v1.py:756-764),\nwhich changes the target\
+  \ model's output tensors and thus memory traffic.\n\nv2-ascend path: \"vllm_ascend/worker/v2/spec_decode/__init__.py:32\
+  \ dispatches\"\ninit_speculator by method: \"extract_hidden_states reuses the upstream\"\nExtractHiddenStatesSpeculator,\
+  \ dspark -> AscendDSparkSpeculator,\ndflash -> AscendDFlashSpeculator/AscendDFlash2Speculator, mtp -> Ascend MTP\nspeculator.\
+  \ The v2 path is stricter and supports fewer methods than v1.\n\nThe method also gates feature compatibility that affects\
+  \ performance:\n- \"KVPP (vllm_ascend/ascend_config.py:102) only allows method in (\\\"mtp\\\",\\\"dspark\\\").\"\n- \"\
+  xlite graph (ascend_config.py:1463) only supports mtp/draft_model/\"\n  extract_hidden_states with a sequential causal chain,\
+  \ and rejects\n  eagle3/extract_hidden_states/dflash/dspark.\n- \"MRV2 PCP (pcp_manager.py:244) only supports mtp/eagle3/dspark.\"\
+  \n- \"Spec+PP (pp_transport.py:94) looks up per-method capabilities.\"\n- \"dspark triggers special KV-cache layout handling\"\
+  \n  (patch_kv_cache_utils.py:634), affecting memory layout and residency.\nChoosing a method that is incompatible with an\
+  \ enabled optimization forces\nthat optimization off, indirectly hurting throughput.\n"
+usage_locations:
+- file: vllm_ascend/spec_decode/__init__.py:41
+  context: v1-ascend get_spec_decode_method dispatches method string to concrete Ascend proposer class
+- file: vllm_ascend/worker/model_runner_v1.py:756
+  context: v1-ascend checks method == eagle3 / extract_hidden_states / use_dspark to set use_aux_hidden_state_outputs and
+    decode_token_per_req
+- file: vllm_ascend/worker/v2/spec_decode/__init__.py:32
+  context: v2-ascend init_speculator dispatches method to Ascend speculator (extract_hidden_states/dspark/dflash/mtp)
+- file: vllm_ascend/worker/v2/pp_transport.py:94
+  context: v2-ascend resolves Spec+PP capabilities by method
+- file: vllm_ascend/worker/v2/pcp_manager.py:244
+  context: v2-ascend MRV2 PCP validates method in (mtp, eagle3, dspark)
+- file: vllm_ascend/ascend_config.py:102
+  context: KVPP validates method in (mtp, dspark)
+- file: vllm_ascend/ascend_config.py:1463
+  context: xlite graph validates method in (mtp, draft_model, extract_hidden_states)
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:634
+  context: dspark method triggers special KV-cache group ownership handling
+- file: vllm/config/speculative.py:387
+  context: upstream SpeculativeConfig.method field definition
+- file: vllm/engine/arg_utils.py:1701
+  context: upstream --spec-method CLI argument registration
+related_parameters:
+- name: speculative.model
+  relation: If model is provided, method may be auto-detected; if model is absent, method must be provided explicitly
+- name: speculative.num_speculative_tokens
+  relation: Together with method determines decode_token_per_req = 1 + num_speculative_tokens; (num_speculative_tokens+1)
+    must be <= 16 on Ascend
+- name: speculative.draft_tensor_parallel_size
+  relation: Only relevant for draft-model-based methods (eagle/eagle3/draft_model/dflash)
+- name: speculative.enforce_eager
+  relation: DFlash2 on v2 model runner requires enforce_eager=true for the draft
+- name: compilation_config.cudagraph_mode
+  relation: MRV2 PCP restricts cudagraph_mode depending on method; xlite graph requires specific methods
+- name: kv_transfer_config.kv_connector
+  relation: KVPP PD disaggregation only supports method mtp/dspark
+constraints:
+- If speculative.model is not provided, speculative.method must be provided explicitly.
+- On Ascend NPU, (num_speculative_tokens + 1) must be <= 16 because npu_fused_infer_attention_score supports at most 16 tokens
+  per decode round.
+- KVPP PD disaggregation supports speculative decoding only with method='mtp' or method='dspark'.
+- xlite graph mode only supports speculative methods with a sequential causal chain (mtp, draft_model, extract_hidden_states)
+  and rejects eagle3, extract_hidden_states, dflash, dspark.
+- Ascend MRV2 PCP supports speculative decoding only with MTP, Eagle3 and DSpark.
+- An unknown method string raises ValueError('Unknown speculative decoding method') in the v1-ascend dispatcher.
+- Watermarking with speculative decoding supports only dspark, eagle, eagle3, mtp methods.
+tuning_advice:
+  summary: Pick the speculative method that matches your draft assets and enabled optimizations; on Ascend prefer mtp/eagle3
+    for model-based speedup and ngram for zero-draft-model low-risk gains.
+  suggested_values:
+  - scenario: DeepSeek-family model with built-in MTP head, no separate draft model
+    value: mtp
+    reason: MTP uses the model's own MTP layers, requires no extra draft checkpoint, and is compatible with KVPP, xlite graph,
+      and MRV2 PCP.
+  - scenario: Have a trained Eagle3 draft head and want high acceptance rate
+    value: eagle3
+    reason: AscendEagleProposer provides the strongest model-based speedup; compatible with MRV2 PCP.
+  - scenario: No draft model available, want low-risk latency reduction
+    value: ngram
+    reason: AscendNgramProposer requires no draft weights and adds negligible memory; good for repetitive/prompt-copy workloads.
+  - scenario: GLM MLA model with DSpark draft checkpoint and PD disaggregation
+    value: dspark
+    reason: DSpark is the only method (besides mtp) supported by KVPP PD disaggregation and has dedicated KV-cache layout
+      handling.
+  - scenario: Qwen DFlash2 draft on v2 model runner
+    value: dflash
+    reason: AscendDFlash2Speculator is selected for DFlash2DraftModel architectures; requires enforce_eager=true for the draft.
+  caveats:
+  - Ensure (num_speculative_tokens + 1) <= 16 on Ascend NPU.
+  - Verify the chosen method is supported by the enabled optimization (KVPP/xlite/PCP) before deployment.
+  - v2 model runner supports a narrower method set than v1; confirm method availability when using VLLM_USE_V2_MODEL_RUNNER=1.
+  quick_guide: Use mtp for DeepSeek MTP models, eagle3 with a draft head, ngram when no draft model exists; keep num_speculative_tokens+1
+    <= 16.
+analysis_date: '2026-10-27'

@@ -1,0 +1,117 @@
+name: ec_transfer.ec_connector
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/distributed/ec_transfer/ec_connector/factory.py:1
+- vllm/distributed/ec_transfer/ec_connector/base.py:1
+- vllm/distributed/ec_transfer/ec_connector/example_connector.py:1
+- vllm_ascend/patch/platform/patch_example_connector.py:31
+- vllm_ascend/patch/platform/__init__.py:63
+- vllm_ascend/distributed/ec_transfer/ec_memcache_connector.py:27
+value_type: str
+default: null
+valid_choices: Registered EC connector names resolved via ECConnectorFactory (e.g. ECExampleConnector, ECCPUConnector, vllm_ascend.distributed.ec_transfer.ec_memcache_connector);
+  null disables EC transfer
+cli_example: '--ec-transfer-config ''{"ec_connector": "ECExampleConnector", "ec_role": "ec_both"}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'ec_transfer.ec_connector selects the encoder-cache (EC) connector implementation used to
+
+  share multimodal encoder outputs (ViT results) between vLLM instances. It is a nested field
+
+  inside the --ec-transfer-config JSON, resolved by ECConnectorFactory and instantiated in the
+
+  scheduler (vllm/v1/core/sched/scheduler.py:12-17) and in the model runner via
+
+  ECConnectorModelRunnerMixin (vllm/v1/worker/ec_connector_model_runner_mixin.py:14-35).
+
+  When set, the connector''s save_caches/start_load_caches hooks run on every multimodal request:
+
+  a cache hit skips the ViT forward entirely (see vllm_ascend/distributed/ec_transfer/
+
+  ec_memcache_connector.py docstring: "key = mm_hash ... a hit skips ViT; only a miss runs ViT"),
+
+  which directly reduces prefill latency and NPU compute for repeated images. A miss adds
+
+  serialization/transfer overhead (safetensors file load or memcache round-trip) on top of the
+
+  normal ViT path, so the connector choice trades transfer cost against ViT recompute.
+
+  On Ascend, vllm-ascend monkey-patches ECExampleConnector.start_load_caches
+
+  (vllm_ascend/patch/platform/patch_example_connector.py:31-72) because upstream only qualifies
+
+  the load device with an index when current_platform.is_cuda_alike() is True; Ascend NPU returns
+
+  False, so in TP>1 every rank would load EC cache to npu:0, causing cross-device tensor access
+
+  and NPU AI Core errcode=95 (MTE DDR address out of range). The patch extends the device-index
+
+  qualification to device == "npu" and only activates on EC consumer nodes (is_consumer), so
+
+  producers and non-EC deployments fall through to upstream behavior. This is a correctness fix
+
+  that also avoids the severe performance collapse (engine crash / error retries) that would
+
+  otherwise occur in TP>1 EC-consumer deployments.
+
+  '
+usage_locations:
+- file: vllm/v1/core/sched/scheduler.py:12
+  context: Scheduler imports ECConnectorBase/ECConnectorFactory and instantiates the configured EC connector to build per-step
+    connector metadata
+- file: vllm/v1/worker/ec_connector_model_runner_mixin.py:14
+  context: Model runner mixin calls get_ec_transfer()/save_caches() to store encoder cache via the selected connector
+- file: vllm_ascend/patch/platform/patch_example_connector.py:31
+  context: Ascend monkey-patch of ECExampleConnector.start_load_caches to pin safetensors loads to the correct NPU device
+    index in TP>1
+- file: vllm_ascend/patch/platform/__init__.py:63
+  context: Registers the EC example connector patch at platform patch import time
+- file: vllm_ascend/distributed/ec_transfer/ec_memcache_connector.py:27
+  context: Ascend-native EC connector implementation (memcache-backed) using ECConnectorBase and encoder cache hidden dim
+    helpers
+related_parameters:
+- name: ec_transfer.ec_role
+  relation: Selects producer/consumer/both role; the Ascend NPU device-index patch only activates when the connector is a
+    consumer (is_consumer)
+- name: ec_transfer.ec_connector_extra_config
+  relation: Connector-specific options (e.g. recv_buffer_tokens for the memcache connector) passed alongside ec_connector
+- name: tensor_parallel_size
+  relation: TP>1 is exactly the case where the Ascend device-index patch is required to avoid npu:0 cross-device access
+- name: kv_transfer_config
+  relation: Analogous connector-selection mechanism for KV cache transfer; both are nested connector configs
+constraints:
+- ec_connector must name a connector registered with ECConnectorFactory, otherwise connector instantiation fails.
+- EC transfer is only meaningful for multimodal models; without encoder cache there is nothing to transfer.
+- On Ascend with TP>1, the ECExampleConnector consumer path requires the vllm-ascend patch to be active, otherwise ranks load
+  to npu:0 and trigger NPU AI Core errcode=95.
+- The Ascend device-index patch only takes effect on EC consumer nodes; producer-only or non-EC deployments use unmodified
+  upstream behavior.
+tuning_advice:
+  summary: Enable an EC connector only for multimodal workloads with repeated images; on Ascend TP>1 use ECExampleConnector
+    with the vllm-ascend patch active, or the Ascend-native memcache connector for cross-instance sharing.
+  suggested_values:
+  - scenario: Single-instance multimodal serving with repeated images, no cross-instance sharing needed
+    value: unset
+    reason: Leaving ec_connector unset avoids transfer overhead; local encoder cache already deduplicates within an instance.
+  - scenario: Multi-instance / PD-disaggregated multimodal deployment sharing ViT outputs on Ascend
+    value: vllm_ascend.distributed.ec_transfer.ec_memcache_connector
+    reason: Ascend-native memcache-backed connector caches by mm_hash so hits skip ViT; supports ec_role and ec_connector_extra_config
+      such as recv_buffer_tokens.
+  - scenario: Ascend TP>1 EC consumer using the example connector
+    value: ECExampleConnector
+    reason: Works correctly only with the vllm-ascend start_load_caches patch that pins loads to the per-rank NPU device index,
+      avoiding errcode=95.
+  caveats:
+  - Verify the vllm-ascend EC example connector patch is imported (vllm_ascend/patch/platform/__init__.py) before relying
+    on ECExampleConnector in TP>1 on Ascend.
+  - Set ec_role appropriately; the NPU device-index fix only applies to consumer nodes.
+  - Monitor memcache size when using the memcache connector since it does not evict.
+  quick_guide: Set ec_connector only for multimodal workloads with repeated images; on Ascend TP>1 prefer the memcache connector
+    or ensure the ECExampleConnector patch is active.
+analysis_date: '2026-10-27'

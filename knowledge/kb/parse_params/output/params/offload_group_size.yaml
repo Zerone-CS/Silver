@@ -1,0 +1,142 @@
+name: --offload-group-size
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/offload.py:54
+- vllm/engine/arg_utils.py:1345
+- vllm/engine/arg_utils.py:550
+- vllm/model_executor/offloader/base.py:145
+- vllm_ascend/model_executor/offloader/base.py:22
+value_type: int
+default: 0
+valid_choices: integer >= 0 (0 disables prefetch offloading)
+cli_example: --offload-group-size 8
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'This parameter controls the prefetch-based CPU weight offloading backend. When
+
+  offload_group_size > 0, vLLM''s create_offloader (vllm/model_executor/offloader/base.py:145)
+
+  selects the PrefetchOffloader (or, on Ascend, AscendPrefetchOffloader via
+
+  vllm_ascend/model_executor/offloader/base.py:22). The model''s layers are partitioned into
+
+  groups of N layers; the last `offload_num_in_group` layers of each group have their weights
+
+  kept in CPU memory and copied to NPU on demand via explicit async prefetch (H2D transfer),
+
+  hiding transfer latency behind compute of preceding layers.
+
+  Memory mechanism: "offloading weights frees NPU HBM that would otherwise hold those layers''"
+
+  parameters, allowing larger models to fit or more KV cache to be allocated (higher
+
+  gpu_memory_utilization headroom). This is the primary benefit — enabling a model that would
+
+  otherwise OOM on a given NPU.
+
+  Latency/throughput mechanism: every forward pass incurs H2D copies for the offloaded layers.
+
+  If prefetching (offload_prefetch_step) successfully hides the transfer behind compute, the
+
+  throughput penalty is small; if not (e.g. compute-bound layers too fast relative to PCIe/H2D
+
+  bandwidth), each offloaded layer adds a stall, reducing tokens/sec. Larger group_size with
+
+  the same num_in_group means fewer offloaded layers overall (offload fraction = num_in_group /
+
+  group_size), so larger group_size = less memory saved but less transfer overhead.
+
+  Ascend specifics: "vllm-ascend''s create_offloader only honors the \"prefetch\" backend"
+
+  (AscendPrefetchOffloader with mode="cpu"); the "uva" backend falls through to NoopOffloader.
+
+  So on Ascend, --offload-group-size is the ONLY way to activate weight offloading — cpu_offload_gb
+
+  (UVA) is effectively a no-op. The H2D path uses Ascend host-to-device copies (not CUDA), and
+
+  the e2e tests (test_cpu_weight_offload.py) exercise group_size=4/num_in_group=1 and
+
+  group_size=8/num_in_group=2 with both eager and graph (cudagraph_capture_sizes) modes,
+
+  confirming compatibility with ACL graph capture on Ascend.
+
+  '
+usage_locations:
+- file: vllm/config/offload.py:54
+  context: 'Field definition offload_group_size: int = Field(default=0, ge=0) with docstring describing group-based offloading.'
+- file: vllm/config/offload.py:100
+  context: 'Validator: prefetch backend active when offload_group_size > 0; enforces num_in_group <= group_size and prefetch_step
+    >= 1.'
+- file: vllm/model_executor/offloader/base.py:145
+  context: create_offloader auto-selects prefetch backend when offload_group_size > 0; passes group_size to PrefetchOffloader.
+- file: vllm_ascend/model_executor/offloader/base.py:22
+  context: Ascend create_offloader builds AscendPrefetchOffloader from prefetch.offload_group_size when backend == 'prefetch'.
+- file: tests/e2e/pull_request/one_card/test_cpu_weight_offload.py:91
+  context: Ascend e2e test uses offload_group_size=4/num_in_group=1 and group_size=8/num_in_group=2 to validate accuracy under
+    eager and graph modes.
+related_parameters:
+- name: --offload-backend
+  relation: Must be 'prefetch' (or 'auto' with group_size>0) for this parameter to take effect; on Ascend only 'prefetch'
+    is honored.
+- name: --offload-num-in-group
+  relation: Number of layers offloaded per group; must be <= offload_group_size. Offload fraction = num_in_group / group_size.
+- name: --offload-prefetch-step
+  relation: Number of layers prefetched ahead; must be >= 1 when group_size > 0. Higher hides more latency but uses more NPU
+    memory.
+- name: --offload-params
+  relation: Selects which parameter name segments to offload; empty means all params of offloaded layers.
+- name: --cpu-offload-gb
+  relation: Alternative UVA offloading backend; on Ascend this is a no-op (only prefetch is supported), so mutually exclusive
+    in practice.
+constraints:
+- offload_group_size must be >= 0; 0 disables prefetch offloading.
+- offload_num_in_group must be <= offload_group_size, otherwise a ValueError is raised.
+- offload_prefetch_step must be >= 1 when offload_group_size > 0, otherwise a ValueError is raised.
+- On Ascend, weight offloading only works with --offload-backend prefetch; the uva backend is not implemented and falls back
+  to a no-op offloader.
+tuning_advice:
+  summary: 'Use --offload-group-size together with --offload-num-in-group to trade NPU HBM for H2D
+
+    transfer overhead; on Ascend this is the only working weight-offload path. Pick the
+
+    smallest offload fraction (num_in_group/group_size) that frees enough memory, and rely on
+
+    --offload-prefetch-step to hide the transfer latency.
+
+    '
+  suggested_values:
+  - scenario: Model fits but KV cache is starved; want to free a little HBM with minimal latency cost
+    value: 8
+    reason: group_size=8 with num_in_group=1 offloads only 1/8 of layers, freeing modest HBM while keeping transfer overhead
+      low; matches Ascend e2e test config.
+  - scenario: Model barely fits / needs significant HBM relief, latency less critical
+    value: 4
+    reason: group_size=4 with num_in_group=1 offloads 1/4 of layers, freeing more HBM at higher per-token transfer cost; validated
+      in Ascend e2e test.
+  - scenario: Selective offload of only heavy MLP/MoE weights to minimize overhead
+    value: 8
+    reason: Combine group_size=8 with --offload-params {gate_up_proj,down_proj} (or w13_weight/w2_weight) so only large weights
+      move, as in the Ascend e2e test.
+  - scenario: Disable offloading (default)
+    value: 0
+    reason: No offloading; full weights resident in HBM, best latency/throughput when memory permits.
+  caveats:
+  - On Ascend, --cpu-offload-gb (UVA backend) is a no-op; only --offload-backend prefetch with offload_group_size > 0 actually
+    offloads weights.
+  - Every offloaded layer adds an H2D copy per forward pass; if compute is too fast relative to host-to-device bandwidth,
+    throughput drops. Increase --offload-prefetch-step to hide more latency at the cost of extra NPU memory.
+  - Larger group_size with fixed num_in_group reduces the offloaded fraction, saving less memory but reducing transfer overhead
+    — tune the ratio, not just the absolute value.
+  - Offloading is compatible with ACL graph capture on Ascend (validated with cudagraph_capture_sizes in e2e tests), but verify
+    accuracy with your model/quantization.
+  - Weight offloading disables some fused/optimized paths (e.g. DeepSeek V4 heterogeneous shared-expert fusion is skipped
+    when offload_group_size > 0), which can reduce throughput beyond the raw transfer cost.
+  quick_guide: Set --offload-backend prefetch and --offload-group-size N (with --offload-num-in-group <= N) to free HBM on
+    Ascend; start with 8/1 and lower group_size only if you need more memory.
+analysis_date: '2026-10-27'

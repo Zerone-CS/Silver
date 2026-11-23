@@ -1,0 +1,186 @@
+name: compilation.cudagraph_mode
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:977
+- vllm/config/vllm.py:1015
+- vllm_ascend/platform.py:1194
+- vllm_ascend/platform.py:1205
+- vllm_ascend/ascend_config.py:96
+- vllm_ascend/ascend_config.py:1371
+- vllm_ascend/worker/model_runner_v1.py:436
+- vllm_ascend/worker/model_runner_v1.py:661
+- vllm_ascend/worker/v2/model_runner.py:184
+- vllm_ascend/worker/v2/model_runner.py:983
+- vllm_ascend/worker/v2/pcp_manager.py:249
+value_type: str
+default: PIECEWISE
+valid_choices:
+- NONE
+- PIECEWISE
+- FULL
+- FULL_DECODE_ONLY
+- FULL_AND_PIECEWISE
+cli_example: '--compilation-config ''{"cudagraph_mode": "FULL_DECODE_ONLY"}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'On Ascend, cudagraph_mode selects whether the model runner captures ACL graphs
+
+  (torch.npu.NPUGraph) and which portions of the forward pass are captured. It is the
+
+  master switch for graph execution, which is the primary latency/throughput lever on NPU.
+
+
+  v1 worker (vllm_ascend/worker/model_runner_v1.py:661): if cudagraph_capture_sizes is
+
+  non-empty AND cudagraph_mode != NONE, the runner builds self.cudagraph_batch_sizes
+
+  (sorted capture sizes) and uses ACL graph replay for those batch sizes. If mode is NONE,
+
+  cudagraph_batch_sizes is empty and every step runs eagerly — losing kernel-launch
+
+  overhead amortization and host-side dispatch savings. At model_runner_v1.py:436 the mode
+
+  also selects the debugger backend (PrecisionDebugger for eager vs AclGraphDumper for
+
+  graph), confirming graph vs eager is a real runtime branch.
+
+
+  v2 worker (vllm_ascend/worker/v2/model_runner.py:184): self.use_aclgraph is True only
+
+  when cudagraph_mode != NONE AND (compilation mode is VLLM_COMPILE or breakable cudagraph
+
+  is enabled) AND not enforce_eager. So on v2, setting cudagraph_mode=NONE disables ACL
+
+  graph entirely. At line 198, if cudagraph_mode.has_full_cudagraphs() the runner allocates
+
+  a dedicated update_stream (torch.npu.Stream) used for full-graph metadata updates — a
+
+  memory/stream resource cost only incurred in FULL modes. At line 983, PIECEWISE mode
+
+  triggers _preserve_dummy_query_tokens logic that pads dummy query tokens to decode_query_len
+
+  during profiling, affecting capture shape alignment.
+
+
+  vllm-ascend platform override (vllm_ascend/platform.py:1191-1208): when XliteGraph is
+
+  enabled (ascend_config.xlite_graph_config.enabled), the platform REWRITES
+
+  compilation_config.cudagraph_mode. If xlite full_mode is set, mixed_mode becomes NONE;
+
+  otherwise mixed_mode = current mode''s mixed_mode() and decode_mode = NONE when no
+
+  speculative config. The resulting mode is recomputed and enforce_eager is forced True
+
+  when the resulting mode is empty or xlite full_mode is on. This means the user-supplied
+
+  cudagraph_mode can be silently downgraded/neutralized under XliteGraph.
+
+
+  Upstream normalization (vllm/config/vllm.py:1010-1030): if the mode requires piecewise
+
+  compilation but compilation mode is not VLLM_COMPILE and breakable cudagraph is disabled,
+
+  the mode is downgraded via without_piecewise(); if it falls back to NONE, capture sizes
+
+  are zeroed. On Ascend, compilation mode is forced to NONE unless VLLM_COMPILE
+
+  (platform.py:1216-1221), so PIECEWISE/FULL modes that require compilation can be
+
+  downgraded unless breakable cudagraph is enabled.
+
+
+  Net effect: "FULL/FULL_DECODE_ONLY give the lowest decode latency (whole decode step"
+
+  captured, minimal host overhead) at the cost of extra memory for graph pools and an
+
+  update stream; PIECEWISE keeps incompatible ops (e.g. FA3 attention whose tiling is
+
+  host-side) outside the graph for flexibility; NONE is fully eager (highest latency,
+
+  lowest memory, required for some features).
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:1194
+  context: XliteGraph override recomputes cudagraph_mode (mixed/decode) and may force enforce_eager
+- file: vllm_ascend/platform.py:1205
+  context: Logs fallback of compilation_config.cudagraph_mode when Xlite graph enabled
+- file: vllm_ascend/worker/model_runner_v1.py:661
+  context: 'v1: builds cudagraph_batch_sizes only when mode != NONE'
+- file: vllm_ascend/worker/model_runner_v1.py:436
+  context: 'v1: selects PrecisionDebugger vs AclGraphDumper based on mode'
+- file: vllm_ascend/worker/v2/model_runner.py:184
+  context: 'v2: computes use_aclgraph from mode, compilation mode, enforce_eager'
+- file: vllm_ascend/worker/v2/model_runner.py:198
+  context: 'v2: allocates update_stream when has_full_cudagraphs()'
+- file: vllm_ascend/worker/v2/model_runner.py:983
+  context: 'v2: PIECEWISE-specific dummy query token preservation during profiling'
+- file: vllm_ascend/worker/v2/pcp_manager.py:249
+  context: 'v2 PCP: validates allowed cudagraph modes (NONE/FULL_DECODE_ONLY)'
+- file: vllm_ascend/ascend_config.py:96
+  context: KVPP validation requires PIECEWISE when not eager
+- file: vllm_ascend/ascend_config.py:1371
+  context: finegrained_tp_config requires graph mode (mode != NONE)
+- file: vllm/config/vllm.py:1015
+  context: Upstream normalization downgrades piecewise-requiring modes when compilation mode incompatible
+related_parameters:
+- name: compilation_config.mode
+  relation: PIECEWISE/FULL modes require VLLM_COMPILE (or breakable cudagraph); otherwise downgraded to without_piecewise()
+- name: enforce_eager
+  relation: When enforce_eager is True, compilation mode is forced NONE and cudagraph_mode effectively disabled
+- name: compilation_config.cudagraph_capture_sizes
+  relation: Capture sizes only used when cudagraph_mode != NONE; zeroed when mode falls back to NONE
+- name: compilation_config.max_cudagraph_capture_size
+  relation: Zeroed when mode falls back to NONE; bounds full-graph batch sizes
+- name: ascend_config.xlite_graph_config.enabled
+  relation: When enabled, platform.py rewrites cudagraph_mode and may force enforce_eager
+- name: speculative_config
+  relation: Presence of spec config changes decode_mode computation under XliteGraph; dynamic spec decoding forces PIECEWISE
+    upstream
+- name: parallel_config.prefill_context_parallel_size
+  relation: MRV2 PCP restricts allowed modes to NONE or FULL_DECODE_ONLY
+- name: finegrained_tp_config.oproj_tensor_parallel_size
+  relation: Requires graph mode (cudagraph_mode != NONE)
+constraints:
+- When KVPP is enabled and enforce_eager is False, cudagraph_mode must be PIECEWISE or a ValueError is raised.
+- When oproj_tensor_parallel_size or mlp_tensor_parallel_size > 1, cudagraph_mode must not be NONE (graph mode required).
+- In MRV2 PCP with data_parallel_size > 1, cudagraph_mode must be NONE or FULL_DECODE_ONLY.
+- In MRV2 PCP with sparse MLA (index_topk), cudagraph_mode must be NONE or FULL_DECODE_ONLY.
+- In MRV2 PCP, if full cudagraphs are used they must be exactly FULL_DECODE_ONLY.
+- If cudagraph_mode requires piecewise compilation but compilation mode is not VLLM_COMPILE and breakable cudagraph is disabled,
+  the mode is automatically downgraded (possibly to NONE).
+- When XliteGraph is enabled with full_mode, cudagraph_mode is forced to NONE and enforce_eager is set True.
+tuning_advice:
+  summary: Use FULL_DECODE_ONLY for decode-heavy serving to minimize latency; use PIECEWISE when FA3 or graph-incompatible
+    ops are present; use NONE only for debugging or features requiring eager.
+  suggested_values:
+  - scenario: Standard decode-heavy LLM serving on Ascend (no FA3, no CP)
+    value: FULL_DECODE_ONLY
+    reason: Captures the whole decode step into ACL graph, minimizing host-side dispatch and kernel-launch overhead for the
+      dominant decode phase.
+  - scenario: FA3 attention enabled (flash_attn_with_kvcache)
+    value: PIECEWISE
+    reason: FA3 tiling is host-side and cannot be captured into ACL graph; PIECEWISE keeps it outside the graph while capturing
+      the rest.
+  - scenario: Context parallel (PCP) deployment
+    value: FULL_DECODE_ONLY
+    reason: Docs state FULL is not sufficiently supported in CP; MRV2 PCP only allows NONE or FULL_DECODE_ONLY.
+  - scenario: KVPP enabled (non-eager)
+    value: PIECEWISE
+    reason: KVPP validation requires PIECEWISE when not eager, otherwise raises ValueError.
+  - scenario: Debugging / precision dump / features requiring eager
+    value: NONE
+    reason: Disables ACL graph so every step runs eagerly; required for some debug paths and avoids graph capture overhead.
+  caveats:
+  - Verify the effective mode in logs — XliteGraph and compilation-mode normalization can silently change it.
+  - FULL modes increase memory usage for graph pools and an extra update stream; ensure headroom.
+  - Ensure compilation_config.mode is VLLM_COMPILE (or breakable cudagraph enabled) or PIECEWISE/FULL may be downgraded.
+  quick_guide: Default PIECEWISE; switch to FULL_DECODE_ONLY for max decode throughput when no FA3/CP constraints apply.
+analysis_date: '2026-10-27'

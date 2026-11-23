@@ -1,0 +1,80 @@
+name: VLLM_PLE_CPU_OFFLOAD
+type: env
+category: memory
+scope: vllm
+source_file:
+- vllm/envs.py:2047
+- vllm/envs.py:157
+- vllm/config/engram.py:27
+- vllm/config/engram.py:46
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'VLLM_PLE_CPU_OFFLOAD controls the default value of EngramConfig.cpu_offload
+
+  (vllm/config/engram.py:27, _default_cpu_offload returns envs.VLLM_PLE_CPU_OFFLOAD).
+
+  When enabled, Engram n-gram embedding tables are stored in pinned CPU memory and
+
+  accessed via UVA lookup instead of residing on the accelerator device. This trades
+
+  device memory for host memory and adds a host-memory read path per lookup.
+
+  The parameter only takes effect for models that use Engram n-gram embeddings
+
+  (EngramConfig.verify_model_config rejects models without n-gram embedding fields).
+
+  On Ascend NPU, EngramConfig.verify_model_config requires current_platform.is_cuda(),
+
+  so the Engram path (and therefore this env var) is not active on Ascend — the
+
+  config is rejected before any offload behavior is applied. Hence the runtime
+
+  performance impact on Ascend NPU is effectively none/low; the parameter is a
+
+  CUDA-only memory-placement knob.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2047
+  context: Environment variable definition, default '1' (enabled), parsed as bool(int(...)).
+- file: vllm/envs.py:157
+  context: 'Type stub declaration VLLM_PLE_CPU_OFFLOAD: bool = True.'
+- file: vllm/config/engram.py:27
+  context: _default_cpu_offload() returns envs.VLLM_PLE_CPU_OFFLOAD as the default for EngramConfig.cpu_offload.
+- file: vllm/config/engram.py:46
+  context: 'EngramConfig.cpu_offload field docstring: stores embedding weights in pinned CPU memory for UVA lookup; explicit
+    value overrides env var.'
+related_parameters:
+- name: EngramConfig.cpu_offload
+  relation: This env var provides the default value; an explicit cpu_offload setting takes precedence.
+- name: EngramConfig.dp_shared_memory
+  relation: Requires cpu_offload=True; setting dp_shared_memory without cpu_offload raises ValueError.
+- name: EngramConfig.embedding_across_dp
+  relation: Related Engram embedding sharding option; interacts with offload placement.
+constraints:
+- dp_shared_memory requires cpu_offload=True, otherwise a ValueError is raised.
+- Engram configuration is rejected for models without n-gram embedding fields.
+- Engram configuration requires the CUDA platform (current_platform.is_cuda()); it is not supported on Ascend NPU.
+tuning_advice:
+  summary: Leave at default on Ascend NPU; this is a CUDA-only Engram embedding placement knob with no effect on Ascend runtime.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any model)
+    value: '1'
+    reason: Engram config is rejected on non-CUDA platforms, so the value is inert; keeping the default avoids confusion.
+  - scenario: CUDA deployment with Engram n-gram embeddings and tight device memory
+    value: '1'
+    reason: Stores embedding tables in pinned CPU memory via UVA, freeing device memory at the cost of host lookup latency.
+  - scenario: CUDA deployment where embedding lookup latency dominates
+    value: '0'
+    reason: Disables CPU offload so embeddings stay on device, avoiding host-memory read overhead.
+  caveats:
+  - No effect on Ascend NPU because EngramConfig.verify_model_config requires is_cuda().
+  - Only relevant to models with Engram n-gram embeddings; ignored otherwise.
+  quick_guide: On Ascend, ignore this variable — Engram CPU offload is CUDA-only and inactive.
+analysis_date: '2026-10-27'

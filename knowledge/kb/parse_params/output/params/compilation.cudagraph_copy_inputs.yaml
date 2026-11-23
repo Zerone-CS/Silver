@@ -1,0 +1,99 @@
+name: compilation.cudagraph_copy_inputs
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/backends.py:1294
+- vllm/compilation/caching.py:551
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This flag controls whether the compilation backend wraps the compiled graph
+
+  execution with a copy-and-call shim that copies symbolic-shape input tensors
+
+  into internally managed static buffers before invoking the cudagraph.
+
+
+  In vllm/compilation/backends.py:1292-1306, when cudagraph_mode is NONE or
+
+  cudagraph_copy_inputs is False, the backend returns a plain
+
+  VllmSerializableFunction without any input-copy wrapper. When True, it
+
+  computes sym_tensor_indices (tensors with symbolic batch dimension) and
+
+  builds a copy-and-call path.
+
+
+  In vllm/compilation/caching.py:551-563, on cache reload, if
+
+  cudagraph_copy_inputs is True, it allocates input_buffers via torch.empty_like
+
+  for each symbolic tensor index and wraps runtime_callable with
+
+  make_copy_and_call; otherwise it uses runtime_callable directly.
+
+
+  Performance effect: "enabling it adds a per-call device-to-device copy of the"
+
+  dynamic input tensors (typically token ids / positions / hidden states) into
+
+  static buffers, plus extra memory for those buffers. This is a small fixed
+
+  overhead per forward pass but guarantees correctness when callers reuse
+
+  varying input buffers. On Ascend NPU, the copy is an aclnn copy on the NPU
+
+  stream; the overhead is minor relative to model compute but non-zero. It does
+
+  not change graph capture itself, only the input marshalling around it.
+
+
+  vllm-ascend does not define or override this parameter; it inherits the
+
+  upstream vLLM compilation config. Ascend cudagraph support is handled through
+
+  vllm-ascend''s own ACL graph path, and this flag only matters when the
+
+  upstream piecewise compilation backend is active.
+
+  '
+usage_locations:
+- file: vllm/compilation/backends.py:1294
+  context: Skips input-copy wrapper when cudagraph_mode is NONE or cudagraph_copy_inputs is False
+- file: vllm/compilation/caching.py:551
+  context: On cache reload, allocates static input buffers and wraps callable with make_copy_and_call when True
+related_parameters:
+- name: compilation.cudagraph_mode
+  relation: Only relevant when cudagraph_mode is not NONE; if NONE the copy path is bypassed entirely
+- name: compilation.level
+  relation: Piecewise compilation backend must be active for this flag to have any effect
+constraints:
+- Has no effect when compilation.cudagraph_mode is NONE, since the backend returns early without the copy wrapper.
+- Only applies to tensors with symbolic (dynamic batch) shapes; weights and static buffers are never copied.
+tuning_advice:
+  summary: Leave at default False unless callers reuse varying input buffers with cudagraph; enabling adds a small per-call
+    NPU copy overhead.
+  suggested_values:
+  - scenario: Standard vLLM serving where the model runner reuses stable input buffers
+    value: false
+    reason: Avoids the extra device-to-device copy and static buffer allocation; default and lowest overhead.
+  - scenario: Custom callers or integrations that pass fresh input tensors each call under cudagraph
+    value: true
+    reason: Guarantees correctness by copying symbolic-shape inputs into internally managed buffers, at the cost of a small
+      per-call copy.
+  caveats:
+  - Enabling adds a per-forward device copy of dynamic input tensors on the NPU stream, slightly increasing latency and memory.
+  - No effect if cudagraph_mode is NONE or piecewise compilation is not active.
+  - vllm-ascend does not override this flag; behavior follows upstream vLLM compilation backend.
+  quick_guide: Keep False for standard serving; set True only if input buffers are not reused across cudagraph calls.
+analysis_date: '2026-10-27'

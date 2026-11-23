@@ -1,0 +1,106 @@
+name: --interleave-mm-strings
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:205
+- vllm/engine/arg_utils.py:1421
+- vllm/engine/arg_utils.py:591
+- vllm/engine/arg_utils.py:1858
+- vllm/config/model.py:411
+- vllm/config/model.py:464
+- vllm/entrypoints/chat_utils.py:2183
+- vllm/entrypoints/chat_utils.py:2222
+value_type: bool
+default: false
+valid_choices: true | false (BooleanOptionalAction-style flag)
+cli_example: --interleave-mm-strings
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag only changes how multimodal chat messages are parsed into the
+
+  conversation prompt on the frontend (API server / entrypoints), not the
+
+  model execution path on the NPU. In vllm/entrypoints/chat_utils.py:2180-2184
+
+  and 2219-2223, `interleave_strings` is computed as
+
+  `content_format == "string" and multimodal_config is not None and
+
+  multimodal_config.interleave_mm_strings`. When true, `_parse_chat_message_content`
+
+  emits placeholder strings interleaved with the surrounding text instead of
+
+  splitting the message into separate text/image parts. This affects only the
+
+  tokenized prompt layout produced by the chat template and the ordering of
+
+  multimodal items in the request. It does not alter attention kernels, KV cache
+
+  allocation, HCCL communication, or any Ascend-specific compute path. The only
+
+  indirect runtime effect is that a different prompt layout can change the number
+
+  of placeholder tokens and thus the prompt length, which marginally affects
+
+  prefill cost — but this is a consequence of the prompt content, not of the flag
+
+  itself. No vllm-ascend override of this parameter was found in the provided
+
+  context; vllm-ascend does not patch MultiModalConfig.interleave_mm_strings.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:205
+  context: 'Field definition `interleave_mm_strings: bool = False` with docstring tying it to --chat-template-content-format=string.'
+- file: vllm/engine/arg_utils.py:1421
+  context: CLI argument registration under the MultiModalConfig argument group.
+- file: vllm/engine/arg_utils.py:591
+  context: EngineArgs field mirroring MultiModalConfig.interleave_mm_strings.
+- file: vllm/engine/arg_utils.py:1858
+  context: Passed into ModelConfig construction from EngineArgs.
+- file: vllm/config/model.py:411
+  context: InitVar on ModelConfig that forwards to MultiModalConfig.
+- file: vllm/config/model.py:464
+  context: Listed in ignored_factors for compute_hash, so it does not affect the computation graph hash.
+- file: vllm/entrypoints/chat_utils.py:2183
+  context: 'Sync chat parsing: enables interleaved string parsing when content_format == ''string''.'
+- file: vllm/entrypoints/chat_utils.py:2222
+  context: 'Async chat parsing: same interleaved string gating.'
+related_parameters:
+- name: --chat-template-content-format
+  relation: Must be set to 'string' for this flag to have any effect; otherwise interleave_strings is forced false.
+- name: --limit-mm-per-prompt
+  relation: Interleaved parsing still respects per-prompt multimodal item limits.
+- name: --enable-mm-embeds
+  relation: Alternative multimodal input path; unrelated to string interleaving but part of the same MultiModalConfig group.
+constraints:
+- The flag only takes effect when --chat-template-content-format is set to 'string'; with any other content format it is silently
+  ignored.
+- Requires a multimodal model (multimodal_config must be non-None); on a text-only model the flag has no effect.
+tuning_advice:
+  summary: 'Enable only when you need fully interleaved multimodal prompts with a
+
+    string-format chat template; it is a correctness/formatting switch, not a
+
+    performance knob, and has no Ascend-specific tuning.
+
+    '
+  suggested_values:
+  - scenario: Multimodal model served with --chat-template-content-format=string and prompts that interleave text and images/video/audio
+    value: true
+    reason: Enables interleaved string parsing so placeholders stay inline with surrounding text, matching the model's expected
+      prompt layout.
+  - scenario: Default deployments, JSON/OpenAI content-format chat templates, or text-only models
+    value: false
+    reason: No benefit; the flag is ignored unless content format is 'string' and a multimodal config exists.
+  caveats:
+  - This is a frontend prompt-parsing switch; it does not change NPU kernels, KV cache, or HCCL behavior, so do not expect
+    throughput gains from toggling it.
+  - Changing the prompt layout can change prompt token counts and thus prefill latency indirectly; measure end-to-end if prompt
+    length shifts significantly.
+  - No vllm-ascend override was found; behavior on Ascend matches upstream vLLM.
+  quick_guide: Set true only with --chat-template-content-format=string on multimodal models; otherwise leave default false.
+analysis_date: '2026-10-27'

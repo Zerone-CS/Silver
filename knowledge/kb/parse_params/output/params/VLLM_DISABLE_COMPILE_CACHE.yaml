@@ -1,0 +1,115 @@
+name: VLLM_DISABLE_COMPILE_CACHE
+type: env
+category: compilation
+scope: both
+source_file:
+- vllm/envs.py:364
+- vllm/envs.py:1388
+- vllm/compilation/compiler_interface.py:204
+- vllm/compilation/backends.py:1081
+- vllm/compilation/decorators.py:566
+- vllm/compilation/decorators.py:700
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+impact_detail: 'This env var controls whether vLLM''s torch.compile / AOT compile artifact cache is
+
+  used. It is read in vllm/envs.py:364 (disable_compile_cache) and consumed by
+
+  is_compile_cache_enabled() in vllm/compilation/compiler_interface.py:204, which
+
+  returns False when VLLM_DISABLE_COMPILE_CACHE is truthy. That result gates:
+
+  (1) saving compiled artifacts in compiler_interface.py:399-413 (skipped when disabled),
+
+  (2) loading AOT-compiled functions from disk in decorators.py:566 (skipped when
+
+  disabled, forcing a fresh torch.compile + profiling/warmup run), and
+
+  (3) saving AOT compiled functions in decorators.py:700 (early return when disabled).
+
+  In backends.py:1081-1099 the cache dir is still created but disable_cache is set,
+
+  logging "vLLM''s torch.compile cache is disabled."
+
+  On Ascend NPU, vllm-ascend relies on torch.compile / ACL graph capture for its
+
+  compiled model path. Disabling the cache does NOT change steady-state inference
+
+  throughput or memory usage — it only affects startup/warm-start latency: every
+
+  process must re-run torch.compile and inductor compilation from scratch instead of
+
+  loading serialized artifacts from VLLM_CACHE_ROOT/torch_compile_cache. This is
+
+  therefore a startup-latency (cold-start) parameter, not a runtime throughput knob.
+
+  vllm-ascend does not override this env var; it only appears in vllm-ascend e2e
+
+  tests (e.g. tests/e2e/pull_request/one_card/lora/*.py set it to "1" to force fresh
+
+  compilation, and test_minimax_m3.py sets it to "0" to reuse cache).
+
+  '
+usage_locations:
+- file: vllm/envs.py:364
+  context: disable_compile_cache() reads VLLM_DISABLE_COMPILE_CACHE (default 0).
+- file: vllm/compilation/compiler_interface.py:204
+  context: is_compile_cache_enabled() returns False when VLLM_DISABLE_COMPILE_CACHE is set, gating artifact save/load.
+- file: vllm/compilation/backends.py:1081
+  context: Backend sets disable_cache from is_compile_cache_enabled and logs cache disabled.
+- file: vllm/compilation/decorators.py:566
+  context: Skips loading AOT-compiled function from disk when cache disabled, forcing recompile.
+- file: vllm/compilation/decorators.py:700
+  context: save_aot_compiled_function returns early when cache disabled.
+- file: tests/e2e/pull_request/one_card/lora/test_qwen35_densemodel_lora.py:12
+  context: vllm-ascend e2e test sets VLLM_DISABLE_COMPILE_CACHE=1 to force fresh compilation.
+- file: tests/e2e/pull_request/four_card/test_minimax_m3.py:45
+  context: vllm-ascend e2e test sets VLLM_DISABLE_COMPILE_CACHE=0 to reuse compile cache.
+related_parameters:
+- name: VLLM_CACHE_ROOT
+  relation: Root directory under which torch_compile_cache artifacts are stored; disabling the cache makes this directory
+    unused for compiled artifacts.
+- name: compilation_config.cache_dir
+  relation: Per-config cache directory; when VLLM_DISABLE_COMPILE_CACHE=1 the cache is not read/written even though the dir
+    is created.
+- name: compilation_config.mode
+  relation: CompilationMode.NONE also disables compilation entirely; VLLM_DISABLE_COMPILE_CACHE only disables the cache, not
+    compilation itself.
+- name: VLLM_USE_AOT_COMPILE
+  relation: AOT compile path (decorators.py) checks VLLM_DISABLE_COMPILE_CACHE before loading/saving compiled functions.
+- name: torch._inductor.config.force_disable_caches
+  relation: Alternative mechanism that also disables the compile cache; is_compile_cache_enabled() ANDs both.
+constraints:
+- Value must be parseable as an integer (0 or 1); non-integer values raise an error during env parsing.
+- Setting VLLM_DISABLE_COMPILE_CACHE=1 does not disable compilation itself, only the on-disk artifact cache; use compilation_config.mode=NONE
+  to skip compilation.
+- When the cache is disabled, compiled artifacts are neither loaded nor saved, so every process start re-runs torch.compile
+  and inductor compilation.
+tuning_advice:
+  summary: Keep the compile cache enabled (default 0) for production to minimize Ascend warm-start latency; only disable it
+    when debugging compilation or when stale/corrupt cache causes issues.
+  suggested_values:
+  - scenario: Production serving with stable model/config on Ascend NPU
+    value: '0'
+    reason: Reuses serialized torch.compile/inductor artifacts from VLLM_CACHE_ROOT, drastically reducing warm-start time
+      across restarts and ranks.
+  - scenario: Debugging compilation, custom passes, or verifying fusion actually ran
+    value: '1'
+    reason: Forces fresh compilation so logs reflect actual compilation and custom passes execute, as done in vllm-ascend
+      e2e tests.
+  - scenario: Stale or corrupt compile cache causing crashes/segfaults
+    value: '1'
+    reason: Bypasses loading of potentially incompatible cached artifacts; alternatively clear VLLM_CACHE_ROOT/torch_compile_cache.
+  caveats:
+  - Do not disable the cache in latency-sensitive autoscaling deployments; warm-start cost grows with model size and number
+    of ranks.
+  - Disabling the cache does not improve runtime throughput — do not use it as a performance tuning knob.
+  - Prefer clearing the cache directory over permanently disabling the cache when artifacts are stale.
+  quick_guide: Leave VLLM_DISABLE_COMPILE_CACHE=0 in production; set to 1 only for debugging or to bypass a bad cache.
+analysis_date: '2026-10-27'

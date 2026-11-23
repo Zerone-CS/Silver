@@ -1,0 +1,134 @@
+name: --decode-context-parallel-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:353
+- vllm/engine/arg_utils.py:1098
+- vllm/config/parallel.py:560
+- vllm/config/model.py:1445
+- vllm/config/vllm.py:1289
+- vllm/config/vllm.py:1332
+- vllm/v1/attention/backend.py:646
+- vllm/v1/attention/backends/fa_utils.py:264
+- vllm_ascend/ascend_config.py:83
+- vllm_ascend/ascend_config.py:1738
+- vllm_ascend/patch/platform/patch_kv_cache_utils.py:99
+- vllm_ascend/patch/platform/patch_speculative_config.py:182
+- vllm_ascend/patch/platform/patch_speculative_config.py:255
+- vllm_ascend/platform.py:1406
+- vllm_ascend/platform.py:1619
+- vllm_ascend/worker/v2/attn_utils.py:195
+- vllm_ascend/worker/v2/attn_utils.py:413
+value_type: int
+default: 1
+valid_choices: 'Integer >= 1. Without PCP: must divide tensor_parallel_size. With PCP: must be 1, pcp, or tp*pcp. For GQA/MQA
+  (non-MLA): must be <= tp_size // total_num_kv_heads.'
+cli_example: --decode-context-parallel-size 2
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "DCP shards the decode-phase KV cache across ranks without expanding the process\nworld size (vllm/config/parallel.py:353).\
+  \ It reuses TP ranks when PCP is disabled,\nor spans the PCP axis / full TP x PCP block when PCP is enabled. On Ascend this\n\
+  has several concrete runtime effects:\n\n1. KV cache memory: each rank stores only 1/DCP of the decode KV cache, so\n  \
+  \ per-rank KV memory drops roughly by a factor of DCP, allowing larger\n   max_num_seqs / longer sequences. This is the\
+  \ primary memory benefit.\n\n2. Attention compute: decode attention is split across DCP ranks, reducing\n   per-rank attention\
+  \ work for long-context decode, but requires cross-rank\n   communication (AllGather/ReduceScatter or All-to-All) to combine\
+  \ partial\n   outputs and LSE. vllm-ascend implements this via the SFA DCP Q-gather and\n   result-merge path (context_parallel.md:75)\
+  \ and reduces KV all-gather traffic\n   by selecting required blocks before communication (release_notes.md:398).\n\n3.\
+  \ Attention metadata: vllm/v1/attention/backend.py:646 forces\n   reorder_batch_threshold=1 when DCP>1 and the backend does\
+  \ not support\n   varlen DCP, which can reduce batching efficiency. vllm/v1/attention/backends/fa_utils.py:264\n   disables\
+  \ the FA4 hd256 fast path when DCP>1 (CUDA-specific; Ascend uses its\n   own attention path).\n\n4. Ascend v2 worker: vllm_ascend/worker/v2/attn_utils.py:195\
+  \ and :413 compute\n   DCP-local sequence lengths and replicated indexer sizes, adding per-batch\n   CPU-side metadata work\
+  \ (get_dcp_local_seq_lens) but avoiding device-to-host\n   sync.\n\n5. Ascend block-size alignment: vllm_ascend/patch/platform/patch_kv_cache_utils.py:99\n\
+  \   computes scheduler_block_size = lcm(group_block_sizes) * dcp for hybrid KV\n   cache groups, which can increase the\
+  \ effective block size and thus memory\n   granularity when DCP>1.\n\nNet effect: \"DCP trades extra HCCL communication\
+  \ for reduced per-rank KV memory\"\nand attention compute, which is beneficial for long-context decode on Ascend\nbut can\
+  \ hurt short-sequence throughput due to communication overhead.\n"
+usage_locations:
+- file: vllm/config/parallel.py:560
+  context: Validates tp % dcp == 0 (no PCP) or dcp in (1, pcp, tp*pcp) (with PCP).
+- file: vllm/config/model.py:1445
+  context: GQA/MQA DCP requires tp > total_num_kv_heads and dcp <= tp // kv_heads.
+- file: vllm/config/vllm.py:1289
+  context: DCP>1 incompatible with --enable-return-routed-experts.
+- file: vllm/config/vllm.py:1332
+  context: NIXL connector requires dcp in (1, transfer_tp_size) and MLA for dcp>1.
+- file: vllm/v1/attention/backend.py:646
+  context: Forces reorder_batch_threshold=1 when DCP>1 without varlen DCP support.
+- file: vllm_ascend/ascend_config.py:83
+  context: KVPP cannot be enabled together with DCP.
+- file: vllm_ascend/ascend_config.py:1738
+  context: Sparse KV offload rejects PCP*DCP > 1.
+- file: vllm_ascend/patch/platform/patch_kv_cache_utils.py:99
+  context: Computes scheduler_block_size = lcm(block_sizes) * dcp for hybrid KV groups.
+- file: vllm_ascend/patch/platform/patch_speculative_config.py:182
+  context: Temporarily disables DCP for dspark speculative config verification.
+- file: vllm_ascend/patch/platform/patch_speculative_config.py:255
+  context: Guards GQA+PCP+DCP verification by forcing dcp=1 during upstream check.
+- file: vllm_ascend/platform.py:1406
+  context: SFA DCP requires cp_kv_cache_interleave_size == block_size; overrides interleave size.
+- file: vllm_ascend/platform.py:1619
+  context: Ascend Engram requires DCP=1.
+- file: vllm_ascend/worker/v2/attn_utils.py:195
+  context: Computes SFA DCP replicated indexer size from DCP.
+- file: vllm_ascend/worker/v2/attn_utils.py:413
+  context: Computes DCP-local sequence lengths for attention metadata.
+related_parameters:
+- name: --tensor-parallel-size
+  relation: DCP reuses TP ranks; tp must be divisible by dcp (no PCP) or dcp must be 1/pcp/tp*pcp (with PCP).
+- name: --prefill-context-parallel-size
+  relation: PCP changes valid DCP values; DCP spans PCP axis or full TP x PCP block.
+- name: --cp-kv-cache-interleave-size
+  relation: Must equal block_size for SFA DCP; vllm-ascend overrides it otherwise.
+- name: --dcp-comm-backend
+  relation: Selects ag_rs vs a2a communication strategy for DCP.
+- name: --dcp-q-replicate
+  relation: Controls Q replication behavior under DCP.
+- name: --enable-return-routed-experts
+  relation: Incompatible with DCP>1.
+- name: additional_config.enable_kvpp
+  relation: KVPP and DCP cannot be enabled at the same time.
+- name: additional_config.sparse_kv_offload_config
+  relation: Sparse KV offload rejects PCP*DCP > 1.
+constraints:
+- Without PCP, tensor_parallel_size must be divisible by decode_context_parallel_size.
+- With PCP enabled, decode_context_parallel_size must be 1, equal to prefill_context_parallel_size, or equal to tensor_parallel_size
+  * prefill_context_parallel_size.
+- For GQA/MQA models (non-MLA), tensor_parallel_size must be greater than the model's total number of KV heads when DCP>1.
+- For GQA/MQA models, decode_context_parallel_size must not exceed tensor_parallel_size divided by total_num_kv_heads.
+- DCP>1 is incompatible with --enable-return-routed-experts.
+- With NixlConnector, decode_context_parallel_size must be 1 or equal to the NIXL transfer parallel size, and DCP>1 requires
+  an MLA model.
+- KVPP (additional_config.enable_kvpp) and DCP cannot be enabled at the same time.
+- Sparse KV offload does not support context parallelism (PCP*DCP must be 1).
+- Ascend Engram requires TP=1/2/4/8 with PP=DCP=1.
+- For SFA sparse models with DCP enabled, cp_kv_cache_interleave_size must equal block_size in P/D disaggregate + kv pool
+  scenarios.
+tuning_advice:
+  summary: Enable DCP for long-context decode on MLA models to shard KV cache and reduce per-rank attention compute, keeping
+    DCP small to limit HCCL overhead.
+  suggested_values:
+  - scenario: Long-context decode with MLA model (e.g. DeepSeek), TP=8, no PCP
+    value: 2
+    reason: Halves per-rank decode KV cache and attention compute while keeping HCCL communication modest; tp=8 divisible
+      by dcp=2.
+  - scenario: Very long context decode, MLA model, TP=8, communication bandwidth sufficient
+    value: 4
+    reason: Further reduces per-rank KV memory and attention work; tp=8 divisible by dcp=4.
+  - scenario: Short-sequence / latency-sensitive decode
+    value: 1
+    reason: Disables DCP to avoid per-layer cross-rank communication overhead that dominates for short sequences.
+  - scenario: SFA sparse model decode-only (PCP=1)
+    value: <equal to tensor_parallel_size>
+    reason: SFA DCP mode requires decode_context_parallel_size == tensor_parallel_size (context_parallel.md:75).
+  caveats:
+  - Ensure cp_kv_cache_interleave_size equals block_size for SFA DCP; vllm-ascend will override it otherwise.
+  - Do not combine DCP with KVPP or sparse KV offload; both are rejected.
+  - For GQA/MQA models, DCP requires tp > total_num_kv_heads and dcp <= tp // kv_heads.
+  - DCP>1 disables --enable-return-routed-experts and the FA4 hd256 fast path (CUDA).
+  quick_guide: Set --decode-context-parallel-size to 2 or 4 for long-context MLA decode on Ascend; keep at 1 for short sequences.
+analysis_date: '2026-10-27'

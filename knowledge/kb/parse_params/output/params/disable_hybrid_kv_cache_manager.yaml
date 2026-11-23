@@ -1,0 +1,129 @@
+name: --disable-hybrid-kv-cache-manager
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/scheduler.py:164
+- vllm/engine/arg_utils.py:1640
+- vllm/config/vllm.py:1984
+- vllm/v1/core/kv_cache_utils.py:2266
+- vllm/distributed/kv_transfer/kv_connector/factory.py:55
+- vllm_ascend/patch/platform/patch_mamba_config.py:69
+- vllm_ascend/platform.py:411
+- vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py:38
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2175
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1358
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/metadata.py:286
+- vllm_ascend/models/glm5next/cache_config.py:352
+value_type: bool
+default: None
+valid_choices: True, False, None (None = auto-determined based on platform support, model attention type, speculative config,
+  and KV connector HMA support)
+cli_example: --disable-hybrid-kv-cache-manager
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "This flag controls whether the Hybrid KV Cache Manager (HMA) is used for models\nwith heterogeneous attention\
+  \ layers (e.g. full attention + sliding window attention,\nor attention + Mamba/GDN layers).\n\nUpstream vLLM behavior (vllm/v1/core/kv_cache_utils.py:2266):\
+  \ when\ndisable_hybrid_kv_cache_manager is True, get_kv_cache_groups() calls\nunify_hybrid_kv_cache_specs(kv_cache_spec),\
+  \ forcing every attention layer to use\nthe same (largest) KV cache spec. This means sliding-window layers are allocated\n\
+  as if they were full-attention layers, wasting NPU HBM. When False (HMA enabled),\nlayers are grouped by their actual spec\
+  \ (SlidingWindowSpec, FullAttentionSpec,\nMambaSpec) and each group gets its own block table, so sliding-window layers only\n\
+  reserve window-sized KV cache — a large memory saving that translates into more\nconcurrent sequences (higher throughput)\
+  \ or longer max_model_len.\n\nAuto-resolution (vllm/config/vllm.py:1984-2020): if the flag is None, vLLM\nauto-disables\
+  \ HMA when the platform does not support hybrid KV cache, when\nchunked local attention is combined with eagle speculation,\
+  \ or when the configured\nKV connector does not support HMA. On Ascend, vllm-ascend reads this flag in\nmultiple places\
+  \ to decide whether hybrid paths are active:\n- \"vllm_ascend/platform.py:411 and patch_mamba_config.py:69 gate hybrid block-size\"\
+  \n  alignment and mamba cache-mode handling on `not disable_hybrid_kv_cache_manager`.\n- \"vllm_ascend/distributed/kv_transfer/...\
+  \ (mooncake_connector.py:2175,\"\n  mooncake_hybrid_connector.py:1358/1689, ascend_store/metadata.py:286) compute\n  `use_hybrid`\
+  \ / `_is_hma_required` from this flag; when HMA is enabled the\n  connectors take the per-group (hybrid) transfer path with\
+  \ per-group block sizes\n  and sliding-window block accounting, which is more complex and can add transfer\n  overhead but\
+  \ is required for correct multi-group KV transfer.\n- \"vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py:38\
+  \ asserts that\"\n  either HMA is disabled or all sub-connectors support HMA.\n- \"vllm_ascend/models/glm5next/cache_config.py:352\
+  \ raises if HMA is disabled for\"\n  GLM-Next models, whose paired MLA/indexer layout requires the hybrid manager.\n\nNet\
+  \ effect on Ascend: \"enabling HMA (leaving the flag False/None) reduces KV cache\"\nmemory for hybrid models and increases\
+  \ batch capacity, at the cost of more complex\nper-group scheduling and KV-transfer bookkeeping. Disabling it simplifies\
+  \ the\nmemory layout (uniform allocation) but wastes HBM on sliding-window layers and\ncan break models/connectors that\
+  \ require HMA.\n"
+usage_locations:
+- file: vllm/config/scheduler.py:164
+  context: Field definition and docstring describing uniform KV cache allocation when True.
+- file: vllm/engine/arg_utils.py:1640
+  context: CLI argument registration in SchedulerConfig argument group.
+- file: vllm/config/vllm.py:1984
+  context: 'Auto-resolution logic: disables HMA for unsupported platforms, chunked local attention + eagle, or non-HMA KV
+    connectors.'
+- file: vllm/v1/core/kv_cache_utils.py:2266
+  context: get_kv_cache_groups() calls unify_hybrid_kv_cache_specs() when disabled, forcing uniform KV cache spec.
+- file: vllm/distributed/kv_transfer/kv_connector/factory.py:55
+  context: Raises ValueError if HMA enabled but connector does not support HMA.
+- file: vllm_ascend/platform.py:411
+  context: Ascend platform gates hybrid block-size / mamba cache-mode alignment on this flag.
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:69
+  context: Ascend mamba config patch checks flag together with KV store usage.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py:2175
+  context: Mooncake connector computes use_hybrid and _is_hma_required from this flag.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_hybrid_connector.py:1358
+  context: Hybrid Mooncake connector computes use_hybrid from this flag.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/metadata.py:286
+  context: uses_hybrid_kv_cache() helper checks the flag.
+- file: vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py:38
+  context: Asserts HMA disabled or all sub-connectors support HMA.
+- file: vllm_ascend/models/glm5next/cache_config.py:352
+  context: Raises ValueError if HMA disabled for GLM-Next models.
+related_parameters:
+- name: --kv-transfer-config
+  relation: If a KV connector does not support HMA, HMA is auto-disabled or an error is raised; Ascend connectors branch on
+    this flag for hybrid transfer paths.
+- name: --enable-prefix-caching
+  relation: Ascend platform.py:415-421 adjusts mamba_block_size only when prefix caching is off and hybrid KV transfer is
+    active.
+- name: --speculative-config
+  relation: Upstream auto-disables HMA when chunked local attention is combined with eagle speculation.
+- name: --max-model-len
+  relation: Disabling HMA inflates per-layer KV cache size, reducing the max_model_len that fits in HBM.
+- name: --block-size
+  relation: Hybrid mode allows per-group block sizes; disabling HMA forces a single uniform block size.
+- name: VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE
+  relation: Env var that, when set, prevents auto-disabling HMA for chunked local attention.
+constraints:
+- If HMA is enabled (flag False/None) and the configured KV connector does not support HMA, vLLM raises a ValueError instructing
+  you to set --disable-hybrid-kv-cache-manager.
+- On Ascend, AscendMultiConnector asserts that either --disable-hybrid-kv-cache-manager is set or all sub-connectors support
+  HMA.
+- GLM-Next models require the hybrid KV cache manager; setting --disable-hybrid-kv-cache-manager raises a ValueError for these
+  models.
+- When the flag is None, vLLM auto-disables HMA on platforms that do not support hybrid KV cache, so an explicit False may
+  be overridden.
+- When chunked local attention is used with eagle speculative decoding, HMA is auto-disabled regardless of an explicit False
+  unless VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE is set.
+tuning_advice:
+  summary: Leave at default (None) to let vLLM auto-select HMA; keep HMA enabled for hybrid models to save NPU HBM, and only
+    disable it when a connector or model requires uniform KV cache.
+  suggested_values:
+  - scenario: Hybrid attention model (full + sliding window, or attention + Mamba/GDN) on Ascend with default connectors
+    value: False (or leave default None)
+    reason: HMA groups layers by spec so sliding-window layers reserve only window-sized KV cache, freeing HBM for more concurrent
+      sequences and higher throughput.
+  - scenario: KV connector that does not support HMA
+    value: 'True'
+    reason: vLLM raises ValueError if HMA is enabled with a non-HMA connector; disabling HMA is the documented fix.
+  - scenario: GLM-Next model on Ascend
+    value: False (or leave default None)
+    reason: GLM-Next's paired MLA/indexer layout requires the hybrid KV cache manager; disabling it raises a ValueError.
+  - scenario: Pure full-attention model (no hybrid layers)
+    value: None
+    reason: HMA has no effect when all layers share the same spec; leave default to avoid unnecessary configuration.
+  caveats:
+  - Disabling HMA on hybrid models inflates KV cache memory and can significantly reduce max_model_len or batch capacity on
+    NPU HBM.
+  - Enabling HMA with Ascend Mooncake/AscendStore connectors activates hybrid transfer paths with per-group block sizes; verify
+    connector compatibility.
+  - Explicit False may still be auto-overridden for chunked local attention + eagle unless VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE
+    is set.
+  quick_guide: Keep HMA enabled (default) for hybrid models to save NPU memory; set --disable-hybrid-kv-cache-manager only
+    when a connector or model requires uniform KV cache.
+analysis_date: '2026-10-27'

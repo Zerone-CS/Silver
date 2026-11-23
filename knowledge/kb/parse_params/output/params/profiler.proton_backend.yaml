@@ -1,0 +1,71 @@
+name: profiler.proton_backend
+type: nested
+category: observability
+scope: vllm
+source_file:
+- vllm/profiler/wrapper.py:396
+value_type: str
+default: null
+valid_choices: None (auto-select CUPTI) or a Proton backend name string (e.g. 'cupti', 'rocprof')
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter is only consumed by the Proton profiler wrapper
+
+  (vllm/profiler/wrapper.py:396, `self._backend = profiler_config.proton_backend`).
+
+  It selects which Proton tracing backend is used when the Proton profiler is
+
+  active. It has no effect on the normal inference hot path — it is only read
+
+  during profiler session setup. On Ascend NPU, Proton relies on Triton''s
+
+  `triton.profiler` module and CUPTI (a CUDA component); there is no Ascend
+
+  equivalent, so this parameter is effectively inert on NPU unless a
+
+  Triton/Proton backend compatible with the platform is installed. No
+
+  vllm-ascend override or usage of this parameter was found in the provided
+
+  context. Its only performance relevance is indirect: enabling the profiler
+
+  itself adds tracing overhead (latency), but the backend choice does not
+
+  change steady-state throughput or memory.
+
+  '
+usage_locations:
+- file: vllm/profiler/wrapper.py:396
+  context: ProtonProfilerWrapper reads profiler_config.proton_backend to select the Proton tracing backend
+related_parameters:
+- name: profiler.proton_mode
+  relation: Selects the Proton profiling mode; used together with proton_backend in the same wrapper
+- name: profiler.proton_hook
+  relation: Selects the Proton hook; combined with backend/mode to configure the Proton session
+- name: profiler.proton_output_format
+  relation: Determines output format of the Proton trace produced by the selected backend
+- name: profiler.proton_profiler_dir
+  relation: Output directory where the Proton backend writes traces
+constraints:
+- The Proton profiler requires a Triton installation with triton.profiler support, otherwise a RuntimeError is raised at wrapper
+  construction.
+- On Ascend NPU there is no CUPTI/Proton backend, so this parameter has no practical effect unless a compatible Triton profiler
+  backend is available.
+tuning_advice:
+  summary: Leave as None on Ascend; use CANN/msprof tooling for NPU profiling rather than Proton.
+  suggested_values:
+  - scenario: Default / Ascend NPU deployment
+    value: unset
+    reason: Proton relies on CUPTI/Triton which is not available on Ascend; leaving None avoids attempting an unsupported
+      backend.
+  - scenario: CUDA GPU reference environment with Triton profiler installed
+    value: cupti
+    reason: Explicitly selects the CUPTI backend when running on GPU for reproducible Proton traces.
+  caveats:
+  - Do not rely on Proton for Ascend performance analysis; use msprof/CANN profiling tools.
+  - Profiling overhead affects latency measurements; disable profiling for production throughput runs.
+  quick_guide: Keep None on Ascend; Proton backend selection is a GPU-only profiling concern.
+analysis_date: '2026-10-27'

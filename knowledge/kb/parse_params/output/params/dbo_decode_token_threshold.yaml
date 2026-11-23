@@ -1,0 +1,111 @@
+name: --dbo-decode-token-threshold
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1218
+- vllm/engine/arg_utils.py:521
+- vllm/config/parallel.py:227
+- vllm/config/parallel.py:1094
+- vllm/v1/worker/ubatch_utils.py:147
+value_type: int
+default: 32
+valid_choices: integer >= 0; must be >= num_ubatches when dual batch overlap is enabled
+cli_example: --dbo-decode-token-threshold 32
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only takes effect when dual batch overlap (DBO) is enabled via
+
+  --enable-dbo (ParallelConfig.enable_dbo). In vllm/v1/worker/ubatch_utils.py:147,
+
+  check_ubatch_thresholds() returns True (i.e. the batch is split into microbatches)
+
+  when the batch is a uniform decode batch and num_tokens >= dbo_decode_token_threshold.
+
+  When the threshold is met, the decode batch is sliced into num_ubatches microbatches
+
+  (derived from ubatch_size) so that communication (all-to-all / all-reduce) of one
+
+  microbatch can overlap with the compute of the other, hiding collective latency.
+
+  When the token count is below the threshold, the batch runs as a single batch and no
+
+  overlap occurs. Thus the parameter controls the crossover point at which DBO''s
+
+  overlap benefit is applied: "too high a threshold means small decode batches never"
+
+  get overlapped (lost latency-hiding opportunity), too low a threshold means tiny
+
+  batches get split into microbatches that are too small to amortize the extra
+
+  microbatch scheduling/sync overhead, potentially hurting throughput.
+
+  On Ascend NPU, DBO overlap is especially valuable because HCCL collective latency
+
+  (all-to-all for MoE EP, all-reduce for TP/DP) is relatively high; the threshold
+
+  determines whether decode steps can hide that HCCL latency behind compute.
+
+  Note: "no vllm-ascend override of this parameter was found in the provided context;"
+
+  the behavior is inherited from upstream vLLM. The parameter is inert unless
+
+  --enable-dbo is set.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:227
+  context: Field definition with default 32 and ge=0 constraint; docstring describes microbatching trigger for decode-only
+    batches.
+- file: vllm/config/parallel.py:1094
+  context: 'Validation: when use_ubatching, min(dbo_decode_token_threshold, dbo_prefill_token_threshold) must be >= num_ubatches,
+    else ValueError.'
+- file: vllm/v1/worker/ubatch_utils.py:147
+  context: check_ubatch_thresholds() compares num_tokens against this threshold for uniform decode batches to decide microbatching.
+- file: vllm/engine/arg_utils.py:1218
+  context: CLI argument registration in the parallel argument group.
+related_parameters:
+- name: --enable-dbo
+  relation: Master switch; this threshold has no effect unless --enable-dbo is enabled.
+- name: --ubatch-size
+  relation: Determines num_ubatches; the threshold must be >= num_ubatches when DBO is active.
+- name: --dbo-prefill-token-threshold
+  relation: Sibling threshold for prefill-containing batches; both are validated together against num_ubatches.
+constraints:
+- The value must be a non-negative integer (Field ge=0).
+- When dual batch overlap is enabled, dbo_decode_token_threshold must be at least the number of microbatches (num_ubatches),
+  otherwise a ValueError is raised.
+- The parameter has no effect unless --enable-dbo is enabled.
+tuning_advice:
+  summary: 'Tune this threshold together with --enable-dbo and --ubatch-size so that decode
+
+    batches large enough to benefit from HCCL/compute overlap are split, while small
+
+    batches stay single-batch to avoid microbatch overhead.
+
+    '
+  suggested_values:
+  - scenario: MoE model with expert parallelism on Ascend, high-concurrency decode (large decode batches)
+    value: 32
+    reason: Default 32 lets typical decode batches (>=32 tokens) be split into microbatches, hiding HCCL all-to-all latency
+      behind compute.
+  - scenario: Low-concurrency / small-batch decode where batches rarely exceed a few tokens
+    value: 16
+    reason: Lowering the threshold allows smaller decode batches to still benefit from overlap, but must remain >= num_ubatches.
+  - scenario: Overhead-sensitive workloads where microbatch sync cost dominates
+    value: 64
+    reason: Raising the threshold keeps small batches single-batch, avoiding microbatch scheduling/sync overhead at the cost
+      of less overlap.
+  caveats:
+  - No effect unless --enable-dbo is set; verify DBO is actually active before tuning.
+  - Must be >= num_ubatches (derived from --ubatch-size) or startup raises ValueError.
+  - Setting the threshold too low splits tiny decode batches into microbatches too small to amortize sync overhead, which
+    can reduce throughput.
+  - On Ascend, the benefit depends on HCCL collective latency; measure end-to-end latency with and without DBO rather than
+    assuming overlap helps.
+  quick_guide: Keep near default 32 when DBO is enabled; lower it for small-batch decode overlap, raise it if microbatch overhead
+    hurts, always >= num_ubatches.
+analysis_date: '2026-10-27'

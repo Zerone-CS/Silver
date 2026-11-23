@@ -1,0 +1,66 @@
+name: VLLM_ASCEND_ENABLE_MLP_OPTIMIZE
+type: env
+category: parallelism
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2001
+value_type: bool
+default: false
+valid_choices: 'boolean-like string: ''0''/''1'' (unset means disabled)'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_ASCEND_ENABLE_MLP_OPTIMIZE is a vllm-ascend-only environment variable (introduced in
+
+  PR #2120, documented in release_notes.md:2001). It controls whether an MLP optimization is
+
+  applied when tensor parallelism is enabled. Per the release note, the feature "provides better
+
+  performance in eager mode" — i.e. it targets the non-graph (eager) execution path where the
+
+  MLP forward pass under TP incurs extra communication/reshape overhead. Enabling it reduces
+
+  that overhead, improving per-token latency and throughput in eager mode. Because the exact
+
+  implementation is not present in the provided source context, the precise code path cannot be
+
+  cited; the mechanism is inferred from the documented description. It has no effect on the
+
+  upstream vLLM side (vLLM does not define this variable).
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2001
+  context: Release note documenting the addition of VLLM_ASCEND_ENABLE_MLP_OPTIMIZE to enable MLP optimization when tensor
+    parallel is enabled, beneficial in eager mode.
+related_parameters:
+- name: --tensor-parallel-size
+  relation: The optimization only applies when tensor parallelism is enabled (TP > 1).
+- name: compilation_config.cudagraph_mode / torchair graph mode
+  relation: Documented benefit is specific to eager mode; graph/torchair modes may not benefit or may already fuse this.
+constraints:
+- The optimization only takes effect when tensor parallelism is enabled (tensor-parallel-size > 1).
+- The documented performance benefit applies to eager mode; behavior under graph capture (torchair/CUDA-graph-like) modes
+  is not guaranteed to improve.
+tuning_advice:
+  summary: Enable VLLM_ASCEND_ENABLE_MLP_OPTIMIZE when running tensor-parallel inference in eager mode to reduce MLP overhead;
+    benchmark against graph modes before adopting.
+  suggested_values:
+  - scenario: Tensor-parallel (TP > 1) inference running in eager mode
+    value: '1'
+    reason: Documented to provide better performance in eager mode when TP is enabled.
+  - scenario: Running with torchair graph mode or ACL graph capture
+    value: '0'
+    reason: The documented benefit is eager-mode specific; graph modes may already fuse the MLP, so enabling may not help
+      and should be benchmarked.
+  - scenario: Single-NPU (TP = 1) deployment
+    value: '0'
+    reason: The optimization targets tensor-parallel MLP; with TP = 1 there is no TP communication overhead to optimize.
+  caveats:
+  - Measure latency/throughput with and without the flag on your specific model and TP size before committing.
+  - Only relevant to vllm-ascend; do not expect any effect on GPU/upstream vLLM.
+  quick_guide: Set VLLM_ASCEND_ENABLE_MLP_OPTIMIZE=1 for TP>1 eager-mode runs; leave off for graph modes or TP=1.
+analysis_date: '2026-10-27'

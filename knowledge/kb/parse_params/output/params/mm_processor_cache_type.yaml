@@ -1,0 +1,95 @@
+name: --mm-processor-cache-type
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1385
+- vllm/engine/arg_utils.py:597
+- vllm/config/multimodal.py:154
+- vllm/multimodal/registry.py:307
+- vllm/v1/worker/worker_base.py:323
+value_type: str
+default: lru
+valid_choices:
+- lru
+- shm
+cli_example: --mm-processor-cache-type shm
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter selects the multi-modal preprocessor cache implementation used to avoid
+
+  re-processing identical image/video inputs. In vllm/multimodal/registry.py:307
+
+  (_get_cache_type), the value is returned only when IPC caching is supported
+
+  (api_process_count == 1 and (data_parallel_size == 1 or data_parallel_external_lb));
+
+  otherwise it falls back to "processor_only". processor_cache_from_config then maps
+
+  "lru" -> MultiModalProcessorSenderCache (mirrored LRU cache) and "shm" ->
+
+  ShmObjectStoreSenderCache (shared-memory FIFO cache). The choice affects how cached
+
+  preprocessed tensors are transported between the API/frontend process and the engine
+
+  core worker: "\"shm\" uses shared memory (zero-copy-ish, avoids pickling large tensors"
+
+  across process boundaries) while "lru" mirrors the cache in each process. On Ascend NPU
+
+  this is host-side (CPU) preprocessing/caching logic and does not touch NPU kernels,
+
+  HCCL, or CANN compilation; the effect is limited to CPU overhead and host memory for
+
+  multimodal workloads. It only matters when mm_processor_cache_gb > 0 and the model is
+
+  multimodal. No vllm-ascend override of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1385
+  context: Registers the --mm-processor-cache-type CLI flag under the MultiModalConfig argument group.
+- file: vllm/config/multimodal.py:154
+  context: Defines mm_processor_cache_type field with default 'lru' and docstring describing shm/lru semantics.
+- file: vllm/multimodal/registry.py:307
+  context: _get_cache_type returns the configured cache type (or 'processor_only' fallback) to select the cache implementation.
+- file: vllm/v1/worker/worker_base.py:323
+  context: Raises ValueError if mm_processor_cache_type == 'shm' but shared_worker_lock is missing from the executor.
+related_parameters:
+- name: --mm-processor-cache-gb
+  relation: Cache is disabled entirely when this is 0; the cache type only takes effect when the cache is enabled.
+- name: --mm-shm-cache-max-object-size-mb
+  relation: Only effective when --mm-processor-cache-type is 'shm'; limits per-object size in the shared memory cache.
+- name: --data-parallel-size
+  relation: IPC caching (and thus the shm/lru distinction) is only used when data_parallel_size == 1 or data_parallel_external_lb
+    is set; otherwise falls back to processor_only.
+- name: --api-server-count
+  relation: IPC caching requires api_process_count == 1; multiple API processes disable the shm/lru cache selection.
+constraints:
+- The value must be one of 'lru' or 'shm'; any other value raises ValueError in processor_cache_from_config.
+- Setting --mm-processor-cache-type shm requires the executor to provide a shared_worker_lock, otherwise a ValueError is raised
+  during worker initialization.
+- The shm/lru cache selection only takes effect when --mm-processor-cache-gb is greater than 0 and the model supports multimodal
+  inputs.
+- The shm/lru cache selection is only used when there is a single API process and data_parallel_size is 1 or data_parallel_external_lb
+  is enabled; otherwise it falls back to processor_only.
+tuning_advice:
+  summary: Leave at the default 'lru' unless you have a single-process multimodal deployment with large repeated inputs where
+    shared-memory transport reduces host-side copy overhead.
+  suggested_values:
+  - scenario: Default multimodal serving, including data-parallel or multi-API-process deployments
+    value: lru
+    reason: Default mirrored LRU cache works in all configurations; shm/lru selection is bypassed (processor_only) when IPC
+      caching is not supported anyway.
+  - scenario: Single API process, data_parallel_size=1, large repeated images/videos, host-side preprocessing is a bottleneck
+    value: shm
+    reason: Shared-memory FIFO cache avoids copying large preprocessed tensors between processes, reducing CPU overhead and
+      latency for repeated multimodal inputs.
+  caveats:
+  - Only relevant for multimodal models with --mm-processor-cache-gb > 0; no effect on text-only models.
+  - The shm path requires the executor to provide shared_worker_lock; verify your deployment path supports it before enabling.
+  - On Ascend NPU this is a host-side optimization only; do not expect NPU throughput gains from changing it.
+  quick_guide: Keep 'lru' by default; use 'shm' only for single-process multimodal workloads with large repeated inputs.
+analysis_date: '2026-10-27'

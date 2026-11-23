@@ -1,0 +1,111 @@
+name: kv_transfer.kv_connector
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/kv_transfer.py:21
+- vllm/config/vllm.py:1053
+- vllm/config/vllm.py:1099
+- vllm_ascend/ascend_config.py:86
+- vllm_ascend/patch/platform/patch_mamba_config.py:49
+- vllm_ascend/ascend_forward_context.py:47
+- vllm_ascend/distributed/kv_transfer/__init__.py:18
+value_type: str
+default: null
+valid_choices: Any registered KVConnectorFactory name; Ascend-relevant values include AscendStoreConnector, MooncakeConnectorV1,
+  MooncakeConnectorV2, MultiConnector, OffloadingConnector, DecodeBenchConnector, LMCacheMPConnector, SimpleCPUOffloadConnector
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "kv_connector selects which KV transfer connector implementation is instantiated by\nKVConnectorFactory (vllm/distributed/kv_transfer/kv_connector/factory.py)\
+  \ and drives the\nentire KV cache movement path between vLLM instances (PD disaggregation, KV pool/offload,\nmulti-connector\
+  \ composition). On Ascend, vllm-ascend actively rewrites the connector\nregistry in vllm_ascend/distributed/kv_transfer/__init__.py:register_connector():\n\
+  - \"It pops \\\"MultiConnector\\\" from KVConnectorFactory._registry and replaces it with\"\n  AscendMultiConnector (vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py),\n\
+  \  which adds DSPARK/SFA prompt handling and HMA support.\n- \"It overrides the KV offloading specs CPUOffloadingSpec ->\
+  \ NPUOffloadingSpec and\"\n  TieringOffloadingSpec -> NPUTieringOffloadingSpec so worker-side transfers use\n  torch.npu\
+  \ streams and the Ascend batched memcpy op instead of CUDA paths.\nThe chosen connector therefore determines whether KV\
+  \ transfer runs over HCCL/RDMA\n(Mooncake), AscendStore (Mooncake/Memcache backends), or NPU offload streams, which\ndirectly\
+  \ controls inter-node KV transfer latency, decode-node TTFT, and host/NPU memory\nfootprint. The connector name is also\
+  \ read in hot-path decisions:\nvllm_ascend/ascend_forward_context.py:_is_decode_only_node() treats\nkv_connector == \"DecodeBenchConnector\"\
+  \ (or kv_role == kv_consumer) as a decode-only node,\nwhich changes forward-context behavior; vllm_ascend/patch/platform/patch_mamba_config.py\n\
+  checks for \"AscendStoreConnector\" (including nested inside MultiConnector) to decide\nmamba_cache_mode alignment; vllm_ascend/ascend_config.py:KVPPConfig.validate()\
+  \ requires\nMooncakeConnectorV2 (or AscendStoreConnector) for KVPP PD disaggregation.\nUpstream vllm/config/vllm.py also\
+  \ uses kv_connector to reject incompatible allocator\nsettings (expandable_segments) and to derive offloading connectors\
+  \ from\nkv_offloading_size/kv_offloading_backend.\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/__init__.py:18
+  context: register_connector() pops MultiConnector from KVConnectorFactory._registry and overrides offloading specs with
+    NPU implementations
+- file: vllm_ascend/distributed/kv_transfer/ascend_multi_connector.py:3
+  context: AscendMultiConnector subclasses upstream MultiConnector, adds DSPARK/SFA prompt handling and HMA support
+- file: vllm_ascend/ascend_config.py:86
+  context: KVPPConfig.validate() requires kv_connector == MooncakeConnectorV2 (or AscendStoreConnector) for KVPP PD disaggregation
+- file: vllm_ascend/ascend_forward_context.py:47
+  context: _is_decode_only_node() treats DecodeBenchConnector or kv_consumer role as decode-only node
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:49
+  context: _using_kv_store() checks for AscendStoreConnector (directly or nested in MultiConnector) to align mamba_cache_mode
+- file: vllm/config/vllm.py:1053
+  context: Upstream derives kv_connector from kv_offloading_backend (OffloadingConnector / SimpleCPUOffloadConnector / LMCacheMPConnector)
+- file: vllm/config/vllm.py:1099
+  context: Upstream rejects KV connector combined with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True unless cumem allocator
+    enabled
+related_parameters:
+- name: kv_transfer.kv_role
+  relation: Determines producer/consumer/both role; decode-only detection and KVPP validation depend on it
+- name: kv_transfer.kv_connector_extra_config
+  relation: Connector-specific settings (e.g. cpu_bytes_to_use, backend, connectors list for MultiConnector)
+- name: kv_transfer.kv_connector_module_path
+  relation: Used to resolve out-of-tree connector classes by module path
+- name: cache_config.kv_offloading_size
+  relation: When set, upstream auto-selects kv_connector (OffloadingConnector/SimpleCPUOffloadConnector/LMCacheMPConnector)
+- name: cache_config.kv_offloading_backend
+  relation: Selects which offloading connector kv_connector is set to (native vs lmcache)
+- name: additional_config.enable_kvpp
+  relation: KVPP requires kv_connector == MooncakeConnectorV2 (or AscendStoreConnector) and is mutually exclusive with DCP
+- name: speculative_config.method
+  relation: KVPP with speculative decoding only supports method='mtp' or 'dspark'
+constraints:
+- When KVPP is enabled, kv_connector must be MooncakeConnectorV2 (or AscendStoreConnector); otherwise startup raises ValueError.
+- When KVPP is enabled, kv_role must not be kv_consumer on the decode-only node.
+- KVPP and decode_context_parallel_size > 1 cannot be enabled at the same time.
+- KVPP requires eager execution or cudagraph_mode == PIECEWISE.
+- KVPP only supports non-hybrid MLA models.
+- KVPP with speculative decoding only supports method='mtp' or 'dspark' and a fixed number of speculative tokens.
+- Upstream rejects any KV connector combined with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True unless enable_cumem_allocator
+  is set.
+- For CPU/NPU KV offload, kv_connector must be set to OffloadingConnector (spec_name CPUOffloadingSpec or TieringOffloadingSpec).
+tuning_advice:
+  summary: 'Choose the connector matching your deployment topology: MooncakeConnectorV1/V2 for PD disaggregation, AscendStoreConnector
+    for KV pool, OffloadingConnector for NPU-host offload, and AscendMultiConnector (via MultiConnector) to compose them.'
+  suggested_values:
+  - scenario: PD disaggregation with pipeline parallelism (CPP)
+    value: MooncakeConnectorV1
+    reason: Docs recommend MooncakeConnectorV1 for more comprehensive PP support.
+  - scenario: KVPP (KV cache pool) PD disaggregation
+    value: MooncakeConnectorV2
+    reason: KVPPConfig.validate() requires MooncakeConnectorV2 (or AscendStoreConnector) for KVPP.
+  - scenario: KV cache pool / AscendStore with Mooncake or Memcache backend
+    value: AscendStoreConnector
+    reason: Enables mamba_cache_mode alignment and is accepted by KVPP validation.
+  - scenario: CPU/host KV cache offload
+    value: OffloadingConnector
+    reason: Docs require OffloadingConnector with spec_name CPUOffloadingSpec or TieringOffloadingSpec; vllm-ascend maps these
+      to NPU implementations.
+  - scenario: Composing multiple connectors (e.g. store + offload)
+    value: MultiConnector
+    reason: vllm-ascend replaces MultiConnector with AscendMultiConnector, which adds DSPARK/SFA and HMA support.
+  caveats:
+  - vllm-ascend silently replaces the MultiConnector registry entry with AscendMultiConnector; behavior differs from upstream
+    MultiConnector.
+  - Offloading specs CPUOffloadingSpec/TieringOffloadingSpec are transparently remapped to NPU implementations using torch.npu
+    streams and Ascend batched memcpy.
+  - DecodeBenchConnector or kv_role=kv_consumer marks a node as decode-only, altering forward-context behavior.
+  - Setting kv_offloading_size auto-overrides kv_connector upstream; do not set both manually.
+  - KVPP requires non-hybrid MLA models and eager or PIECEWISE cudagraph mode.
+  quick_guide: Pick MooncakeConnectorV1/V2 for PD, AscendStoreConnector for KV pool, OffloadingConnector for offload, MultiConnector
+    to compose.
+analysis_date: '2026-10-27'

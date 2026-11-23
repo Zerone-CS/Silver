@@ -1,0 +1,82 @@
+name: VLLM_ASCEND_LLMDD_RPC_PORT
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2000
+value_type: int
+default: <computed>
+valid_choices: any valid TCP port number (0-65535)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_ASCEND_LLMDD_RPC_PORT is the renamed form of the former VLLM_LLMDD_RPC_PORT
+
+  environment variable (renamed in PR #2450, documented in release_notes.md:2000). It
+
+  configures the RPC port used by the LLM data-distribution (LLMDD) communication
+
+  mechanism in vllm-ascend. No definition or usage site was found in the provided
+
+  source context for either vllm or vllm-ascend, so the exact code path cannot be
+
+  confirmed from source. Based on the name and the surrounding release-note context
+
+  (which groups it with data-distribution / cache-sync environment variables such as
+
+  LLMDATADIST_COMM_PORT and LLMDATADIST_SYNC_CACHE_WAIT_TIME), it is a networking
+
+  configuration knob for an auxiliary RPC channel rather than a compute-path parameter.
+
+  It does not directly affect NPU compute, HCCL collective throughput, or KV-cache
+
+  memory. Its only plausible runtime effect is on connection setup latency and on
+
+  avoiding port conflicts when multiple instances run on the same host; a misconfigured
+
+  or colliding port can cause startup failures or connection retries, which is why the
+
+  impact is rated low rather than none.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2000
+  context: 'Release note stating VLLM_LLMDD_RPC_PORT was renamed to VLLM_ASCEND_LLMDD_RPC_PORT (PR #2450); no source usage
+    site available in provided context.'
+related_parameters:
+- name: VLLM_LLMDD_RPC_PORT
+  relation: Legacy name of this variable; renamed to VLLM_ASCEND_LLMDD_RPC_PORT, the old name is no longer honored.
+- name: LLMDATADIST_COMM_PORT
+  relation: 'Sibling data-distribution communication port variable that was removed (PR #2448); same networking family.'
+- name: LLMDATADIST_SYNC_CACHE_WAIT_TIME
+  relation: 'Related data-distribution cache-sync tuning variable that was removed (PR #2448).'
+constraints:
+- The value must be a valid TCP port number; an invalid or already-in-use port will prevent the LLMDD RPC channel from binding
+  and can cause startup or connection failures.
+- The legacy name VLLM_LLMDD_RPC_PORT is no longer recognized after the rename; only VLLM_ASCEND_LLMDD_RPC_PORT takes effect.
+tuning_advice:
+  summary: 'Only set VLLM_ASCEND_LLMDD_RPC_PORT when running multiple vllm-ascend instances on
+
+    the same host and the default LLMDD RPC port collides; it has negligible impact on
+
+    steady-state throughput and only affects connection setup.
+
+    '
+  suggested_values:
+  - scenario: Single instance per host (default behavior)
+    value: <unset>
+    reason: Leave unset to use the built-in default port; avoids unnecessary configuration and port-conflict risk.
+  - scenario: Multiple vllm-ascend instances co-located on one host
+    value: 29501
+    reason: Assign a distinct, non-conflicting port per instance so the LLMDD RPC channel binds successfully and avoids connection
+      retries at startup.
+  caveats:
+  - This variable was renamed from VLLM_LLMDD_RPC_PORT; setting the old name has no effect on current vllm-ascend versions.
+  - No source usage site was found in the provided context, so verify the exact default port and behavior against the installed
+    vllm-ascend version before relying on it.
+  - Changing this port does not improve NPU compute or HCCL collective performance; it only affects the auxiliary RPC/data-distribution
+    channel.
+  quick_guide: Leave unset unless you hit a port conflict across co-located instances; then set a unique port per instance.
+analysis_date: '2026-10-27'

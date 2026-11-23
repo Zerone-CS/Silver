@@ -1,0 +1,121 @@
+name: --device-ids
+type: cli
+category: hardware
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1081
+- vllm/engine/arg_utils.py:488
+- vllm/engine/arg_utils.py:1966
+- vllm_ascend/patch/platform/__init__.py:51
+- vllm_ascend/patch/__init__.py:86
+- examples/offline_data_parallel.py:128
+value_type: list[int]
+default: null
+valid_choices: Comma-separated physical device IDs (integers) or device UUIDs; must not mix integers and UUIDs; must not contain
+  duplicates
+cli_example: --device-ids "2,3,5,7"
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: '--device-ids selects which physical NPU devices a vLLM instance uses without setting
+
+  ASCEND_RT_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES. In upstream vLLM it is resolved by
+
+  ArgUtils._resolve_device_ids (vllm/engine/arg_utils.py:1966), which validates duplicates,
+
+  rejects mixed int/UUID lists, and composes with CUDA_VISIBLE_DEVICES. The help text states
+
+  the intent: "avoiding CUDA_VISIBLE_DEVICES preserves full GPU topology visibility for"
+
+  GPU-NIC affinity and DeepGEMM. On Ascend the analogous effect is that the process keeps
+
+  full visibility of all NPUs, so HCCL can build its topology (HCCS vs RoCE links) and
+
+  device-to-device affinity correctly instead of being restricted to a remapped visible set.
+
+  This directly affects collective communication efficiency (HCCL all-reduce/all-gather,
+
+  MC2/MegaMoe dispatch-combine) and therefore throughput and latency of TP/EP/DP runs.
+
+  vllm-ascend does not redefine the flag itself but patches the DP device-id resolution path:
+
+  vllm_ascend/patch/platform/patch_dp_device_ids.py (registered at
+
+  vllm_ascend/patch/platform/__init__.py:51) rewrites
+
+  vllm.v1.core.dp_utils.get_physical_gpu_ids_for_local_dp_rank so that a pre-sharded
+
+  ASCEND_RT_VISIBLE_DEVICES (one slice per DP rank) is tolerated instead of applying the
+
+  local_dp_rank * world_size offset, which otherwise raises IndexError. The Ascend example
+
+  examples/offline_data_parallel.py:128-169 builds device_ids from torch.npu.device_count()
+
+  and passes them as the LLM(device_ids=...) kwarg, showing the intended Ascend usage for
+
+  application-level data parallelism. The parameter itself does not change per-token compute;
+
+  its performance effect is indirect, via correct device placement and preserved topology
+
+  for HCCL/NIC affinity.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1081
+  context: CLI argument definition in ParallelConfig group; parses comma-separated ints or UUID strings, default None
+- file: vllm/engine/arg_utils.py:488
+  context: EngineArgs.device_ids field (list[int | str] | None) consumed when building ParallelConfig
+- file: vllm/engine/arg_utils.py:1966
+  context: _resolve_device_ids validates duplicates, rejects mixed int/UUID, maps UUIDs via device_control_id_to_physical_device_id,
+    composes with CUDA_VISIBLE_DEVICES
+- file: vllm/entrypoints/launchers/dp_supervisor.py:133
+  context: Multi-port external-LB DP supervisor assigns per-child device_ids via _build_device_ids
+- file: vllm_ascend/patch/platform/__init__.py:51
+  context: Registers patch_dp_device_ids which fixes get_physical_gpu_ids_for_local_dp_rank for sharded ASCEND_RT_VISIBLE_DEVICES
+- file: vllm_ascend/patch/__init__.py:86
+  context: 'Documents the DP device-id patch rationale (PR #45026 removed per-process device isolation)'
+- file: examples/offline_data_parallel.py:128
+  context: Ascend example builds device_ids from torch.npu.device_count() and passes device_ids to LLM()
+related_parameters:
+- name: --data-parallel-size
+  relation: device_ids is sliced per local DP rank in DP deployments; the Ascend patch fixes the interaction with sharded
+    ASCEND_RT_VISIBLE_DEVICES
+- name: --tensor-parallel-size
+  relation: Number of device IDs must be sufficient for TP x PP x DP local ranks; device selection determines which NPUs form
+    the HCCL group
+- name: --distributed-executor-backend
+  relation: Has no effect when set to ray; Ray placement groups must be used instead
+- name: ASCEND_RT_VISIBLE_DEVICES
+  relation: Alternative device-selection mechanism; --device-ids avoids remapping it, preserving full topology visibility
+- name: --data-parallel-multi-port-external-lb
+  relation: DP supervisor derives per-child device_ids from this flag
+constraints:
+- --device-ids must not contain duplicate device IDs; duplicates raise ValueError.
+- --device-ids must not mix integer IDs and UUID strings in the same list; mixing raises ValueError.
+- --device-ids has no effect when the Ray executor is used; use Ray placement groups for device selection instead.
+- The number of device IDs provided must be enough to cover all local ranks required by tensor, pipeline and local data parallelism.
+tuning_advice:
+  summary: Use --device-ids to pin an instance to specific NPUs while keeping full topology visible to HCCL, and rely on the
+    vllm-ascend DP patch when sharding ASCEND_RT_VISIBLE_DEVICES per rank.
+  suggested_values:
+  - scenario: Single-node TP/EP run on an 8-NPU Ascend node, want all devices
+    value: 0,1,2,3,4,5,6,7
+    reason: Passing all physical IDs keeps the full HCCS topology visible so HCCL can pick the best links, matching the pattern
+      in examples/offline_data_parallel.py.
+  - scenario: Co-locating multiple vLLM instances on one node
+    value: 0,1,2,3
+    reason: Pin each instance to a disjoint contiguous set of NPUs so HCCL groups stay within one interconnect domain and
+      instances do not contend for devices.
+  - scenario: Application-level data parallel with per-rank env sharding
+    value: 0,1,2,3,4,5,6,7
+    reason: The vllm-ascend patch_dp_device_ids patch tolerates a pre-sharded ASCEND_RT_VISIBLE_DEVICES; passing the full
+      device list per rank keeps resolution consistent.
+  caveats:
+  - Do not combine --device-ids with the Ray executor; it is silently ignored there.
+  - Avoid mixing integer IDs and UUIDs, and avoid duplicate IDs, or startup fails with ValueError.
+  - On Ascend, verify the chosen IDs are on the same HCCS ring; cross-ring selection degrades collective bandwidth.
+  quick_guide: Pass a comma-separated list of physical NPU IDs (e.g. --device-ids "0,1,2,3") to pin devices without remapping
+    ASCEND_RT_VISIBLE_DEVICES; not supported with Ray.
+analysis_date: '2026-10-27'

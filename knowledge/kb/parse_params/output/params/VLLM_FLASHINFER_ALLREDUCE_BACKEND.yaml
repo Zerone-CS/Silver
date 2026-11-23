@@ -1,0 +1,88 @@
+name: VLLM_FLASHINFER_ALLREDUCE_BACKEND
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1721
+- vllm/envs.py:219
+- vllm/distributed/device_communicators/flashinfer_all_reduce.py:144
+- vllm/distributed/device_communicators/flashinfer_all_reduce.py:176
+value_type: str
+default: auto
+valid_choices:
+- auto
+- trtllm
+- mnnvl
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var selects the backend used by vLLM''s FlashInfer fused all-reduce
+
+  (vllm/distributed/device_communicators/flashinfer_all_reduce.py). It is read in
+
+  _resolve_fi_ar_backend() (line 144) and consumed by get_fi_ar_workspace() (line 176)
+
+  to create the all-reduce workspace used by AllReduceFusionPass and standalone
+
+  FlashInferAllReduce. The choice affects the fused all-reduce kernel path
+
+  (trtllm vs mnnvl) which can change all-reduce latency and thus per-token latency
+
+  and throughput on multi-GPU setups.
+
+  However, this is a FlashInfer/CUDA-specific mechanism: FlashInfer''s fused all-reduce
+
+  relies on NVIDIA kernels (trtllm / NVSwitch multicast mnnvl). On Ascend NPU the
+
+  communication path is HCCL, not FlashInfer, and vllm-ascend does not reference this
+
+  env var anywhere in the provided context. Therefore on Ascend this parameter has no
+
+  runtime effect — it is effectively inert. Its performance impact on Ascend is
+
+  negligible/low (only relevant if a FlashInfer-based path were ever enabled, which it
+
+  is not on NPU).
+
+  '
+usage_locations:
+- file: vllm/envs.py:1721
+  context: Definition via env_with_choices with default 'auto' and choices auto/trtllm/mnnvl
+- file: vllm/envs.py:219
+  context: Typed declaration Literal['auto','trtllm','mnnvl'] = 'auto'
+- file: vllm/distributed/device_communicators/flashinfer_all_reduce.py:144
+  context: Read in _resolve_fi_ar_backend to pick backend; 'auto' resolves to mnnvl with trtllm fallback on single node
+- file: vllm/distributed/device_communicators/flashinfer_all_reduce.py:176
+  context: Used by get_fi_ar_workspace to create the all-reduce workspace for fused all-reduce
+related_parameters:
+- name: VLLM_ALLREDUCE_USE_FLASHINFER
+  relation: Gates whether the FlashInfer all-reduce workspace/tuned max size is used; this backend only matters when FlashInfer
+    all-reduce is active
+- name: VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE
+  relation: Controls the FlashInfer workspace buffer size used alongside the selected all-reduce backend
+constraints:
+- The value must be one of 'auto', 'trtllm', or 'mnnvl'; other values are rejected by env_with_choices.
+- The 'trtllm' backend cannot be used for multi-node all-reduce; selecting it with more than one node raises a ValueError
+  and 'mnnvl' must be used instead.
+- The 'mnnvl' backend requires NVSwitch multicast support; on single-node topologies without it, 'auto' falls back to 'trtllm'.
+tuning_advice:
+  summary: On Ascend NPU this FlashInfer/CUDA-specific all-reduce backend selector has no effect; leave it at the default
+    and rely on HCCL for communication.
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: auto
+    reason: FlashInfer fused all-reduce (trtllm/mnnvl) is an NVIDIA-specific path; vllm-ascend uses HCCL, so this env var
+      is inert on NPU and the default is safest.
+  - scenario: NVIDIA GPU multi-node deployment (reference, not Ascend)
+    value: mnnvl
+    reason: trtllm does not support multi-node all-reduce, so mnnvl is required for multi-node fused all-reduce.
+  caveats:
+  - This parameter only affects the FlashInfer fused all-reduce path; on Ascend NPU communication goes through HCCL and this
+    setting is not consulted.
+  - Setting 'trtllm' on a multi-node topology raises a ValueError; use 'mnnvl' for multi-node.
+  - The 'mnnvl' backend depends on NVSwitch multicast; without it 'auto' falls back to 'trtllm' on single node.
+  quick_guide: Leave at 'auto' on Ascend — it has no runtime effect since NPU communication uses HCCL, not FlashInfer.
+analysis_date: '2026-10-27'

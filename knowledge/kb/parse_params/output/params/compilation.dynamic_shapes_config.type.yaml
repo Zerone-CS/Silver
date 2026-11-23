@@ -1,0 +1,73 @@
+name: compilation.dynamic_shapes_config.type
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/backends.py:1013
+- vllm/compilation/backends.py:1242
+- vllm/compilation/decorators.py:524
+- vllm/compilation/wrapper.py:103
+value_type: str
+default: BACKED
+valid_choices:
+- BACKED
+- UNBACKED
+- BACKED_SIZE_OBLIVIOUS
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This field selects the DynamicShapesType used when torch.compile() traces the model.\nIt is read in several\
+  \ places:\n- \"vllm/compilation/wrapper.py:103 reads ds_type and, when evaluate_guards is enabled,\"\n  asserts ds_type\
+  \ != UNBACKED (UNBACKED adds no guards). The guard_filter_fn installed\n  here controls which guards torch.compile keeps,\
+  \ which directly affects how many\n  recompilations / guard evaluations happen at runtime.\n- \"vllm/compilation/backends.py:1242\
+  \ uses the type together with evaluate_guards to decide\"\n  whether to relax backed-size value ranges (dropping 0/1 specialization\
+  \ guards). This\n  affects guard-check overhead and the likelihood of graph recompilation when input\n  shapes vary (e.g.\
+  \ varying batch/prefill lengths).\n- \"vllm/compilation/decorators.py:524 reads ds_type to build the AOT compile cache key\"\
+  \n  factors, so changing the type invalidates the torch.compile cache and forces a fresh\n  compile (one-time latency cost).\n\
+  On Ascend NPU, vllm-ascend does not define or override this field; it inherits the\nupstream vLLM compilation config. The\
+  \ Ascend compilation path (npugraph_ex / graph\nfusion passes) consumes the compiled graph, so the dynamic-shapes type influences\
+  \ how\nmany distinct graphs are produced and thus how much of the workload can be captured\ninto NPU graphs. BACKED (default)\
+  \ is the safest and most compatible; UNBACKED can\nreduce guard overhead but risks data-dependent errors; BACKED_SIZE_OBLIVIOUS\
+  \ is\nexperimental. The impact is medium: it does not change kernel math but affects\nrecompilation frequency, guard evaluation\
+  \ cost, and cache reuse.\n"
+usage_locations:
+- file: vllm/compilation/wrapper.py:103
+  context: Reads ds_type; asserts UNBACKED is incompatible with evaluate_guards and installs guard_filter_fn.
+- file: vllm/compilation/backends.py:1242
+  context: Uses type == BACKED with evaluate_guards to relax backed-size value ranges.
+- file: vllm/compilation/decorators.py:524
+  context: Reads ds_type to compute AOT compile cache hash factors.
+- file: vllm/compilation/backends.py:1013
+  context: Serialized into compilation metadata payload for cache/debugging.
+related_parameters:
+- name: compilation.dynamic_shapes_config.evaluate_guards
+  relation: Must be false when type is UNBACKED; together they control guard filtering and range relaxation.
+- name: compilation_config.mode
+  relation: Guard filtering only applies when mode != STOCK_TORCH_COMPILE.
+- name: VLLM_USE_BYTECODE_HOOK
+  relation: evaluate_guards (and thus the type interaction) requires VLLM_USE_BYTECODE_HOOK=0.
+- name: VLLM_USE_AOT_COMPILE
+  relation: ds_type participates in AOT compile cache key; changing it invalidates the cache.
+constraints:
+- UNBACKED cannot be combined with evaluate_guards=true; the code asserts 'UNBACKED dynamic shapes do not add guards'.
+- evaluate_guards (which interacts with this type) requires VLLM_USE_BYTECODE_HOOK=0.
+- Guard filtering driven by this type only takes effect when compilation mode is not STOCK_TORCH_COMPILE.
+tuning_advice:
+  summary: Keep the default BACKED for Ascend deployments; only experiment with other types after validating correctness and
+    measuring recompilation.
+  suggested_values:
+  - scenario: Default production deployment on Ascend NPU
+    value: BACKED
+    reason: Safest, most compatible with torch.compile and the Ascend npugraph_ex path; avoids data-dependent errors.
+  - scenario: Stable input shapes with guard overhead concerns and validated model
+    value: UNBACKED
+    reason: Removes guards, reducing guard-evaluation overhead, but requires evaluate_guards=false and thorough correctness
+      validation.
+  caveats:
+  - Do not set UNBACKED together with evaluate_guards=true; it will assert.
+  - Expect a recompile (cache invalidation) whenever this value changes.
+  quick_guide: Leave as BACKED unless you have validated UNBACKED correctness and measured a guard-overhead win.
+analysis_date: '2026-10-27'

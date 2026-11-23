@@ -1,0 +1,91 @@
+name: EXPERT_MAP_RECORD
+type: env
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:327
+- vllm_ascend/ascend_config.py:328
+- vllm_ascend/patch/platform/__init__.py:40
+- vllm_ascend/platform.py:977
+value_type: str
+default: 'false'
+valid_choices: 'boolean-like string: ''true'' enables; any other value (including ''1'') is treated as false in the ascend_config
+  assertion, while platform.py accepts ''true'' or ''1'''
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: "EXPERT_MAP_RECORD is a Model Runner V1 (MRv1) safety-guard environment variable for the\nlegacy EPLB (Expert\
+  \ Parallelism Load Balancer) path in vllm-ascend. It does not itself\nchange kernel behavior; instead it gates two things:\n\
+  \n1. In vllm_ascend/ascend_config.py:324-328, when `additional_config.eplb_config.dynamic_eplb`\n   is true (which is also\
+  \ force-set to true when `expert_map_record_path` is provided, see\n   line 310-311), an assertion requires either `DYNAMIC_EPLB`\
+  \ in (\"true\",\"1\") or\n   `EXPERT_MAP_RECORD == \"true\"`. If neither is set, config validation raises and the engine\n\
+  \   fails to start. So EXPERT_MAP_RECORD is one of two ways to unlock the dynamic/recording\n   EPLB code path.\n\n2. In\
+  \ vllm_ascend/patch/platform/__init__.py:40, the presence of `DYNAMIC_EPLB=true` OR\n   `EXPERT_MAP_RECORD=true` triggers\
+  \ import of `patch_multiproc_executor`. This monkey-patch\n   alters the multiprocess executor so that expert-map recording\
+  \ / dynamic EPLB data can be\n   collected and propagated across workers. Without it, the recording path is not wired up.\n\
+  \nPerformance effect: \"enabling EXPERT_MAP_RECORD (together with `expert_map_record_path`)\"\nturns on the recording mode\
+  \ of legacy EPLB. Recording collects per-expert token heat over\n`expert_heat_collection_interval` steps and writes an expert\
+  \ map JSON. This adds per-step\nbookkeeping overhead (heat collection, periodic aggregation) and, when combined with\ndynamic_eplb,\
+  \ triggers periodic expert rearrangement (`algorithm_execution_interval`),\nwhich causes expert-weight movement across ranks\
+  \ (HCCL communication) and transient\nthroughput dips. The resulting balanced expert placement improves MoE throughput and\n\
+  reduces tail latency on imbalanced workloads, so the net effect is workload-dependent:\nmedium impact — indirect throughput/latency\
+  \ effect via load balancing, plus recording\noverhead.\n\nOn Model Runner V2, EXPERT_MAP_RECORD is explicitly rejected (platform.py:976-982\
+  \ raises\nValueError), so this variable has no effect there and must be unset.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:327
+  context: 'Assertion in EplbConfig._validate_config: dynamic_eplb requires DYNAMIC_EPLB or EXPERT_MAP_RECORD to be true'
+- file: vllm_ascend/ascend_config.py:310
+  context: Setting expert_map_record_path forces dynamic_eplb=True, which then requires the env guard
+- file: vllm_ascend/patch/platform/__init__.py:40
+  context: Conditionally imports patch_multiproc_executor when DYNAMIC_EPLB or EXPERT_MAP_RECORD is enabled
+- file: vllm_ascend/platform.py:977
+  context: MRv2 validation rejects EXPERT_MAP_RECORD (and DYNAMIC_EPLB) as V1-only controls
+related_parameters:
+- name: DYNAMIC_EPLB
+  relation: Alternative guard env var; either DYNAMIC_EPLB=true or EXPERT_MAP_RECORD=true satisfies the assertion
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: When true, requires EXPERT_MAP_RECORD or DYNAMIC_EPLB to be set
+- name: additional_config.eplb_config.expert_map_record_path
+  relation: Recording output path; setting it forces dynamic_eplb=True and thus requires the env guard
+- name: additional_config.eplb_config.expert_map_path
+  relation: Static EPLB map loading; does NOT require any env variable
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: Controls how often heat is collected during recording
+- name: additional_config.eplb_config.algorithm_execution_interval
+  relation: Controls how often expert rearrangement runs in dynamic mode
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: When enabled (MRv2), EXPERT_MAP_RECORD is rejected and must be unset
+constraints:
+- EXPERT_MAP_RECORD must be exactly the string 'true' to satisfy the ascend_config assertion (values like '1' or 'True' do
+  not pass the == 'true' check there).
+- If additional_config.eplb_config.dynamic_eplb is true (or expert_map_record_path is set), either DYNAMIC_EPLB or EXPERT_MAP_RECORD
+  must be enabled or startup fails with an assertion error.
+- EXPERT_MAP_RECORD is a Model Runner V1 control; when VLLM_USE_V2_MODEL_RUNNER is enabled it must be unset or platform validation
+  raises a ValueError.
+- When using expert_map_record_path, the path must end in .json or a TypeError is raised.
+tuning_advice:
+  summary: Use EXPERT_MAP_RECORD=true only in MRv1 recording mode to generate an expert map; for steady-state serving prefer
+    static EPLB or MRv2 --enable-eplb.
+  suggested_values:
+  - scenario: MRv1 recording mode to generate an expert map for later static EPLB
+    value: 'true'
+    reason: Satisfies the dynamic_eplb assertion and triggers patch_multiproc_executor so heat data is collected and written
+      to expert_map_record_path.
+  - scenario: MRv1 dynamic EPLB (online balancing)
+    value: 'false'
+    reason: Use DYNAMIC_EPLB=true instead as the guard; EXPERT_MAP_RECORD is meant for recording, not online balancing.
+  - scenario: MRv1 static EPLB (load pre-recorded map)
+    value: 'false'
+    reason: Static EPLB via expert_map_path requires no env variable and avoids recording overhead.
+  - scenario: Model Runner V2 (VLLM_USE_V2_MODEL_RUNNER=1)
+    value: unset
+    reason: MRv2 rejects EXPERT_MAP_RECORD; use --enable-eplb with upstream EPLBConfig fields instead.
+  caveats:
+  - Set the literal string 'true' (not '1') to satisfy the ascend_config.py == 'true' check.
+  - Recording is a profiling/generation step; do not leave it enabled in production serving.
+  - Pair with expert_heat_collection_interval and algorithm_execution_interval tuned to your workload to limit overhead.
+  quick_guide: export EXPERT_MAP_RECORD=true only for MRv1 expert-map recording; otherwise unset it.
+analysis_date: '2026-10-27'

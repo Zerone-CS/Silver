@@ -1,0 +1,64 @@
+name: VLLM_ASCEND_ENABLE_PREFETCH_MLP
+type: env
+category: model
+scope: vllm-ascend
+source_file:
+- 'vllm_ascend/envs.py: <unknown>'
+value_type: bool
+default: false
+valid_choices: 0 or 1 (boolean-like env flag)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'VLLM_ASCEND_ENABLE_PREFETCH_MLP is a vllm-ascend-specific environment flag that enables
+
+  a prefetch optimization for the MLP (dense) path. Per the release notes, it was introduced
+
+  to improve the performance of Qwen3 dense models (PR #2816) by prefetching MLP weights/inputs
+
+  ahead of the compute stage, overlapping memory movement with computation on the Ascend NPU.
+
+  It is also documented as the recommended replacement for the removed
+
+  VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE flag, since the two were always enabled together (PR #5272).
+
+  The exact definition/usage site was not present in the provided source context, so the
+
+  mechanism is inferred from documentation: "enabling it turns on an MLP prefetch code path"
+
+  that reduces stalls in the dense MLP layers, improving latency/throughput for dense models.
+
+  It has no effect on MoE-only paths and is not defined in upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm_ascend/envs.py
+  context: Environment variable definition (not present in provided context; inferred from docs)
+- file: vllm_ascend/ops/linear.py (inferred)
+  context: MLP prefetch code path gated by this flag (inferred from release notes)
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE
+  relation: Removed; VLLM_ASCEND_ENABLE_PREFETCH_MLP is its recommended replacement (always enabled together)
+- name: VLLM_ASCEND_ENABLE_FLASHCOMM
+  relation: Complementary dense-model optimization; docs pair dense optimize + flashcomm_v1 for Qwen3 dense speedup
+constraints:
+- This flag only affects dense (non-MoE) MLP paths; enabling it on MoE-only models provides no benefit.
+- VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE has been removed and must not be used; use VLLM_ASCEND_ENABLE_PREFETCH_MLP instead.
+tuning_advice:
+  summary: Enable VLLM_ASCEND_ENABLE_PREFETCH_MLP=1 for dense models (e.g. Qwen3 dense) to overlap MLP memory movement with
+    compute and reduce latency.
+  suggested_values:
+  - scenario: Serving dense models such as Qwen3 dense on Ascend NPU
+    value: 1
+    reason: 'Release notes state the prefetch feature improves Qwen3 dense model performance (PR #2816).'
+  - scenario: MoE-only models or when memory headroom is tight
+    value: 0
+    reason: Prefetch only benefits dense MLP paths and may add memory pressure; leave disabled if no dense benefit.
+  caveats:
+  - Pair with VLLM_ASCEND_ENABLE_FLASHCOMM=1 for the full dense-model speedup documented for Qwen3.
+  - Do not use the removed VLLM_ASCEND_ENABLE_DENSE_OPTIMIZE flag; this flag replaces it.
+  quick_guide: Set VLLM_ASCEND_ENABLE_PREFETCH_MLP=1 for dense models to enable MLP prefetch; leave 0 for MoE-only workloads.
+analysis_date: '2026-10-27'

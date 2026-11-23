@@ -1,0 +1,93 @@
+name: ASCEND_LOCAL_COMM_RES_PATH
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- docs/source/tutorials/models/MiniMax-M3.md:1065
+value_type: str
+default: <unset>
+valid_choices: Any filesystem directory path (e.g. /etc/hixlep/) that contains the local communication resource configuration
+  for the 950PR/DT Device UB path
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ASCEND_LOCAL_COMM_RES_PATH is not defined or read anywhere in the vllm or vllm-ascend
+
+  Python source; it is a CANN/HCCL-side environment variable consumed by the Ascend
+
+  communication runtime (HIXLEP / local comm resource layer). It is documented only in the
+
+  MiniMax-M3 tutorial (docs/source/tutorials/models/MiniMax-M3.md:1065) as part of the
+
+  required export set for the 950PR/DT "Device UB" pooling path, together with
+
+  ASCEND_LOCAL_COMM_RES=''{"version":"1.3"}'' and unsetting ASCEND_GLOBAL_RESOURCE_CONFIG.
+
+  Because it selects the local communication resource configuration used by the HCCL/UBOE
+
+  transport, it indirectly affects inter-device communication efficiency (KV-cache pooling /
+
+  PD-disaggregated transfer latency and throughput) rather than any vLLM scheduling or
+
+  memory-allocation logic. If the path is wrong or the file is missing, the pooling/transfer
+
+  path may fail to initialize or fall back to a slower transport, degrading latency and
+
+  throughput. It does not change model compute, batching, or NPU memory footprint directly.
+
+  '
+usage_locations:
+- file: docs/source/tutorials/models/MiniMax-M3.md:1065
+  context: 'Documented as a required export for 950PR/DT Device UB pooling: export ASCEND_LOCAL_COMM_RES_PATH=/etc/hixlep/
+    alongside ASCEND_LOCAL_COMM_RES and unset ASCEND_GLOBAL_RESOURCE_CONFIG'
+related_parameters:
+- name: ASCEND_LOCAL_COMM_RES
+  relation: Must be set together (e.g. '{"version":"1.3"}') when using the 950PR/DT Device UB path; the path points to the
+    resource config consumed by this setting
+- name: ASCEND_GLOBAL_RESOURCE_CONFIG
+  relation: Mutually exclusive with this path for the Device UB mode — must be unset when ASCEND_LOCAL_COMM_RES_PATH is used;
+    use it instead for the UBOE path
+- name: ASCEND_ENABLE_USE_FABRIC_MEM
+  relation: Alternative pooling export for 800I/T A3 HCCS path; not combined with ASCEND_LOCAL_COMM_RES_PATH
+- name: HCCL_INTRA_ROCE_ENABLE
+  relation: Alternative RoCE-path export for A2/A3; not used together with the Device UB local comm resource path
+constraints:
+- The directory given by ASCEND_LOCAL_COMM_RES_PATH must exist and be mounted inside the container (e.g. mount /etc/hixlep/)
+  or the communication resource layer cannot initialize.
+- ASCEND_LOCAL_COMM_RES_PATH is only applicable to the 950PR/DT Device UB pooling path; for UBOE use ASCEND_GLOBAL_RESOURCE_CONFIG
+  instead.
+- ASCEND_GLOBAL_RESOURCE_CONFIG must be unset when ASCEND_LOCAL_COMM_RES_PATH is used.
+- Requires HDK >= 25.6 with mooncake >= v0.3.11 and CANN >= 9.1.0 for the 950PR/DT Device UB path.
+tuning_advice:
+  summary: 'Set ASCEND_LOCAL_COMM_RES_PATH only when deploying KV-cache pooling / PD disaggregation
+
+    on 950PR/DT hardware via the Device UB path, pointing it at a mounted directory that holds
+
+    the local comm resource config, and pair it with ASCEND_LOCAL_COMM_RES while unsetting
+
+    ASCEND_GLOBAL_RESOURCE_CONFIG.
+
+    '
+  suggested_values:
+  - scenario: 950PR/DT Device UB pooling path (recommended default location)
+    value: /etc/hixlep/
+    reason: Documented value in the MiniMax-M3 tutorial; the directory must be mounted into the container and used together
+      with ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'.
+  - scenario: 800I/T A3 HCCS or A2/A3 RoCE pooling
+    value: <unset>
+    reason: These paths use ASCEND_ENABLE_USE_FABRIC_MEM or HCCL_INTRA_ROCE_ENABLE instead; ASCEND_LOCAL_COMM_RES_PATH is
+      not part of their required export set.
+  caveats:
+  - This variable is consumed by the CANN/HCCL communication runtime, not by vLLM or vllm-ascend Python code, so misconfiguration
+    surfaces as transport init failures or silent fallback to a slower path rather than a Python error.
+  - Forgetting to unset ASCEND_GLOBAL_RESOURCE_CONFIG when using the Device UB path can cause conflicting resource configuration
+    and degraded or failed transfers.
+  - The directory must be bind-mounted into the container; a path that exists on the host but not in the container will break
+    pooling initialization.
+  - Only relevant to KV-cache pooling / PD-disaggregated deployments; it has no effect on single-node non-pooling inference.
+  quick_guide: 'On 950PR/DT Device UB pooling: export ASCEND_LOCAL_COMM_RES_PATH=/etc/hixlep/ with ASCEND_LOCAL_COMM_RES set
+    and ASCEND_GLOBAL_RESOURCE_CONFIG unset; otherwise leave it unset.'
+analysis_date: '2026-10-27'

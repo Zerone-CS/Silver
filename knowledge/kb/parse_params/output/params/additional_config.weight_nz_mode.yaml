@@ -1,0 +1,122 @@
+name: additional_config.weight_nz_mode
+type: nested
+category: quantization
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:618
+- vllm_ascend/ascend_config.py:661
+- vllm_ascend/ascend_config.py:381
+- vllm_ascend/utils.py:375
+- vllm_ascend/utils.py:391
+- vllm_ascend/model_executor/offloader/prefetch.py:136
+value_type: int
+default: 1
+valid_choices:
+- 0
+- 1
+- 2
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'weight_nz_mode controls whether model weights are converted to the Ascend FRACTAL_NZ
+
+  (fractal) memory layout via torch_npu.npu_format_cast(..., ACL_FORMAT_FRACTAL_NZ) in
+
+  vllm_ascend/utils.py (maybe_trans_nz / _should_trans_nz). The conversion policy is:
+
+  mode 0 disables NZ entirely; mode 1 (default) converts only quantized/other supported
+
+  dtypes; mode 2 additionally converts BF16/FP16 weights when supported. FP32 and meta
+
+  tensors are never converted, and on 310P hardware NZ conversion is always applied for
+
+  supported weights regardless of the mode (see the NZ conversion policy comment at
+
+  vllm_ascend/utils.py:389-392).
+
+  Mechanism: "NZ is the native cube-friendly layout for Da Vinci NPU matrix units. Running"
+
+  quantized matmul/MoE weights in NZ avoids per-op ND->NZ format casts at execution time,
+
+  reducing latency and improving throughput for quantized models. For BF16/FP16 weights,
+
+  mode 2 can unlock faster kernels but costs extra device memory (NZ layout is padded) and
+
+  conversion time at load. Mode 0 keeps weights in ND, which is required for some
+
+  compatibility paths (e.g. CPU weight offload with ACL graph capture, RL training-inference
+
+  consistency) but may be slower for quantized inference.
+
+  Interaction with CPU weight offload: "prefetch.py raises a RuntimeError when NZ static"
+
+  buffers would meet ACL graph capture, because the ND->NZ conversion is aclop-only on
+
+  current CANN/torch_npu and aclop ops cannot run during NPU graph capture. In that case
+
+  the user must either set enforce_eager=True or set weight_nz_mode=0.
+
+  Interaction with RL: "rl_config.apply() forcibly overrides weight_nz_mode to 0 when"
+
+  rl_config.enabled is true, logging a warning if the user set a non-zero value.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:618
+  context: 'Field definition weight_nz_mode: int = 1 on AscendConfig.'
+- file: vllm_ascend/ascend_config.py:661
+  context: After-validator rejects values not in (0, 1, 2) with ValueError.
+- file: vllm_ascend/ascend_config.py:381
+  context: rl_config.apply() forces weight_nz_mode=0 when RL mode is enabled.
+- file: vllm_ascend/utils.py:375
+  context: _should_trans_nz reads config.weight_nz_mode to decide NZ conversion per dtype.
+- file: vllm_ascend/utils.py:391
+  context: NZ conversion policy comment (310P always, non-310P follows weight_nz_mode, FP32/meta never).
+- file: vllm_ascend/model_executor/offloader/prefetch.py:136
+  context: Error message instructing users to set weight_nz_mode=0 when NZ buffers conflict with ACL graph capture.
+related_parameters:
+- name: rl_config.enabled
+  relation: When enabled, forcibly overrides weight_nz_mode to 0 regardless of user setting.
+- name: enforce_eager
+  relation: CPU weight offload with NZ buffers requires enforce_eager=True or weight_nz_mode=0.
+- name: enable_kv_nz
+  relation: Separate switch for KV cache NZ layout (MLA models); independent of weight NZ.
+- name: offload_backend
+  relation: Prefetch offload backend is incompatible with NZ static buffers under ACL graph capture.
+constraints:
+- weight_nz_mode must be one of 0, 1, or 2; any other value raises a ValueError at config initialization.
+- FP32 weights and meta tensors are never converted to NZ regardless of weight_nz_mode.
+- On 310P hardware, supported weights are always converted to FRACTAL_NZ and weight_nz_mode is effectively ignored.
+- When rl_config.enabled is true, weight_nz_mode is forced to 0 and any user-provided non-zero value is overridden with a
+  warning.
+- CPU weight offload (prefetch backend) with NZ static buffers cannot be combined with ACL graph capture; the engine aborts
+  unless enforce_eager=True or weight_nz_mode=0.
+tuning_advice:
+  summary: Keep the default mode 1 for quantized inference; use mode 2 only for BF16/FP16 models that benefit from NZ kernels
+    and have memory headroom; use mode 0 for RL, CPU offload with graph capture, or debugging.
+  suggested_values:
+  - scenario: Quantized (W8A8/INT8/FP8) inference on A2/A3, default deployment
+    value: 1
+    reason: Converts quantized weights to NZ so matmul/MoE ops avoid runtime ND->NZ casts, improving throughput without extra
+      BF16/FP16 memory cost.
+  - scenario: BF16/FP16 model with memory headroom and NZ-friendly kernels
+    value: 2
+    reason: Also converts BF16/FP16 weights to NZ, which can unlock faster cube kernels at the cost of extra padded device
+      memory and load-time conversion.
+  - scenario: RL training-inference consistency or CPU weight offload with ACL graph capture
+    value: 0
+    reason: RL mode forces 0 anyway, and prefetch offload with NZ buffers aborts under graph capture unless NZ is disabled
+      or enforce_eager is set.
+  - scenario: Debugging precision issues or comparing against ND reference
+    value: 0
+    reason: Disabling NZ keeps weights in ND layout, isolating layout-conversion effects from other precision issues.
+  caveats:
+  - Setting mode 2 on memory-constrained deployments may cause OOM due to NZ padding overhead.
+  - On 310P hardware the setting is effectively ignored because NZ is always applied for supported weights.
+  - The legacy VLLM_ASCEND_ENABLE_NZ env var no longer works; migrate to additional_config.weight_nz_mode.
+  quick_guide: Use weight_nz_mode=1 (default) for quantized models, 2 for BF16/FP16 with memory headroom, 0 for RL/offload/debug.
+analysis_date: '2026-10-27'

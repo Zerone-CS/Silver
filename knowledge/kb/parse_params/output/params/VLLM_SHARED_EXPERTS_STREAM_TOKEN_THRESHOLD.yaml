@@ -1,0 +1,91 @@
+name: VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:2013
+- vllm/envs.py:297
+- vllm/model_executor/layers/fused_moe/runner/shared_experts.py:114
+- vllm/models/inkling/amd/moe.py:543
+- vllm/models/inkling/nvidia/moe.py:525
+- vllm/models/kimi_k3/nvidia/latent_moe_runner.py:206
+value_type: int
+default: 256
+valid_choices: any non-negative integer; 0 effectively disables the aux-stream overlap path (token count is always >= 1)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is defined only in upstream vLLM (vllm/envs.py:2013, default 256) and is
+
+  consumed exclusively by CUDA/NVIDIA-specific MoE code paths. The core gate is in
+
+  vllm/model_executor/layers/fused_moe/runner/shared_experts.py:110-120, where
+
+  `should_run_shared_in_aux_stream` requires `current_platform.is_cuda_alike()` AND a
+
+  non-None aux stream AND `hidden_states.shape[0] <= VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD`.
+
+  When true, shared experts are enqueued on a separate CUDA stream (MULTI_STREAM_OVERLAPPED)
+
+  to overlap with routed experts; otherwise NO_OVERLAP. The threshold exists because for
+
+  large batches the separate-stream execution is not beneficial (input clone overhead), per
+
+  the code comment at envs.py:2009-2012. Additional consumers are NVIDIA/AMD model-specific
+
+  paths: "vllm/models/inkling/{amd,nvidia}/moe.py (sink experts parallel execution) and"
+
+  vllm/models/kimi_k3/nvidia/latent_moe_runner.py:206 (selects ALLREDUCE_OVERLAP tier vs
+
+  COLUMN_PARALLEL tier). All of these are gated on CUDA-alike platforms and CUDA streams.
+
+  On Ascend NPU, `current_platform.is_cuda_alike()` is False, so the aux-stream overlap
+
+  branch is never taken and this threshold has no effect on the Ascend runtime path. No
+
+  vllm-ascend override, monkey-patch, or reference to this env var was found in the provided
+
+  context. Therefore the runtime performance impact on Ascend NPU is effectively none; it is
+
+  classified low only because it is a genuine performance-tuning knob in upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/fused_moe/runner/shared_experts.py:114
+  context: Gates whether shared experts run on a separate CUDA stream (MULTI_STREAM_OVERLAPPED) vs NO_OVERLAP, only when current_platform.is_cuda_alike()
+- file: vllm/models/inkling/amd/moe.py:543
+  context: Decides whether sink experts execute in parallel on an aux stream for AMD Inkling MoE
+- file: vllm/models/inkling/nvidia/moe.py:525
+  context: Decides whether sink experts execute in parallel on an aux stream for NVIDIA Inkling MoE
+- file: vllm/models/kimi_k3/nvidia/latent_moe_runner.py:206
+  context: Selects ALLREDUCE_OVERLAP tail tier (aux-stream overlap) vs COLUMN_PARALLEL tier by token count
+related_parameters:
+- name: VLLM_DISABLE_SHARED_EXPERTS_STREAM
+  relation: Master disable switch; when set, shared experts never run on a separate stream regardless of this threshold
+- name: VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD
+  relation: Sibling token-count cutoff for multi-stream GEMM overlap; same design pattern, also CUDA-oriented
+constraints:
+- The value must be a non-negative integer; it is parsed via int(os.getenv(...)).
+- The aux-stream overlap path only activates on CUDA-alike platforms (current_platform.is_cuda_alike()), so on Ascend NPU
+  this threshold is never consulted.
+- Setting the value to 0 disables the separate-stream overlap path because token counts are always at least 1.
+tuning_advice:
+  summary: No tuning needed on Ascend NPU — this env var only affects CUDA-alike shared-expert stream overlap and is inert
+    on Ascend.
+  suggested_values:
+  - scenario: Ascend NPU deployment (v1 or v2 worker)
+    value: 256
+    reason: Leave at default; the parameter is never read on Ascend because the overlap path requires current_platform.is_cuda_alike(),
+      so changing it has no runtime effect.
+  - scenario: Upstream NVIDIA GPU reference (for comparison only)
+    value: 256
+    reason: Default tuned for GPU; lower it if small-batch latency suffers from stream overhead, raise it if large-batch throughput
+      benefits from overlap.
+  caveats:
+  - Do not expect any latency/throughput change on Ascend from setting this variable.
+  - If you need to disable shared-expert stream overlap on GPU, use VLLM_DISABLE_SHARED_EXPERTS_STREAM instead.
+  quick_guide: Ignore on Ascend NPU; it only gates CUDA-stream overlap of shared experts in upstream vLLM.
+analysis_date: '2026-10-27'

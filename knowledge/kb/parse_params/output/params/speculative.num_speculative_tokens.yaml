@@ -1,0 +1,135 @@
+name: speculative.num_speculative_tokens
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/speculative.py:1484
+- vllm/config/vllm.py:616
+- vllm/engine/arg_utils.py:1704
+- vllm/engine/arg_utils.py:2484
+- vllm_ascend/platform.py:1534
+- vllm_ascend/ascend_config.py:1389
+- vllm_ascend/worker/model_runner_v1.py:572
+- vllm_ascend/worker/model_runner_v1.py:633
+- vllm_ascend/worker/dcp_utils.py:104
+- vllm_ascend/worker/worker.py:1213
+- vllm_ascend/_310p/model_runner_310p.py:105
+value_type: int
+default: <computed>
+valid_choices: positive integer; must be divisible by the draft model's n_predict when larger than it; HPC attention backend
+  caps at 3; fused sparse-KV path requires 1 + num_speculative_tokens <= 14
+cli_example: --spec-tokens <n>
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "num_speculative_tokens (n) is the number of draft tokens proposed per decode step. It is the\nsingle most\
+  \ pervasive speculative-decoding knob and touches nearly every Ascend runtime path:\n\n1. Decode step width / graph capture.\
+  \ In vllm_ascend/platform.py:1532-1537\n   (_get_reduced_cg_cap) and vllm_ascend/ascend_config.py:1387-1393, Ascend computes\n\
+  \   decode_query_len = 1 + num_speculative_tokens and uses it to size the default ACLGraph\n   capture upper bound: \"min(max_num_seqs\
+  \ * decode_query_len, 512). A larger n therefore\"\n   inflates the default max_cudagraph_capture_size, which increases\
+  \ graph capture time and\n   memory for captured graphs, but also lets larger decode batches stay on the graph path\n  \
+  \ instead of falling back to eager. In ascend_config.py the same decode_query_len feeds\n   max_step = min(max_num_batched_tokens,\
+  \ max_num_seqs * decode_query_len); if the largest\n   capture size does not cover max_step, oproj_tensor_parallel_size\
+  \ / mlp_tensor_parallel_size\n   are silently disabled (warning at line 1401) because an oversized step would dispatch to\n\
+  \   eager and hang cross-DP HCCL collectives.\n\n2. Model runner bookkeeping. vllm_ascend/worker/model_runner_v1.py:572\
+  \ sets\n   decode_threshold = 1 + n, which drives the \"is this a uniform decode batch\" decision used\n   for ACLGraph\
+  \ dispatch and MC2 token capacity (set_mc2_tokens_capacity at line 567 uses\n   uniform_decode_query_len). Line 633 passes\
+  \ n into NPUInputBatch, which sizes the block\n   table (npu_input_batch.py:140) and per-request speculative slots. dcp_utils.py:104\
+  \ uses the\n   same 1 + n threshold for DCP decode scheduling.\n\n3. KV cache / memory. Each running request must reserve\
+  \ n extra KV slots per step\n   (vllm/config/vllm.py num_lookahead_tokens), so larger n reduces the number of concurrent\n\
+  \   sequences that fit in HBM. On Ascend this directly shrinks max_num_seqs for a fixed KV\n   budget, which in turn shrinks\
+  \ the ACLGraph capture bound above.\n\n4. Correctness-related zeroing. vllm_ascend/worker/worker.py:1209-1217 enables Mamba+Eagle3\n\
+  \   KV zeroing only when method == \"eagle3\" and n > 1, adding a per-step zeroing cost.\n\n5. 310P path. vllm_ascend/_310p/model_runner_310p.py:105\
+  \ feeds n into NPUInputBatch; for\n   ngram on 310P the graph uniform_decode_query_len is forced to 1 (line 114-118), so\
+  \ n does\n   not widen the graph shape there.\n\nNet effect: \"raising n increases accepted tokens per step (lower inter-token\
+  \ latency, higher\"\nthroughput when acceptance rate is high) but costs more draft-model compute, more KV memory,\nlarger\
+  \ graph captures, and higher rejection-sampling overhead. The optimum is workload- and\nacceptance-rate-dependent.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1534
+  context: Computes decode_query_len = 1 + n to size the default ACLGraph capture cap (min(max_num_seqs*decode_query_len,
+    512)).
+- file: vllm_ascend/ascend_config.py:1389
+  context: Uses n to compute max_step for oproj/mlp tensor-parallel graph-mode validation; disables those features if capture
+    bound is too small.
+- file: vllm_ascend/worker/model_runner_v1.py:572
+  context: Sets decode_threshold = 1 + n for uniform-decode detection and MC2 token capacity.
+- file: vllm_ascend/worker/model_runner_v1.py:633
+  context: Passes n into NPUInputBatch to size block table and speculative slots.
+- file: vllm_ascend/worker/dcp_utils.py:104
+  context: Sets decode_threshold = 1 + n for DCP decode scheduling.
+- file: vllm_ascend/worker/worker.py:1213
+  context: Enables Mamba+Eagle3 KV zeroing when method == eagle3 and n > 1.
+- file: vllm_ascend/_310p/model_runner_310p.py:105
+  context: Feeds n into NPUInputBatch on 310P; ngram forces graph query_len to 1.
+- file: vllm/config/vllm.py:616
+  context: Exposes num_speculative_tokens property used for KV lookahead reservation.
+- file: vllm/engine/arg_utils.py:2484
+  context: Validates max_num_batched_tokens >= max_num_seqs * (n + 1) when LoRA + spec decode are both enabled.
+- file: vllm/config/speculative.py:1484
+  context: Validates divisibility by draft model n_predict and defaults from draft config.
+related_parameters:
+- name: speculative_config.method
+  relation: Determines which proposer is used (eagle3, deepseek_mtp, ngram, dspark, etc.); some methods impose extra constraints
+    on n (e.g. eagle3 + Mamba zeroing when n > 1).
+- name: speculative_config.model
+  relation: Draft model config may supply a default n via n_predict; n must be divisible by n_predict when larger.
+- name: max_num_batched_tokens
+  relation: Must be >= max_num_seqs * (n + 1) when LoRA + spec decode are enabled; also bounds max_step in ascend_config.py.
+- name: max_num_seqs
+  relation: Together with n determines the default ACLGraph capture cap (max_num_seqs * (1 + n), capped at 512) and the xlite
+    decode-only token budget.
+- name: compilation_config.max_cudagraph_capture_size
+  relation: If explicitly set, overrides the n-derived default; if too small relative to max_num_seqs*(1+n), oproj/mlp tensor-parallel
+    is disabled.
+- name: xlite_graph_config.full_mode
+  relation: Decode-only xlite budget is max_num_seqs * (1 + n); larger n increases the budget.
+- name: parallel_config.data_parallel_size
+  relation: Dynamic speculative decoding (num_speculative_tokens_per_batch_size) is disabled when DP > 1, falling back to
+    static n.
+- name: attention backend (HPC)
+  relation: HPC attention backend rejects n > 3.
+constraints:
+- If a draft model is provided but num_speculative_tokens is not set and the draft config has no n_predict, vLLM raises ValueError.
+- When num_speculative_tokens exceeds the draft model's n_predict, it must be divisible by n_predict or a ValueError is raised.
+- When LoRA and speculative decoding are both enabled, max_num_batched_tokens must be at least max_num_seqs * (num_speculative_tokens
+  + 1), otherwise a ValueError is raised.
+- The HPC attention backend only supports up to 3 speculative tokens (mtp in {0,1,2,3}); larger values raise ValueError.
+- For the fused sparse-KV offload path, Q_max = 1 + num_speculative_tokens must be between 1 and 14.
+- oproj_tensor_parallel_size / mlp_tensor_parallel_size require graph mode and a cudagraph capture bound that covers max_num_seqs
+  * (1 + num_speculative_tokens); otherwise they are disabled.
+tuning_advice:
+  summary: Tune n to the draft model's acceptance rate and the KV/graph budget; start small (1-3) and increase only while
+    acceptance stays high and memory allows.
+  suggested_values:
+  - scenario: DeepSeek MTP (deepseek_mtp) on Ascend, large-scale EP deployment
+    value: 1
+    reason: vllm-ascend docs recommend num_speculative_tokens=1 for deepseek_mtp in large-scale EP; keeps KV lookahead and
+      graph capture small.
+  - scenario: Eagle3 draft model with high acceptance rate, memory headroom available
+    value: 3
+    reason: Balances accepted tokens per step against KV lookahead and graph capture cost; stays within typical acceptance-rate
+      sweet spot.
+  - scenario: HPC attention backend
+    value: 3
+    reason: HPC backend rejects n > 3, so 3 is the maximum allowed.
+  - scenario: Fused sparse-KV offload (fused_copy_sfa) with draft8
+    value: 8
+    reason: Docs show draft8 example with num_speculative_tokens=8; Q_max = 9 stays within the 1..14 bound and topk_buffer_size
+      must be >= 18432.
+  - scenario: Memory-constrained deployment or low acceptance rate
+    value: 1
+    reason: Minimizes KV lookahead and graph capture size, maximizing concurrent sequences.
+  caveats:
+  - Raising n increases the default ACLGraph capture cap; if it hits the 512 ceiling, further increases no longer widen the
+    graph but still cost KV memory.
+  - Ensure max_num_batched_tokens >= max_num_seqs * (n + 1) when using LoRA, and generally to keep max_step within the capture
+    bound.
+  - If oproj/mlp tensor-parallel is enabled, verify the capture bound covers max_num_seqs*(1+n) or the feature will be silently
+    disabled.
+  - Monitor acceptance rate; if it drops below ~50%, reduce n.
+  quick_guide: Start with n=1-3, raise only while acceptance rate stays high and KV/graph memory permits; cap at 3 for HPC
+    attention and 14 for fused sparse-KV.
+analysis_date: '2026-10-27'

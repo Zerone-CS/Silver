@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "image": "sha256:7b485a6e417b682a49c43b3bd902f2a5c9b85d18101fcaebbc11822318031cb1",
+  "model_dir": "/data/models/Qwen3-0.6B",
+  "model": "closure-qwen3",
+  "port": 38123,
+  "card": 6,
+  "die": 13,
+  "chip": 1,
+  "sibling_dies": [
+    12
+  ],
+  "lock_dir": "/var/tmp",
+  "packages": {
+    "vllm": "0.23.0+empty",
+    "vllm-ascend": "0.23.0",
+    "torch": "2.10.0+cpu",
+    "torch-npu": "2.10.0.post4"
+  }
+}

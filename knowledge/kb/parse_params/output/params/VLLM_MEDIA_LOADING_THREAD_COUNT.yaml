@@ -1,0 +1,95 @@
+name: VLLM_MEDIA_LOADING_THREAD_COUNT
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:990
+- vllm/envs.py:80
+- vllm/multimodal/media/connector.py:45
+- vllm/multimodal/video_decoders/deepstream.py:87
+value_type: int
+default: 8
+valid_choices: positive integer; 1 disables parallel processing; DeepStream decode pool clamps to [1, 16]
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only controls the size of the process-wide ThreadPoolExecutor
+
+  (global_thread_pool) created in vllm/multimodal/media/connector.py:44-46 with
+
+  max_workers=envs.VLLM_MEDIA_LOADING_THREAD_COUNT. That pool is used to load
+
+  media bytes (images/audio/video) from URLs or local sources in parallel on the
+
+  API-server / frontend side, before any NPU compute happens. It does not touch
+
+  the model forward pass, KV cache, HCCL communication, or CANN kernels, so it
+
+  has no direct effect on NPU throughput or device memory. Its only performance
+
+  effect is on multimodal request preprocessing latency: "with more workers,"
+
+  multiple media items in a batch can be fetched/decoded concurrently, reducing
+
+  time-to-first-token for multimodal inputs. It is also reused as the default
+
+  pool_size for the DeepStream video decode pool (deepstream.py:87), clamped to
+
+  [1, 16]. On Ascend, media loading is still CPU-side work; the NPU is idle
+
+  waiting for preprocessed tensors, so raising this can indirectly improve
+
+  end-to-end multimodal latency when many media items are submitted at once.
+
+  vllm-ascend does not define or override this variable.
+
+  '
+usage_locations:
+- file: vllm/multimodal/media/connector.py:45
+  context: Creates global_thread_pool ThreadPoolExecutor with max_workers=VLLM_MEDIA_LOADING_THREAD_COUNT for parallel media
+    byte loading
+- file: vllm/multimodal/video_decoders/deepstream.py:87
+  context: Used as default pool_size for the DeepStream video decode pool when --media-io-kwargs does not set it; clamped
+    to [1, 16]
+- file: vllm/envs.py:80
+  context: Type declaration of the env var (int, default 8)
+related_parameters:
+- name: VLLM_MEDIA_CACHE
+  relation: Media cache can avoid repeated fetches, reducing the benefit of a large loading thread pool
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retries happen inside the loading workers; more workers means more concurrent retry streams
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Per-download size cap enforced while streaming in the loading workers
+- name: --media-io-kwargs
+  relation: video.pool_size overrides the DeepStream decode pool size that otherwise defaults to this env var
+constraints:
+- The value must be a positive integer; setting it to 1 disables parallel media loading.
+- For the DeepStream video decode pool the effective value is clamped to the range [1, 16] regardless of the env var.
+- The thread pool is created once at import time, so changing the env var after the process starts has no effect.
+tuning_advice:
+  summary: Tune to the expected number of concurrent media items per batch to reduce multimodal preprocessing latency; leave
+    at default for text-only workloads.
+  suggested_values:
+  - scenario: Text-only LLM serving on Ascend
+    value: 8
+    reason: No media loading occurs, so the default is harmless; no need to change.
+  - scenario: Multimodal serving with many concurrent image/audio requests
+    value: 16
+    reason: More workers allow concurrent media fetch/decode, reducing time-to-first-token when the NPU would otherwise idle
+      waiting for preprocessed inputs.
+  - scenario: Memory/CPU-constrained host or few concurrent media items
+    value: 4
+    reason: Limits host thread and memory overhead while still allowing some parallelism.
+  - scenario: Debugging or strictly serial media loading
+    value: 1
+    reason: Disables parallel processing as documented, useful for deterministic behavior or isolating concurrency issues.
+  caveats:
+  - Raising this does not improve NPU token throughput; it only shortens CPU-side media preprocessing latency.
+  - DeepStream video decode pool caps the effective value at 16.
+  - The pool is created at import time; set the env var before launching vLLM.
+  quick_guide: Set VLLM_MEDIA_LOADING_THREAD_COUNT to roughly the number of concurrent media items (default 8) to cut multimodal
+    preprocessing latency; it has no effect on NPU compute.
+analysis_date: '2026-10-27'

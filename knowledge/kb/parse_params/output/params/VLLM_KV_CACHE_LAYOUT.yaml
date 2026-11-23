@@ -1,0 +1,110 @@
+name: VLLM_KV_CACHE_LAYOUT
+type: env
+category: kv_cache
+scope: both
+source_file:
+- vllm/envs.py:1778
+- vllm/envs.py:244
+- vllm_ascend/attention/attention_v1.py:116
+- vllm_ascend/attention/attention_v1.py:560
+value_type: str
+default: null
+valid_choices:
+- LBNHC
+- LBHNC
+- LHBNC
+- NHD
+- HND
+- BLHNC
+- BLNHC
+- BHLNC
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'VLLM_KV_CACHE_LAYOUT selects the physical memory layout of the KV cache tensor.
+
+  In vllm-ascend v1 (vllm_ascend/attention/attention_v1.py:116), the layout directly
+
+  determines the KV cache tensor shape returned by AscendAttentionBackend.get_kv_cache_shape:
+
+  when the layout is "LBHNC" or "HND" the shape is (2, num_blocks, num_kv_heads, block_size,
+
+  head_size) — i.e. BNSD (block, head, seq, dim) — otherwise it is (2, num_blocks, block_size,
+
+  num_kv_heads, head_size) — i.e. BSND. The impl records this at init
+
+  (attention_v1.py:560-561) as self.kv_cache_layout / self.use_bnsd_kv_cache, which then
+
+  drives reshape_and_cache to pass a BNSD layout to the Ascend device operator. The chosen
+
+  layout changes the memory access pattern of the paged-attention kernel: "BNSD (HND/LBHNC)"
+
+  keeps the head dimension outermost within a block, which can be more contiguous for
+
+  per-head attention reads, while BSND keeps the token/seq dim contiguous. This affects
+
+  kernel read efficiency (latency) and, because the tensor shape/strides differ, the
+
+  per-block byte footprint and thus how many blocks fit in NPU HBM (memory). Upstream
+
+  (vllm/v1/attention/backends/utils.py:301) the value is validated against the set of
+
+  layouts each backend declares via supported_kv_cache_layouts(); an unsupported value
+
+  raises ValueError. On Ascend the value is read directly from envs_vllm.VLLM_KV_CACHE_LAYOUT
+
+  without going through the upstream resolve_kv_cache_layout candidate check, so only the
+
+  two branches (BNSD vs BSND) matter for the Ascend attention backend.
+
+  '
+usage_locations:
+- file: vllm_ascend/attention/attention_v1.py:116
+  context: get_kv_cache_shape returns BNSD shape when layout is LBHNC/HND, else BSND
+- file: vllm_ascend/attention/attention_v1.py:560
+  context: AscendAttentionBackendImpl records kv_cache_layout and sets use_bnsd_kv_cache
+- file: vllm/v1/attention/backends/utils.py:301
+  context: upstream resolve_kv_cache_layout validates explicit layout against backend-supported candidates
+- file: vllm/v1/core/kv_cache_utils.py:1644
+  context: validate_kv_cache_layout errors if layout cannot express mixed page sizes
+- file: vllm/v1/kv_cache_interface.py:379
+  context: kernel block splitting requires dense pages or a layer-compact layout
+related_parameters:
+- name: VLLM_SSM_CONV_STATE_LAYOUT
+  relation: companion layout env var; DS value is documented as consistent with LBHNC KV cache layout
+- name: --block-size
+  relation: kernel block subdivision requires dense pages; error suggests reducing block-size or using a layer-compact layout
+- name: kv_cache_layout (CacheConfig)
+  relation: upstream CacheConfig.kv_cache_layout, if already set, wins over the env var
+constraints:
+- The value must be one of LBNHC, LBHNC, LHBNC, NHD, HND, BLHNC, BLNHC, BHLNC; other values are rejected by env_with_choices.
+- Upstream, an explicit VLLM_KV_CACHE_LAYOUT must be in the set of layouts supported by every backend, otherwise resolve_kv_cache_layout
+  raises ValueError.
+- A layout that is not block-compact cannot express models with mixed page sizes; such a model requires a block-outermost
+  layout such as BLHNC.
+- Splitting a manager block into multiple kernel blocks requires dense, unpadded pages; otherwise reduce --block-size or use
+  a layer-compact layout such as LBNHC.
+tuning_advice:
+  summary: Leave unset (BSND) unless the Ascend attention kernel or a KV connector benefits from BNSD; set LBHNC/HND only
+    when validated for your model and kernel.
+  suggested_values:
+  - scenario: Default Ascend v1 deployment, no specific kernel requirement
+    value: unset
+    reason: Unset selects the BSND shape (2, num_blocks, block_size, num_kv_heads, head_size), the standard Ascend path.
+  - scenario: Workload where the Ascend paged-attention kernel performs better with head-outermost blocks, or a KV connector
+      requires BNSD
+    value: LBHNC
+    reason: Selects BNSD KV cache shape (2, num_blocks, num_kv_heads, block_size, head_size) and sets use_bnsd_kv_cache, changing
+      the device operator layout.
+  - scenario: Legacy alias for BNSD
+    value: HND
+    reason: Treated identically to LBHNC in the Ascend backend (both map to BNSD).
+  caveats:
+  - Benchmark both layouts for your model; the benefit is kernel- and shape-dependent and not guaranteed.
+  - Do not assume upstream layout names like BLHNC/BHLNC have distinct Ascend behavior — they fall into the BSND branch.
+  - If using a KV connector or hybrid/mixed-page-size model, confirm the chosen layout is compatible before deploying.
+  quick_guide: Keep VLLM_KV_CACHE_LAYOUT unset for BSND; set LBHNC/HND only to opt into BNSD after benchmarking.
+analysis_date: '2026-10-27'

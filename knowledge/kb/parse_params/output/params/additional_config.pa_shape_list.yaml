@@ -1,0 +1,87 @@
+name: additional_config.pa_shape_list
+type: nested
+category: model
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:592
+- vllm_ascend/ascend_config.py:439
+value_type: list[int]
+default: []
+valid_choices: Any list of integer batch-size shapes; empty list disables PA fallback (FIA remains default)
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'pa_shape_list is an Ascend-only tuning knob declared in AscendConfig
+
+  (vllm_ascend/ascend_config.py:592) as a plain list[Any] with default empty list.
+
+  It is consumed by the attention backend selection logic: "FIA (Flash Attention) is"
+
+  the default attention operator in vLLM-Ascend, but when the runtime batch size
+
+  matches a value present in pa_shape_list, the framework switches to the PA
+
+  (PagedAttention) operator instead. This is a per-batch-size dispatch decision made
+
+  at attention-kernel selection time, so it directly changes which NPU attention
+
+  kernel executes for a given step. The performance mechanism is that FIA can be
+
+  suboptimal at certain medium-concurrency batch sizes on Ascend NPU, and PA may
+
+  deliver better latency/throughput for exactly those shapes. Because the switch is
+
+  keyed on batch size, the effect is workload-dependent: it only helps for the
+
+  specific batch sizes listed, and has no effect for any other batch size. It does
+
+  not change memory allocation or KV-cache layout, only the attention operator
+
+  chosen. The parameter is explicitly documented as a temporary tuning knob and is
+
+  listed among features planned for deprecation (release_notes.md), so its impact is
+
+  bounded and will disappear once FIA optimizations land.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:592
+  context: 'Field declaration pa_shape_list: list[Any] = dataclasses.field(default_factory=list) in AscendConfig'
+- file: vllm_ascend/ascend_config.py:439
+  context: 'Documented in AscendConfig docstring example dict as "pa_shape_list": []'
+related_parameters:
+- name: --additional-config
+  relation: pa_shape_list is passed as a key inside the JSON given to --additional-config
+- name: attention backend / FIA vs PA operator selection
+  relation: pa_shape_list controls whether the PA operator is used instead of the default FIA operator for matching batch
+    sizes
+constraints:
+- pa_shape_list must be provided as a list value inside the --additional-config JSON object; unknown keys are rejected because
+  AscendConfig uses extra="forbid".
+- The PA operator is only selected when the runtime batch size exactly matches a value in pa_shape_list; other batch sizes
+  continue to use FIA.
+tuning_advice:
+  summary: Use pa_shape_list only to force the PA attention operator for specific medium-concurrency batch sizes where FIA
+    underperforms on Ascend NPU; leave empty otherwise.
+  suggested_values:
+  - scenario: Default / general workloads where FIA performs well
+    value: []
+    reason: Empty list keeps FIA as the attention operator for all batch sizes, which is the default and recommended path.
+  - scenario: Medium-concurrency serving where profiling shows FIA latency is worse than PA at specific batch sizes
+    value: '[16, 32, 64]'
+    reason: Listing the exact batch sizes observed during profiling causes the framework to switch to PA for those shapes,
+      recovering latency/throughput; values must match actual runtime batch sizes.
+  caveats:
+  - This is a temporary tuning knob; PagedAttention and pa_shape_list are listed as planned for deprecation in the release
+    notes, so avoid building long-term tuning strategies around it.
+  - The switch is keyed on exact batch-size match, so it only affects the specific shapes listed and has no effect on other
+    batch sizes.
+  - FIA is the default and generally preferred operator; only enable PA for shapes where profiling demonstrates a concrete
+    regression.
+  - Because AscendConfig uses extra="forbid", a typo in the key name inside --additional-config will fail fast at startup.
+  quick_guide: Leave pa_shape_list empty unless profiling shows FIA is slower than PA at specific batch sizes, then list exactly
+    those batch sizes.
+analysis_date: '2026-10-27'

@@ -1,0 +1,106 @@
+name: --dp-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:518
+- vllm/config/parallel.py:219
+- vllm/config/vllm.py:1867
+- vllm/v1/engine/core.py:2052
+- vllm_ascend/worker/model_runner_v1.py:419
+- vllm_ascend/worker/v2/model_runner.py:181
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:379
+value_type: int
+default: 1
+valid_choices: integer >= 1; must satisfy dp_size % tp_size == 0 when fine-grained TP is used
+cli_example: --data-parallel-size 2
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "--dp-size (data_parallel_size) controls how many independent data-parallel engine\nreplicas run, each holding\
+  \ a full model copy and processing its own request stream.\nOn Ascend it drives several hot paths:\n\n1. v1 worker (vllm_ascend/worker/model_runner_v1.py:419):\
+  \ self.dp_size is read from\n   parallel_config.data_parallel_size. In _sync_metadata_across_dp (line 837) the code\n  \
+  \ short-circuits and returns immediately when dp_size == 1, avoiding any cross-DP\n   collective. When dp_size > 1 it packs\
+  \ num_tokens and cudagraph_mode into a tensor and\n   runs dist.all_reduce over get_dp_group().cpu_group every step (line\
+  \ 847). This is a\n   per-step synchronization cost that grows with DP world size and directly adds latency\n   to the decode\
+  \ loop. The comment at line 831-834 explicitly notes this all_reduce\n   cannot be skipped even in eager mode, harming performance.\n\
+  \n2. v2 worker (vllm_ascend/worker/v2/model_runner.py:181): dp_size > 1 combined with\n   fine-grained TP (oproj/mlp tensor_parallel_size\
+  \ > 1) sets\n   _finegrained_tp_requires_graph, forcing graph dispatch alignment. In\n   aclgraph_utils.py (lines 194, 215)\
+  \ and spec_decode/autoregressive/aclgraph.py (lines\n   107, 158) num_tokens_across_dp is materialized as a full tensor\
+  \ of size dp_size for\n   ACL graph replay, so larger dp_size increases graph metadata and padding work.\n\n3. Dyntra load\
+  \ balancing (patch_dyntra_lb_core.py:379): dp_size = dist.get_world_size(\n   self.dp_group) sizes the all_gather buffers\
+  \ (_lb_all_data_np list of dp_size arrays)\n   and the per-step dist.all_gather over the DP group (line 491). Larger dp_size\
+  \ means\n   larger collective payloads and more memory for LB bookkeeping.\n\n4. Upstream config (vllm/config/vllm.py:1867):\
+  \ effective_dp_size feeds\n   set_splitting_ops_for_v1, which changes compilation splitting behavior for MoE models\n  \
+  \ when dp_size > 1, affecting graph capture and compile time.\n\nNet effect: \"increasing dp_size scales aggregate throughput\
+  \ (more replicas) but adds\"\nper-step DP synchronization latency and memory overhead; dp_size == 1 eliminates the\nDP all_reduce\
+  \ entirely.\n"
+usage_locations:
+- file: vllm_ascend/worker/model_runner_v1.py:419
+  context: Reads data_parallel_size into self.dp_size for the v1 model runner
+- file: vllm_ascend/worker/model_runner_v1.py:837
+  context: Skips DP all_reduce when dp_size == 1; otherwise all_reduce over DP cpu_group each step
+- file: vllm_ascend/worker/v2/model_runner.py:181
+  context: dp_size > 1 combined with fine-grained TP requires graph dispatch alignment
+- file: vllm_ascend/worker/v2/aclgraph_utils.py:194
+  context: Builds num_tokens_across_dp tensor of size dp_size for ACL graph replay
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:379
+  context: Sizes Dyntra LB all_gather buffers by DP world size
+- file: vllm/config/vllm.py:1867
+  context: effective_dp_size drives set_splitting_ops_for_v1 for MoE models
+- file: vllm/v1/engine/core.py:2052
+  context: Initializes DP process group and asserts dp_size > 1 for DP engine core
+related_parameters:
+- name: --tensor-parallel-size
+  relation: Fine-grained TP size must be <= dp_size and evenly divide dp_size (dp_size % tp_size == 0)
+- name: --data-parallel-size-local
+  relation: Number of DP ranks on the current node; defaults to dp_size
+- name: --data-parallel-rank
+  relation: Rank of this DP replica; must satisfy 0 <= local_dp_rank <= dp_rank < dp_size
+- name: --data-parallel-address
+  relation: Master IP for DP coordination; required when dp_size > 1
+- name: --enable-expert-parallel
+  relation: EP is typically combined with DP for MoE models; interacts with dp_size
+- name: --enable-elastic-ep
+  relation: Elastic EP uses elastic_ep_max_dp_size to bound DP scaling
+- name: --dp-sync-interval
+  relation: Controls DP synchronization frequency, mitigating per-step DP all_reduce cost
+constraints:
+- When using fine-grained TP, the fine-grained TP size must be <= dp_size and must evenly divide dp_size (dp_size % tp_size
+  == 0).
+- For DP engine core initialization, dp_size must be greater than 1 (assert dp_size > 1).
+- DP ranks must satisfy 0 <= local_dp_rank <= dp_rank < dp_size.
+- The DP coordinator is only used when dp_size > 1.
+tuning_advice:
+  summary: 'Use dp_size > 1 to scale aggregate throughput across NPUs when a single replica cannot
+
+    saturate the hardware, but keep dp_size == 1 for latency-sensitive single-replica
+
+    deployments to avoid per-step DP all_reduce overhead.
+
+    '
+  suggested_values:
+  - scenario: Single-node, latency-sensitive serving where one replica fits
+    value: 1
+    reason: dp_size == 1 short-circuits _sync_metadata_across_dp, eliminating the per-step DP all_reduce and its latency cost.
+  - scenario: Multi-node high-throughput MoE serving (e.g. DeepSeek-V3.1 decode)
+    value: 32
+    reason: Docs show decode deployment with --dp-size 32 --tp-size 1 across 2 nodes (16 local DP ranks each) to maximize
+      aggregate throughput.
+  - scenario: Prefill node in PD-disaggregated deployment
+    value: 2
+    reason: Docs example uses --dp-size 2 --tp-size 8 for prefill nodes, balancing TP within each DP replica.
+  - scenario: Fine-grained TP enabled
+    value: <multiple of fine-grained TP size>
+    reason: Fine-grained TP size must be <= dp_size and evenly divide it (dp_size % tp_size == 0) to avoid runtime errors.
+  caveats:
+  - Each DP replica holds a full model copy; ensure total NPU memory across dp_size replicas is sufficient.
+  - Larger dp_size increases DP all_reduce/all_gather payloads and per-step sync latency; consider --dp-sync-interval to amortize.
+  - When combining with fine-grained TP, verify dp_size % tp_size == 0 or expect runtime errors.
+  - v2 worker with dp_size > 1 and fine-grained TP forces graph dispatch alignment, increasing graph metadata overhead.
+  quick_guide: Start with dp_size=1 for lowest latency; scale dp_size (multiple of fine-grained TP size) for throughput, watching
+    DP sync overhead.
+analysis_date: '2026-10-27'

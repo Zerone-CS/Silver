@@ -1,0 +1,70 @@
+name: diffusion.max_denoising_steps
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/model_executor/models/diffusion_gemma.py:792
+value_type: int
+default: 48
+valid_choices: positive integer; if unset, falls back to generation_config.json value, then to 48
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter bounds the number of denoising iterations per canvas block for the
+
+  DiffusionGemma model (vllm/model_executor/models/diffusion_gemma.py:791-799). It is read
+
+  once at runner construction and passed into DiffusionGemmaRequestStates as
+
+  max_denoising_steps, which sizes the per-request diffusion state buffers (history buffer
+
+  used for the stability_threshold early-stop check, plus per-step state). A larger value
+
+  increases the worst-case number of forward passes per canvas block (directly raising
+
+  decode latency) and enlarges the persistent diffusion state tensors (memory). The actual
+
+  number of steps executed per request is bounded by this cap but can terminate earlier via
+
+  the stability_threshold convergence check (gen_config["stability_threshold"] + 1). No
+
+  vllm-ascend override or Ascend-specific handling of this parameter was found in the
+
+  provided context; it is a pure model-level knob in upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/model_executor/models/diffusion_gemma.py:792
+  context: Reads diffusion_config.max_denoising_steps, falling back to generation_config.json then 48
+- file: vllm/model_executor/models/diffusion_gemma.py:798
+  context: Passed as max_denoising_steps into DiffusionGemmaRequestStates to size diffusion state buffers
+related_parameters:
+- name: diffusion.canvas_length
+  relation: Sibling diffusion config; canvas_length sets block size while max_denoising_steps caps iterations per block
+- name: stability_threshold
+  relation: Read from generation_config.json; controls early-stop convergence, so effective steps <= max_denoising_steps
+constraints:
+- If diffusion.max_denoising_steps is not set, the value is taken from the model's generation_config.json, and if that is
+  also absent it defaults to 48.
+- The value must be a positive integer; it is used to size per-request diffusion state buffers.
+tuning_advice:
+  summary: Keep the model's generation_config value unless latency/memory must be reduced; lower it only if quality tolerance
+    allows.
+  suggested_values:
+  - scenario: Default / quality-first deployment matching model training
+    value: 48
+    reason: Matches the code fallback and typical generation_config value, preserving intended denoising quality.
+  - scenario: Latency-sensitive serving where slight quality loss is acceptable
+    value: 32
+    reason: Reduces worst-case forward passes per canvas block, lowering decode latency and diffusion state memory.
+  - scenario: Memory-constrained NPU with many concurrent requests
+    value: 24
+    reason: Smaller max_denoising_steps shrinks per-request diffusion state buffers, allowing higher batch concurrency.
+  caveats:
+  - Effective steps are also bounded by stability_threshold early-stop, so gains depend on convergence behavior.
+  - No Ascend-specific tuning exists; validate output quality after lowering the cap.
+  quick_guide: Leave at generation_config default (48) unless you need lower latency/memory and can accept quality tradeoff.
+analysis_date: '2026-10-27'

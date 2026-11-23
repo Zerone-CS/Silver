@@ -1,0 +1,78 @@
+name: kv_transfer_config.kv_connector_extra_config.backend
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/worker.py:95
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:861
+value_type: str
+default: mooncake
+valid_choices:
+- mooncake
+- memcache
+- cpu
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This key selects the storage/transfer backend used by the AscendStoreConnector\n(vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store).\
+  \ It is read from\nkv_transfer_config.kv_connector_extra_config[\"backend\"] and passed to the\nKVPoolWorker, which dynamically\
+  \ imports the corresponding backend module\n(see pool_worker.py importlib usage). The choice of backend determines the\n\
+  medium over which KV blocks are offloaded/shared between prefill and decode\ninstances:\n  - \"\\\"mooncake\\\" (default\
+  \ in tests) uses the Mooncake transfer engine (RDMA-based\"\n    KV pool), giving the highest bandwidth for cross-node KV\
+  \ transfer but\n    requiring the Mooncake runtime and RNIC/HCCL-capable fabric.\n  - \"\\\"memcache\\\" uses a memcache-style\
+  \ pool, typically lower bandwidth and\"\n    higher per-block latency than RDMA, but simpler to deploy.\n  - \"\\\"cpu\\\
+  \" keeps KV in host memory (no remote transfer), lowest transfer\"\n    bandwidth but no network dependency.\nBecause KV\
+  \ transfer sits on the critical path of PD-disaggregated decode,\nthe backend choice directly affects inter-instance KV\
+  \ fetch latency and thus\nTTFT/ITL for the decode side, as well as host/NPU memory footprint (whether\nKV is staged in host\
+  \ memory vs. transferred over RDMA). It does not change\nper-token compute, so impact is medium rather than high.\nNote:\
+  \ \"the SFA PD RD2H connector uses a separate key \\\"transfer_backend\\\"\"\n(not \"backend\") and currently only supports\
+  \ \"memfabric\"; the \"backend\" key\nhere applies to AscendStoreConnector.\n"
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_worker.py:861
+  context: KVPoolWorker reads kv_connector_extra_config['backend'] to select and import the KV pool backend module.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/ascend_store_connector.py:202
+  context: AscendStoreConnector construction reads backend from extra config; 'cpu' backend used in request-lifecycle tests.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/sfa_pd_rd2h/worker.py:95
+  context: SFA PD RD2H connector reads a related key 'transfer_backend' (only 'memfabric' supported) — distinct from 'backend'.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Must be AscendStoreConnector for the 'backend' key to be consumed; other connectors use different keys (e.g. 'transfer_backend'
+    for SfaRemoteD2HConnector).
+- name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+  relation: Layerwise reuse config is scoped per-connector; backend selection interacts with layerwise buffer sharing.
+- name: kv_transfer_config.kv_connector_extra_config.layerwise_num_shared_buffers
+  relation: Number of shared buffers used when layerwise reuse is enabled with the chosen backend.
+- name: kv_transfer_config.kv_connector_extra_config.transfer_backend
+  relation: Separate key used by SfaRemoteD2HConnector (only 'memfabric'); do not confuse with 'backend'.
+constraints:
+- The 'backend' key is only meaningful when kv_connector is AscendStoreConnector; other connectors ignore it or use a different
+  key.
+- The selected backend module must be importable at runtime (KVPoolWorker dynamically imports it via importlib); an unavailable
+  backend causes initialization failure.
+- For SfaRemoteD2HConnector, the equivalent setting is 'transfer_backend' and only 'memfabric' is currently supported; setting
+  'backend' there has no effect.
+tuning_advice:
+  summary: Use 'mooncake' for high-bandwidth cross-node PD KV transfer on Ascend; use 'memcache' or 'cpu' only when RDMA/Mooncake
+    is unavailable or for single-node setups.
+  suggested_values:
+  - scenario: Multi-node PD disaggregation with RDMA/Mooncake available
+    value: mooncake
+    reason: Highest KV transfer bandwidth, minimizes decode-side KV fetch latency on the critical path.
+  - scenario: Single-node or no RDMA fabric, moderate KV reuse
+    value: memcache
+    reason: Simpler deployment without Mooncake runtime; acceptable latency when KV transfer volume is modest.
+  - scenario: Testing / no remote transfer needed, KV kept in host memory
+    value: cpu
+    reason: No network dependency; suitable for correctness testing or when KV is not shared across instances.
+  caveats:
+  - Ensure the chosen backend's runtime (e.g. Mooncake) is installed and the fabric is configured before enabling; otherwise
+    connector init fails.
+  - Do not set 'backend' expecting it to affect SfaRemoteD2HConnector — that connector uses 'transfer_backend' with only 'memfabric'.
+  - Layerwise reuse may be disabled for certain backends; verify get_layerwise_reuse_config behavior for your backend.
+  quick_guide: Set kv_connector_extra_config.backend to 'mooncake' for RDMA PD transfer, 'memcache' for simpler pools, 'cpu'
+    for host-memory-only.
+analysis_date: '2026-10-27'

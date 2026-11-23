@@ -1,0 +1,119 @@
+name: --max-num-queued-reqs
+type: cli
+category: scheduling
+scope: vllm
+source_file:
+- vllm/config/scheduler.py:74
+- vllm/engine/arg_utils.py:560
+- vllm/engine/arg_utils.py:1602
+- vllm/engine/arg_utils.py:2434
+- vllm/v1/engine/async_llm.py:297
+- vllm/v1/utils.py:214
+value_type: int
+default: null
+valid_choices: int >= 0, or None for no limit
+cli_example: --max-num-queued-reqs 256
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is an admission-control valve enforced in the API server process, not in the
+
+  scheduler or model runner. In vllm/v1/engine/async_llm.py:check_admission(), when
+
+  max_num_queued_reqs is set, the engine compares the current count of unfinished
+
+  requests (waiting + running, with n>1 counting as n slots) against the limit and
+
+  raises QueueOverflowError (mapped to HTTP 503) if admitting the new request would
+
+  exceed it. Because the check happens before the request enters the engine, it does
+
+  not change per-iteration scheduling, kernel selection, or NPU compute behavior at
+
+  all — the Ascend execution path (vllm-ascend worker, ACL graph capture, HCCL
+
+  collectives) is completely unaffected for admitted requests. Its performance effect
+
+  is purely at the system/QoS level: it bounds the otherwise unbounded request queue,
+
+  which (a) caps queueing latency (TTFT) by shedding load to other instances instead
+
+  of letting requests pile up, and (b) prevents memory growth from an unbounded number
+
+  of pending request objects. When num_servers > 1, vllm/v1/utils.py:214 allocates a
+
+  shared multiprocessing RawArray (SharedAdmissionStats) so all API server processes
+
+  enforce a single global counter — a small fixed IPC overhead, not per-token. Setting
+
+  it too low causes premature 503 rejections and wasted NPU capacity (lower effective
+
+  throughput); setting it too high (or leaving None) lets the queue grow unbounded,
+
+  inflating tail latency. No vllm-ascend override of this parameter was found in the
+
+  provided context; it is a pure upstream vLLM v1 API-server-side mechanism.
+
+  '
+usage_locations:
+- file: vllm/config/scheduler.py:74
+  context: SchedulerConfig field definition with ge=0 validation and docstring describing sizing as data_parallel_size * max_num_seqs
+    plus queue depth
+- file: vllm/engine/arg_utils.py:1602
+  context: CLI argument registration in the SchedulerConfig argument group
+- file: vllm/engine/arg_utils.py:2434
+  context: Passed into SchedulerConfig construction in create_engine_config
+- file: vllm/v1/engine/async_llm.py:323
+  context: check_admission() reads scheduler_config.max_num_queued_reqs and raises QueueOverflowError when current_requests
+    + n exceeds it
+- file: vllm/v1/utils.py:214
+  context: When num_servers > 1 and the limit is set, allocates SharedAdmissionStats RawArray so API server processes share
+    the admission counter
+related_parameters:
+- name: --max-num-seqs
+  relation: Per-DP-rank concurrency limit; max_num_queued_reqs is a global (across all DP ranks) cap and should be sized as
+    roughly data_parallel_size * max_num_seqs plus desired queue depth so it does not bind before per-rank admission
+- name: --max-num-queued-tokens
+  relation: Companion admission-control limit on total prompt tokens in prefill (TTFT QoS); both raise HTTP 503 and are enforced
+    in the same check_admission() path
+- name: --data-parallel-size
+  relation: The request limit counts in-flight requests across all DP ranks the API server routes to, so the recommended sizing
+    scales with data_parallel_size
+- name: --api-server-count
+  relation: When more than one API server process runs, a shared admission counter is allocated so the limit is enforced globally
+    rather than per process
+constraints:
+- The value must be a non-negative integer (Field(ge=0)) or None; negative values fail validation.
+- The limit is enforced in the API server process and counts in-flight requests across all DP ranks it routes to, not per
+  rank.
+- A request with n > 1 counts as n slots against the limit.
+- When the limit is reached, new requests are rejected with HTTP 503 (QueueOverflowError) rather than queued.
+tuning_advice:
+  summary: Size it as roughly data_parallel_size * max_num_seqs plus the desired queue depth so it acts as a coarse overload
+    valve without binding before per-rank admission.
+  suggested_values:
+  - scenario: Single-instance serving where per-rank admission should be the binding constraint
+    value: data_parallel_size * max_num_seqs + queue_depth
+    reason: Docstring recommends this sizing so the global cap does not reject requests before per-rank max_num_seqs admission
+      does.
+  - scenario: Multi-instance deployment behind a load balancer that retries on 503
+    value: 256
+    reason: A finite cap lets overloaded instances shed load to peers via HTTP 503, preserving TTFT instead of building an
+      unbounded queue.
+  - scenario: Latency-sensitive online serving with strict TTFT SLO
+    value: data_parallel_size * max_num_seqs
+    reason: Keeping the cap near the per-rank concurrency bound limits queueing delay and keeps tail latency predictable.
+  - scenario: Offline batch throughput maximization
+    value: unset
+    reason: Leaving it unset (no limit) avoids rejecting work when maximizing aggregate throughput is the priority and latency
+      is not a concern.
+  caveats:
+  - Do not set it below data_parallel_size * max_num_seqs or you will reject requests the NPUs could otherwise run, wasting
+    Ascend capacity.
+  - Pair with --max-num-queued-tokens when TTFT QoS matters, since the two limits are enforced together in check_admission().
+  - This is an API-server-side valve; it does not change NPU kernel or HCCL performance for admitted requests.
+  quick_guide: Set to roughly data_parallel_size * max_num_seqs plus queue depth to bound the queue without starving the NPUs;
+    leave None only for offline batch.
+analysis_date: '2026-10-27'

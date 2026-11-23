@@ -1,0 +1,84 @@
+name: additional_config.eplb_config.stair_config.replica_search_beam_size
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:212
+- vllm_ascend/ascend_config.py:226
+- vllm_ascend/ascend_config.py:258
+value_type: int
+default: 64
+valid_choices: Integer between 1 and 128 inclusive
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This parameter controls the beam width of the FlashTree-style replica search inside the
+
+  MRv2 STAIR EPLB policy (vllm-ascend only; no upstream vLLM equivalent). Per the StairConfig
+
+  docstring, replica_search_beam_size is the "Maximum unique replica-count candidates kept
+
+  after each search stage" of the replica search. It bounds the search frontier: at each of
+
+  replica_search_num_stages stages, up to replica_search_beam_size candidate replica-count
+
+  assignments survive to the next stage. A larger beam explores more of the replica-count
+
+  space, yielding a better expert placement (more balanced rank load, fewer hot-rank
+
+  bottlenecks) which improves MoE decode/prefill throughput and tail latency on Ascend NPU.
+
+  However, the search cost grows roughly linearly with beam size per stage, so a larger beam
+
+  increases the CPU-side EPLB rebalancing/planning time (which runs on host, not NPU) and can
+
+  delay rebalancing decisions. The parameter does not directly touch NPU memory or HCCL
+
+  communication; its effect is indirect via the quality of the expert-to-rank placement that
+
+  the EPLB policy commits. It is validated in StairConfig._validate (must be 1..128) and
+
+  booleans are rejected by the field validator.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:226
+  context: 'Field definition replica_search_beam_size: int = 64 inside StairConfig'
+- file: vllm_ascend/ascend_config.py:258
+  context: 'Validation in _validate: must be between 1 and 128, else ValueError'
+- file: vllm_ascend/ascend_config.py:212
+  context: Docstring describing it as max unique replica-count candidates kept after each search stage
+related_parameters:
+- name: additional_config.eplb_config.stair_config.replica_search_num_stages
+  relation: Number of search stages; total search work scales with num_stages × beam_size
+- name: additional_config.eplb_config.stair_config.replica_search_radius
+  relation: Radius of greedy extra-replica budget explored per stage; combined with beam size defines search breadth
+- name: additional_config.eplb_config.stair_config.placement_search_backtrack_limit
+  relation: Downstream constrained-LPT placement cost per surviving candidate; more candidates means more placement work
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Rebalance trigger; better placement from larger beam interacts with when rebalancing fires
+constraints:
+- replica_search_beam_size must be an integer between 1 and 128 inclusive, otherwise StairConfig validation raises a ValueError.
+- Boolean values are rejected for all STAIR numeric fields, including replica_search_beam_size.
+tuning_advice:
+  summary: Keep the default beam of 64 for most MoE deployments; increase toward 96-128 only when rank imbalance is the throughput
+    bottleneck and rebalance latency is acceptable, decrease to 16-32 if EPLB planning overhead is too high.
+  suggested_values:
+  - scenario: Default / balanced MoE serving on Ascend NPU
+    value: 64
+    reason: Default value provides a good tradeoff between replica-search quality and host-side planning cost.
+  - scenario: Large-scale MoE with pronounced rank imbalance and infrequent rebalancing
+    value: 128
+    reason: Widest allowed beam explores more replica-count candidates, improving rank balance and MoE throughput when rebalance
+      latency is not critical.
+  - scenario: Latency-sensitive serving where EPLB planning overhead must stay low
+    value: 16
+    reason: Smaller beam reduces per-stage search cost, keeping rebalancing fast at the cost of slightly less optimal placement.
+  caveats:
+  - Do not raise beam size and replica_search_num_stages together without measuring rebalance latency.
+  - Values above 128 are rejected by validation; values below 1 are rejected.
+  quick_guide: Leave at 64; raise toward 128 for better balance, lower toward 16 if EPLB planning is too slow.
+analysis_date: '2026-10-27'

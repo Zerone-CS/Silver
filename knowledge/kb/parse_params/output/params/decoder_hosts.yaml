@@ -1,0 +1,108 @@
+name: --decoder-hosts
+type: cli
+category: other
+scope: vllm-ascend
+source_file:
+- examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:323
+- examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:708
+- examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:289
+- tools/docs_codegen/converters.py:492
+value_type: list[str]
+default: '[''localhost'']'
+valid_choices: Any list of reachable hostnames or IP addresses; length must equal the number of --decoder-ports
+cli_example: --decoder-hosts 192.0.0.3 192.0.0.4
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--decoder-hosts is not a vLLM engine parameter; it is an argument of the
+
+  disaggregated-prefill (PD) load-balance proxy example scripts shipped in
+
+  vllm-ascend (examples/disaggregated_prefill_v1/*.py and
+
+  examples/epd_disaggregated/*.py) and of the docs codegen tool
+
+  (tools/docs_codegen/converters.py). It is parsed in parse_args() and zipped
+
+  with --decoder-ports into args.decoder_instances, which the proxy uses to
+
+  route decode-phase requests to the D (decoder) instances. It does not touch
+
+  the vLLM core scheduler, KV cache, or NPU kernels, so it has no direct effect
+
+  on per-token compute. Its performance relevance is indirect: the set of
+
+  decoder hosts determines how decode requests are load-balanced across D
+
+  instances. A mis-sized or unreachable decoder host list causes request
+
+  retries (--max-retries / --retry-delay) or failed routing, which increases
+
+  end-to-end latency and lowers effective throughput of the PD deployment.
+
+  The docs codegen converter (_convert_external_dp_proxy) expands the
+
+  routing.groups.decoder mapping into the --decoder-hosts/--decoder-ports
+
+  option lists, so the value is generated from the deployment YAML.
+
+  '
+usage_locations:
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:323
+  context: argparse definition of --decoder-hosts (nargs='+', default ['localhost'])
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:346
+  context: _validate_hosts(args.decoder_hosts, '--decoder-hosts') validates host strings
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:349
+  context: length check against --decoder-ports, then zipped into decoder_instances
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:708
+  context: length check against --decoder-ports before building decoder_instances
+- file: examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:289
+  context: argparse definition in EPD proxy (default empty list)
+- file: tools/docs_codegen/converters.py:492
+  context: _expand_proxy_group expands routing.groups.decoder into decoder_hosts/decoder_ports for the generated proxy command
+related_parameters:
+- name: --decoder-ports
+  relation: Must have the same number of entries as --decoder-hosts; zipped pairwise into decoder_instances
+- name: --prefiller-hosts
+  relation: Counterpart for the prefill (P) instances in the same PD proxy
+- name: --encoder-hosts
+  relation: Counterpart for encoder instances in the EPD proxy variant
+- name: --pd-hosts
+  relation: Additional PD instance group in the EPD proxy variant
+- name: --host
+  relation: Proxy listen address; layerwise mode forbids wildcard addresses because decoder hosts must reach the proxy metaserver
+- name: --max-retries
+  relation: Retry count for HTTP requests to decoder hosts; affects latency when a decoder host is unreachable
+constraints:
+- The number of --decoder-hosts entries must equal the number of --decoder-ports entries, otherwise the proxy raises ValueError.
+- Each decoder host string must be a valid hostname or IP address; malformed values (e.g. shell-escaping typos) are rejected
+  by _validate_hosts.
+- In layerwise mode the proxy --host must not be a wildcard address (0.0.0.0, ::, 0:0:0:0:0:0:0:0) because decoder hosts must
+  reach the proxy metaserver.
+- Each decoder host-port pair must be unique and reachable from the proxy.
+tuning_advice:
+  summary: List every decoder (D) instance host exactly once, matching --decoder-ports one-to-one, so the PD proxy can balance
+    decode requests without retries.
+  suggested_values:
+  - scenario: Single-node local test of PD disaggregation
+    value: '[''localhost'']'
+    reason: Default matches a single decoder instance on the same host as the proxy.
+  - scenario: Multi-node PD deployment with 16 decoder instances per host
+    value: '[''192.0.0.3'', ''192.0.0.3'', ..., ''192.0.0.4'', ...]'
+    reason: Docs example repeats each D host once per decoder port so host/port pairs stay aligned and load is spread across
+      all D instances.
+  - scenario: Generated from deployment YAML via docs codegen
+    value: <expanded from routing.groups.decoder>
+    reason: tools/docs_codegen/converters.py derives --decoder-hosts automatically from the routing.groups.decoder mapping,
+      avoiding manual mismatch.
+  caveats:
+  - This is a proxy example script argument, not a vLLM engine flag; it does not change NPU kernel or scheduler behavior directly.
+  - A host/port count mismatch aborts startup with ValueError, so keep the two lists in lockstep.
+  - Unreachable decoder hosts trigger HTTP retries (--max-retries, --retry-delay), adding latency and reducing effective decode
+    throughput.
+  - In layerwise mode the proxy must bind a non-wildcard --host reachable by all decoder hosts, otherwise decode requests
+    cannot fetch KV/metaserver data.
+  quick_guide: Pass one --decoder-hosts entry per --decoder-ports entry, all reachable from the proxy.
+analysis_date: '2026-10-27'

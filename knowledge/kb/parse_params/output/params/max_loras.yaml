@@ -1,0 +1,106 @@
+name: --max-loras
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/lora.py:37
+- vllm/engine/arg_utils.py:1484
+- vllm/engine/arg_utils.py:2461
+- vllm/v1/core/sched/scheduler.py:852
+- vllm/v1/core/sched/scheduler.py:897
+- vllm/v1/cudagraph_dispatcher.py:124
+- vllm/v1/cudagraph_dispatcher.py:295
+- vllm_ascend/worker/model_runner_v1.py:4189
+- vllm_ascend/core/dyntra_lb_scheduler.py:660
+- vllm_ascend/core/recompute_scheduler.py:462
+- vllm_ascend/patch/platform/patch_balance_schedule.py:388
+value_type: int
+default: 1
+valid_choices: integer >= 1
+cli_example: --max-loras <int>
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: "--max-loras bounds how many distinct LoRA adapters may be active in a single\nbatch. It is consumed in two\
+  \ distinct places:\n\n1. Scheduler admission (vllm/v1/core/sched/scheduler.py:852,897 and the\n   vllm-ascend scheduler\
+  \ variants: \"vllm_ascend/core/dyntra_lb_scheduler.py:660,706,\"\n   vllm_ascend/core/recompute_scheduler.py:462,509,\n\
+  \   vllm_ascend/core/scheduler_profiling_chunk.py:618,662,\n   vllm_ascend/patch/platform/patch_balance_schedule.py:388,424).\
+  \ The scheduler\n   tracks the set of lora_int_id values among running requests and, when the\n   count reaches max_loras,\
+  \ defers any waiting request that would introduce a\n   new adapter (pop_request + prepend to skipped_waiting). So max_loras\
+  \ directly\n   caps the number of distinct adapters that can be co-scheduled; setting it too\n   low serializes multi-adapter\
+  \ workloads and reduces effective batch size /\n   throughput, while setting it higher than needed wastes device memory.\n\
+  \n2. CUDA/NPU graph capture and dispatch (vllm/v1/cudagraph_dispatcher.py:124,295).\n   When cudagraph_specialize_lora is\
+  \ off, graphs are captured only for\n   max_loras + 1 active LoRAs and dispatch always uses max_loras + 1; when\n   specialize_active_lora\
+  \ is on, separate graphs are captured for powers of 2 up\n   to max_loras. A larger max_loras therefore increases the number\
+  \ of captured\n   graph variants (more capture time and memory) and, in the non-specialized\n   path, forces every LoRA\
+  \ batch to be padded to max_loras + 1 slots.\n\nOn Ascend, vllm_ascend/worker/model_runner_v1.py:4189 explicitly overrides\
+  \ the\nnum_active_loras passed to maybe_dummy_run_with_lora with\nself.lora_config.max_loras (a temporary workaround for\
+  \ a llama32_lora accuracy\nissue). This means the Ascend v1 worker always dummy-runs with the full\nmax_loras active, so\
+  \ a large max_loras inflates dummy-run/capture cost and\nmemory reservation on NPU regardless of the actual runtime adapter\
+  \ count.\nThe vllm-ascend docs (lora.md) note that --max-loras 1 keeps a single device\nslot and is the setting used by\
+  \ the fast path.\n"
+usage_locations:
+- file: vllm/config/lora.py:37
+  context: LoRAConfig.max_loras field definition (default 1, ge=1)
+- file: vllm/engine/arg_utils.py:1484
+  context: CLI argument registration for --max-loras
+- file: vllm/engine/arg_utils.py:2461
+  context: Passed into LoRAConfig when enable_lora is set
+- file: vllm/v1/core/sched/scheduler.py:852
+  context: Assert scheduled LoRA count <= max_loras
+- file: vllm/v1/core/sched/scheduler.py:897
+  context: Defer waiting requests that would exceed max_loras
+- file: vllm/v1/cudagraph_dispatcher.py:124
+  context: Graph capture cases derived from max_loras
+- file: vllm/v1/cudagraph_dispatcher.py:295
+  context: Dispatch uses max_loras + 1 when not specializing
+- file: vllm_ascend/worker/model_runner_v1.py:4189
+  context: Ascend v1 worker forces num_active_loras = max_loras for dummy run
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:660
+  context: Ascend dyntra scheduler LoRA admission check
+- file: vllm_ascend/core/recompute_scheduler.py:462
+  context: Ascend recompute scheduler LoRA admission check
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:388
+  context: Ascend balance-schedule patch LoRA admission check
+related_parameters:
+- name: --enable-lora
+  relation: max_loras only takes effect when LoRA is enabled
+- name: --max-cpu-loras
+  relation: Must be >= max_loras; controls CPU-side adapter cache size
+- name: --max-lora-rank
+  relation: Together with max_loras determines LoRA kernel/graph memory footprint
+- name: --specialize-active-lora
+  relation: When enabled, captures graphs per active-LoRA count (powers of 2 up to max_loras) instead of a single max_loras+1
+    graph
+- name: --fully-sharded-loras
+  relation: Sharding strategy interacts with per-adapter memory cost
+constraints:
+- --max-loras must be an integer greater than or equal to 1.
+- --max-cpu-loras, if set, must be greater than or equal to --max-loras.
+- The number of distinct LoRA adapters active in a single batch can never exceed --max-loras; requests introducing additional
+  adapters are deferred to a later scheduling step.
+tuning_advice:
+  summary: Set --max-loras to the peak number of distinct adapters you expect concurrently in one batch; keep it at 1 for
+    single-adapter fast path, raise only when multi-adapter concurrency is required.
+  suggested_values:
+  - scenario: Single adapter serving (one LoRA, or base model only)
+    value: 1
+    reason: Keeps a single device slot and uses the fast path; minimizes graph capture variants and dummy-run cost on Ascend.
+  - scenario: Multi-tenant serving with a small set of hot adapters
+    value: 4
+    reason: Allows up to 4 distinct adapters co-scheduled per batch while keeping graph capture and memory overhead modest.
+  - scenario: Many adapters with high concurrency, memory available
+    value: 8
+    reason: Increases co-scheduling of distinct adapters; pair with --specialize-active-lora to avoid padding every batch
+      to max_loras+1.
+  caveats:
+  - On Ascend v1 worker the dummy run always uses max_loras active adapters, so avoid over-provisioning --max-loras beyond
+    real concurrency needs.
+  - Ensure --max-cpu-loras >= --max-loras to avoid adapter eviction thrash.
+  - Consider enabling --specialize-active-lora when max_loras > 1 to capture per-count graphs and reduce padding overhead.
+  quick_guide: Use --max-loras 1 for single-adapter fast path; raise to your peak concurrent adapter count only when multi-adapter
+    batching is needed.
+analysis_date: '2026-10-27'

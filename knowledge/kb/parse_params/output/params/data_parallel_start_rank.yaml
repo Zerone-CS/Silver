@@ -1,0 +1,129 @@
+name: --data-parallel-start-rank
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1139
+- vllm/engine/arg_utils.py:498
+- vllm/engine/arg_utils.py:2262
+- vllm/entrypoints/cli/serve.py:92
+- vllm/entrypoints/launchers/dp_supervisor.py:43
+value_type: int
+default: null
+valid_choices: Any non-negative integer offset; must be consistent with data_parallel_size and data_parallel_size_local across
+  nodes
+cli_example: --data-parallel-start-rank 2
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+impact_detail: 'This parameter does not directly affect kernel execution, memory allocation, or
+
+  communication bandwidth. It is a launch-time bookkeeping value used to assign
+
+  each node''s local data-parallel ranks a distinct offset in the global DP rank
+
+  space. In vllm/engine/arg_utils.py:2262, when data_parallel_size_local is set
+
+  and data_parallel_start_rank is not None (and not headless), the engine infers
+
+  hybrid LB mode (data_parallel_hybrid_lb = True) and computes
+
+  data_parallel_rank = data_parallel_start_rank. In vllm/entrypoints/cli/serve.py:92,
+
+  an explicit start rank also triggers hybrid-LB detection, which changes
+
+  api_server_count defaulting (hybrid LB uses local DP size for internal LB of
+
+  local ranks only). In vllm/entrypoints/launchers/dp_supervisor.py:43, the start
+
+  rank is used to compute per-child data_parallel_rank for multi-port external LB.
+
+  On Ascend, the actual DP communication (HCCL all-reduce/all-gather for MoE
+
+  token dispatch and DP synchronization) is driven by the resulting global rank
+
+  assignment, not by this flag itself. A wrong value causes rank collisions or
+
+  gaps, which breaks HCCL group formation and can hang or crash the run rather
+
+  than degrade performance gracefully. Correctly set, it enables multi-node DP
+
+  deployments (e.g. DeepSeek-R1/V3.1 dp4 tp4 across 2 nodes) to scale throughput
+
+  linearly with DP replicas. vllm-ascend does not override this parameter; it is
+
+  consumed by upstream launch logic and the resulting parallel_config is used by
+
+  Ascend workers.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1139
+  context: CLI argument definition (-dpr / --data-parallel-start-rank), type=int, help 'Starting data parallel rank for secondary
+    nodes.'
+- file: vllm/engine/arg_utils.py:498
+  context: 'EngineArgs field data_parallel_start_rank: int | None = None'
+- file: vllm/engine/arg_utils.py:2262
+  context: Infers hybrid LB mode and sets data_parallel_rank from start rank when data_parallel_size_local is set and not
+    headless
+- file: vllm/entrypoints/cli/serve.py:92
+  context: Detects hybrid LB mode when start rank is set; affects api_server_count defaulting and mutual-exclusion check with
+    other LB modes
+- file: vllm/entrypoints/launchers/dp_supervisor.py:43
+  context: infer_multi_port_external_lb_start_rank uses start rank (or node_rank * local_size) to assign child data_parallel_rank
+related_parameters:
+- name: --data-parallel-size
+  relation: Total global DP ranks; start rank + local size must stay within this range
+- name: --data-parallel-size-local
+  relation: Number of DP ranks on this node; combined with start rank determines this node's rank range
+- name: --data-parallel-rank
+  relation: Explicit single-rank assignment; mutually exclusive with start-rank-based hybrid LB inference
+- name: --data-parallel-hybrid-lb
+  relation: Auto-enabled when start rank is set with local size; cannot combine with external/multi-port LB modes
+- name: --data-parallel-external-lb
+  relation: Mutually exclusive LB mode; serve.py raises if more than one LB mode is selected
+- name: --data-parallel-multi-port-external-lb
+  relation: Mutually exclusive LB mode; start rank is used as the base for per-child ranks
+- name: --headless
+  relation: When headless is set, hybrid LB inference from start rank is skipped
+- name: --node-rank
+  relation: Fallback for computing start rank in multi-port external LB when start rank is unset
+constraints:
+- Only one data-parallel load balancing mode may be active; setting --data-parallel-start-rank together with --data-parallel-external-lb
+  or --data-parallel-multi-port-external-lb raises a ValueError.
+- The start rank plus --data-parallel-size-local must not exceed --data-parallel-size, otherwise rank ranges overlap or exceed
+  the global DP rank space.
+- Each node must be given a distinct, non-overlapping start rank so that all global DP ranks are covered exactly once.
+- Hybrid LB mode is only inferred from --data-parallel-start-rank when --data-parallel-size-local is also set and --headless
+  is not set.
+- When --data-parallel-size-local equals --data-parallel-size (single node), hybrid LB mode is disabled regardless of the
+  start rank.
+tuning_advice:
+  summary: Set --data-parallel-start-rank to node_rank × data_parallel_size_local on every secondary node in multi-node DP
+    deployments; leave unset on the head node.
+  suggested_values:
+  - scenario: Head node (Node 0) of a multi-node DP deployment
+    value: 0
+    reason: Node 0 owns the first local_size global ranks; explicit 0 is treated as set (is not None) and correctly infers
+      hybrid LB, per test_data_parallel_start_rank_zero_infers_hybrid_lb.
+  - scenario: Second node in a 2-node dp4 tp4 deployment (2 local DP ranks per node)
+    value: 2
+    reason: 'Matches the vllm-ascend DeepSeek-R1/V3.1 tutorial: Node 1 starts at rank 2 so its two local ranks occupy global
+      ranks 2 and 3.'
+  - scenario: Nth secondary node with L local DP ranks per node
+    value: node_rank * L
+    reason: Guarantees contiguous, non-overlapping global rank ranges across nodes; dp_supervisor uses the same formula as
+      fallback.
+  caveats:
+  - A wrong start rank does not degrade performance gracefully — it causes rank collisions or gaps that break HCCL group formation
+    and typically hang or crash the job.
+  - Setting --data-parallel-start-rank implicitly enables hybrid LB mode, which changes api_server_count defaulting to the
+    local DP size; be aware if you also tune --api-server-count.
+  - On Ascend, DP synchronization and MoE all-to-all use HCCL; the global rank assignment derived from this flag must match
+    across all nodes or collective ops will deadlock.
+  - For single-node deployments the flag is unnecessary; vllm-ascend docs recommend dp4 tp4 over dp2 tp8 for single-node DeepSeek
+    deployments.
+  quick_guide: On secondary nodes set --data-parallel-start-rank = node_rank × --data-parallel-size-local; omit it on the
+    head node.
+analysis_date: '2026-10-27'

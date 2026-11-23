@@ -1,0 +1,79 @@
+name: kv_transfer_config.kv_connector_extra_config.enable_offload_prefix_caching
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/preempt_offload_connector.md:51
+- docs/source/user_guide/feature_guide/preempt_offload_connector.md:274
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'This flag is a nested field inside kv_transfer_config.kv_connector_extra_config for the
+
+  PreemptOffloadConnector in vllm-ascend. It is not defined in upstream vLLM; it is an
+
+  Ascend-specific connector option. When enabled, the connector allows CPU offload blocks to be
+
+  shared across requests that have full hashed blocks with the same prefix-cache hash. This
+
+  reduces the number of distinct CPU blocks that must be allocated and copied for repeated
+
+  prefixes, lowering CPU memory pressure and avoiding redundant D2H/H2D transfers for shared
+
+  prefixes. Because the connector''s D2H/H2D transfers currently use basic torch copy operations
+
+  (not throughput-optimized), reducing redundant copies can indirectly improve effective
+
+  throughput during preemption-heavy decode workloads. The effect is on the offload path only;
+
+  it does not change the main KV cache allocation or attention kernel behavior. The feature is
+
+  experimental and disabled by default.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/preempt_offload_connector.md:51
+  context: Documents enable_offload_prefix_caching as an optional connector extra config that enables CPU block sharing for
+    full hashed blocks with the same prefix-cache hash; default false.
+- file: docs/source/user_guide/feature_guide/preempt_offload_connector.md:274
+  context: Notes that enable_offload_prefix_caching is experimental and disabled by default.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Must be set to PreemptOffloadConnector for this option to have any effect.
+- name: kv_transfer_config.kv_role
+  relation: Set to kv_consumer on Decode nodes; the connector (and this option) is only active on the Decode side of P/D disaggregation.
+- name: kv_transfer_config.kv_connector_extra_config.cpu_bytes_to_use_per_rank
+  relation: Defines the CPU offload budget; prefix sharing reduces how much of this budget is consumed by duplicate prefixes.
+- name: kv_transfer_config.kv_connector_extra_config.offload_host_memory_ratio
+  relation: Alternative CPU capacity sizing; prefix sharing affects effective utilization of the offloaded block pool.
+- name: scheduler_config.recompute_scheduler_enable
+  relation: Preempt offload requires the vLLM-Ascend recompute scheduler; without it the connector is inactive.
+constraints:
+- The option only takes effect when kv_connector is set to PreemptOffloadConnector.
+- The feature requires the vLLM V1 engine and the vLLM-Ascend recompute scheduler.
+- The feature is only supported on Decode nodes in P/D disaggregation and is not supported in PD-mixed or normal non-P/D deployments.
+- Do not enable scheduler_config.recompute_scheduler_enable in PD-mixed deployments, as preempt offload will not be active.
+tuning_advice:
+  summary: Leave enable_offload_prefix_caching disabled by default; enable only for controlled testing of prefix sharing on
+    Decode nodes with PreemptOffloadConnector.
+  suggested_values:
+  - scenario: Production P/D-disaggregated Decode node with PreemptOffloadConnector
+    value: false
+    reason: The feature is experimental and disabled by default; enabling it in production risks unvalidated behavior on the
+      offload path.
+  - scenario: Testing workloads with many repeated long prefixes and preemption pressure
+    value: true
+    reason: CPU block sharing for identical prefix hashes can reduce duplicate CPU block allocation and redundant D2H/H2D
+      copies, easing CPU memory pressure during preemption.
+  caveats:
+  - Only meaningful when kv_connector is PreemptOffloadConnector and the recompute scheduler is active on a Decode node.
+  - Transfer throughput is not optimized, so do not expect large latency gains from prefix sharing alone.
+  - Monitor CPU memory and shared memory limits; insufficient CPU capacity causes offload to be skipped.
+  quick_guide: Keep false unless explicitly testing prefix sharing with PreemptOffloadConnector on Decode nodes.
+analysis_date: '2026-10-27'

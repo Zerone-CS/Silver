@@ -1,0 +1,100 @@
+name: pooler.tok_pooling_type
+type: nested
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:746
+- vllm/config/model.py:2068
+- vllm/model_executor/layers/pooler/tokwise/poolers.py:104
+- vllm/model_executor/layers/pooler/tokwise/poolers.py:127
+- vllm/model_executor/models/interfaces_base.py:170
+- vllm/pooling_params.py:142
+value_type: str
+default: ALL
+valid_choices:
+- ALL
+- STEP
+- MEAN
+- CLS
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'pooler.tok_pooling_type selects the tokenwise pooling method used by token
+
+  embedding / token classification models (pooler_for_token_embed and
+
+  pooler_for_token_classify in vllm/model_executor/layers/pooler/tokwise/poolers.py).
+
+  It is resolved via get_tok_pooling_method(pooler_config.get_tok_pooling_type())
+
+  and only affects the small post-model pooling head, not the transformer forward
+
+  pass. Its main runtime-relevant effect is indirect: in
+
+  ModelConfig.is_chunked_prefill_supported (vllm/config/model.py:2068), a decoder
+
+  attention model with tok_pooling_type == "STEP" (or seq_pooling_type MEAN/CLS)
+
+  disables chunked prefill. Disabling chunked prefill can reduce prefill
+
+  throughput and increase latency for long prompts, so the choice of STEP can
+
+  have a measurable scheduling impact. For encoder-only pooling models chunked
+
+  prefill is already unsupported regardless. The pooling computation itself
+
+  (ALL vs MEAN vs CLS vs STEP) is a cheap reduction over the sequence dimension
+
+  and has negligible cost relative to the model forward. No vllm-ascend override
+
+  of this parameter was found in the provided context; it is a pure upstream
+
+  vLLM pooling-model configuration.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:746
+  context: Resolves tok_pooling_type from user value, sentence_transformers config, or model default (default_tok_pooling_type).
+- file: vllm/config/model.py:2068
+  context: is_chunked_prefill_supported returns False for decoder models when tok_pooling_type == STEP.
+- file: vllm/model_executor/layers/pooler/tokwise/poolers.py:104
+  context: pooler_for_token_embed builds the token pooling method from tok_pooling_type.
+- file: vllm/model_executor/layers/pooler/tokwise/poolers.py:127
+  context: pooler_for_token_classify builds the token pooling method from tok_pooling_type.
+- file: vllm/pooling_params.py:142
+  context: Validates that step_tag_id/returned_token_ids are only used when tok_pooling_type == STEP.
+- file: vllm/model_executor/models/interfaces_base.py:170
+  context: default_tok_pooling_type ClassVar (default ALL) used as model default.
+related_parameters:
+- name: pooler.seq_pooling_type
+  relation: Sibling pooling config; together with tok_pooling_type determines chunked prefill support for decoder pooling
+    models.
+- name: pooler.step_tag_id
+  relation: Only valid when tok_pooling_type == STEP; otherwise raises VLLMValidationError.
+- name: pooler.returned_token_ids
+  relation: Only valid when tok_pooling_type == STEP; otherwise raises VLLMValidationError.
+- name: enable_chunked_prefill
+  relation: Effectively disabled for decoder pooling models when tok_pooling_type == STEP.
+constraints:
+- step_tag_id and returned_token_ids may only be set when tok_pooling_type is STEP, otherwise a VLLMValidationError is raised.
+- For decoder-attention pooling models, chunked prefill is not supported when tok_pooling_type is STEP.
+- For encoder-only pooling models, chunked prefill is not supported regardless of tok_pooling_type.
+tuning_advice:
+  summary: Leave tok_pooling_type at the model default (usually ALL) unless the model requires STEP; avoid STEP on decoder
+    pooling models if chunked prefill throughput matters.
+  suggested_values:
+  - scenario: Standard embedding / token-classification models (BERT, RoBERTa, e5, bge)
+    value: ALL
+    reason: Model default and does not disable chunked prefill; pooling cost is negligible.
+  - scenario: Models that require step-based token pooling (e.g. specific reranker/classifier checkpoints)
+    value: STEP
+    reason: Required for step_tag_id/returned_token_ids semantics; accept the chunked-prefill tradeoff.
+  caveats:
+  - On decoder pooling models, STEP disables chunked prefill — benchmark long-prompt prefill latency before adopting it.
+  - Do not set step_tag_id or returned_token_ids unless tok_pooling_type is STEP, or validation will fail.
+  quick_guide: Keep the model default (ALL) unless the checkpoint mandates STEP; STEP costs chunked prefill on decoder pooling
+    models.
+analysis_date: '2026-10-27'

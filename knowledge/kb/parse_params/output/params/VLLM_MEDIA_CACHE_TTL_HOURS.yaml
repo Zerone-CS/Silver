@@ -1,0 +1,89 @@
+name: VLLM_MEDIA_CACHE_TTL_HOURS
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:968
+- vllm/envs.py:76
+- vllm/envs.py:2313
+- vllm/multimodal/media/connector.py:219
+value_type: float
+default: 24
+valid_choices: any non-negative float (hours); 0 or negative effectively disables TTL-based retention
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_MEDIA_CACHE_TTL_HOURS only takes effect when VLLM_MEDIA_CACHE is set to a
+
+  writable directory (vllm/multimodal/media/connector.py:208-219). In that case the
+
+  value is converted to seconds (envs.VLLM_MEDIA_CACHE_TTL_HOURS * 3600) and stored
+
+  as self._media_cache_ttl_secs, which is consulted in _get_cached_bytes() to decide
+
+  whether a cached media file is still valid (connector.py:232-238). It is a pure
+
+  API-server-side media download cache policy: "it does not touch the NPU, HCCL, CANN,"
+
+  KV cache, or the model execution path. Its only performance effect is indirect —
+
+  a longer TTL means more URL media fetches are served from local disk instead of
+
+  being re-downloaded, reducing request latency for multimodal inputs that reference
+
+  the same URLs. It does not affect token throughput or NPU memory. vllm-ascend does
+
+  not reference or override this variable anywhere; it is inherited unchanged from
+
+  upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/envs.py:968
+  context: Environment variable definition; parsed as float with default 24 hours.
+- file: vllm/envs.py:76
+  context: 'Type annotation VLLM_MEDIA_CACHE_TTL_HOURS: float = 24 in the envs module.'
+- file: vllm/envs.py:2313
+  context: Listed among env vars propagated to worker processes.
+- file: vllm/multimodal/media/connector.py:219
+  context: Converted to seconds and stored as _media_cache_ttl_secs when media cache is enabled.
+- file: vllm/multimodal/media/connector.py:232
+  context: _get_cached_bytes() checks TTL to decide whether a cached entry is expired.
+related_parameters:
+- name: VLLM_MEDIA_CACHE
+  relation: Master switch; TTL has no effect unless this is set to a writable directory.
+- name: VLLM_MEDIA_CACHE_MAX_SIZE_MB
+  relation: Companion eviction policy; entries are evicted by LRU size limit or by TTL, whichever triggers first.
+- name: VLLM_IMAGE_FETCH_TIMEOUT
+  relation: Fetch timeout applies only on cache misses; a longer TTL reduces how often the timeout path is hit.
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retry policy applies on cache misses; longer TTL reduces retry exposure.
+constraints:
+- VLLM_MEDIA_CACHE_TTL_HOURS has no effect unless VLLM_MEDIA_CACHE is set to an existing, writable directory.
+- The value is parsed as a float; non-numeric strings will raise a ValueError at startup.
+tuning_advice:
+  summary: 'Leave at the default 24 hours for typical multimodal serving; only tune it when
+
+    you have a stable set of media URLs and want to trade host disk for lower
+
+    per-request fetch latency. It has no direct Ascend NPU performance effect.
+
+    '
+  suggested_values:
+  - scenario: Default multimodal serving with occasional repeated media URLs
+    value: 24
+    reason: Default balances cache hit rate against staleness and disk usage.
+  - scenario: Benchmark or load test replaying the same image/video URLs repeatedly
+    value: 168
+    reason: A one-week TTL keeps all replayed media resident so fetch latency does not pollute latency measurements.
+  - scenario: URLs whose content changes frequently (e.g. live camera snapshots)
+    value: 0.1
+    reason: Short TTL forces re-fetch so stale media is not served; combine with a modest VLLM_MEDIA_CACHE_MAX_SIZE_MB.
+  caveats:
+  - Only meaningful when VLLM_MEDIA_CACHE is set; otherwise the value is ignored.
+  - Does not change NPU throughput or memory; do not expect Ascend-side gains from tuning it.
+  - Pair with VLLM_MEDIA_CACHE_MAX_SIZE_MB to bound host disk consumption.
+  quick_guide: Keep 24h by default; raise for repeated-URL workloads, lower for volatile URLs — no direct NPU impact.
+analysis_date: '2026-10-27'

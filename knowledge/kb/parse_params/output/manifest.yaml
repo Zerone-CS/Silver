@@ -1,0 +1,20 @@
+build_timestamp: '2026-10-27T07:34:50.486631+00:00'
+builder_version: 1.0.0
+input_parameters_file: parameters.json
+input_total_params: 1060
+stage1_coarse_filter:
+  passed: 888
+  skipped: 172
+stage2_deep_analysis:
+  analyzed: 888
+  performance_high: 122
+  performance_medium: 254
+  performance_low: 382
+  confirmed_perf_related: 758
+  confirmed_not_perf: 130
+  errors: 0
+output_yaml_count: 756
+output_skipped_count: 302
+source_commits:
+  vllm: ced6857
+  vllm-ascend: 8fde6d4e3

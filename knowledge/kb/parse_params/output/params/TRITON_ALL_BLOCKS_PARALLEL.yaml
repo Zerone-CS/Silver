@@ -1,0 +1,83 @@
+name: TRITON_ALL_BLOCKS_PARALLEL
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ops/rotary_embedding.py:630
+- vllm_ascend/ops/rotary_embedding.py:628
+value_type: str
+default: unset
+valid_choices: any string; the code only checks for the literal value "1" to mean enabled
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'TRITON_ALL_BLOCKS_PARALLEL is a Triton runtime environment variable that controls how
+
+  Triton launches its grid of blocks. In vllm-ascend it is only referenced inside
+
+  AscendMRotaryEmbedding.forward_triton (vllm_ascend/ops/rotary_embedding.py:630). This
+
+  path is taken for interleaved mrope models (e.g. Qwen2-VL style) when HAS_TRITON is true
+
+  and positions.ndim == 2 and self.mrope_interleaved (see forward_oot at line 652-654).
+
+  The code compares query_shape[0] (the token/batch dimension) against the empirical
+
+  threshold _ASCEND_TRITON_GRID_LIMIT = 65535. When the token count exceeds this limit and
+
+  the env var is not already "1", it sets os.environ["TRITON_ALL_BLOCKS_PARALLEL"] = "1"
+
+  before calling triton_mrope. The purpose (per the inline comment) is to avoid
+
+  scheduler/runtime failures when the Triton grid becomes very large on Ascend NPU. This is
+
+  a correctness/safety guard rather than a throughput knob: it does not change the math of
+
+  the rotary embedding, only how Triton schedules blocks. Its performance effect is
+
+  therefore indirect and small — it prevents launch failures (which would otherwise crash
+
+  or fall back) for very large batches, but does not materially change steady-state
+
+  latency/throughput for normal batch sizes. It is auto-set by vllm-ascend, so users rarely
+
+  need to touch it.
+
+  '
+usage_locations:
+- file: vllm_ascend/ops/rotary_embedding.py:630
+  context: Conditionally sets os.environ['TRITON_ALL_BLOCKS_PARALLEL']='1' when query token count exceeds _ASCEND_TRITON_GRID_LIMIT
+    (65535) before calling triton_mrope
+- file: vllm_ascend/ops/rotary_embedding.py:652
+  context: forward_oot dispatches to forward_triton for interleaved mrope when HAS_TRITON and positions.ndim==2
+related_parameters:
+- name: HAS_TRITON
+  relation: The Triton mrope path (and thus this env var) is only used when Triton is available
+- name: mrope_interleaved
+  relation: forward_triton is only taken when mrope_interleaved is true
+- name: _ASCEND_TRITON_GRID_LIMIT
+  relation: Internal threshold (65535) that triggers auto-setting this env var
+constraints:
+- The env var is only consulted on the Triton mrope path (interleaved mrope with Triton available); it has no effect on the
+  torch_npu.npu_mrope path.
+- Only the literal string value "1" is treated as enabled; any other value is treated as disabled.
+tuning_advice:
+  summary: Leave unset and let vllm-ascend auto-enable it for large interleaved-mrope batches; only set manually if you hit
+    Triton grid launch failures.
+  suggested_values:
+  - scenario: Default / normal batch sizes on interleaved mrope models
+    value: unset
+    reason: vllm-ascend auto-sets it to "1" only when query token count exceeds 65535, avoiding unnecessary scheduling changes
+      for small grids.
+  - scenario: Very large batches (>65535 tokens) hitting Triton scheduler/runtime failures
+    value: '1'
+    reason: Enables all-blocks-parallel Triton scheduling to avoid grid launch failures on Ascend NPU, as the code does automatically
+      above the threshold.
+  caveats:
+  - Do not force it to "1" globally; it is a safety guard for large grids, not a general throughput optimization.
+  - Has no effect unless the model uses interleaved mrope and the Triton path is active.
+  quick_guide: Usually leave unset — vllm-ascend enables it automatically for large interleaved-mrope grids.
+analysis_date: '2026-10-27'

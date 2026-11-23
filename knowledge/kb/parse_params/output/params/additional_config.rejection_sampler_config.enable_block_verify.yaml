@@ -1,0 +1,100 @@
+name: additional_config.rejection_sampler_config.enable_block_verify
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:348
+- vllm_ascend/sample/rejection_sampler.py:435
+- vllm_ascend/model_executor/warmup/rejection_sampler_triton_warmup.py:332
+value_type: bool
+default: false
+valid_choices: true or false (boolean; string values like "true"/"false" are coerced by pydantic)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only parameter (defined in vllm_ascend/ascend_config.py:348 as part of
+
+  RejectionSamplerConfig, read from vllm_config.additional_config["rejection_sampler_config"]).
+
+  It controls the rejection-sampling algorithm used during speculative decoding on Ascend NPU.
+
+
+  When enabled AND max_spec_len >= 3, vllm_ascend/sample/rejection_sampler.py:435 sets
+
+  using_block_verify=True, which switches the rejection sampler from per-token independent
+
+  verification to block (joint cumulative-product) verification. Block verify evaluates all draft
+
+  tokens as a block using cumulative probability products, which raises the acceptance rate of
+
+  draft tokens. A higher acceptance rate means more draft tokens are kept per verification step,
+
+  reducing wasted target-model forward passes and lowering end-to-end latency / increasing
+
+  effective throughput for spec-decode workloads.
+
+
+  The flag also gates the Triton warmup path: "rejection_sampler_triton_warmup.py:332 computes"
+
+  block_verify = max_spec_len >= 3 and enable_block_verify, so enabling it triggers additional
+
+  warmup of the block-verify Triton kernels (one-time startup cost, avoids first-request JIT
+
+  latency). The trade-off is reduced sampling precision (documented in additional_config.md:199),
+
+  since the joint verification is a heuristic approximation of the true rejection-sampling
+
+  distribution.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:348
+  context: Field definition of RejectionSamplerConfig.enable_block_verify (default False), parsed from additional_config.
+- file: vllm_ascend/sample/rejection_sampler.py:435
+  context: 'Runtime dispatch: using_block_verify = max_spec_len >= 3 and enable_block_verify; selects block-verify rejection
+    sampling kernel.'
+- file: vllm_ascend/sample/rejection_sampler.py:442
+  context: Raises ValueError if synthetic_mode is combined with block verify.
+- file: vllm_ascend/model_executor/warmup/rejection_sampler_triton_warmup.py:332
+  context: Warmup path decides whether to pre-compile block-verify Triton kernels based on this flag and max_spec_len.
+related_parameters:
+- name: additional_config.rejection_sampler_config.enable_entropy_verify
+  relation: Sibling flag; entropy verify adjusts acceptance threshold by entropy and can be combined with block verify.
+- name: additional_config.rejection_sampler_config.posterior_threshold
+  relation: Used together in the block/entropy verify threshold computation; must be in (0, 1].
+- name: additional_config.rejection_sampler_config.posterior_alpha
+  relation: Scaling factor for entropy in threshold computation; must be >= 0.
+- name: speculative_config.num_speculative_tokens
+  relation: Block verify only activates when num_speculative_tokens (max_spec_len) >= 3; otherwise the flag has no effect.
+- name: synthetic_mode (rejection sampler)
+  relation: 'Mutually exclusive: block verify raises ValueError when synthetic_mode is enabled.'
+constraints:
+- Block verify only takes effect when num_speculative_tokens (max_spec_len) is at least 3; with fewer speculative tokens the
+  flag is silently ignored.
+- Enabling block verify together with synthetic_mode raises a ValueError; block verify must be disabled when using synthetic
+  rejection sampling.
+- The value is parsed as a boolean; string inputs such as "true"/"false" are coerced by pydantic.
+tuning_advice:
+  summary: Enable block verify for spec-decode workloads with num_speculative_tokens >= 3 to raise draft acceptance rate and
+    cut latency, accepting a small precision loss.
+  suggested_values:
+  - scenario: Speculative decoding with num_speculative_tokens >= 3 and latency/throughput priority
+    value: true
+    reason: Block (joint cumulative-product) verification raises acceptance rate, reducing wasted target forward passes and
+      lowering latency.
+  - scenario: Quality-critical generation or num_speculative_tokens < 3
+    value: false
+    reason: Block verify trades sampling precision for speed and is inactive below 3 speculative tokens anyway.
+  - scenario: Using synthetic_mode rejection sampling
+    value: false
+    reason: Block verify is incompatible with synthetic_mode and raises ValueError if both are set.
+  caveats:
+  - Verify num_speculative_tokens >= 3, otherwise the flag has no effect.
+  - Monitor output quality; combine with posterior_threshold/posterior_alpha tuning to control the precision trade-off.
+  - Expect a small one-time startup cost from block-verify Triton kernel warmup.
+  quick_guide: Set enable_block_verify=true only for spec-decode with >=3 draft tokens when you want higher acceptance rate
+    and lower latency over exact sampling precision.
+analysis_date: '2026-10-27'

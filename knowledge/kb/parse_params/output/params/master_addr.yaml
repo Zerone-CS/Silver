@@ -1,0 +1,96 @@
+name: --master-addr
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:281
+- vllm/engine/arg_utils.py:477
+- vllm/engine/arg_utils.py:1061
+- vllm/engine/arg_utils.py:2325
+- vllm/distributed/parallel_state.py:1813
+- vllm/v1/executor/multiproc_executor.py:155
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:59
+value_type: str
+default: 127.0.0.1
+valid_choices: Any valid IPv4/IPv6 address or resolvable hostname reachable from all nodes
+cli_example: --master-addr <ip-address>
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "--master-addr sets ParallelConfig.master_addr, which is the rendezvous address used to\nbootstrap the torch.distributed\
+  \ process group (and the ZMQ/MessageQueue control plane)\nwhen running multi-node with the mp executor.\n\nUpstream vLLM\
+  \ usage:\n- \"vllm/distributed/parallel_state.py:1813 — when nnodes > 1 (and not external_launcher /\"\n  elastic_ep), the\
+  \ distributed_init_method is built from master_addr:master_port. This is\n  the TCPStore rendezvous point that every rank\
+  \ connects to during init_process_group.\n- \"vllm/engine/arg_utils.py:2325 — in mp data-parallel mode, master_addr is also\
+  \ used as\"\n  the data_parallel_address (fallback to ParallelConfig.data_parallel_master_ip).\n- \"vllm/v1/executor/multiproc_executor.py:155\
+  \ — the DP group leader logs master_addr and\"\n  uses a locally-derived connect_ip for the MessageQueue; master_addr is\
+  \ the rendezvous\n  identity for the DP group.\n- \"vllm/config/parallel.py:843 — master_addr is explicitly excluded from\
+  \ the DP config hash,\"\n  so it does not affect collective-communication semantics validation.\n\nvllm-ascend override:\n\
+  - \"vllm_ascend/patch/platform/patch_multiproc_executor.py:59 — the Ascend-patched\"\n  multiproc executor passes connect_ip=self.parallel_config.master_addr\
+  \ directly into the\n  MessageQueue constructor (unlike upstream v1 which uses get_ip()). This means on Ascend\n  the master_addr\
+  \ value is the actual IP the MessageQueue binds/connects to for the\n  scheduler->worker broadcast channel. If master_addr\
+  \ is wrong or unreachable, the\n  MessageQueue connection fails and the engine cannot start; if it points to a slow or\n\
+  \  non-local interface, the per-step SchedulerOutput broadcast (which carries token/sample\n  metadata every decode step)\
+  \ incurs extra latency, directly hurting decode throughput.\n\nPerformance mechanism: \"master_addr itself is not a tuning\
+  \ knob for compute, but it\"\ndetermines the network path for the control-plane rendezvous and the MessageQueue\nbroadcast.\
+  \ On Ascend multi-node deployments, choosing a high-bandwidth, low-latency\ninterface (e.g. the RoCE/HCCL-facing NIC rather\
+  \ than a management NIC) reduces\nrendezvous time at startup and per-step control-plane latency. A misconfigured address\n\
+  causes hangs or startup failures rather than gradual slowdown.\n"
+usage_locations:
+- file: vllm/config/parallel.py:281
+  context: ParallelConfig.master_addr field definition, default 127.0.0.1, used for multi-node mp inference
+- file: vllm/engine/arg_utils.py:1061
+  context: CLI argument registration --master-addr in ParallelConfig argument group
+- file: vllm/engine/arg_utils.py:2325
+  context: Used as data_parallel_address fallback in mp data-parallel mode
+- file: vllm/distributed/parallel_state.py:1813
+  context: Builds distributed_init_method (TCPStore rendezvous) from master_addr:master_port when nnodes > 1
+- file: vllm/v1/executor/multiproc_executor.py:155
+  context: DP group leader logs master_addr; MessageQueue connect_ip derived locally upstream
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:59
+  context: 'Ascend override: MessageQueue connect_ip=self.parallel_config.master_addr (uses master_addr directly)'
+- file: vllm_ascend/distributed/weight_transfer/hccl_engine.py:33
+  context: HCCLWeightTransferInitInfo.master_address — separate weight-transfer rendezvous address (not the same field)
+related_parameters:
+- name: --master-port
+  relation: Companion port for the same rendezvous endpoint; must be set consistently with master_addr across all nodes
+- name: --nnodes
+  relation: master_addr is only used for rendezvous when nnodes > 1; with nnodes=1 the loopback address is used
+- name: --node-rank
+  relation: Each node must have a unique node-rank from 0 to nnodes-1; master_addr must be identical on all nodes
+- name: --distributed-executor-backend
+  relation: master_addr applies to the mp executor; with ray the Ray cluster handles rendezvous instead
+- name: --data-parallel-address
+  relation: In mp DP mode, master_addr is used as the data_parallel_address fallback when data_parallel_address is unset
+constraints:
+- master_addr must be identical on all nodes participating in the multi-node deployment.
+- master_addr must be an address reachable from every node (typically the head node's routable IP, not 127.0.0.1, for multi-node).
+- master_addr is only used for rendezvous when nnodes > 1; with a single node the loopback address is used instead.
+- master_addr must be paired with a consistent --master-port across all nodes.
+- Only the head node should start the API server; all nodes must use identical model, TP, PP, --nnodes, --master-addr, and
+  --master-port values.
+tuning_advice:
+  summary: Set --master-addr to the head node's high-bandwidth routable IP, identical on all nodes, when running multi-node
+    mp inference on Ascend.
+  suggested_values:
+  - scenario: Single-node deployment (nnodes=1)
+    value: 127.0.0.1
+    reason: Default loopback is sufficient; no cross-node rendezvous needed.
+  - scenario: Multi-node PP/TP with mp executor (Ascend)
+    value: <head-node RoCE/HCCL-facing IP>
+    reason: Use the head node's high-bandwidth NIC IP so the TCPStore rendezvous and Ascend MessageQueue broadcast travel
+      over the fast interconnect, minimizing startup and per-step control-plane latency.
+  - scenario: Multi-node DP with mp backend
+    value: <head-node routable IP>
+    reason: master_addr is used as the data_parallel_address fallback; must be reachable from all DP nodes.
+  caveats:
+  - Do not use 127.0.0.1 for multi-node; it will not be reachable from other nodes and rendezvous will hang.
+  - Ensure the chosen interface is the same one used for HCCL communication to avoid routing the control plane over a slow
+    management network.
+  - Verify master_addr is identical across all nodes and matches --master-port; mismatches cause silent hangs rather than
+    clear errors.
+  quick_guide: For multi-node Ascend mp deployments, set --master-addr to the head node's fast NIC IP on every node, paired
+    with a matching --master-port.
+analysis_date: '2026-10-27'

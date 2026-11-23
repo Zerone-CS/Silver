@@ -1,0 +1,105 @@
+name: --dp-rank-start
+type: cli
+category: parallelism
+scope: vllm-ascend
+source_file:
+- examples/external_online_dp/launch_online_dp.py:13
+- examples/external_online_dp/launch_online_dp.py:26
+- examples/external_online_dp/launch_online_dp.py:56
+- tools/docs_codegen/converters.py:349
+- tests/e2e/common/multi_node/external_dp/external_dp_config.py:52
+value_type: int
+default: 0
+valid_choices: any non-negative integer; must satisfy dp_rank_start + dp_size_local <= dp_size
+cli_example: --dp-rank-start 0
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+impact_detail: '--dp-rank-start is NOT a vLLM or vllm-ascend engine parameter. It is a helper
+
+  argument of the example launcher script examples/external_online_dp/launch_online_dp.py,
+
+  which spawns one vLLM engine process per local DP rank. The script computes
+
+  dp_rank = dp_rank_start + i for i in range(dp_size_local) (line 56) and passes
+
+  that rank to run_dp_template.sh, which ultimately sets the engine''s data-parallel
+
+  rank (--data-parallel-rank / DP_RANK). The value therefore only determines the
+
+  global DP rank numbering assigned to each locally launched engine; it does not
+
+  change any kernel, memory allocation, or communication primitive by itself.
+
+  Its performance relevance is indirect: "correct rank numbering is required for the"
+
+  external DP topology (dp_size, dp_size_local, dp_address, dp_rpc_port) to form a
+
+  consistent global DP group. If ranks are mis-numbered (overlapping or out of range),
+
+  the DP group either fails to initialize or routes requests to the wrong engine,
+
+  which manifests as load imbalance across DP ranks and reduced aggregate throughput.
+
+  On Ascend, DP ranks communicate via HCCL for the DP all-reduce/all-gather used in
+
+  expert-parallel MoE and DP attention; a wrong rank offset breaks that HCCL group
+
+  formation. The parameter itself has no direct latency/memory effect.
+
+  '
+usage_locations:
+- file: examples/external_online_dp/launch_online_dp.py:26
+  context: Reads args.dp_rank_start into dp_rank_start local variable.
+- file: examples/external_online_dp/launch_online_dp.py:56
+  context: Computes per-process dp_rank = dp_rank_start + i and passes it to run_dp_template.sh as DP_RANK.
+- file: tools/docs_codegen/converters.py:349
+  context: Maps config field dp_rank_start to the --dp-rank-start CLI flag when generating launch scripts.
+- file: tests/e2e/common/multi_node/external_dp/external_dp_config.py:52
+  context: NodeInfo.dp_rank_start parsed from external DP YAML config (default 0).
+related_parameters:
+- name: --dp-size
+  relation: Total number of DP ranks across all nodes; dp_rank_start + dp_size_local must not exceed it.
+- name: --dp-size-local
+  relation: Number of DP ranks launched on this node; ranks assigned are dp_rank_start .. dp_rank_start + dp_size_local -
+    1.
+- name: --dp-address
+  relation: IP of the DP master node (node 0) used for DP RPC coordination; rank numbering must be consistent with it.
+- name: --dp-rpc-port
+  relation: RPC port for DP master communication; all ranks in the DP group must share it.
+- name: --vllm-start-port
+  relation: Engine port = vllm_start_port + local index; independent of dp_rank_start but co-configured per node.
+constraints:
+- dp_rank_start + dp_size_local must not exceed dp_size, otherwise two nodes will claim the same global DP rank and the DP
+  group will fail to form.
+- Each node in a multi-node external DP deployment must be given a distinct, non-overlapping dp_rank_start so that the union
+  of local ranks covers 0..dp_size-1 exactly once.
+- The parameter is only meaningful when using the external_online_dp launcher; it is not a vLLM engine flag and has no effect
+  if passed directly to vllm serve.
+tuning_advice:
+  summary: 'Set dp_rank_start to the cumulative number of DP ranks on all preceding nodes so
+
+    that global DP ranks are contiguous and non-overlapping across the cluster.
+
+    '
+  suggested_values:
+  - scenario: Single-node external DP (all DP ranks on one node)
+    value: 0
+    reason: With dp_size_local == dp_size, the node owns all ranks starting at 0.
+  - scenario: Multi-node DP8TP4 prefill, 4 nodes each with 1 local DP rank (DP8 total)
+    value: node_index (0,1,2,3 per node)
+    reason: Docs example assigns dp_rank_start=0/1/2/3 to nodes .1-.4 so each node owns one distinct global rank.
+  - scenario: Multi-node DP8TP4 decode, 4 nodes each with 2 local DP ranks
+    value: 2 * node_index (0,2,4,6 per node)
+    reason: Docs example assigns dp_rank_start=0/2/4/6 to nodes .5-.8, giving each node two contiguous ranks and covering
+      0..7.
+  caveats:
+  - Mis-numbering ranks (overlap or gap) does not raise a clear error at launch; it surfaces later as HCCL group-formation
+    failure or skewed request distribution across DP engines, hurting aggregate throughput.
+  - dp_rank_start is a launcher-script argument, not an engine flag; do not confuse it with vLLM's --data-parallel-rank which
+    the template script derives from it.
+  - Keep dp_rank_start consistent with the dp_address master node and dp_rpc_port; all nodes must agree on the same DP group
+    topology.
+  quick_guide: Set dp_rank_start to the sum of dp_size_local over all previous nodes; verify the union of ranks equals 0..dp_size-1.
+analysis_date: '2026-10-27'

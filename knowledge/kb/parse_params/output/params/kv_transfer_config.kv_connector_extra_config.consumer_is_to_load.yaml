@@ -1,0 +1,89 @@
+name: kv_transfer_config.kv_connector_extra_config.consumer_is_to_load
+type: nested
+category: kv_cache
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1537
+- docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:895
+- docs/source/tutorials/models/GLM5.3-Flash.md:1017
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a nested field inside kv_transfer_config.kv_connector_extra_config consumed by the
+
+  AscendStoreConnector (KV Cache Pool / Ascend Store) path in vllm-ascend. Per the docs, it
+
+  controls whether the Decode node loads KV Cache from the KV Pool. When enabled, the Decode
+
+  worker issues pool lookups/loads for cached prefixes instead of recomputing them, which can
+
+  reduce prefill-equivalent computation and lower time-to-first-token for repeated prefixes.
+
+  When disabled (default false), the Decode node does not load from the pool, so no pool-load
+
+  latency is incurred and no pool memory is contributed by the Decode side. The parameter
+
+  therefore trades pool-load latency and pool memory footprint against avoided recomputation.
+
+  In the documented GLM5.3-Flash PD-disaggregated topology, Decode receives KV through the
+
+  P->D connector (MooncakeConnectorV2) and keeps consumer_is_to_load/consumer_is_to_put
+
+  disabled, contributing no pool memory; enabling it on Decode would only be meaningful when
+
+  the pool layout matches the Decode TP layout (docs note TP8 pool entries are not loaded
+
+  directly into TP1 Decode engines).
+
+  '
+usage_locations:
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:1537
+  context: 'Reference table entry: consumer_is_to_load (bool, default false) - whether Decode node loads KV Cache from KV
+    Pool.'
+- file: docs/source/user_guide/feature_guide/kv_cache_pool_ascend_store.md:895
+  context: Notes that consumer_is_to_put and consumer_is_to_load can be configured via kv_connector_extra_config.
+- file: docs/source/tutorials/models/GLM5.3-Flash.md:1017
+  context: PD-disaggregated deployment keeps consumer_is_to_load and consumer_is_to_put disabled on Decode.
+related_parameters:
+- name: kv_transfer_config.kv_connector_extra_config.consumer_is_to_put
+  relation: Companion flag controlling whether the Decode node writes KV into the pool; typically configured together.
+- name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+  relation: Per-layer KV access option; only supported on the Prefill node, interacts with pool load/save behavior.
+- name: kv_transfer_config.kv_connector_extra_config.backend
+  relation: Selects the KV Pool backend (mooncake/memcache/yuanrong) that the load path uses.
+- name: kv_transfer_config.kv_connector_extra_config.load_async
+  relation: Controls whether pool loading is asynchronous, affecting load latency overlap.
+- name: kv_transfer_config.kv_load_failure_policy
+  relation: Determines behavior (recompute/fail) when a pool KV load fails.
+constraints:
+- consumer_is_to_load is a boolean and only accepts true or false.
+- It must be placed inside kv_transfer_config.kv_connector_extra_config, not at the top level of kv-transfer-config.
+- Pool entries are only reusable when the pool layout matches the consuming engine's TP layout; TP8 pool entries cannot be
+  loaded directly into TP1 Decode engines.
+tuning_advice:
+  summary: Keep consumer_is_to_load false on Decode in standard PD disaggregation; enable only when Decode should reuse pool
+    prefixes with a matching TP layout.
+  suggested_values:
+  - scenario: Standard PD-disaggregated deployment where Decode receives KV via the P->D connector
+    value: false
+    reason: Decode gets KV from Prefill through MooncakeConnectorV2; loading from the pool adds latency and pool memory without
+      benefit.
+  - scenario: Decode node with matching TP layout that should reuse cached prefixes from the KV Pool
+    value: true
+    reason: Enables pool lookups/loads on Decode to avoid recomputation of repeated prefixes, reducing TTFT when prefixes
+      are reused.
+  caveats:
+  - Only enable when the pool entry layout matches the Decode engine's TP layout; mismatched layouts cannot be loaded.
+  - Consider pairing with load_async to overlap pool-load latency with computation.
+  - Set kv_load_failure_policy appropriately (recompute vs fail) when enabling pool loads.
+  quick_guide: Leave false for normal PD disaggregation; set true only when Decode should load matching-layout prefixes from
+    the KV Pool.
+analysis_date: '2026-10-27'

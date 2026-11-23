@@ -1,0 +1,73 @@
+name: kv_transfer_config.kv_connector_extra_config.discard_partial_chunks
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/config.py:1
+- docs/source/user_guide/feature_guide/kvpp.md:134
+value_type: bool
+default: true
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This is a nested field inside kv_transfer_config.kv_connector_extra_config, consumed by the
+
+  AscendStoreConnector (KVPP / KV prefix pooling) path in vllm-ascend. It controls whether
+
+  partial (incomplete) token blocks/chunks are discarded rather than saved to the prefix pool.
+
+  When true (default), only fully-populated blocks are persisted, so the pool stores complete,
+
+  reusable prefixes and lookups can match whole blocks. When false, partial chunks may be
+
+  written, increasing pool memory footprint and potentially producing entries that cannot be
+
+  cleanly reused, but avoiding dropping the tail of a request. The performance effect is
+
+  indirect: "it changes how much KV data is saved/loaded and how effective prefix reuse is,"
+
+  rather than directly altering compute or communication throughput. The vllm-ascend KVPP
+
+  documentation explicitly recommends keeping it at the default true.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/config.py:1
+  context: Parsed as part of AscendStoreConnector extra config for KV prefix pooling save/load decisions
+- file: docs/source/user_guide/feature_guide/kvpp.md:134
+  context: Documentation recommends keeping discard_partial_chunks=true with KVPP
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Only relevant when set to AscendStoreConnector (KVPP)
+- name: kv_transfer_config.kv_role
+  relation: Applies to kv_producer and kv_both roles in KVPP
+- name: kv_transfer_config.kv_connector_extra_config.use_layerwise
+  relation: Must be false with KVPP; interacts with how chunks are saved
+- name: kv_transfer_config.kv_connector_extra_config.load_async
+  relation: Recommended true alongside discard_partial_chunks=true
+constraints:
+- Only takes effect when kv_connector is AscendStoreConnector (KVPP); ignored by other connectors.
+- Layerwise pooling, KV events, and consumer write-back are not supported with KVPP regardless of this setting.
+tuning_advice:
+  summary: Keep discard_partial_chunks=true for KVPP; only disable if you specifically need to persist partial prefixes and
+    accept extra pool memory.
+  suggested_values:
+  - scenario: Standard KVPP prefix pooling deployment
+    value: true
+    reason: Default and documented recommendation; stores only complete reusable blocks, maximizing clean prefix reuse and
+      minimizing pool memory.
+  - scenario: Workloads where the tail partial block must be preserved for reuse
+    value: false
+    reason: Persists partial chunks, but increases pool footprint and may reduce lookup efficiency; use only when tail reuse
+      matters.
+  caveats:
+  - This field only matters for AscendStoreConnector; other connectors ignore it.
+  - KVPP does not support layerwise pooling, KV events, or consumer write-back.
+  quick_guide: Leave discard_partial_chunks at its default true unless you have a specific need to persist partial prefixes.
+analysis_date: '2026-10-27'

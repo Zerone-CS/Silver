@@ -1,0 +1,148 @@
+name: VLLM_PP_LAYER_PARTITION
+type: env
+category: parallelism
+scope: both
+source_file:
+- vllm/envs.py:864
+- vllm/distributed/utils.py:143
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_layerwise.py:115
+- vllm_ascend/worker/v2/pp_transport.py:122
+- vllm_ascend/patch/worker/patch_v2/patch_dspark.py:110
+value_type: str
+default: null
+valid_choices: Comma-separated list of positive integers, one per PP stage, whose sum equals the model's total hidden layer
+  count (e.g. '32,29' or '38,40')
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'VLLM_PP_LAYER_PARTITION overrides the automatic layer split computed by
+
+  vllm/distributed/utils.py:get_pp_indices(). When unset, vLLM divides
+
+  num_hidden_layers evenly across pp_size and distributes the remainder to the
+
+  middle partitions (excluding first/last, which hold embeddings/norm). When set,
+
+  the string is parsed into a per-stage layer count list and used verbatim
+
+  (start_layer = sum(partitions[:pp_rank])). This directly determines how many
+
+  transformer layers each PP stage executes, which controls:
+
+  (1) per-stage compute load and thus pipeline bubble / stage imbalance — an
+
+  unbalanced split makes the slowest stage the bottleneck, increasing inter-stage
+
+  latency and reducing throughput;
+
+  (2) per-stage weight memory and KV-cache footprint — a stage with more layers
+
+  holds more weights and KV blocks, potentially causing OOM on that NPU while
+
+  others are underutilized;
+
+  (3) HCCL P2P send/recv volume between adjacent stages (activation tensors
+
+  crossing stage boundaries).
+
+  On Ascend, vllm-ascend consumes this env var in several places:
+
+  - "mooncake_layerwise.py:layerwise_topology_namespace() uses"
+
+  model.get_layers_start_end_indices() (which reads VLLM_PP_LAYER_PARTITION) to
+
+  build the KV-transfer namespace hash; it requires contiguous, nonempty
+
+  partitions covering every layer, otherwise raises ValueError. A different
+
+  partition changes the namespace, affecting layerwise KV offload routing.
+
+  - "v2 pp_transport.py and patch_dspark.py temporarily patch"
+
+  vllm_envs.VLLM_PP_LAYER_PARTITION to None while loading an unsharded
+
+  speculative draft model, so the draft is not partitioned by the target''s
+
+  manual split. This is a correctness guard, not a perf knob, but it means the
+
+  env var''s effect is masked during draft load.
+
+  - "NPUPlatform._validate_indexer_pp_config validates the partition against"
+
+  Indexer owner layers for GLM-5.2-style models (see docs: 38,40 required, 39/39
+
+  rejected).
+
+  The env var is also part of the AOT compile hash factors
+
+  (vllm/compilation/caching.py:576), so changing it invalidates compiled graphs
+
+  and triggers recompilation.
+
+  '
+usage_locations:
+- file: vllm/distributed/utils.py:143
+  context: get_pp_indices reads the env var to compute per-stage [start,end) layer ranges; validates count and sum.
+- file: vllm/compilation/caching.py:576
+  context: Included in AOT compile hash factors; changing it invalidates compiled artifacts.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_layerwise.py:115
+  context: Layerwise KV offload namespace derived from actual PP partition; requires contiguous nonempty partitions covering
+    all layers.
+- file: vllm_ascend/worker/v2/pp_transport.py:122
+  context: v2 worker masks the env var to None while initializing an unsharded speculative draft under PP.
+- file: vllm_ascend/patch/worker/patch_v2/patch_dspark.py:110
+  context: DSpark draft loading masks the target's manual partition so the draft is not split.
+related_parameters:
+- name: --pipeline-parallel-size
+  relation: Number of comma-separated entries must equal pp_size; the split only applies when PP > 1.
+- name: --speculative-config / draft model
+  relation: Partition applies only to the target model; draft layers are excluded from the sum and loaded on the last PP stage.
+- name: dspark_target_layer_ids
+  relation: DSpark taps must stay inside the target model's layer range when customizing the partition.
+- name: MooncakeConnectorV2 / layerwise KV offload
+  relation: Partition determines the KV-transfer namespace; must be contiguous and cover all layers.
+constraints:
+- The number of comma-separated values must equal --pipeline-parallel-size, otherwise get_pp_indices raises ValueError.
+- The sum of the partition values must equal the model's total hidden layer count, otherwise get_pp_indices raises ValueError.
+- Each value must be a valid integer; non-integer entries raise ValueError ('Invalid partition string').
+- For Mooncake layerwise PP, partitions must be contiguous and nonempty and must cover every model layer, otherwise a ValueError
+  is raised.
+- For GLM-5.2-style Indexer models, each stage must contain the full Indexer owner for its shared Indexer layers; a balanced
+  39/39 split is rejected by the stage-boundary guard.
+- The partition applies only to the target model; draft-model layers must not be included in the sum.
+tuning_advice:
+  summary: Use VLLM_PP_LAYER_PARTITION to balance per-stage compute/memory on Ascend NPU when the default even split is suboptimal
+    or when model-specific constraints (Indexer owners, DSpark taps) require a specific boundary.
+  suggested_values:
+  - scenario: Default / no special model constraints
+    value: unset
+    reason: Leave unset to let vLLM auto-distribute layers evenly with remainder to middle stages, which is usually well-balanced.
+  - scenario: GLM-5.2 Prefill PP2 on 16 NPUs (DP1 x PP2 x TP8)
+    value: 38,40
+    reason: Documented validated split; each stage must contain the full Indexer owner for its shared Indexer layers. A balanced
+      39/39 is rejected.
+  - scenario: General PP2 with 61 layers where last stage also holds drafter/output modules
+    value: 32,29
+    reason: Documented example; giving the last stage fewer target layers offsets the extra drafter and output-side modules
+      it hosts.
+  - scenario: DSpark speculative decoding with PP
+    value: <keep dspark_target_layer_ids inside target layer ranges>
+    reason: Taps on intermediate target layers must remain within the target model so the drafter input width stays valid.
+  caveats:
+  - An unbalanced split makes the heaviest stage the pipeline bottleneck, increasing latency and reducing throughput; balance
+    compute and KV-cache memory, not just layer count.
+  - A stage with too many layers can OOM on its NPU while other stages are underutilized; account for embedding/norm/drafter
+    modules on first/last stages.
+  - Changing this env var invalidates AOT-compiled graphs (it is a compile hash factor), triggering recompilation on next
+    start.
+  - On v2 worker and DSpark paths, vllm-ascend temporarily masks this env var to None during draft load, so the draft is never
+    partitioned by the target split.
+  - For Mooncake layerwise KV offload, the partition changes the KV-transfer namespace; ensure contiguous, full-coverage partitions
+    to avoid ValueError.
+  quick_guide: Leave unset unless the default split is imbalanced or a model constraint (Indexer owners, DSpark taps) demands
+    a specific boundary; then set a comma list summing to total hidden layers with one entry per PP stage.
+analysis_date: '2026-10-27'

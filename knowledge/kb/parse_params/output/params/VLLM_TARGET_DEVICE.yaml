@@ -1,0 +1,127 @@
+name: VLLM_TARGET_DEVICE
+type: env
+category: hardware
+scope: both
+source_file:
+- vllm/envs.py:604
+- vllm/envs.py:89
+- vllm/platforms/__init__.py:178
+- vllm/platforms/__init__.py:237
+- setup.py:49
+- setup.py:85
+- vllm_ascend/utils.py:735
+- tools/bisect/version_compat.py:296
+value_type: str
+default: cuda
+valid_choices:
+- cuda
+- rocm
+- cpu
+- xpu
+- empty
+- ascend
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'VLLM_TARGET_DEVICE is an installation-time / platform-selection environment
+
+  variable, not a runtime tuning knob. In upstream vLLM it is read at import
+
+  time (vllm/envs.py:604, default "cuda") and consumed by setup.py:49 to decide
+
+  which backend extensions to compile, and by vllm/platforms/__init__.py:178/237
+
+  to resolve the active platform plugin. On Ascend, the actual runtime platform
+
+  is selected by the vllm-ascend out-of-tree platform plugin (registered via the
+
+  vllm.platform_plugins entry point), NOT by VLLM_TARGET_DEVICE. The value
+
+  "empty" is the special build-only mode used throughout vllm-ascend docs and
+
+  tooling (tutorials/models/Hunyuan-A13B-Instruct.md:59,
+
+  developer_guide/contribution/index.md:48, testing.md:51,
+
+  tools/bisect/version_compat.py:296) to install vLLM without compiling any
+
+  CUDA/ROCm kernels, since the NPU kernels come from vllm-ascend/CANN instead.
+
+  Because it only gates build-time compilation and platform-plugin resolution,
+
+  it does not directly change per-token latency or steady-state throughput at
+
+  runtime. Its indirect performance relevance is that choosing "empty" avoids
+
+  building unused CUDA extensions (faster install, smaller footprint) and
+
+  ensures the Ascend platform plugin is the one activated; a wrong value can
+
+  cause the wrong platform to be probed or a build to fail, which is a
+
+  correctness/setup issue rather than a runtime perf lever. vllm_ascend/utils.py:735
+
+  notes that a version string built with VLLM_TARGET_DEVICE=empty carries a
+
+  "+empty" local version segment that must be stripped for version comparisons.
+
+  '
+usage_locations:
+- file: vllm/envs.py:604
+  context: Defines VLLM_TARGET_DEVICE env var, default 'cuda', lowercased.
+- file: vllm/envs.py:89
+  context: 'Typed default declaration VLLM_TARGET_DEVICE: str = ''cuda''.'
+- file: setup.py:49
+  context: Reads envs.VLLM_TARGET_DEVICE to drive build backend selection.
+- file: setup.py:85
+  context: Auto-overrides to 'cpu' on macOS, 'empty' on unsupported platforms, auto-detects rocm/xpu/cuda on Linux.
+- file: vllm/platforms/__init__.py:178
+  context: cpu_platform_plugin checks VLLM_TARGET_DEVICE == 'cpu' to force CPU platform.
+- file: vllm/platforms/__init__.py:237
+  context: resolve_current_platform_cls_qualname treats explicit 'cpu' as authoritative before probing plugins.
+- file: vllm_ascend/utils.py:735
+  context: Strips '+empty' local version segment (from VLLM_TARGET_DEVICE=empty builds) for version comparisons.
+- file: tools/bisect/version_compat.py:296
+  context: vllm-ascend bisect tooling sets VLLM_TARGET_DEVICE=empty when pip-installing editable vLLM.
+related_parameters:
+- name: VLLM_VERSION
+  relation: vllm-ascend bisect tooling sets VLLM_VERSION alongside VLLM_TARGET_DEVICE=empty; '+empty' build suffix is stripped
+    for version checks.
+- name: VLLM_USE_PRECOMPILED
+  relation: Both are installation-time env vars read in setup.py; precompiled extensions interact with target-device build
+    selection.
+- name: SOC_VERSION
+  relation: Ascend build-time variable (setup.py) that selects the NPU SoC for CANN compilation; complements VLLM_TARGET_DEVICE=empty
+    during vllm-ascend install.
+constraints:
+- On Ascend, vLLM must be installed with VLLM_TARGET_DEVICE=empty so that no CUDA/ROCm kernels are compiled; the NPU kernels
+  are provided by vllm-ascend.
+- On macOS the value is automatically forced to 'cpu' regardless of what is set.
+- On non-Linux, non-macOS platforms the value is automatically forced to 'empty'.
+- Setting VLLM_TARGET_DEVICE=cpu makes the CPU platform authoritative and skips probing accelerator plugins.
+tuning_advice:
+  summary: Always install vLLM with VLLM_TARGET_DEVICE=empty on Ascend; it is a build-time switch, not a runtime performance
+    knob.
+  suggested_values:
+  - scenario: Installing vLLM from source on an Ascend NPU host
+    value: empty
+    reason: Skips CUDA/ROCm kernel compilation; NPU kernels come from vllm-ascend/CANN. This is the documented install path
+      in vllm-ascend tutorials and CI.
+  - scenario: Installing vLLM on a CUDA GPU host (reference/upstream)
+    value: cuda
+    reason: Default value; compiles CUDA extensions needed for GPU execution.
+  - scenario: CPU-only build or CI without accelerators
+    value: cpu
+    reason: Forces CPU platform plugin and avoids probing accelerator plugins.
+  caveats:
+  - Do not set VLLM_TARGET_DEVICE=ascend; it is not a recognized value. Ascend is activated via the vllm-ascend platform plugin
+    entry point.
+  - This variable only affects build/install and platform resolution; it will not change runtime throughput or latency once
+    vLLM is built.
+  - After installing with 'empty', the vLLM version carries a '+empty' suffix; rely on vllm-ascend's version-comparison helper
+    which strips it.
+  quick_guide: 'On Ascend: VLLM_TARGET_DEVICE=empty pip install . for vLLM, then install vllm-ascend.'
+analysis_date: '2026-10-27'

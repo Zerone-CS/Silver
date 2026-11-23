@@ -1,0 +1,97 @@
+name: --max-parallel-loading-workers
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/config/parallel.py:209
+- vllm/engine/arg_utils.py:534
+- vllm/engine/arg_utils.py:1241
+- vllm/config/speculative.py:1759
+value_type: int
+default: null
+valid_choices: integer >= 1, or null (unset)
+cli_example: --max-parallel-loading-workers 4
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This parameter controls how many worker processes load model weights in parallel
+
+  during startup when the model is sharded across tensor-parallel ranks. It is defined
+
+  in vllm/config/parallel.py:209 as `max_parallel_loading_workers: int | None = Field(default=None, ge=1)`
+
+  and exposed via the ParallelConfig CLI group (vllm/engine/arg_utils.py:1241). It is
+
+  also propagated to the draft model''s parallel config in
+
+  vllm/config/speculative.py:1759 (create_draft_parallel_config), so speculative decoding
+
+  draft workers inherit the same loading concurrency.
+
+
+  The mechanism is purely a startup/weight-loading concern: it bounds how many ranks
+
+  simultaneously read and materialize model weights into device memory. On Ascend NPU,
+
+  weight loading goes through the same vLLM model loader path (vllm-ascend does not
+
+  override this parameter — no matching definition or monkey-patch was found in the
+
+  vllm-ascend context). The effect is on host RAM peak usage during load (each parallel
+
+  loader holds a copy of weights in host memory before H2D copy) and on startup latency
+
+  (more workers = faster load but higher RAM). It does NOT affect steady-state
+
+  inference throughput or per-token latency. Because it is listed in the
+
+  `ignored_factors` set in vllm/config/parallel.py:847, it does not participate in the
+
+  data-parallel config hash, so changing it does not alter DP topology semantics.
+
+  '
+usage_locations:
+- file: vllm/config/parallel.py:209
+  context: Field definition with ge=1 constraint and docstring describing RAM OOM avoidance under tensor parallel.
+- file: vllm/engine/arg_utils.py:534
+  context: EngineArgs field mirroring ParallelConfig.max_parallel_loading_workers.
+- file: vllm/engine/arg_utils.py:1241
+  context: CLI argument registration in the ParallelConfig argument group.
+- file: vllm/config/speculative.py:1759
+  context: Propagated into draft model parallel config for speculative decoding.
+- file: vllm/config/parallel.py:847
+  context: Listed in ignored_factors, excluded from DP config hash.
+related_parameters:
+- name: --tensor-parallel-size
+  relation: Higher TP means more ranks loading weights; this parameter bounds concurrent loaders to avoid host RAM OOM.
+- name: --speculative-config
+  relation: Draft model parallel config inherits this value (speculative.py:1759).
+- name: --data-parallel-size
+  relation: Excluded from DP config hash (ignored_factors), so it does not affect DP topology consistency.
+constraints:
+- The value must be an integer greater than or equal to 1 (Field(ge=1)); 0 or negative values are rejected.
+- When unset (null), vLLM falls back to its internal default loading behavior.
+tuning_advice:
+  summary: 'Leave unset for most cases; only tune when loading large models under high tensor
+
+    parallelism causes host RAM pressure or slow startup on Ascend NPU.
+
+    '
+  suggested_values:
+  - scenario: Large model with high tensor-parallel size and limited host RAM
+    value: 1
+    reason: Serializes weight loading to minimize peak host RAM, avoiding OOM during load.
+  - scenario: Small/medium model with ample host RAM, want faster startup
+    value: 4
+    reason: Parallelizes weight loading across ranks to reduce startup latency without risking RAM OOM.
+  - scenario: Default / unsure
+    value: unset
+    reason: Let vLLM use its internal default loading behavior, which is safe for most deployments.
+  caveats:
+  - This is a startup-only knob; do not expect inference throughput gains from tuning it.
+  - On Ascend NPU, weight loading still goes through the standard vLLM loader; monitor host RAM when raising the value with
+    large models.
+  quick_guide: Only raise it to speed up startup if host RAM allows; lower to 1 if weight loading OOMs under high TP.
+analysis_date: '2026-10-27'

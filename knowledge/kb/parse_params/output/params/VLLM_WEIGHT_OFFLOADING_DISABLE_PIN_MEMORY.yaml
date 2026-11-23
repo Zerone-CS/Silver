@@ -1,0 +1,69 @@
+name: VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY
+type: env
+category: memory
+scope: vllm
+source_file:
+- vllm/envs.py:2053
+- vllm/envs.py:303
+- vllm/model_executor/model_loader/utils.py:191
+- vllm/model_executor/offloader/base.py:28
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "This env var only takes effect when CPU weight offloading is active (i.e. --cpu-offload-gb > 0\nor a weight\
+  \ offloader is configured). It is read in two places:\n1. vllm/model_executor/offloader/base.py:should_pin_memory() — returns\n\
+  \   is_pin_memory_available() and not envs.VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY.\n   This gates whether offloaded weight\
+  \ tensors are allocated in pinned (page-locked) host memory.\n2. vllm/model_executor/model_loader/utils.py:189-198 — when\
+  \ restoring CPU-resident parameters\n   after a temporary move to the target device, the restored CPU tensors are allocated\
+  \ with\n   pin_memory=use_pin_memory. Setting the env var to 1 forces pin_memory=False.\nMechanism: \"pinned host memory\
+  \ enables fast asynchronous DMA/H2D copies (on Ascend, host-to-device\"\ncopies via the CANN runtime / aclrtMemcpyAsync),\
+  \ so offloaded weights can be streamed to the NPU\nwith lower latency and overlap. Disabling pin memory means the runtime\
+  \ must stage through\npageable memory, adding copy latency and potentially blocking the copy stream. The tradeoff is\nthat\
+  \ pinned memory is non-pageable and consumes host RAM that cannot be swapped, which matters on\nunified-memory or memory-constrained\
+  \ hosts. On Ascend NPU, host memory is separate from device\nHBM, so the \"unified memory eats into GPU memory\" rationale\
+  \ in the docstring does not directly\napply; the primary effect is copy latency for offloaded weights. When CPU offloading\
+  \ is not used,\nthis env var has no runtime effect.\n"
+usage_locations:
+- file: vllm/envs.py:2053
+  context: Environment variable definition, default 0 (pin memory enabled).
+- file: vllm/envs.py:303
+  context: 'Type annotation VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY: bool = False.'
+- file: vllm/model_executor/offloader/base.py:28
+  context: should_pin_memory() combines platform capability with this override to decide pinned allocation for offloaded weights.
+- file: vllm/model_executor/model_loader/utils.py:191
+  context: use_pin_memory computed to restore CPU-resident parameters with pin_memory flag.
+- file: tests/basic_correctness/test_cpu_offload.py:25
+  context: Test toggles this env var together with VLLM_WEIGHT_OFFLOADING_DISABLE_UVA to validate CPU offload correctness.
+related_parameters:
+- name: VLLM_WEIGHT_OFFLOADING_DISABLE_UVA
+  relation: Sibling override controlling UVA offloading; both affect how offloaded weights are stored and copied.
+- name: --cpu-offload-gb
+  relation: CPU weight offloading must be enabled for this env var to have any effect.
+- name: VLLM_WSL2_ENABLE_PIN_MEMORY
+  relation: Related pin-memory control; on WSL2 pinned memory is disabled by default and must be explicitly enabled.
+constraints:
+- The value is parsed as bool(int(...)), so only integer strings like 0 or 1 are valid; other strings raise a ValueError at
+  startup.
+- This env var only affects behavior when CPU weight offloading is enabled; otherwise it is read but has no effect.
+tuning_advice:
+  summary: Keep pin memory enabled (default 0) for CPU weight offloading on Ascend to minimize host-to-device copy latency;
+    disable only if host RAM is constrained.
+  suggested_values:
+  - scenario: CPU weight offloading enabled with sufficient host RAM
+    value: 0
+    reason: Pinned host memory enables faster asynchronous H2D copies of offloaded weights to the NPU, reducing load/streaming
+      latency.
+  - scenario: Host RAM constrained or pinned allocation fails/OOM
+    value: 1
+    reason: Disabling pin memory frees non-pageable host RAM at the cost of slower copies, avoiding host OOM.
+  caveats:
+  - Only relevant when --cpu-offload-gb > 0; no effect otherwise.
+  - Setting to 1 trades copy latency for lower host memory pressure.
+  quick_guide: Leave at 0 unless host memory is tight; only matters with CPU weight offloading.
+analysis_date: '2026-10-27'

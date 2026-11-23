@@ -1,0 +1,89 @@
+name: --kv-offloading-backend
+type: cli
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/config/cache.py:243
+- vllm/config/vllm.py:1042
+- vllm/engine/arg_utils.py:1326
+- vllm/engine/arg_utils.py:778
+- vllm/engine/arg_utils.py:2122
+value_type: str
+default: native
+valid_choices:
+- native
+- lmcache
+cli_example: --kv-offloading-backend native
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This parameter selects the KV cache offloading connector that vLLM wires up in\nVllmConfig._post_init_kv_transfer_config\
+  \ (vllm/config/vllm.py:1032-1060). It is a\nno-op unless kv_offloading_size is set: \"the method returns early when\"\n\
+  kv_offloading_size is None (line 1039-1040), so the backend choice has zero runtime\neffect in that case.\nWhen kv_offloading_size\
+  \ IS set:\n- \"\\\"native\\\" sets kv_transfer_config.kv_connector to \\\"OffloadingConnector\\\" (or\"\n  \"SimpleCPUOffloadConnector\"\
+  \ when VLLM_USE_SIMPLE_KV_OFFLOAD is enabled) and injects\n  cpu_bytes_to_use = kv_offloading_size * (1 << 30) into kv_connector_extra_config.\n\
+  \  This offloads KV blocks from NPU HBM to host CPU memory, freeing HBM for more\n  concurrent sequences (higher batch/throughput)\
+  \ at the cost of PCIe/host-memory\n  transfer latency on eviction/reload. On Ascend this is a host<->device copy path\n\
+  \  (no HCCL involvement), so the latency penalty is bounded by the NPU-host link.\n- \"\\\"lmcache\\\" sets kv_connector\
+  \ to \\\"LMCacheMPConnector\\\" (multi-process mode, default\"\n  tcp://localhost:5555). kv_offloading_size is intentionally\
+  \ NOT propagated because\n  capacity is owned by the standalone LMCache server. This adds an out-of-process\n  KV store\
+  \ hop, which can further reduce HBM pressure and enable cross-instance KV\n  reuse, but adds network/IPC latency and requires\
+  \ the lmcache package + server.\nThe choice therefore trades HBM capacity (memory) against per-token transfer latency\n\
+  and achievable throughput. It does not change model compute or graph capture.\n"
+usage_locations:
+- file: vllm/config/cache.py:243
+  context: Field definition with docstring; default 'native', only active when kv_offloading_size set.
+- file: vllm/config/vllm.py:1042
+  context: Read in _post_init_kv_transfer_config to select kv_connector and extra config.
+- file: vllm/engine/arg_utils.py:1326
+  context: CLI argument registration in CacheConfig group.
+- file: vllm/engine/arg_utils.py:2122
+  context: Passed into CacheConfig construction in create_engine_config.
+related_parameters:
+- name: --kv-offloading-size
+  relation: Master switch; offloading (and thus this backend) is only activated when kv_offloading_size is set.
+- name: --kv-transfer-config
+  relation: If provided, its kv_connector is overwritten by the backend selection; if absent a default KVTransferConfig is
+    created.
+- name: VLLM_USE_SIMPLE_KV_OFFLOAD
+  relation: Env var that switches the native backend connector from OffloadingConnector to SimpleCPUOffloadConnector.
+- name: --gpu-memory-utilization
+  relation: Offloading frees HBM, indirectly interacting with memory utilization budgeting.
+constraints:
+- KV offloading is only activated when --kv-offloading-size is set; otherwise --kv-offloading-backend is ignored.
+- The 'lmcache' backend requires the optional lmcache package and a running LMCache server (default tcp://localhost:5555).
+- When --kv-offloading-backend is 'lmcache', --kv-offloading-size is not propagated to the connector; capacity is managed
+  by the LMCache server.
+tuning_advice:
+  summary: 'Leave the default ''native'' unless you specifically need an external KV store; only
+
+    set --kv-offloading-size when HBM is the bottleneck, and pick ''lmcache'' only when
+
+    you have the LMCache server deployed and want cross-instance KV reuse.
+
+    '
+  suggested_values:
+  - scenario: HBM-constrained decode with long context, single instance, no external store
+    value: native
+    reason: Offloads KV blocks to host CPU memory via OffloadingConnector, freeing NPU HBM for larger batches; no extra server
+      dependency.
+  - scenario: Multi-instance / disaggregated deployment with a shared LMCache server for KV reuse
+    value: lmcache
+    reason: LMCacheMPConnector routes KV to an out-of-process store, enabling cross-instance reuse; capacity managed by the
+      server, not kv_offloading_size.
+  - scenario: No KV offloading needed (HBM sufficient)
+    value: native
+    reason: Backend is ignored when --kv-offloading-size is unset, so the default is safe and adds no overhead.
+  caveats:
+  - Setting --kv-offloading-backend without --kv-offloading-size has no effect (early return in _post_init_kv_transfer_config).
+  - Native offloading adds host<->NPU copy latency on eviction/reload; measure whether the extra batch capacity outweighs
+    the transfer cost.
+  - lmcache backend requires the lmcache package and a running server; misconfiguration will fail at connector instantiation.
+  - vllm-ascend does not appear to override this parameter in the provided context; behavior follows upstream vLLM, but verify
+    the Ascend worker supports the chosen connector before relying on it.
+  quick_guide: Keep 'native' by default; only enable offloading via --kv-offloading-size, and use 'lmcache' only with a deployed
+    LMCache server.
+analysis_date: '2026-10-27'

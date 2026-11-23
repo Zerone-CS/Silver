@@ -1,0 +1,86 @@
+name: --safetensors-prefetch-num-threads
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/load.py:88
+- vllm/engine/arg_utils.py:985
+- vllm/model_executor/model_loader/default_loader.py:292
+- vllm/model_executor/model_loader/weight_utils.py:872
+value_type: int
+default: DEFAULT_SAFETENSORS_PREFETCH_NUM_THREADS
+valid_choices: integer >= 1
+cli_example: --safetensors-prefetch-num-threads <int>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter only takes effect during the model loading phase, and only when
+
+  safetensors prefetching is active. In vllm/model_executor/model_loader/weight_utils.py
+
+  (safetensors_weights_iterator), prefetching is triggered when
+
+  safetensors_load_strategy == "prefetch", or when the strategy is None and the
+
+  checkpoint filesystem is detected as a network FS (nfs/nfs4/lustre) AND the total
+
+  checkpoint size fits within 90% of available RAM. When triggered,
+
+  _prefetch_all_checkpoints() is called with num_prefetch_threads=this value and
+
+  block_size=safetensors_prefetch_block_size, reading checkpoint files into the OS
+
+  page cache using a thread pool. More threads increase parallel read throughput from
+
+  slow/network storage, reducing cold-start model load time (a one-time latency cost),
+
+  but do not affect steady-state inference throughput or NPU memory. The value is
+
+  passed through default_loader.py:292 into the iterator. No vllm-ascend override of
+
+  this parameter was found in the provided context; it is a pure upstream vLLM
+
+  model-loading knob that applies equally on Ascend NPU since model loading is
+
+  host-side I/O.
+
+  '
+usage_locations:
+- file: vllm/config/load.py:88
+  context: LoadConfig field definition with ge=1 constraint and docstring
+- file: vllm/engine/arg_utils.py:985
+  context: CLI argument registration under LoadConfig group
+- file: vllm/model_executor/model_loader/default_loader.py:292
+  context: Passed into safetensors_weights_iterator from LoadConfig
+- file: vllm/model_executor/model_loader/weight_utils.py:947
+  context: Forwarded to _prefetch_all_checkpoints as num_prefetch_threads
+related_parameters:
+- name: --safetensors-load-strategy
+  relation: Prefetching (and thus this parameter) only activates when strategy is 'prefetch', or None with network FS + fits-in-RAM
+    auto-detection
+- name: --safetensors-prefetch-block-size
+  relation: Companion parameter controlling read block size per prefetch operation
+- name: --model-loader-extra-config
+  relation: Alternative multithread load path (enable_multithread_load/num_threads) that bypasses this prefetch mechanism
+constraints:
+- The value must be an integer greater than or equal to 1 (Field(ge=1)).
+- This parameter has no effect unless safetensors prefetching is active (strategy 'prefetch', or None with a detected network
+  filesystem and checkpoint fitting in RAM).
+tuning_advice:
+  summary: Tune only when loading large checkpoints from slow/network storage; leave default for local fast storage.
+  suggested_values:
+  - scenario: Checkpoint on local NVMe/SSD, default behavior
+    value: default
+    reason: Local storage is not I/O-bound; prefetch threads add little benefit and default is sufficient.
+  - scenario: Large checkpoint on NFS/Lustre with --safetensors-load-strategy prefetch
+    value: 8
+    reason: More parallel read threads hide network latency and reduce cold-start load time; scale with available CPU cores.
+  - scenario: Very large model on high-latency network FS with many CPU cores
+    value: 16
+    reason: Higher parallelism can further saturate network bandwidth during prefetch, at the cost of CPU contention.
+  caveats:
+  - Ensure checkpoint size fits within ~90% of available RAM before enabling prefetch to avoid OOM.
+  - Do not over-provision threads beyond available CPU cores; contention can slow other host-side work.
+  quick_guide: Leave default unless loading from slow/network storage, then set to roughly the number of available CPU cores.
+analysis_date: '2026-10-27'

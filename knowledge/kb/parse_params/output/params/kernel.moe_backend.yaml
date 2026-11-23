@@ -1,0 +1,102 @@
+name: kernel.moe_backend
+type: nested
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1675
+- vllm/engine/arg_utils.py:2561
+- vllm/model_executor/layers/fused_moe/layer.py:348
+- vllm/v1/worker/gpu_worker.py:1529
+- vllm/models/deepseek_v4/nvidia/model.py:793
+- tests/ut/worker/test_mtp_pcp_speculator_v2.py:397
+value_type: str
+default: auto
+valid_choices: Free-form string; normalized via lower().replace('-', '_'). Known upstream values include 'auto', 'aiter',
+  'flydsl', 'emulation', 'flashinfer_moe_ep_mega_cutedsl' (ROCm/NVIDIA-specific). Ascend-specific backend names are resolved
+  by vllm-ascend's MoE layer dispatch.
+cli_example: --moe-backend <backend>
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'kernel.moe_backend selects which MoE expert-computation kernel implementation is used for
+
+  FusedMoE layers. In upstream vLLM it is read from vllm_config.kernel_config.moe_backend and
+
+  passed into FusedMoEConfig (vllm/model_executor/layers/fused_moe/layer.py:348), where it drives
+
+  backend selection for the grouped GEMM / expert dispatch path. Different backends map to
+
+  different kernel implementations (e.g. aiter, flydsl, emulation, flashinfer mega-kernel), each
+
+  with distinct throughput, latency, and memory characteristics. It also gates feature paths:
+
+  e.g. DeepSeek V4 MegaMoE requires expert parallel and a specific backend
+
+  (vllm/models/deepseek_v4/nvidia/model.py:793-802), and NVFP4 checkpoints require a specific
+
+  megakernel backend (fi_moe.py:148-156). On Ascend, the actual MoE kernel dispatch is handled by
+
+  vllm-ascend''s own MoE layer implementation; the upstream backend names (aiter/flydsl/emulation)
+
+  are ROCm/NVIDIA-specific and do not map to Ascend kernels. The value is still propagated through
+
+  the config (as seen in the vllm-ascend MTP speculator test asserting moe_backend == "auto" is
+
+  carried into the draft config), but on Ascend the effective kernel choice is governed by
+
+  vllm-ascend''s MoE dispatch rather than this string. Therefore its direct performance impact on
+
+  Ascend is indirect/medium: it can influence which code path is taken when vllm-ascend consults
+
+  the backend, but the primary Ascend MoE kernel selection is not driven by this upstream field.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1675
+  context: Registers --moe-backend CLI flag with lower/replace normalization.
+- file: vllm/engine/arg_utils.py:2561
+  context: Transfers top-level moe_backend into kernel_config.moe_backend when not 'auto'.
+- file: vllm/model_executor/layers/fused_moe/layer.py:348
+  context: Passes moe_backend into FusedMoEConfig for MoE layer construction.
+- file: vllm/v1/worker/gpu_worker.py:1529
+  context: Reads moe_backend to override envs for EPLB.
+- file: vllm/models/deepseek_v4/nvidia/model.py:793
+  context: Selects MegaMoE / FI MegaMoE path based on backend; requires expert parallel.
+- file: tests/ut/worker/test_mtp_pcp_speculator_v2.py:397
+  context: vllm-ascend test verifying moe_backend propagates into draft config for MTP speculator.
+related_parameters:
+- name: --enable-expert-parallel
+  relation: MegaMoE backends require expert parallel enabled, otherwise NotImplementedError.
+- name: kernel.linear_backend
+  relation: Sibling kernel backend selector in KernelConfig.
+- name: kernel.sparse_indexer_topk_backend
+  relation: Sibling kernel backend selector in KernelConfig.
+- name: quantization
+  relation: Some quantized checkpoints (e.g. NVFP4) require a specific MoE backend/megakernel.
+constraints:
+- When a MegaMoE backend is selected for DeepSeek V4, expert parallel must be enabled or a NotImplementedError is raised.
+- NVFP4-quantized expert checkpoints require moe_backend=flashinfer_moe_ep_mega_cutedsl; other backends raise ValueError.
+- The top-level --moe-backend only overrides kernel_config.moe_backend when its value is not 'auto'.
+- Backend names are normalized to lowercase with hyphens replaced by underscores.
+tuning_advice:
+  summary: Keep kernel.moe_backend at 'auto' on Ascend; only override when a specific Ascend-supported backend is documented,
+    since upstream backend names do not map to Ascend kernels.
+  suggested_values:
+  - scenario: Default Ascend deployment (v1 and v2 workers)
+    value: auto
+    reason: Lets vllm-ascend select the appropriate MoE kernel; avoids forcing ROCm/NVIDIA-specific backend names that have
+      no Ascend implementation.
+  - scenario: Debugging / correctness comparison
+    value: emulation
+    reason: Upstream 'emulation' backend provides a reference path useful for validating MoE numerics, though it is slower
+      and not intended for production throughput.
+  caveats:
+  - Do not set aiter/flydsl/flashinfer_moe_ep_mega_cutedsl on Ascend — these are ROCm/NVIDIA backends and will not select
+    Ascend kernels.
+  - Changing this value affects both the main model and MTP/speculative draft configs, so re-validate speculative decoding
+    after any change.
+  quick_guide: Leave --moe-backend at auto on Ascend unless a vllm-ascend-specific backend is explicitly documented.
+analysis_date: '2026-10-27'

@@ -1,0 +1,95 @@
+name: --enable-nccl-comm-suspend
+type: cli
+category: memory
+scope: vllm
+source_file:
+- vllm/config/model.py:350
+- vllm/engine/arg_utils.py:726
+- vllm/engine/arg_utils.py:958
+- vllm/v1/worker/gpu_worker.py:262
+- vllm/v1/worker/gpu_worker.py:284
+value_type: bool
+default: false
+valid_choices: true / false (boolean flag)
+cli_example: --enable-nccl-comm-suspend
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This flag only takes effect inside the sleep-mode lifecycle of the v1 GPU worker
+
+  (vllm/v1/worker/gpu_worker.py). When enabled, Worker.sleep() calls
+
+  suspend_device_comms() after the sleep-mode backend suspends (line 262-263), and
+
+  Worker.wake_up() calls resume_device_comms() after the backend resumes (line 284-285).
+
+  These invoke NCCL''s ncclCommSuspend/ncclCommResume to release NCCL communicator
+
+  memory during sleep, so it can reduce residual device memory held by NCCL comms
+
+  while the engine is asleep. It does NOT affect steady-state inference throughput or
+
+  latency — it only changes how much memory is freed/restored across a sleep/wake
+
+  cycle. The default (False) leaves communicators untouched and sleep still releases
+
+  weights/KV-cache memory as before.
+
+  On Ascend NPU: "this is an upstream vLLM CUDA/NCCL-specific path. vllm-ascend does"
+
+  not appear in the provided context as reading or overriding enable_nccl_comm_suspend,
+
+  and the Ascend worker uses HCCL rather than NCCL. The suspend_device_comms /
+
+  resume_device_comms helpers are NCCL-oriented, so on Ascend this flag is effectively
+
+  a no-op for the actual collective communication backend. Its only conceivable effect
+
+  would be through the generic sleep-mode backend path, which is itself gated by
+
+  --enable-sleep-mode (documented as cuda/hip only in ModelConfig).
+
+  '
+usage_locations:
+- file: vllm/config/model.py:350
+  context: ModelConfig field definition; docstring marks it experimental and NCCL-specific.
+- file: vllm/engine/arg_utils.py:726
+  context: EngineArgs field mirroring ModelConfig.enable_nccl_comm_suspend.
+- file: vllm/engine/arg_utils.py:958
+  context: CLI argument registration --enable-nccl-comm-suspend.
+- file: vllm/v1/worker/gpu_worker.py:262
+  context: Worker.sleep() conditionally calls suspend_device_comms() when enabled.
+- file: vllm/v1/worker/gpu_worker.py:284
+  context: Worker.wake_up() conditionally calls resume_device_comms() when enabled.
+related_parameters:
+- name: --enable-sleep-mode
+  relation: Prerequisite; the NCCL suspend/resume calls only run inside the sleep/wake lifecycle, which requires sleep mode
+    to be enabled.
+- name: --sleep-mode-backend
+  relation: Determines the suspend/resume backend; NCCL comm suspension is layered on top of the backend's suspend/resume.
+- name: --enable-cumem-allocator
+  relation: Related memory-reclamation mechanism for sleep mode; automatically enabled by sleep mode on CUDA/HIP.
+constraints:
+- The flag has no effect unless --enable-sleep-mode is enabled, since the suspend/resume calls only occur in Worker.sleep()/wake_up().
+- Sleep mode itself is documented as only supported on cuda and hip platforms, so on Ascend NPU this path is not a supported
+  configuration.
+- The underlying ncclCommSuspend/ncclCommResume mechanism is NCCL-specific and does not apply to Ascend's HCCL communication
+  backend.
+tuning_advice:
+  summary: Leave disabled on Ascend NPU; it is an experimental NCCL-only sleep-mode memory optimization with no effect on
+    HCCL-based Ascend runtime.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker)
+    value: false
+    reason: vllm-ascend uses HCCL, not NCCL; the ncclCommSuspend/ncclCommResume path does not apply, so enabling it provides
+      no benefit and adds experimental risk.
+  - scenario: CUDA GPU deployment using sleep mode and needing to reclaim NCCL communicator memory
+    value: true
+    reason: On CUDA with --enable-sleep-mode, this releases NCCL communicator memory during sleep via suspend_device_comms/resume_device_comms.
+  caveats:
+  - Requires --enable-sleep-mode; without it the flag is inert.
+  - Not applicable to Ascend NPU since the communication backend is HCCL.
+  - Experimental feature; validate memory reclamation and wake-up correctness before production use.
+  quick_guide: Do not enable on Ascend NPU — it is an NCCL-only, sleep-mode-gated, experimental memory optimization.
+analysis_date: '2026-10-27'

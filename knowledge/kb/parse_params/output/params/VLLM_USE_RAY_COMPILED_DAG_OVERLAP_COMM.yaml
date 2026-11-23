@@ -1,0 +1,93 @@
+name: VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:907
+- vllm/envs.py:63
+- vllm/v1/executor/ray_executor.py:566
+- vllm/v1/executor/ray_executor.py:636
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read only in the upstream vLLM Ray Compiled Graph executor path
+
+  (vllm/v1/executor/ray_executor.py). It is passed as the `_overlap_gpu_communication`
+
+  argument to `forward_dag.experimental_compile(...)` (line 636). When enabled, Ray''s
+
+  Compiled Graph attempts to overlap GPU/NPU communication with compute across
+
+  pipeline-parallel stages, which can reduce pipeline bubbles and improve latency/throughput
+
+  for PP deployments using the Ray backend.
+
+
+  Crucially, this parameter is only consulted when the distributed executor backend is
+
+  "ray" AND Ray Compiled Graph is used. On Ascend, vllm-ascend does not reference this
+
+  env var anywhere in the provided context, and the default Ascend deployment uses
+
+  multiprocessing (mp) executor with HCCL communication rather than Ray Compiled Graph.
+
+  Therefore on typical Ascend NPU setups this parameter has no effect. Even when Ray is
+
+  used, the overlap mechanism is described in the source comment as an "experimental
+
+  feature" and is GPU-oriented (NCCL communicator / RayPPCommunicator wrapping vLLM''s
+
+  PP communicator), not HCCL-specific. Its real-world performance impact on Ascend is
+
+  therefore low and conditional.
+
+  '
+usage_locations:
+- file: vllm/envs.py:907
+  context: Definition of the env var, default 0 (disabled), parsed as bool(int(...)).
+- file: vllm/v1/executor/ray_executor.py:566
+  context: Logged at Ray executor init for observability.
+- file: vllm/v1/executor/ray_executor.py:636
+  context: Passed as _overlap_gpu_communication to forward_dag.experimental_compile to enable comm/compute overlap in Ray
+    Compiled Graph.
+related_parameters:
+- name: VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE
+  relation: Selects the channel type (auto/nccl/shm) used by Ray Compiled Graph; overlap comm only applies within the compiled-graph
+    path.
+- name: VLLM_USE_RAY_WRAPPED_PP_COMM
+  relation: Chooses whether RayPPCommunicator wraps vLLM's PP communicator vs Ray's NCCL communicator; affects how overlap
+    communication is realized.
+- name: VLLM_USE_RAY_V2_EXECUTOR_BACKEND
+  relation: When true, uses RayExecutorV2 (MQ-based) instead of the compiled-graph backend, bypassing this overlap setting.
+- name: distributed_executor_backend
+  relation: This env var only takes effect when the backend is 'ray' and Ray Compiled Graph is used.
+constraints:
+- Only takes effect when the distributed executor backend is 'ray' and Ray Compiled Graph is in use; with the default mp executor
+  it is ignored.
+- The value must be parseable as an integer 0 or 1 (bool(int(...))); other values raise an error at env parsing.
+- The overlap communication feature is experimental in Ray's Compiled Graph and is GPU/NCCL-oriented; it is not an Ascend
+  HCCL-specific mechanism.
+tuning_advice:
+  summary: Leave disabled for standard Ascend mp-executor deployments; only consider enabling when running pipeline parallelism
+    through the Ray Compiled Graph backend and after benchmarking.
+  suggested_values:
+  - scenario: Default Ascend NPU deployment using mp executor with HCCL
+    value: '0'
+    reason: The env var is only read by the Ray Compiled Graph executor; with mp executor it has no effect, so keep the default
+      to avoid confusion.
+  - scenario: Ray backend with pipeline parallelism and Ray Compiled Graph, seeking to reduce PP bubbles
+    value: '1'
+    reason: Enables _overlap_gpu_communication in experimental_compile, allowing comm/compute overlap across PP stages; validate
+      gains on Ascend before adopting.
+  caveats:
+  - No vllm-ascend override exists; behavior is entirely upstream and Ray-specific.
+  - Experimental feature — benchmark latency/throughput before and after enabling, and be prepared to revert.
+  - Requires Ray Compiled Graph installation and the ray executor backend; otherwise silently ignored.
+  quick_guide: Keep at 0 unless you run PP over Ray Compiled Graph on Ascend and have measured a benefit.
+analysis_date: '2026-10-27'

@@ -1,0 +1,96 @@
+name: --max-cpu-loras
+type: cli
+category: memory
+scope: vllm
+source_file:
+- vllm/config/lora.py:44
+- vllm/config/lora.py:118
+- vllm/engine/arg_utils.py:634
+- vllm/engine/arg_utils.py:1494
+- vllm/engine/arg_utils.py:2470
+- vllm/lora/model_manager.py:304
+value_type: int
+default: null
+valid_choices: Any integer >= max_loras; if unset (None) it is set to max_loras at validation time
+cli_example: --max-cpu-loras 4
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: '--max-cpu-loras sets LoRAConfig.max_cpu_loras, which is the capacity of the CPU-side
+
+  LoRA adapter cache (vllm/lora/model_manager.py:304 `capacity` property returns
+
+  lora_config.max_cpu_loras). It does NOT size any NPU/GPU device buffer — the device
+
+  buffers are sized by --max-loras (lora_slots) and --max-lora-rank. Therefore it does
+
+  not directly change per-token compute or device memory footprint of the forward pass.
+
+  Its effect is on host (CPU) memory: each cached adapter holds its LoRA A/B weights in
+
+  host memory, so a larger value keeps more adapters resident and avoids re-loading
+
+  weights from disk when switching adapters. On Ascend NPU this is purely a host-side
+
+  cache sizing knob; the actual adapter activation (copying weights into the NPU LoRA
+
+  slot buffers) is bounded by max_loras. In vllm-ascend there is no override of this
+
+  parameter — it flows through the standard LoRAConfig path (see vllm-ascend e2e tests
+
+  test_lora_with_spec_decode.py and test_qwen3_multi_loras.py which pass max_cpu_loras
+
+  directly to LLM/VllmRunner). Because it only affects host memory and adapter-swap
+
+  latency (not steady-state NPU throughput), the runtime performance impact is low.
+
+  '
+usage_locations:
+- file: vllm/config/lora.py:118
+  context: 'Validator: if max_cpu_loras is None it defaults to max_loras; raises ValueError if max_cpu_loras < max_loras.'
+- file: vllm/engine/arg_utils.py:2470
+  context: EngineArgs.create_engine_config passes max_cpu_loras into LoRAConfig (None if <=0).
+- file: vllm/lora/model_manager.py:304
+  context: LoRAModelManager.capacity returns max_cpu_loras — the CPU adapter cache size.
+- file: tests/e2e/pull_request/one_card/lora/test_lora_with_spec_decode.py:76
+  context: vllm-ascend e2e test sets max_cpu_loras=1 alongside max_loras=1.
+- file: tests/e2e/pull_request/one_card/lora/test_qwen3_multi_loras.py:67
+  context: vllm-ascend e2e test sets max_loras=2, max_cpu_loras=4 to exercise multi-LoRA add/remove.
+related_parameters:
+- name: --max-loras
+  relation: max_cpu_loras must be >= max_loras; if unset it defaults to max_loras. max_loras sizes device LoRA slots, max_cpu_loras
+    sizes the host cache.
+- name: --max-lora-rank
+  relation: Together with max_loras determines device LoRA buffer size; max_cpu_loras only affects host cache, not device
+    buffers.
+- name: --enable-lora
+  relation: LoRAConfig (and thus max_cpu_loras) is only constructed when enable_lora is True.
+- name: --lora-modules
+  relation: Number of adapters registered at startup; keeping them within max_cpu_loras avoids eviction/reload.
+constraints:
+- max_cpu_loras must be greater than or equal to max_loras, otherwise a ValueError is raised.
+- If max_cpu_loras is not set (None) or <= 0, it is automatically set to max_loras.
+- max_cpu_loras only takes effect when --enable-lora is enabled; otherwise LoRAConfig is not created.
+tuning_advice:
+  summary: Set max_cpu_loras to the number of adapters you expect to serve concurrently (>= max_loras) to avoid host-side
+    reloads, without over-allocating host RAM.
+  suggested_values:
+  - scenario: Single adapter serving (most common)
+    value: 1
+    reason: With max_loras=1 and one adapter, max_cpu_loras=1 is sufficient; matches vllm-ascend e2e test_lora_with_spec_decode.py.
+  - scenario: Multiple adapters served concurrently with swapping
+    value: 4
+    reason: Keep several adapters resident in host cache to avoid disk reloads on swap; vllm-ascend test_qwen3_multi_loras.py
+      uses max_loras=2, max_cpu_loras=4.
+  - scenario: Large adapter pool with frequent switching
+    value: <number of distinct adapters>
+    reason: Set equal to the total number of adapters you serve so none are evicted from the host cache; bounded by available
+      host RAM.
+  caveats:
+  - This parameter does not change NPU device memory or steady-state throughput; tune --max-loras and --max-lora-rank for
+    device-side performance.
+  - Ensure max_cpu_loras >= max_loras to avoid a startup ValueError.
+  quick_guide: Set --max-cpu-loras to the number of adapters you serve concurrently (>= --max-loras); it only affects host
+    cache, not NPU memory.
+analysis_date: '2026-10-27'

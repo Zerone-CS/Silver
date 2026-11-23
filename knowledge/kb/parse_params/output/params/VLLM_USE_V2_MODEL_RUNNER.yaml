@@ -1,0 +1,176 @@
+name: VLLM_USE_V2_MODEL_RUNNER
+type: env
+category: model
+scope: both
+source_file:
+- vllm/envs.py:2037
+- vllm/envs.py:300
+- vllm/config/vllm.py:675
+- vllm_ascend/patch/platform/patch_use_v2_model_runner.py:19
+- vllm_ascend/patch/__init__.py:815
+- vllm_ascend/patch/worker/__init__.py:52
+- vllm_ascend/platform.py:951
+- vllm_ascend/platform.py:1071
+- vllm_ascend/ascend_forward_context.py:472
+- vllm_ascend/quantization/methods/kv_cache/turboquant/config.py:64
+value_type: bool
+default: null
+valid_choices:
+- 'true'
+- 'false'
+- unset (None)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This env var selects between two entirely different model-runner execution
+
+  paths on Ascend, which changes the hot loop of every decode/prefill step.
+
+
+  Upstream (vllm/config/vllm.py:675): `VllmConfig.use_v2_model_runner` is a
+
+  property that, when the env var is unset, falls back to per-model architecture
+
+  whitelists, Triton availability checks and feature-support inspections. When
+
+  the env var is explicitly set (True/False) it short-circuits and returns that
+
+  value (except HiSparse/watermark configs which force True).
+
+
+  vllm-ascend OVERRIDES this: `vllm_ascend/patch/platform/patch_use_v2_model_runner.py`
+
+  monkey-patches `VllmConfig.use_v2_model_runner` to return ONLY
+
+  `envs.VLLM_USE_V2_MODEL_RUNNER`, defaulting to False when unset. The patch is
+
+  applied unconditionally in `vllm_ascend/patch/worker/__init__.py:56` so both
+
+  EngineCore and worker processes share the same behavior. Consequence: on
+
+  Ascend the v2 runner is NEVER auto-enabled by model architecture — it must be
+
+  explicitly requested. This is a deliberate safety override because the NPU v2
+
+  runner is not yet compatible with all upstream-defaulted models/features and
+
+  enabling by architecture can crash.
+
+
+  Performance mechanism: "the v2 runner uses a different input-batch/block-table"
+
+  representation (`ascend_forward_context.py:472/481` routes extra forward-context
+
+  attributes through `ctx.additional_kwargs` under v2 vs direct `setattr` under
+
+  v1), different spec-decode dispatch (v2 `init_speculator` vs v1
+
+  `get_spec_decode_method`), and enables features that are v2-only on Ascend:
+
+  PCP (prefill context parallel), KVPP with PCP, async-scheduling +
+
+  profiling_chunk, DeepSeek V4.1 packed cache, TurboQuant compressed KV cache,
+
+  and DSpark/DFlash speculators. These features directly change throughput,
+
+  latency and KV-cache memory footprint. Conversely, DSA-CP is v1-only and
+
+  requires VLLM_USE_V2_MODEL_RUNNER=0.
+
+
+  Because the choice gates whole feature families (context parallelism, packed
+
+  KV cache, async scheduling), it has high impact on throughput, latency and
+
+  memory — but the direction depends on the model and feature combination.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2037
+  context: Env var definition; maybe_convert_bool of os.getenv, default None (unset).
+- file: vllm/config/vllm.py:675
+  context: 'Upstream use_v2_model_runner property: env var short-circuits architecture/Triton heuristics; HiSparse/watermark
+    force True.'
+- file: vllm_ascend/patch/platform/patch_use_v2_model_runner.py:19
+  context: 'Ascend monkey-patch: returns env var directly, False when unset; disables upstream auto-enablement.'
+- file: vllm_ascend/patch/worker/__init__.py:52
+  context: Patch imported unconditionally so EngineCore and worker processes agree.
+- file: vllm_ascend/ascend_forward_context.py:472
+  context: Forward-context extra attrs read/written via additional_kwargs under v2, direct attribute under v1.
+- file: vllm_ascend/platform.py:951
+  context: DeepSeek V4.1 on A5 requires v2 runner, raises ValueError otherwise.
+- file: vllm_ascend/platform.py:1071
+  context: profiling_chunk_config with async_scheduling requires v2 runner.
+- file: vllm_ascend/quantization/methods/kv_cache/turboquant/config.py:64
+  context: DeepSeek V4 TurboQuant compressed KV cache requires v2 runner.
+related_parameters:
+- name: --additional-config enable_dsa_cp
+  relation: DSA-CP is v1-only; requires VLLM_USE_V2_MODEL_RUNNER=0, raises config error under v2.
+- name: --prefill-context-parallel-size
+  relation: PCP requires VLLM_USE_V2_MODEL_RUNNER=1.
+- name: --additional-config enable_kvpp
+  relation: KVPP with PCP requires v2 runner; KVPP alone still requires eager execution.
+- name: --async-scheduling
+  relation: profiling_chunk_config with async scheduling requires v2 runner.
+- name: attention_config.hisparse_config
+  relation: HiSparse forces v2 runner upstream and errors if VLLM_USE_V2_MODEL_RUNNER=0.
+- name: watermark_config
+  relation: Watermarking forces v2 runner upstream, overriding VLLM_USE_V2_MODEL_RUNNER=0.
+- name: attention_config.indexer_kv_dtype
+  relation: DeepSeek V4 TurboQuant (v2-only) requires indexer_kv_dtype='int8'.
+constraints:
+- On Ascend the v2 model runner is enabled ONLY when VLLM_USE_V2_MODEL_RUNNER is explicitly set to 1; leaving it unset defaults
+  to the v1 runner regardless of model architecture.
+- DeepSeek V4.1 on Ascend A5 requires VLLM_USE_V2_MODEL_RUNNER=1 or startup raises a ValueError.
+- DeepSeek V4 TurboQuant compressed KV cache requires VLLM_USE_V2_MODEL_RUNNER=1.
+- profiling_chunk_config combined with async scheduling requires VLLM_USE_V2_MODEL_RUNNER=1.
+- PCP (prefill context parallel) requires VLLM_USE_V2_MODEL_RUNNER=1.
+- DSA-CP (enable_dsa_cp) is supported only with ModelRunner V1 and requires VLLM_USE_V2_MODEL_RUNNER=0; enabling it under
+  v2 raises a configuration error.
+- Upstream HiSparse requires the v2 runner and raises if VLLM_USE_V2_MODEL_RUNNER=0.
+- Upstream ECCPUConnector requires the v2 runner and raises if VLLM_USE_V2_MODEL_RUNNER is not 1.
+- Upstream LongcatFlashNgramForCausalLM and DFlash drafters with mixed sliding/full attention require the v2 runner.
+tuning_advice:
+  summary: 'Leave VLLM_USE_V2_MODEL_RUNNER unset (v1) for general models; explicitly set
+
+    it to 1 only when you need v2-only Ascend features (PCP, KVPP+PCP, DeepSeek
+
+    V4.1 packed cache, TurboQuant, async-scheduling+profiling_chunk, DSpark/DFlash)
+
+    and have validated the model on the NPU v2 runner.
+
+    '
+  suggested_values:
+  - scenario: General-purpose serving of standard models (Qwen, Llama, etc.) on Ascend
+    value: unset
+    reason: Ascend defaults to v1 when unset; v1 is the stable path and avoids v2 compatibility gaps.
+  - scenario: DeepSeek V4.1 on Ascend A5
+    value: '1'
+    reason: platform.py raises ValueError unless v2 runner is enabled for DeepseekV41ForCausalLM/DeepseekV41DSparkModel on
+      A5.
+  - scenario: Enabling PCP (--prefill-context-parallel-size > 1) or KVPP with PCP
+    value: '1'
+    reason: PCP requires the v2 model runner per context_parallel.md and additional_config.md.
+  - scenario: Using DSA-CP (enable_dsa_cp) on GLM-5.2
+    value: '0'
+    reason: DSA-CP is supported only with ModelRunner V1; v2 raises a configuration error.
+  - scenario: DeepSeek V4 TurboQuant compressed KV cache
+    value: '1'
+    reason: turboquant/config.py raises unless use_v2_model_runner is true.
+  - scenario: async scheduling combined with profiling_chunk_config
+    value: '1'
+    reason: platform.py requires v2 runner for profiling_chunk with async scheduling.
+  caveats:
+  - Setting the env var to 0 explicitly is different from leaving it unset only in that it also disables upstream HiSparse/watermark
+    auto-enablement; on Ascend both resolve to v1.
+  - Validate correctness (outputs) after switching runners — the v2 runner uses different input-batch/block-table and forward-context
+    plumbing.
+  - When migrating DSA-CP to PCP, set VLLM_USE_V2_MODEL_RUNNER=1, replace TP size N>1 with --tensor-parallel-size 1 --prefill-context-parallel-size
+    N, and remove enable_dsa_cp.
+  quick_guide: Unset = v1 (stable default on Ascend); set to 1 only for v2-only features (PCP, DeepSeek V4.1 A5, TurboQuant,
+    async+profiling_chunk); set to 0 for DSA-CP.
+analysis_date: '2026-10-27'

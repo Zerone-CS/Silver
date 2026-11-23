@@ -1,0 +1,78 @@
+name: VLLM_MOE_ROUTING_SIMULATION_STRATEGY
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1743
+- vllm/model_executor/layers/fused_moe/router/router_factory.py:119
+- vllm/model_executor/layers/fused_moe/router/routing_simulator_router.py:332
+value_type: str
+default: ''
+valid_choices: Any strategy name registered in RoutingSimulator.get_available_strategies() (e.g. uniform_random, normal_routing);
+  empty string disables simulation
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read in vllm upstream only (no vllm-ascend override found in the
+
+  provided context). When set to a non-empty string, create_fused_moe_router()
+
+  (router_factory.py:119-125) short-circuits the normal router selection priority
+
+  and returns a RoutingSimulatorRouter instead of the real router (GroupedTopK,
+
+  CustomRouting, FusedTopKBias, etc.). At runtime, RoutingSimulatorRouter._compute_routing
+
+  (routing_simulator_router.py:332) calls RoutingSimulator.simulate_routing() to
+
+  generate topk_weights/topk_ids from a synthetic strategy rather than from the
+
+  model''s actual router_logits. This replaces the real gating computation with a
+
+  simulation, so the produced expert assignments are not the model''s true routing.
+
+  Performance-wise, the simulation path bypasses the optimized fused top-k/grouped
+
+  routing kernels and instead runs a Python-level strategy, which can add per-layer
+
+  overhead and change expert load distribution (affecting MoE kernel efficiency and
+
+  EPLB balance). It is intended for testing/debugging, not production inference.
+
+  '
+usage_locations:
+- file: vllm/model_executor/layers/fused_moe/router/router_factory.py:119
+  context: Reads env var; if non-empty, returns RoutingSimulatorRouter overriding all other router selection.
+- file: vllm/model_executor/layers/fused_moe/router/routing_simulator_router.py:332
+  context: Reads env var to select the simulation strategy used in _compute_routing.
+related_parameters:
+- name: VLLM_USE_EPLB / eplb_state
+  relation: RoutingSimulatorRouter accepts eplb_state; simulated routing changes expert load distribution seen by EPLB.
+- name: custom_routing_function
+  relation: Overridden by simulation router — simulation takes priority over custom routing.
+- name: use_grouped_topk / e_score_correction_bias
+  relation: Normal router selection (GroupedTopKRouter, FusedTopKBiasRouter) is bypassed when simulation is enabled.
+constraints:
+- Setting this env var to any non-empty value forces RoutingSimulatorRouter for all MoE layers, overriding grouped-topk, custom
+  routing, and top-k-bias routers.
+- The strategy name must be one registered in RoutingSimulator.get_available_strategies() or registered via RoutingSimulator.register_strategy(),
+  otherwise simulation will fail.
+- Custom strategies may not produce correct model outputs; this path is for testing/debugging only.
+tuning_advice:
+  summary: Leave unset for production; only set to a known strategy name for MoE routing simulation/debugging.
+  suggested_values:
+  - scenario: Production inference on Ascend NPU
+    value: unset
+    reason: Empty string keeps the real router (grouped-topk/custom/top-k-bias) and correct model outputs with optimized fused
+      routing kernels.
+  - scenario: Debugging or benchmarking MoE expert load balancing / EPLB behavior
+    value: uniform_random
+    reason: A registered simulation strategy lets you exercise routing paths and load distribution without real router logits.
+  caveats:
+  - Do not enable in production — outputs will be incorrect.
+  - Verify the strategy name exists in RoutingSimulator.get_available_strategies() before use.
+  quick_guide: Keep unset (empty) for real inference; set only to a registered strategy name for MoE routing simulation/debugging.
+analysis_date: '2026-10-27'

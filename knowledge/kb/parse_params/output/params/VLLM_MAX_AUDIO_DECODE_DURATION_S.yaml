@@ -1,0 +1,108 @@
+name: VLLM_MAX_AUDIO_DECODE_DURATION_S
+type: env
+category: model
+scope: vllm
+source_file:
+- vllm/envs.py:1004
+- vllm/envs.py:82
+- vllm/entrypoints/speech_to_text/base/serving.py:126
+- vllm/multimodal/media/audio.py:133
+- vllm/multimodal/media/audio.py:173
+- vllm/model_executor/models/nano_nemotron_vl.py:635
+value_type: int
+default: 600
+valid_choices: positive integer (seconds); no upper bound enforced by code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This env var caps the maximum decoded audio duration (in seconds) for audio
+
+  inputs processed by vLLM''s multimodal / speech-to-text frontend. It is read
+
+  once at server startup into SpeechToTextBaseServing.max_audio_decode_duration_s
+
+  (vllm/entrypoints/speech_to_text/base/serving.py:126) and passed as
+
+  max_duration_s into load_audio_pyav (vllm/multimodal/media/audio.py:133,
+
+  vllm/model_executor/models/nano_nemotron_vl.py:635).
+
+  The limit is enforced in two places inside the pyav decode loop:
+
+  (1) an early metadata-based rejection before any decoding (audio.py:122-135),
+
+  and (2) a per-frame check `total_samples > max_samples` where
+
+  max_samples = int(sr * max_duration_s) (audio.py:137, 168-175). Because the
+
+  check happens *during* decoding, it bounds the float32 PCM buffer that can be
+
+  accumulated in host memory (chunks list) — it prevents decompression-bomb
+
+  audio from allocating gigabytes of CPU RAM. It does NOT touch NPU memory,
+
+  HCCL, or the model execution path; the decoded PCM is later converted to
+
+  features and moved to the NPU as part of normal multimodal preprocessing.
+
+  Therefore its performance effect on Ascend is indirect: "it bounds host-side"
+
+  preprocessing memory and prevents pathological long-audio requests from
+
+  consuming CPU/RAM and stalling the frontend, but it does not change
+
+  throughput or latency of the NPU compute itself. No vllm-ascend override of
+
+  this variable was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1004
+  context: Definition of the env var with default 600 seconds.
+- file: vllm/entrypoints/speech_to_text/base/serving.py:126
+  context: Read at serving init into max_audio_decode_duration_s.
+- file: vllm/multimodal/media/audio.py:133
+  context: Early metadata-duration rejection before decoding.
+- file: vllm/multimodal/media/audio.py:173
+  context: Per-frame decoded-sample check during pyav decode loop.
+- file: vllm/model_executor/models/nano_nemotron_vl.py:635
+  context: Forwarded as max_duration_s when extracting audio from video.
+related_parameters:
+- name: VLLM_MAX_AUDIO_DECODE_BYTES
+  relation: Companion guard on total float32 PCM bytes allocated during decode; default 256 MiB is sized for 600s mono 48kHz
+    float32. If you raise the duration limit, you likely must raise this too.
+- name: VLLM_MAX_AUDIO_CLIP_FILESIZE_MB
+  relation: Pre-decode file-size guard (default 25 MB); rejects oversized compressed audio before decoding starts.
+- name: VLLM_MAX_AUDIO_PREPROCESS_WORKERS
+  relation: Controls STT preprocessing thread pool size; interacts with how many concurrent audio decodes run.
+constraints:
+- The value must be a positive integer number of seconds; a value of 0 or negative would make max_samples <= 0 and reject
+  essentially all audio.
+- Audio whose container/stream metadata reports a duration greater than this limit is rejected before decoding with a ValueError.
+- Audio whose decoded sample count exceeds sr * VLLM_MAX_AUDIO_DECODE_DURATION_S is rejected mid-decode with a ValueError.
+- Raising this limit without also raising VLLM_MAX_AUDIO_DECODE_BYTES will cause decoding to fail on the byte limit instead
+  (default 256 MiB covers ~600s mono 48kHz float32).
+tuning_advice:
+  summary: Keep the default 600s unless you serve long-form audio (e.g. meeting transcription); if you raise it, raise VLLM_MAX_AUDIO_DECODE_BYTES
+    proportionally.
+  suggested_values:
+  - scenario: Default multimodal / short-clip audio serving
+    value: 600
+    reason: Default is sufficient for typical clips and bounds host RAM against decompression bombs.
+  - scenario: Long-form speech-to-text (e.g. 30-minute meeting recordings)
+    value: 1800
+    reason: Upstream correctness test uses 1800s for long-audio WER evaluation; pair with a larger VLLM_MAX_AUDIO_DECODE_BYTES
+      (e.g. 805306368 for 1800s mono 48kHz float32).
+  - scenario: Untrusted / public-facing audio endpoint
+    value: 300
+    reason: Tighter cap reduces host RAM exposure and frontend CPU time from adversarial long audio on Ascend deployments.
+  caveats:
+  - Raising this value alone is insufficient — VLLM_MAX_AUDIO_DECODE_BYTES must be raised in tandem or decoding fails on the
+    byte limit.
+  - This parameter does not influence NPU throughput or HBM; do not tune it expecting latency gains on Ascend.
+  - Ensure frontend CPU/RAM headroom scales with the number of concurrent long-audio requests when raising the limit.
+  quick_guide: Leave at 600s for normal audio; set 1800s (and raise VLLM_MAX_AUDIO_DECODE_BYTES) only for long-form transcription.
+analysis_date: '2026-10-27'

@@ -1,0 +1,91 @@
+name: speculative.suffix_decoding_max_tree_depth
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/config/speculative.py:1586
+- vllm/config/speculative.py:1592
+value_type: int
+default: 16
+valid_choices: integer >= 1
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only takes effect when speculative decoding method is "suffix"
+
+  (Arctic Inference based suffix decoding). It bounds the maximum depth of the
+
+  global and prompt suffix trees, which in turn limits the sum of the prefix
+
+  match length and the number of speculated tokens per step.
+
+
+  In vllm/config/speculative.py:1583-1590, if num_speculative_tokens is not set,
+
+  it is defaulted to suffix_decoding_max_tree_depth. So this value directly
+
+  becomes the per-step speculation budget (max tokens drafted per forward pass).
+
+  A larger tree depth allows longer suffix matches and more speculative tokens,
+
+  increasing potential acceptance length (higher throughput when acceptance is
+
+  good) but also increasing draft/verify compute and memory for tree nodes per
+
+  step (higher latency and more wasted work when acceptance is poor).
+
+
+  No definition or override was found in vllm-ascend source; the parameter is
+
+  consumed by the upstream suffix proposer path. On Ascend NPU, suffix decoding
+
+  runs the Arctic Inference proposer on CPU/host side while verification runs on
+
+  NPU, so the tree depth mainly affects the size of the verify batch submitted to
+
+  the NPU and the host-side tree construction cost.
+
+  '
+usage_locations:
+- file: vllm/config/speculative.py:1586
+  context: Defaults num_speculative_tokens to suffix_decoding_max_tree_depth when unset for suffix method
+- file: vllm/config/speculative.py:1592
+  context: Validation that suffix_decoding_max_tree_depth must be >= 1
+related_parameters:
+- name: speculative.num_speculative_tokens
+  relation: Auto-filled from suffix_decoding_max_tree_depth when unset; acts as the max speculation limit for suffix decoding
+- name: speculative.method
+  relation: Only relevant when method is 'suffix'
+- name: speculative.suffix_decoding_max_spec_factor
+  relation: Caps speculation length relative to matched prefix length; interacts with tree depth bound
+- name: speculative.suffix_decoding_max_cached_requests
+  relation: Controls suffix tree cache size; combined with depth determines memory footprint
+constraints:
+- suffix_decoding_max_tree_depth must be >= 1, otherwise a ValueError is raised.
+- Suffix decoding requires the arctic-inference package (arctic-inference==0.1.1); otherwise an ImportError is raised.
+- Only effective when speculative decoding method is 'suffix'.
+tuning_advice:
+  summary: Tune tree depth to balance suffix match length (throughput) against per-step verify cost (latency) on Ascend NPU.
+  suggested_values:
+  - scenario: Latency-sensitive serving with repetitive/predictable prompts
+    value: 8
+    reason: Smaller tree keeps the verify batch small, reducing NPU verify latency while still capturing short suffix matches.
+  - scenario: Throughput-oriented batch serving with highly repetitive workloads (code, RAG, templated prompts)
+    value: 16
+    reason: Default depth allows longer suffix matches and more speculative tokens, improving acceptance and throughput when
+      repetition is high.
+  - scenario: Highly repetitive long-context workloads where acceptance is very high
+    value: 32
+    reason: Deeper trees capture longer matches, but only worthwhile if acceptance rate stays high to offset larger verify
+      batches.
+  caveats:
+  - If num_speculative_tokens is unset, it is silently defaulted to this value, so changing tree depth also changes the speculation
+    budget.
+  - Larger depth increases host-side tree construction and NPU verify batch size; poor acceptance wastes NPU compute and raises
+    latency.
+  - No vllm-ascend override exists; behavior follows upstream vLLM suffix decoding path.
+  quick_guide: Start at 16; lower to 8 for latency, raise to 32 only for highly repetitive workloads with high acceptance.
+analysis_date: '2026-10-27'

@@ -1,0 +1,77 @@
+name: VLLM_PATTERN_MATCH_DEBUG
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:764
+- vllm/envs.py:287
+- vllm/compilation/passes/pass_manager.py:82
+value_type: str
+default: null
+valid_choices: any fx.Node name string (e.g. 'getitem_34', 'scaled_mm_3'), or unset (None)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This is a debug-only environment variable read in vllm/envs.py (VLLM_PATTERN_MATCH_DEBUG,
+
+  default None). It is consumed exclusively by the with_pattern_match_debug decorator in
+
+  vllm/compilation/passes/pass_manager.py:82. When set to a non-None value, the decorator wraps
+
+  the custom compilation pass call in set_env_var("TORCHINDUCTOR_PATTERN_MATCH_DEBUG", debug_val),
+
+  which turns on Inductor''s built-in pattern-match debug logging for the duration of that pass.
+
+  When unset (the default), the decorator simply calls fn(*args, **kwargs) with no overhead.
+
+  The performance effect is therefore limited to the compilation phase: "enabling it causes"
+
+  Inductor to emit verbose pattern-match diagnostics, adding logging overhead during torch.compile
+
+  graph lowering. It does not affect steady-state inference throughput or memory. On Ascend,
+
+  vllm-ascend does not reference this variable; it only matters if the Ascend backend path goes
+
+  through vLLM''s custom compilation pass manager (torch.compile / Inductor-based compilation).
+
+  For Ascend-native graph compilation (ACLGraph / CANN), this flag has no effect.
+
+  '
+usage_locations:
+- file: vllm/envs.py:764
+  context: Environment variable definition; reads VLLM_PATTERN_MATCH_DEBUG as str or None.
+- file: vllm/envs.py:287
+  context: 'Type annotation declaration VLLM_PATTERN_MATCH_DEBUG: str | None = None.'
+- file: vllm/compilation/passes/pass_manager.py:82
+  context: with_pattern_match_debug decorator checks the value and sets TORCHINDUCTOR_PATTERN_MATCH_DEBUG around the pass
+    call.
+related_parameters:
+- name: VLLM_DEBUG_DUMP_PATH
+  relation: Sibling debug env var for dumping fx graphs; both are compilation-debugging aids.
+- name: TORCHINDUCTOR_PATTERN_MATCH_DEBUG
+  relation: The underlying Inductor env var that this vLLM variable sets for the duration of a pass.
+- name: VLLM_USE_STANDALONE_COMPILE
+  relation: Controls whether Inductor standalone compile is used; pattern-match debug only applies when Inductor compilation
+    runs.
+constraints:
+- The value must be a valid fx.Node name string (e.g. 'getitem_34' or 'scaled_mm_3'); an invalid name will not match any node
+  and produces no useful debug output.
+- This variable only has an effect when vLLM's custom compilation passes run through torch.compile/Inductor; it is ignored
+  on Ascend-native graph compilation paths.
+tuning_advice:
+  summary: Leave unset for production; only set to a specific fx.Node name when debugging Inductor pattern-match failures
+    during compilation.
+  suggested_values:
+  - scenario: Production inference on Ascend NPU
+    value: unset
+    reason: Default None means the decorator adds no overhead; enabling it only adds compile-time logging noise.
+  - scenario: Debugging a specific custom pass pattern match during torch.compile on Ascend
+    value: getitem_34
+    reason: Set to the fx.Node name you want Inductor to trace; matches the documented example format.
+  caveats:
+  - Only affects the compilation phase; no impact on runtime throughput or memory.
+  - Has no effect on Ascend-native (ACLGraph/CANN) compilation paths that bypass Inductor.
+  quick_guide: Keep unset unless debugging Inductor pattern matching; set to an fx.Node name only for compile-time diagnostics.
+analysis_date: '2026-10-27'

@@ -1,0 +1,92 @@
+name: VLLM_MQ_MAX_CHUNK_BYTES_MB
+type: env
+category: communication
+scope: both
+source_file:
+- vllm/envs.py:1757
+- vllm/envs.py:241
+- vllm/v1/executor/multiproc_executor.py:151
+- vllm/v1/executor/ray_executor_v2.py:329
+- vllm_ascend/patch/platform/patch_multiproc_executor.py:54
+value_type: int
+default: 16
+valid_choices: positive integer (megabytes); no explicit upper bound enforced in code
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This env var sets the maximum chunk size (in MB) for the RPC broadcast MessageQueue
+
+  used by the multiprocessing executor to broadcast SchedulerOutput objects from the
+
+  driver to worker processes. In vLLM upstream it is read in
+
+  vllm/v1/executor/multiproc_executor.py:151 and vllm/v1/executor/ray_executor_v2.py:329
+
+  as `max_chunk_bytes = envs.VLLM_MQ_MAX_CHUNK_BYTES_MB * 1024 * 1024` and passed to
+
+  MessageQueue(max_chunk_bytes=...). In vllm-ascend the same logic is replicated in
+
+  vllm_ascend/patch/platform/patch_multiproc_executor.py:54, which patches the
+
+  multiproc executor for Ascend. The value only affects the transport layer for
+
+  SchedulerOutput messages: "objects larger than this threshold are broadcast to worker"
+
+  processes via zmq (per the envs.py comment), while smaller ones use shared memory.
+
+  It does NOT affect model compute, HCCL collective communication, or KV cache sizing.
+
+  Impact on Ascend runtime is therefore indirect and minor: "a too-small value forces"
+
+  large SchedulerOutputs (e.g. big batches, many scheduled requests, structured output
+
+  metadata) onto the zmq path, adding serialization/copy latency per step; a too-large
+
+  value increases per-queue shared-memory reservation. Neither changes NPU kernel
+
+  throughput. Because vllm-ascend reuses the upstream env var unchanged (no override of
+
+  the default), behavior on Ascend matches upstream.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1757
+  context: Defines VLLM_MQ_MAX_CHUNK_BYTES_MB env var, default 16 MB, parsed as int.
+- file: vllm/v1/executor/multiproc_executor.py:151
+  context: Converts MB to bytes and passes as max_chunk_bytes to the rpc_broadcast_mq MessageQueue.
+- file: vllm/v1/executor/ray_executor_v2.py:329
+  context: Same conversion for the Ray-based executor broadcast MessageQueue.
+- file: vllm_ascend/patch/platform/patch_multiproc_executor.py:54
+  context: Ascend-patched multiproc executor reads the env var to size the rpc_broadcast_mq MessageQueue.
+related_parameters:
+- name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+  relation: Sibling RPC tuning env var for the multiprocessing executor; both govern driver-worker RPC behavior.
+- name: tensor_parallel_size / pipeline_parallel_size
+  relation: Determines world_size and thus the number of workers the broadcast queue fans out to.
+constraints:
+- The value must be a positive integer number of megabytes; it is multiplied by 1024*1024 to form max_chunk_bytes.
+- Only applies when using the multiprocessing (or Ray) executor with multiple worker processes; single-process execution does
+  not use this queue.
+tuning_advice:
+  summary: Leave at the default 16 MB unless profiling shows SchedulerOutput broadcast overhead; it is a minor RPC transport
+    knob, not an NPU compute parameter.
+  suggested_values:
+  - scenario: Default deployments (v1 and v2 Ascend worker paths)
+    value: 16
+    reason: Upstream default; adequate for typical batch sizes and matches vllm-ascend's unmodified behavior.
+  - scenario: Very large batches / many concurrent requests producing large SchedulerOutputs
+    value: 32
+    reason: Raises the shared-memory threshold so large SchedulerOutputs avoid the slower zmq broadcast path, reducing per-step
+      RPC latency.
+  - scenario: Memory-constrained hosts with many worker processes
+    value: 8
+    reason: Reduces per-queue shared-memory reservation at the cost of more zmq broadcasts for large messages.
+  caveats:
+  - Applies to both v1 and v2 Ascend worker paths since vllm-ascend reuses the upstream env var in its patched multiproc executor.
+  - Do not expect throughput gains from this knob alone; it only affects driver-to-worker SchedulerOutput transport.
+  - Tune together with VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS if RPC latency is a suspected bottleneck.
+  quick_guide: Keep VLLM_MQ_MAX_CHUNK_BYTES_MB at 16 unless large-batch RPC broadcast overhead is observed.
+analysis_date: '2026-10-27'

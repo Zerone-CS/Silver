@@ -1,0 +1,98 @@
+name: compilation.compilation_time
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/compilation/monitor.py:50
+- vllm/v1/executor/abstract.py:134
+- vllm/v1/engine/core.py:359
+- vllm/v1/worker/gpu_worker.py:951
+- vllm/v1/worker/cpu_worker.py:284
+- vllm_ascend/worker/worker.py:960
+value_type: float
+default: 0.0
+valid_choices: non-negative float (seconds); accumulated at runtime, not user-set
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'compilation.compilation_time is a read-only runtime measurement field, not a tuning knob.
+
+  It is accumulated in vllm/compilation/monitor.py:50-52 (compilation_config.compilation_time +=
+
+  total_compile_time) inside the torch.compile monitoring context manager, and is only populated
+
+  when compilation_config.mode == CompilationMode.VLLM_COMPILE. It is then read back by workers
+
+  (vllm/v1/worker/gpu_worker.py:951, vllm/v1/worker/cpu_worker.py:284, and on Ascend
+
+  vllm_ascend/worker/worker.py:960) to build a CompilationTimes object, propagated to the main
+
+  process via collective_rpc in vllm/v1/executor/abstract.py:134 (taking max across workers since
+
+  they compile in parallel), and finally logged in vllm/v1/engine/core.py:359-378 as part of the
+
+  "init engine ... took X s (compilation: Y s)" message. On Ascend, vllm_ascend/worker/worker.py:960
+
+  reads self.vllm_config.compilation_config.compilation_time and also falls back to 0.0 for
+
+  encoder_compilation_time on older vLLM releases. The value itself does not change any execution
+
+  path — it only reflects how long graph compilation/warmup took. Its indirect performance value is
+
+  diagnostic: "it lets operators see how much of startup latency is spent in compilation (e.g. ACLGraph"
+
+  capture / torch.compile on Ascend), which is the dominant startup cost when compilation is enabled.
+
+  '
+usage_locations:
+- file: vllm/compilation/monitor.py:50
+  context: Accumulates total_compile_time into compilation_config.compilation_time (or encoder_compilation_time) when mode
+    == VLLM_COMPILE
+- file: vllm/v1/executor/abstract.py:134
+  context: Propagates max compilation_time across workers back to main process config after compile_or_warm_up_model
+- file: vllm/v1/engine/core.py:359
+  context: Reads compilation_time to log engine init breakdown (compilation vs total)
+- file: vllm/v1/worker/gpu_worker.py:951
+  context: Returns CompilationTimes(language_model=compilation_time, encoder=...) from worker
+- file: vllm/v1/worker/cpu_worker.py:284
+  context: Same CompilationTimes construction on CPU worker
+- file: vllm_ascend/worker/worker.py:960
+  context: Ascend worker returns CompilationTimes using vllm_config.compilation_config.compilation_time; encoder falls back
+    to 0.0
+- file: vllm/benchmarks/startup.py:159
+  context: Benchmark extracts compilation_time to report startup breakdown
+related_parameters:
+- name: compilation_config.mode
+  relation: compilation_time is only accumulated when mode == CompilationMode.VLLM_COMPILE; otherwise it stays 0.0
+- name: compilation_config.encoder_compilation_time
+  relation: Sibling field accumulating encoder-side compile time; both are reported together
+- name: compilation_config.cudagraph_mode
+  relation: Graph capture (ACLGraph on Ascend) is a major contributor to the measured compilation time
+- name: enforce_eager
+  relation: When eager mode is used, no graph compilation occurs and compilation_time remains ~0
+constraints:
+- compilation_time is a runtime-accumulated measurement and cannot be set by the user via CLI or config.
+- The value is only non-zero when compilation_config.mode is VLLM_COMPILE; in eager or non-compile modes it stays at its default
+  0.0.
+- With tensor parallelism greater than 1, the reported value is the maximum across worker processes, not a sum, because workers
+  compile in parallel.
+tuning_advice:
+  summary: Not a tunable parameter — use it as a diagnostic to locate startup latency, and tune the underlying compilation
+    settings (mode, cudagraph sizes, enforce_eager) instead.
+  suggested_values:
+  - scenario: Diagnosing slow Ascend startup
+    value: observe logged value
+    reason: 'Read the ''init engine ... (compilation: X s)'' log line to quantify how much startup is spent in graph compilation
+      before adjusting compilation_config.'
+  - scenario: Startup latency critical, compilation dominates
+    value: reduce captured graph sizes or set enforce_eager
+    reason: Lowering the number of captured ACLGraph batch sizes or disabling compilation reduces the measured compilation_time
+      at the cost of some runtime latency.
+  caveats:
+  - Do not attempt to set compilation.compilation_time directly; it is overwritten by the monitor at runtime.
+  - On Ascend with TP>1 the value is the max across ranks, so per-rank imbalance is not visible from this single number.
+  quick_guide: Treat compilation_time as a read-only startup metric; tune compilation_config.mode/cudagraph sizes or enforce_eager
+    to change it.
+analysis_date: '2026-10-27'

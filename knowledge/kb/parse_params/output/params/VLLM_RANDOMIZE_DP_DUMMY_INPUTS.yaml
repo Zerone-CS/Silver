@@ -1,0 +1,83 @@
+name: VLLM_RANDOMIZE_DP_DUMMY_INPUTS
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:1447
+- vllm/envs.py:181
+- vllm/v1/worker/gpu_model_runner.py:5778
+value_type: bool
+default: false
+valid_choices: 'boolean: ''0'' (disabled) or ''1'' (enabled); any other value is treated as disabled'
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- memory
+impact_detail: 'This env var only takes effect when data_parallel_size > 1 (see gpu_model_runner.py:5784-5787,
+
+  where randomize_inputs = randomize_inputs or (envs.VLLM_RANDOMIZE_DP_DUMMY_INPUTS and dp_size > 1)).
+
+  When enabled, the maybe_randomize_inputs context manager replaces input_ids with random token ids
+
+  (torch.randint_like over the vocab range) during dummy runs — specifically during profile_run and
+
+  DP rank dummy runs. The purpose is to spread expert selection across all experts in MoE models so
+
+  that the memory profiling / dummy run exercises a representative expert distribution rather than a
+
+  degenerate one. On Ascend NPU this affects the memory profiling phase (which determines the KV cache
+
+  size / available memory) and the DP dummy-run warmup. It does not change steady-state inference
+
+  throughput directly; its effect is indirect — a more representative dummy run can yield a more
+
+  accurate memory profile and avoid under/over-estimating KV cache blocks, and can avoid pathological
+
+  expert-load imbalance during warmup. The randomization itself adds a small one-time cost
+
+  (torch.randint_like) during profiling only. No vllm-ascend override of this env var was found in the
+
+  provided context; the behavior is inherited from upstream vLLM''s v1 gpu_model_runner path.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1447
+  context: Definition of the env var; parsed as True only when the string equals '1'.
+- file: vllm/envs.py:181
+  context: 'Type stub declaration VLLM_RANDOMIZE_DP_DUMMY_INPUTS: bool = False.'
+- file: vllm/v1/worker/gpu_model_runner.py:5778
+  context: maybe_randomize_inputs context manager; randomizes input_ids during profile_run and DP dummy runs when dp_size
+    > 1.
+- file: vllm/envs.py:2279
+  context: Listed among env vars excluded from compile cache key factors (does not affect compiled artifacts).
+related_parameters:
+- name: --data-parallel-size
+  relation: The env var has no effect unless data_parallel_size > 1; it is gated on dp_size > 1.
+- name: VLLM_DP_SIZE
+  relation: Sets the data parallel world size that gates whether randomization is applied.
+- name: --enable-expert-parallel
+  relation: Randomizing dummy inputs is most relevant for MoE models with expert parallelism, to balance expert selection
+    during profiling.
+constraints:
+- The env var only takes effect when data parallel size is greater than 1; with a single DP rank it is ignored.
+- The value is enabled only when the environment variable is exactly the string '1'; any other value (including 'true') is
+  treated as disabled.
+tuning_advice:
+  summary: Enable only for multi-DP MoE deployments to get representative expert selection during profiling; leave disabled
+    otherwise.
+  suggested_values:
+  - scenario: MoE model with data-parallel-size > 1 and expert parallelism
+    value: '1'
+    reason: Randomizing dummy inputs spreads expert selection across all experts during profile_run and DP dummy runs, yielding
+      a more representative memory profile and avoiding degenerate expert-load imbalance.
+  - scenario: Dense model or single DP rank deployment
+    value: '0'
+    reason: The env var is gated on dp_size > 1 and provides no benefit for dense models; leaving it disabled avoids unnecessary
+      profiling overhead.
+  caveats:
+  - Set the value to the literal string '1'; values like 'true' are silently treated as disabled.
+  - This does not affect steady-state throughput, only the profiling/dummy-run phase.
+  quick_guide: Set VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 for multi-DP MoE runs; otherwise leave unset.
+analysis_date: '2026-10-27'

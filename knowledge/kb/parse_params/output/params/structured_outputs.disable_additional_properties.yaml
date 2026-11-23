@@ -1,0 +1,71 @@
+name: structured_outputs.disable_additional_properties
+type: nested
+category: other
+scope: vllm
+source_file:
+- vllm/v1/structured_output/backend_guidance.py:95
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag is only consumed by the guidance structured-output backend
+
+  (vllm/v1/structured_output/backend_guidance.py). It is read once in
+
+  GuidanceBackend.__post_init__ and passed to serialize_guidance_grammar()
+
+  during compile_grammar(), where it controls whether `additionalProperties`
+
+  is emitted into the serialized JSON schema grammar. It does not affect the
+
+  per-token masking hot path (that is handled by llguidance.LLMatcher), nor
+
+  does it touch any NPU kernel, HCCL communication, or memory allocation.
+
+  Its only runtime effect is a marginal change in grammar compilation cost
+
+  and matcher complexity: "omitting `additionalProperties` can slightly reduce"
+
+  the size/complexity of the compiled grammar, which may marginally reduce
+
+  grammar-compile latency and per-step matcher overhead for JSON-schema
+
+  constrained requests. There is no vllm-ascend override of this parameter;
+
+  it is a pure CPU-side grammar-construction knob and is orthogonal to
+
+  Ascend NPU execution.
+
+  '
+usage_locations:
+- file: vllm/v1/structured_output/backend_guidance.py:95
+  context: Read from structured_outputs_config in GuidanceBackend.__post_init__
+- file: vllm/v1/structured_output/backend_guidance.py:115
+  context: Passed to serialize_guidance_grammar() during compile_grammar()
+related_parameters:
+- name: structured_outputs.backend
+  relation: Only takes effect when the guidance backend is selected; ignored by outlines/xgrammar backends
+- name: structured_outputs.disable_any_whitespace
+  relation: Sibling guidance-backend grammar-serialization option passed to the same serialize_guidance_grammar() call
+constraints:
+- This option is only supported by the guidance structured-output backend; it has no effect when backend is outlines or xgrammar.
+tuning_advice:
+  summary: Leave at default unless you specifically need guidance-backend JSON-schema output to match outlines/xgrammar semantics.
+  suggested_values:
+  - scenario: Using the guidance backend and want output parity with outlines/xgrammar
+    value: true
+    reason: Omits additionalProperties from the serialized schema, aligning guidance behavior with the other backends and
+      slightly simplifying the compiled grammar.
+  - scenario: Default / any non-guidance backend
+    value: false
+    reason: No effect outside the guidance backend; keeping the default avoids surprises.
+  caveats:
+  - Only affects the guidance backend; ignored by outlines and xgrammar.
+  - Impact is limited to grammar compilation and matcher complexity on CPU; it does not change NPU kernel behavior or throughput
+    meaningfully.
+  quick_guide: Only relevant for the guidance backend; default false is fine for most deployments.
+analysis_date: '2026-10-27'

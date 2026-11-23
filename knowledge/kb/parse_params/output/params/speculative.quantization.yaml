@@ -1,0 +1,79 @@
+name: speculative.quantization
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm_ascend/platform.py:788
+value_type: str
+default: null
+valid_choices: Any quantization method name supported by vLLM (e.g. fp8, w8a8, awq, gptq); on Ascend it is always reset to
+  None
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+- latency
+impact_detail: 'This field specifies the quantization method used for the draft (speculative) model
+
+  weights when using a draft-model-based speculative decoding method. In upstream vLLM it
+
+  selects the quantization kernel/config used to load and run the draft model, which can
+
+  affect draft-model memory footprint and per-token draft latency.
+
+
+  On Ascend, however, vllm-ascend explicitly neutralizes this parameter. In
+
+  vllm_ascend/platform.py:786-794 (the platform config sanitization pass), if
+
+  vllm_config.speculative_config.quantization is not None, a warning is logged and the
+
+  value is forcibly reset to None: "\"Speculative quantization is set but Ascend"
+
+  automatically uses the main model''s quantization method." This means the draft model
+
+  inherits the main model''s quantization scheme rather than honoring a user-specified
+
+  draft quantization. Consequently, on Ascend this parameter has no runtime effect on
+
+  kernel selection, memory layout, or latency — the effective quantization is dictated by
+
+  the main model config. The only observable effect is a warning log when a non-None
+
+  value is supplied. Performance impact is therefore low (no tuning lever on Ascend).
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:788
+  context: Platform config sanitization resets speculative_config.quantization to None, forcing draft model to inherit main
+    model quantization.
+related_parameters:
+- name: model_config.quantization
+  relation: On Ascend the draft model inherits the main model's quantization method; this field is ignored.
+- name: speculative_config.method
+  relation: Draft-model-based speculative methods (e.g. eagle/mtp) are the only ones where draft quantization would apply
+    upstream.
+- name: speculative_config.model
+  relation: The draft model whose weights this quantization field would describe upstream.
+constraints:
+- On Ascend, any non-None value is silently reset to None; the draft model always uses the main model's quantization method.
+- Only takes effect for draft-model-based speculative decoding methods; it has no effect for n-gram or other non-draft-model
+  methods.
+tuning_advice:
+  summary: Do not set this on Ascend — it is forcibly reset to None and the draft model inherits the main model's quantization.
+  suggested_values:
+  - scenario: Any Ascend deployment using speculative decoding
+    value: unset
+    reason: vllm-ascend resets speculative_config.quantization to None in platform.py; setting it only produces a warning
+      and has no effect.
+  - scenario: Controlling draft model precision on Ascend
+    value: Set model_config.quantization instead
+    reason: Ascend derives the draft model quantization from the main model's quantization method, so tune the main model
+      quantization to influence draft precision/memory.
+  caveats:
+  - Setting a non-None value triggers a warning log but is otherwise ignored on Ascend.
+  - Because the draft model inherits the main model quantization, you cannot independently quantize the draft model on Ascend.
+  - Upstream vLLM behavior (independent draft quantization) does not carry over to Ascend.
+  quick_guide: Leave unset on Ascend; draft quantization follows the main model.
+analysis_date: '2026-10-27'

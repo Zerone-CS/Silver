@@ -1,0 +1,89 @@
+name: additional_config.dynamic_spec_config.method
+type: nested
+category: speculation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1298
+- vllm_ascend/ascend_config.py:1305
+- vllm_ascend/ascend_config.py:1308
+- vllm_ascend/ascend_config.py:1316
+- vllm_ascend/spec_decode/dflash_proposer.py:91
+- vllm_ascend/spec_decode/dspark_proposer.py:64
+value_type: str
+default: null
+valid_choices:
+- dspark
+- dflash
+- null
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This field selects which dynamic speculative-length scheduler is instantiated inside the\nAscend proposer.\
+  \ It is read from get_ascend_config().dynamic_spec_config in two places:\n- \"vllm_ascend/spec_decode/dflash_proposer.py:91\
+  \ — if method == \\\"dflash\\\", a DynamicSpecScheduler\"\n  is created with method=\"dflash\" and the configured method_params.\n\
+  - \"vllm_ascend/spec_decode/dspark_proposer.py:64 — if method == \\\"dspark\\\", a DynamicSpecScheduler\"\n  is created\
+  \ with method=\"dspark\".\nWhen set, the scheduler adapts the per-request verify budget (how many of the\nnum_speculative_tokens\
+  \ drafted tokens are actually verified by the target model) based on\ndraft confidence (DSpark confidence head sigmoid,\
+  \ or DFlash head-free max(softmax(logits))).\nThis directly changes the number of target-model verify tokens per step, which\
+  \ is the dominant\ncost of speculative decoding on Ascend NPU. Lower verify length reduces target-model compute\nand latency\
+  \ when the drafter is uncertain; higher verify length preserves acceptance gains when\nconfidence is high. Net effect is\
+  \ a latency/throughput tradeoff that is workload-dependent.\nWhen method is None (default), self.dynamic_spec stays None\
+  \ and the proposer uses the fixed\nnum_speculative_tokens path — no dynamic scheduling overhead.\nNote: \"the value must\
+  \ match the speculative_config.method (\\\"dspark\\\" or \\\"dflash\\\"); the scheduler\"\nis only instantiated in the proposer\
+  \ whose method matches, so a mismatch silently disables the\ndynamic path (dynamic_spec remains None).\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1305
+  context: SUPPORTED_METHODS ClassVar defines valid values ('dspark', 'dflash'); None disables.
+- file: vllm_ascend/ascend_config.py:1316
+  context: model_validator _validate raises ValueError if method not in SUPPORTED_METHODS and not None.
+- file: vllm_ascend/spec_decode/dflash_proposer.py:91
+  context: Instantiates DynamicSpecScheduler(method='dflash') when method == 'dflash'.
+- file: vllm_ascend/spec_decode/dspark_proposer.py:64
+  context: Instantiates DynamicSpecScheduler(method='dspark') when method == 'dspark'.
+- file: vllm_ascend/ascend_config.py:109
+  context: KVPP validation rejects any non-None dynamic_spec_config.method (dynamic speculative lengths unsupported with KVPP).
+related_parameters:
+- name: speculative_config.method
+  relation: Must match this value ('dspark' or 'dflash'); the scheduler is only created in the proposer whose method matches.
+- name: speculative_config.num_speculative_tokens
+  relation: Upper bound on drafted tokens; dynamic scheduling decides how many of these are verified per request.
+- name: additional_config.dynamic_spec_config.method_params
+  relation: Method-specific hyperparameters (e.g. initial_verify_budget_per_req, budget_update_interval, budget_threshold)
+    consumed by the DynamicSpecScheduler.
+- name: additional_config.enable_kvpp
+  relation: Mutually exclusive — KVPP raises ValueError if dynamic_spec_config.method is set.
+- name: speculative_config.enable_adaptive_verification
+  relation: KVPP rejects DSpark adaptive verification; related dynamic-verification feature.
+constraints:
+- dynamic_spec_config.method must be one of 'dspark', 'dflash', or None; any other value raises ValueError at config validation.
+- dynamic_spec_config.method must match speculative_config.method ('dspark' or 'dflash'); otherwise the dynamic scheduler
+  is never instantiated and the setting has no effect.
+- KVPP (additional_config.enable_kvpp) cannot be combined with a non-None dynamic_spec_config.method — KVPP validation raises
+  ValueError for dynamic speculative lengths.
+- DSpark dynamic method requires a draft model with a DSpark confidence head; models without such a head must use 'dflash'
+  or another method.
+- Dynamic speculative decoding targets model runner v1 only; it is not supported on the v2 worker path.
+tuning_advice:
+  summary: Set to the same value as speculative_config.method ('dspark' or 'dflash') to enable confidence-based dynamic verify
+    length; leave None to keep fixed num_speculative_tokens.
+  suggested_values:
+  - scenario: DSpark draft model with a confidence head (e.g. Qwen series), variable concurrency
+    value: dspark
+    reason: Uses the DSpark confidence head to adapt per-request verify budget, reducing target-model verify cost when the
+      drafter is uncertain.
+  - scenario: Draft model without a confidence head, or wanting a head-free confidence proxy
+    value: dflash
+    reason: DFlash estimates confidence from max(softmax(logits)) of the drafted token, requiring no extra neural head.
+  - scenario: Fixed-length speculative decoding, KVPP enabled, or v2 worker path
+    value: unset
+    reason: None disables the dynamic path; KVPP and v2 do not support dynamic speculative lengths.
+  caveats:
+  - Ensure speculative_config.method equals this value, otherwise the scheduler is not created and the setting is a no-op.
+  - Benchmark against a fixed num_speculative_tokens baseline; dynamic verify length can hurt acceptance at high confidence.
+  - Do not combine with enable_kvpp — validation will raise.
+  quick_guide: Set dynamic_spec_config.method to 'dspark' or 'dflash' matching speculative_config.method to enable dynamic
+    verify length; leave None otherwise.
+analysis_date: '2026-10-27'

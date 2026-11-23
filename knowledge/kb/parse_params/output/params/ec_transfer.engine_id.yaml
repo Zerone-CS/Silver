@@ -1,0 +1,78 @@
+name: ec_transfer.engine_id
+type: nested
+category: communication
+scope: vllm
+source_file:
+- vllm/distributed/ec_transfer/ec_connector/factory.py:48
+value_type: int
+default: 0
+valid_choices: non-negative integer; must be unique per engine instance within a deployment
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'ec_transfer.engine_id is a field of ECTransferConfig (elastic/ephemeral cache transfer
+
+  config) that identifies a given engine instance to the EC connector. In the upstream
+
+  vLLM code path, it is read in ECConnectorFactory.create_connector
+
+  (vllm/distributed/ec_transfer/ec_connector/factory.py:48) only for logging the connector
+
+  name and engine_id when constructing the connector. The connector class itself
+
+  (ECConnectorBase) receives the full VllmConfig and may use engine_id internally to
+
+  namespace/route transfer metadata between engines. On Ascend, the equivalent
+
+  disaggregated prefill/decode KV transfer path is driven by vllm-ascend''s Mooncake /
+
+  Ascend-direct connectors, where engine_id is used to uniquely identify each engine
+
+  (prefill vs decode groups) so that KV blocks are routed to the correct peer. A wrong or
+
+  duplicated engine_id does not change per-token compute cost, but it can cause misrouted
+
+  or dropped KV transfers, which manifests as retries, stalls, or failed handshakes —
+
+  indirectly hurting latency and throughput of the disaggregated pipeline. It has no
+
+  direct effect on memory footprint or kernel selection.
+
+  '
+usage_locations:
+- file: vllm/distributed/ec_transfer/ec_connector/factory.py:48
+  context: Read when creating the EC connector to log connector name and engine_id; passed via VllmConfig.ec_transfer_config
+    to the connector constructor.
+related_parameters:
+- name: ec_transfer.ec_connector
+  relation: Selects the connector class that consumes engine_id; must be set or create_connector raises ValueError.
+- name: kv_transfer_config.engine_id
+  relation: Analogous engine identifier for the KV transfer (Mooncake) path; docs show engine_id used per role group (prefill/decode)
+    and must be unique per engine.
+- name: kv_transfer_config.kv_port
+  relation: Paired with engine_id in deployment docs; each engine needs a unique engine_id and a unique kv_port.
+constraints:
+- ec_transfer_config must be set (non-None) before a connector can be created, otherwise create_connector raises ValueError.
+- ec_connector must not be None, otherwise get_connector_class raises ValueError.
+- Each engine instance in a deployment must have a unique engine_id; duplicate ids cause transfer misrouting.
+tuning_advice:
+  summary: Assign a unique, sequentially increasing engine_id per engine instance and keep it consistent with the declared
+    prefill/decode topology.
+  suggested_values:
+  - scenario: Single prefill engine group (shared by PP ranks)
+    value: 0
+    reason: Docs for GLM5.2 use engine_id 0 for the prefill engine shared across PP ranks.
+  - scenario: Decode engine group
+    value: 2
+    reason: Docs assign a distinct engine_id (e.g. 2) to decode engines to avoid collision with prefill.
+  - scenario: Multiple P instances in a disaggregated pool
+    value: <increment from 0>
+    reason: Docs state engine_id should start from 0 and increment sequentially per P instance, paired with a unique kv_port.
+  caveats:
+  - Do not reuse the same engine_id across engines in one deployment; collisions break KV routing.
+  - Keep engine_id aligned with the prefill/decode topology declared in the connector config.
+  quick_guide: Give every engine a unique engine_id (start at 0, increment), paired with a unique kv_port.
+analysis_date: '2026-10-27'

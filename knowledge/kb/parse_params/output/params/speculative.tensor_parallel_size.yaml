@@ -1,0 +1,85 @@
+name: speculative.tensor_parallel_size
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/speculative.py:1692
+- vllm_ascend/platform.py:1746
+- vllm_ascend/spec_decode/llm_base_proposer.py:218
+value_type: int
+default: null
+valid_choices: 1 or the target model's tensor_parallel_size (any other value raises ValueError)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This is the draft-model tensor-parallel size used by speculative decoding. In upstream vLLM,\n`_verify_and_get_draft_tp`\
+  \ (vllm/config/speculative.py:1692) resolves the value: if unset it\ndefaults to the target model's tensor_parallel_size\
+  \ (except mlp_speculator which is forced to 1),\nand if explicitly set it must be either 1 or equal to the target TP size,\
+  \ otherwise a ValueError\nis raised. The resolved value is stored as `speculative_config.draft_tensor_parallel_size` and\n\
+  drives the draft model's parallel layout (draft_parallel_config.tensor_parallel_size).\n\nOn Ascend, vllm-ascend reads this\
+  \ value in two places:\n1. vllm_ascend/platform.py:1746-1765 — when decode context parallel (DCP) is enabled for a\n   GQA/MQA\
+  \ draft model, the draft TP size must be greater than the draft model's total KV heads,\n   and max_dcp_size = draft_tensor_parallel_size\
+  \ // total_num_kv_heads bounds the allowed DCP size.\n   This directly gates whether DCP can be used with the draft model.\n\
+  2. vllm_ascend/spec_decode/llm_base_proposer.py:218-237 — for Eagle, the draft model in practice\n   uses the same TP size\
+  \ as the target model. When draft_tensor_parallel_size differs from the\n   target tensor_parallel_size (i.e. it is 1 while\
+  \ target TP > 1), vllm-ascend builds a\n   single-rank TP process group and patches the tensor-parallel group context so\
+  \ the draft model\n   runs with TP=1. This changes the communication pattern of the draft forward pass (no TP\n   all-reduce\
+  \ across ranks for the draft model), affecting draft-model latency and per-rank\n   memory footprint. A larger draft TP\
+  \ shards draft weights across more NPUs (lower per-NPU\n   memory, more HCCL collectives); TP=1 keeps the draft model replicated\
+  \ on each rank (higher\n   per-rank memory, no draft TP communication).\n\nBecause the draft model runs every speculative\
+  \ step, its TP layout affects decode latency and\nthroughput of the speculative loop, and its weight sharding affects NPU\
+  \ memory. The effect is\nmedium rather than high because the draft model is small relative to the target model and the\n\
+  value is constrained to only two choices.\n"
+usage_locations:
+- file: vllm/config/speculative.py:1692
+  context: _verify_and_get_draft_tp resolves/validates draft TP; defaults to target TP, allows only 1 or target TP
+- file: vllm_ascend/platform.py:1746
+  context: Reads draft_parallel_config.tensor_parallel_size or draft_tensor_parallel_size to validate DCP compatibility for
+    GQA/MQA draft models
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:227
+  context: Compares draft TP vs target TP; if different, patches TP group to single-rank for the Eagle draft model
+related_parameters:
+- name: tensor_parallel_size
+  relation: Draft TP must be 1 or equal to the target model's tensor_parallel_size; also the fallback default when unset
+- name: decode_context_parallel_size
+  relation: For GQA/MQA draft models, draft TP must exceed total KV heads and bounds max DCP size (draft_tp // num_kv_heads)
+- name: speculative_config.method
+  relation: Determines whether a draft model exists and how draft TP is applied (Eagle forces draft TP=1 in practice on Ascend)
+- name: draft_parallel_config.tensor_parallel_size
+  relation: Takes precedence over draft_tensor_parallel_size when set (checked first in platform.py)
+constraints:
+- draft_tensor_parallel_size must be either 1 or equal to the target model's tensor_parallel_size; any other value raises
+  a ValueError.
+- For a GQA/MQA draft model with decode context parallel enabled, draft_tensor_parallel_size must be greater than the draft
+  model's total number of KV heads.
+- For a GQA/MQA draft model with decode context parallel enabled, decode_context_parallel_size must not exceed draft_tensor_parallel_size
+  divided by the draft model's total KV heads.
+- mlp_speculator draft models cannot run with tp>1 and are forced to draft_tensor_parallel_size=1.
+tuning_advice:
+  summary: Leave draft TP unset (inherits target TP) for sharded draft weights, or set it to 1 to run the Eagle draft model
+    replicated with no draft TP communication on Ascend.
+  suggested_values:
+  - scenario: Eagle/MTP draft model on Ascend with target TP>1 and sufficient per-NPU memory
+    value: 1
+    reason: vllm-ascend patches the TP group to a single rank for the draft model, eliminating draft-model TP all-reduce latency
+      at the cost of replicating draft weights per NPU.
+  - scenario: Memory-constrained deployment where draft weights must be sharded across NPUs
+    value: <target tensor_parallel_size>
+    reason: Setting draft TP equal to target TP shards draft weights across all ranks, reducing per-NPU memory, at the cost
+      of HCCL collectives in the draft forward pass.
+  - scenario: GQA/MQA draft model with decode context parallel enabled
+    value: <target tensor_parallel_size>
+    reason: Draft TP must exceed the draft model's total KV heads and bounds max DCP size (draft_tp // num_kv_heads); using
+      target TP maximizes the allowable decode_context_parallel_size.
+  caveats:
+  - Only 1 or the target tensor_parallel_size are valid; intermediate values raise ValueError.
+  - On Ascend the Eagle draft model runs with TP=1 in practice regardless, so setting draft TP=1 mainly avoids building a
+    redundant TP group.
+  - With decode context parallel and a GQA/MQA draft model, verify draft TP > total KV heads or startup fails.
+  quick_guide: Use draft TP=1 for lowest draft latency on Ascend, or equal to target TP to shard draft weights and enable
+    larger DCP.
+analysis_date: '2026-10-27'

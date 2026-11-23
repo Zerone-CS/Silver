@@ -1,0 +1,134 @@
+name: speculative.disable_padded_drafter_batch
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/config/vllm.py:1429
+- vllm/config/vllm.py:1465
+- vllm/v1/spec_decode/llm_base_proposer.py:333
+- vllm/v1/spec_decode/extract_hidden_states.py:36
+- vllm_ascend/worker/model_runner_v1.py:2013
+- vllm_ascend/worker/model_runner_v1.py:2073
+- vllm_ascend/spec_decode/llm_base_proposer.py:316
+- vllm_ascend/attention/mla_v1.py:652
+- vllm_ascend/attention/mla_v1.py:721
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag switches the speculative-decoding (EAGLE/MTP/draft_model) drafter input
+
+  preparation between two code paths in the v1 Ascend model runner
+
+  (vllm_ascend/worker/model_runner_v1.py:2013 and :2073).
+
+
+  When False (default, padded batch): the runner uses
+
+  `drafter.prepare_inputs_padded(...)` and `prepare_next_token_ids_padded(...)`, which
+
+  operate on a dense GPU tensor of shape (num_reqs, num_spec_tokens + 1) with rejected
+
+  tokens marked -1. This keeps all requests padded to a uniform length, enabling
+
+  fixed-shape graph capture and vectorized GPU/NPU-side token bookkeeping
+
+  (`_copy_valid_sampled_token_count`). It is the only path compatible with full
+
+  CUDA-graph (ACL graph) capture on Ascend — see the NotImplementedError guard in
+
+  vllm_ascend/spec_decode/llm_base_proposer.py:316.
+
+
+  When True (unpadded): the runner uses `drafter.prepare_inputs(...)` and
+
+  `prepare_next_token_ids_cpu(...)`, which operate on a CPU-side list[list[int]] of
+
+  variable-length valid tokens per request. This avoids padding wasted draft tokens and
+
+  can reduce per-step work when acceptance lengths vary widely, but it forces CPU-side
+
+  Python bookkeeping (host-device sync / list processing) and disables full-graph
+
+  capture. On Ascend, the MLA metadata builder (vllm_ascend/attention/mla_v1.py:652,
+
+  :721) has explicit branches that pad block_table / actual_seq_lengths_q up to
+
+  graph_pad_size only when this flag is True, adding extra padding tensor construction
+
+  and concatenation work per decode step.
+
+
+  Net effect: "enabling it trades graph-capture/vectorized bookkeeping for less padding"
+
+  waste; on Ascend it typically increases per-step CPU overhead and prevents full-graph
+
+  mode, so it is a latency/throughput tradeoff rather than a clear win.
+
+  '
+usage_locations:
+- file: vllm_ascend/worker/model_runner_v1.py:2013
+  context: Selects prepare_next_token_ids_cpu (CPU list path) vs padded GPU tensor path for next-token bookkeeping after sampling.
+- file: vllm_ascend/worker/model_runner_v1.py:2073
+  context: Selects drafter.prepare_inputs (unpadded) vs prepare_inputs_padded for building drafter attention metadata and
+    token indices.
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:316
+  context: Raises NotImplementedError if disable_padded_drafter_batch is True while cudagraph_mode has full cudagraphs.
+- file: vllm_ascend/attention/mla_v1.py:652
+  context: In fullgraph prefill, block_table size is padded to graph_pad_size only when this flag is True.
+- file: vllm_ascend/attention/mla_v1.py:721
+  context: In decode metadata, block_table/actual_seq_lengths_q/seq_lens are padded to graph_pad_size when this flag is True.
+- file: vllm/config/vllm.py:1429
+  context: 'Upstream: raises ValueError if async scheduling is explicitly enabled together with this flag.'
+- file: vllm/config/vllm.py:1465
+  context: 'Upstream: auto-disables async scheduling when this flag is True.'
+- file: vllm/v1/spec_decode/llm_base_proposer.py:333
+  context: 'Upstream: raises NotImplementedError for draft models / parallel drafting when this flag is True.'
+related_parameters:
+- name: speculative_config.method
+  relation: Only effective for eagle, eagle3, mtp, dflash, draft_model, extract_hidden_states; not for ngram/suffix/medusa.
+- name: compilation_config.cudagraph_mode
+  relation: Mutually exclusive with full cudagraphs on Ascend — full graph mode requires padded drafter batch (flag False).
+- name: scheduler_config.async_scheduling
+  relation: Incompatible — async scheduling is disabled (or errors) when this flag is True.
+- name: speculative_config.num_speculative_tokens
+  relation: Larger values increase padding waste when padded batch is used, making this flag more attractive.
+- name: speculative_config.parallel_drafting
+  relation: Upstream raises NotImplementedError for parallel drafting when this flag is True.
+constraints:
+- disable_padded_drafter_batch=True cannot be combined with a cudagraph_mode that contains full cudagraphs on Ascend; it raises
+  NotImplementedError.
+- disable_padded_drafter_batch=True is incompatible with async scheduling; upstream raises ValueError if async scheduling
+  is explicitly enabled and auto-disables it otherwise.
+- disable_padded_drafter_batch=True is not supported with the extract_hidden_states method (raises ValueError).
+- Upstream raises NotImplementedError for draft models or parallel drafting when disable_padded_drafter_batch=True.
+- The flag only takes effect for eagle, eagle3, mtp, dflash, draft_model, and extract_hidden_states methods.
+tuning_advice:
+  summary: Keep the default False on Ascend to preserve full-graph capture and vectorized GPU-side bookkeeping; only enable
+    it when full-graph mode is off and padding waste dominates.
+  suggested_values:
+  - scenario: Default production deployment with ACL/CUDA graph capture enabled
+    value: false
+    reason: Full cudagraph mode requires padded drafter batch on Ascend; enabling this flag raises NotImplementedError and
+      forces a slower eager path.
+  - scenario: EAGLE/MTP with high variance in accepted draft tokens and graph mode disabled
+    value: true
+    reason: Avoids padding wasted draft tokens to num_spec_tokens+1 per request, reducing wasted compute when acceptance lengths
+      vary widely.
+  - scenario: Async scheduling enabled
+    value: false
+    reason: Async scheduling is incompatible with this flag and will be disabled or error out.
+  caveats:
+  - Enabling this flag disables full-graph capture on Ascend, which usually costs more than the padding savings.
+  - The unpadded path uses CPU-side list[list[int]] bookkeeping (prepare_next_token_ids_cpu), introducing host-side Python
+    overhead and potential host-device sync per step.
+  - MLA metadata builder adds extra block_table/actual_seq_lengths_q padding work per decode step when this flag is True.
+  - Only affects EAGLE-family / MTP / draft_model methods; no effect for ngram, suffix, or medusa.
+  quick_guide: Leave disable_padded_drafter_batch=False on Ascend unless you have disabled graph capture and measured a padding-waste
+    bottleneck.
+analysis_date: '2026-10-27'

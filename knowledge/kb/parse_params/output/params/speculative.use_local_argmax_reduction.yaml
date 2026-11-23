@@ -1,0 +1,98 @@
+name: speculative.use_local_argmax_reduction
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/v1/spec_decode/llm_base_proposer.py:132
+- vllm/v1/worker/gpu/spec_decode/speculator.py:133
+- tests/ut/spec_decode/test_eagle_proposer.py:2282
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls how the draft-token argmax is computed during speculative
+
+  decoding. When False (default), the drafter must all-gather the full logits
+
+  tensor across the tensor-parallel group so every rank can compute the global
+
+  argmax, which costs O(vocab_size) communication per draft token. When True,
+
+  each rank computes a local argmax over its vocab shard and only exchanges the
+
+  (max_value, max_index) pair, reducing communication to O(2 * tp_size) per
+
+  token. On Ascend NPU this all-gather maps to an HCCL collective; for large
+
+  vocabularies (e.g. 100k+ tokens) the reduction in HCCL traffic and the
+
+  avoided full-logit materialization can meaningfully cut per-draft-step latency
+
+  and improve end-to-end speculative-decoding throughput. The flag is read in
+
+  vllm upstream at vllm/v1/spec_decode/llm_base_proposer.py:132 and
+
+  vllm/v1/worker/gpu/spec_decode/speculator.py:133. vllm-ascend does not define
+
+  or override this parameter; it is consumed through the inherited
+
+  SpeculativeConfig and exercised in the Ascend EAGLE proposer unit test
+
+  (tests/ut/spec_decode/test_eagle_proposer.py:2282), which sets it to False.
+
+  The optimization only applies to greedy draft selection in non-tree
+
+  speculation; tree-based speculation and sampling-based draft selection do not
+
+  benefit.
+
+  '
+usage_locations:
+- file: vllm/v1/spec_decode/llm_base_proposer.py:132
+  context: Reads speculative_config.use_local_argmax_reduction into the proposer to select local-argmax vs all-gather draft
+    token reduction.
+- file: vllm/v1/worker/gpu/spec_decode/speculator.py:133
+  context: Reads the flag in the speculator to configure draft token argmax reduction path.
+- file: tests/ut/spec_decode/test_eagle_proposer.py:2282
+  context: Ascend EAGLE proposer unit test sets the flag to False in the speculative config.
+related_parameters:
+- name: speculative.method
+  relation: Only meaningful for speculative decoding methods that use a drafter (e.g. eagle/eagle3/mtp); no effect without
+    speculation.
+- name: speculative.parallel_drafting
+  relation: The optimization targets greedy draft selection in non-tree speculation; tree/parallel drafting paths do not use
+    the local-argmax reduction.
+- name: speculative.draft_tensor_parallel_size
+  relation: Benefit scales with the draft TP size, since the all-gather cost avoided is proportional to the TP group size.
+- name: tensor_parallel_size
+  relation: Communication savings only materialize when TP > 1; with TP = 1 there is no cross-rank reduction to optimize.
+constraints:
+- Only applies to greedy draft token selection in non-tree speculation; tree-based or sampling-based draft selection ignores
+  it.
+- Provides no benefit when the draft tensor-parallel size is 1, since there is no cross-rank all-gather to eliminate.
+tuning_advice:
+  summary: Enable for greedy, non-tree speculative decoding with draft TP > 1 and large vocabularies to cut HCCL all-gather
+    traffic per draft token.
+  suggested_values:
+  - scenario: EAGLE/EAGLE3/MTP greedy drafting with draft_tensor_parallel_size > 1 and large vocab (100k+)
+    value: true
+    reason: Replaces O(vocab_size) all-gather with O(2 * tp_size) reduction, reducing HCCL communication and per-draft-step
+      latency.
+  - scenario: Draft TP = 1 or small vocabulary models
+    value: false
+    reason: No cross-rank reduction exists at TP=1 and savings are negligible for small vocab, so leave default to avoid untested
+      paths.
+  - scenario: Tree-based or sampling-based draft selection
+    value: false
+    reason: The optimization only applies to greedy non-tree draft selection; enabling has no effect.
+  caveats:
+  - Confirm the installed vLLM version exposes this field; vllm-ascend does not define it.
+  - Validate draft-token correctness on Ascend after enabling, since the Ascend unit test uses the default False path.
+  - Measure end-to-end acceptance rate and latency; benefit depends on HCCL bandwidth and draft step count.
+  quick_guide: Set true only for greedy non-tree speculation with draft TP > 1 and large vocab; otherwise keep default false.
+analysis_date: '2026-10-27'

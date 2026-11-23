@@ -1,0 +1,104 @@
+name: --lora-target-modules
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1499
+- vllm/engine/arg_utils.py:636
+- vllm/engine/arg_utils.py:2465
+value_type: list[str]
+default: null
+valid_choices: Any list of module name suffixes (e.g. o_proj, qkv_proj, gate_up_proj, down_proj); None means all supported
+  LoRA modules
+cli_example: --lora-target-modules o_proj qkv_proj
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- memory
+- latency
+impact_detail: 'This parameter is defined upstream in vLLM (LoRAConfig.target_modules) and passed
+
+  through to LoRAConfig at engine-arg construction time (arg_utils.py:2465). It restricts
+
+  which linear modules receive LoRA adapter computation. On Ascend, LoRA is handled by
+
+  vllm-ascend''s LoRA support layer, which builds LoRA-wrapped linear layers only for the
+
+  modules matching the target suffixes. The performance mechanism is twofold:
+
+  (1) Compute: each targeted module adds a LoRA matmul (A@B) on top of the base linear
+
+  op during both prefill and decode. Fewer target modules => fewer extra matmuls per
+
+  forward pass => lower per-token latency and higher throughput, especially at decode
+
+  where the base GEMM is small and the LoRA overhead is proportionally larger.
+
+  (2) Memory: LoRA-wrapped modules allocate per-adapter A/B buffers (scaled by
+
+  max_loras and max_lora_rank) and, on Ascend, may require additional workspace for the
+
+  LoRA kernels; restricting target modules reduces this footprint and can free HBM for
+
+  KV cache. Restricting to a subset (e.g. only attention projections) is a common
+
+  accuracy/throughput tradeoff. If None, all supported modules are wrapped, maximizing
+
+  adapter expressiveness but also maximizing LoRA compute and memory overhead.
+
+  vllm-ascend does not appear to override the semantics of this parameter; it is
+
+  consumed by the LoRA layer construction path. Note that the actual set of "supported"
+
+  modules is model-architecture dependent and determined by the LoRA manager.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1499
+  context: CLI argument registration for --lora-target-modules from LoRAConfig.target_modules
+- file: vllm/engine/arg_utils.py:636
+  context: EngineArgs field lora_target_modules mapped to LoRAConfig.target_modules
+- file: vllm/engine/arg_utils.py:2465
+  context: Passed into LoRAConfig(target_modules=...) when enable_lora is set
+related_parameters:
+- name: --enable-lora
+  relation: Must be enabled for --lora-target-modules to have any effect; LoRAConfig is only built when enable_lora is true
+- name: --max-loras
+  relation: Per-adapter LoRA buffer memory scales with max_loras; combined with target modules determines total LoRA memory
+- name: --max-lora-rank
+  relation: LoRA matmul cost and buffer size scale with rank; interacts with number of target modules
+- name: --fully-sharded-loras
+  relation: Changes how LoRA computation is sharded across TP ranks, affecting per-module overhead
+constraints:
+- The parameter only takes effect when --enable-lora is set; otherwise LoRAConfig is not constructed.
+- Values must be module name suffixes that exist in the model architecture; unknown suffixes will not match any module and
+  thus apply no LoRA.
+- The set of actually supported LoRA modules is model-dependent and determined by the LoRA manager, not arbitrary.
+tuning_advice:
+  summary: Restrict LoRA to the modules the adapter actually needs (typically attention projections) to cut LoRA compute and
+    memory overhead on Ascend.
+  suggested_values:
+  - scenario: Latency/throughput-sensitive serving with adapters trained only on attention projections
+    value:
+    - qkv_proj
+    - o_proj
+    reason: Limits LoRA matmuls to attention layers, reducing per-token overhead and LoRA buffer memory while matching typical
+      adapter training scope.
+  - scenario: Adapters trained on MLP as well, needing higher fidelity
+    value:
+    - qkv_proj
+    - o_proj
+    - gate_up_proj
+    - down_proj
+    reason: Covers attention and MLP projections for better adapter accuracy at the cost of more LoRA compute and memory.
+  - scenario: Maximum adapter expressiveness / unknown adapter scope
+    value: unset
+    reason: Default None applies LoRA to all supported modules, maximizing accuracy but also LoRA compute and memory overhead.
+  caveats:
+  - Only set this to a subset if your adapter was trained on that subset; otherwise accuracy degrades.
+  - Combine with --max-loras and --max-lora-rank tuning to control total LoRA memory on Ascend HBM.
+  - Verify the chosen suffixes match the model's actual module names; mismatches silently apply no LoRA.
+  quick_guide: Set --lora-target-modules to the projections your adapter was trained on (e.g. qkv_proj o_proj) to reduce LoRA
+    overhead on Ascend.
+analysis_date: '2026-10-27'

@@ -1,0 +1,111 @@
+name: --kv-sharing-fast-prefill
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:221
+- vllm/engine/arg_utils.py:1297
+- vllm/engine/arg_utils.py:2110
+- vllm/config/vllm.py:1793
+- vllm/v1/attention/backends/utils.py:631
+- vllm/v1/attention/backends/utils.py:1011
+- vllm/v1/worker/gpu/attn_utils.py:156
+- vllm/v1/engine/async_llm.py:388
+- vllm_ascend/worker/model_runner_v1.py:2339
+- vllm_ascend/worker/model_runner_v1.py:3710
+- vllm_ascend/patch/worker/patch_v2/patch_model_runner.py:167
+value_type: bool
+default: false
+valid_choices: true, false
+cli_example: --kv-sharing-fast-prefill
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This flag enables the KV-sharing fast-prefill optimization for models with KV-sharing\narchitectures (e.g.\
+  \ YOCO / Gemma3n). In such models only a subset of layers generate KV\ncaches; the trailing run of KV-sharing layers can\
+  \ skip the prefill tokens entirely and\nonly process the last token(s), reducing prefill compute.\n\nUpstream mechanism\
+  \ (vllm):\n- \"vllm/v1/worker/gpu/attn_utils.py:156 `get_kv_sharing_fast_prefill_eligible_layers`\"\n  returns the contiguous\
+  \ suffix of KV-sharing attention layers when the flag is set;\n  otherwise returns an empty set (no optimization).\n- \"\
+  vllm/v1/attention/backends/utils.py:631 `make_kv_sharing_fast_prefill_common_attn_metadata`\"\n  rewrites the attention\
+  \ metadata for eligible layers so that only decode/logits\n  positions are attended, and vllm/v1/attention/backends/utils.py:1011\
+  \ wraps the\n  underlying attention backend in a `FastPrefillAttentionBuilder` that applies this\n  rewrite. This reduces\
+  \ the number of query tokens processed by those layers during\n  prefill, lowering prefill latency and FLOPs.\n- \"vllm/config/cache.py:283\
+  \ lists `kv_sharing_fast_prefill` in the hash-ignored factors,\"\n  so toggling it does not invalidate the compiled graph\
+  \ cache.\n\nAscend mechanism (vllm-ascend):\n- \"v1 worker (vllm_ascend/worker/model_runner_v1.py:2339) asserts that prompt\
+  \ logprobs\"\n  are not requested when the flag is on, and at line 3710-3712 it populates\n  `cm_base.num_logits_indices`\
+  \ / `cm_base.logits_indices_padded` via\n  `_prepare_kv_sharing_fast_prefill(logits_indices)` so the Ascend attention metadata\n\
+  \  builders can implement the same fast-prefill path. This is the actual Ascend-side\n  wiring that makes the optimization\
+  \ effective on NPU.\n- \"v2 worker (vllm_ascend/patch/worker/patch_v2/patch_model_runner.py:167) constructs an\"\n  upstream\
+  \ `FastPrefillHelper` when the flag is set and no PCP manager is present,\n  delegating to the upstream fast-prefill machinery.\n\
+  \nNet effect on Ascend: \"for KV-sharing models, prefill latency and prefill FLOPs are\"\nreduced (fewer tokens processed\
+  \ in the trailing KV-sharing layers), improving\ntime-to-first-token and overall throughput for prefill-heavy workloads.\
+  \ For models\nwithout KV sharing the flag is a no-op (eligible layer set is empty). It does not\nchange KV cache memory\
+  \ footprint.\n"
+usage_locations:
+- file: vllm/config/cache.py:221
+  context: CacheConfig field definition and docstring describing the YOCO/Gemma3n optimization.
+- file: vllm/engine/arg_utils.py:1297
+  context: CLI argument registration under CacheConfig group.
+- file: vllm/engine/arg_utils.py:2110
+  context: Passed into CacheConfig construction from EngineArgs.
+- file: vllm/config/vllm.py:1793
+  context: 'Validation: raises ValueError if combined with EAGLE speculative decoding; logs warning that model-side changes
+    are required.'
+- file: vllm/v1/attention/backends/utils.py:631
+  context: make_kv_sharing_fast_prefill_common_attn_metadata rewrites metadata to skip prefill tokens for eligible layers.
+- file: vllm/v1/attention/backends/utils.py:1011
+  context: create_fast_prefill_custom_backend wraps attention backend builder to apply fast-prefill metadata.
+- file: vllm/v1/worker/gpu/attn_utils.py:156
+  context: get_kv_sharing_fast_prefill_eligible_layers computes the trailing KV-sharing layer suffix.
+- file: vllm/v1/engine/async_llm.py:388
+  context: Rejects requests with prompt_logprobs when the flag is enabled.
+- file: vllm_ascend/worker/model_runner_v1.py:2339
+  context: v1 Ascend worker asserts no prompt logprobs when flag enabled.
+- file: vllm_ascend/worker/model_runner_v1.py:3710
+  context: v1 Ascend worker prepares logits_indices_padded / num_logits_indices for fast prefill.
+- file: vllm_ascend/patch/worker/patch_v2/patch_model_runner.py:167
+  context: v2 Ascend worker builds upstream FastPrefillHelper when flag set and no PCP manager.
+related_parameters:
+- name: --speculative-config
+  relation: Mutually exclusive with EAGLE speculative decoding; enabling both raises ValueError.
+- name: --enable-prefix-caching
+  relation: Independent; fast prefill operates on attention metadata, not prefix cache.
+- name: --max-num-batched-tokens
+  relation: Larger prefill batches amplify the prefill savings from skipping KV-sharing layer tokens.
+- name: --enforce-eager
+  relation: Fast prefill metadata path interacts with cudagraph capture; upstream skips fast prefill during cudagraph capture
+    steps.
+constraints:
+- Cannot be combined with EAGLE speculative decoding; vLLM raises a ValueError if --speculative-config uses EAGLE while --kv-sharing-fast-prefill
+  is enabled.
+- Requests that set prompt_logprobs are rejected (VLLMValidationError) when this flag is enabled, because fast prefill produces
+  incorrect logprobs for prompt tokens.
+- The v1 Ascend worker asserts that num_prompt_logprobs is zero when the flag is enabled.
+- The optimization only takes effect for models with KV-sharing layers (e.g. Gemma3n / YOCO); for other models the eligible
+  layer set is empty and the flag is a no-op.
+- Requires model-side changes for correctness and to realize prefill savings, as warned by vLLM at startup.
+tuning_advice:
+  summary: Enable only for KV-sharing models (e.g. Gemma3n) with prefill-heavy workloads and no EAGLE speculation or prompt-logprob
+    requests.
+  suggested_values:
+  - scenario: Serving a KV-sharing model (Gemma3n/YOCO) with long prompts and no EAGLE speculation
+    value: true
+    reason: Skips prefill tokens in trailing KV-sharing layers, reducing prefill latency and FLOPs on Ascend NPU.
+  - scenario: Standard dense/MoE models without KV sharing
+    value: false
+    reason: Eligible layer set is empty; the flag is a no-op and adds no benefit.
+  - scenario: Using EAGLE speculative decoding
+    value: false
+    reason: vLLM raises ValueError when combined with EAGLE; must be disabled.
+  - scenario: Requests require prompt_logprobs
+    value: false
+    reason: Requests with prompt_logprobs are rejected when the flag is enabled.
+  caveats:
+  - On Ascend v2 worker, the fast-prefill helper is skipped when PCP is enabled (pcp_manager is not None).
+  - Verify model-side support for fast prefill; otherwise correctness may be affected.
+  - Benchmark prefill-heavy vs decode-heavy workloads separately; gains only appear in prefill.
+  quick_guide: Set --kv-sharing-fast-prefill only for KV-sharing models with prefill-heavy traffic, no EAGLE, and no prompt-logprob
+    requests.
+analysis_date: '2026-10-27'

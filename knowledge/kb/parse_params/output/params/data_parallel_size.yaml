@@ -1,0 +1,124 @@
+name: --data-parallel-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:129
+- vllm/engine/arg_utils.py:1127
+- vllm/engine/arg_utils.py:496
+- vllm/engine/arg_utils.py:2188
+- vllm_ascend/ascend_config.py:691
+- vllm_ascend/ascend_config.py:1437
+- vllm_ascend/patch/platform/patch_balance_schedule.py:142
+- vllm_ascend/patch/platform/patch_engram_config.py:35
+- vllm_ascend/patch/platform/patch_parallel_config.py:26
+- vllm_ascend/platform.py:1097
+- vllm_ascend/platform.py:1321
+- vllm_ascend/worker/model_runner_v1.py:419
+value_type: int
+default: 1
+valid_choices: integer >= 1
+cli_example: --data-parallel-size 2
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "--data-parallel-size (alias -dp) controls the number of data-parallel replicas.\nEach DP rank runs an independent\
+  \ copy of the model (attention weights replicated)\nand processes its own batch of requests, so raising DP multiplies aggregate\n\
+  throughput and total KV-cache capacity roughly linearly, at the cost of\nreplicating model weights per rank (memory) and\
+  \ requiring cross-DP coordination.\n\nUpstream (vllm/config/parallel.py:129): data_parallel_size is a Field(default=1, ge=1).\n\
+  MoE layers are sharded according to tensor_parallel_size * prefill_context_parallel_size\n* data_parallel_size, so DP directly\
+  \ changes the expert-sharding plane and thus\nper-rank expert weight footprint and all-to-all communication volume.\n\n\
+  Ascend-specific effects:\n- \"vllm_ascend/worker/model_runner_v1.py:419 reads data_parallel_size into\"\n  self.dp_size,\
+  \ which drives DP-aware token routing / dummy-batch handling in the\n  v1 model runner. DP>1 introduces per-step DP synchronization\
+  \ collectives\n  (dp_sync_interval controls their frequency) that add latency.\n- \"vllm_ascend/patch/platform/patch_balance_schedule.py:142\
+  \ allocates a per-DP-rank\"\n  balance_queue and runs an all_gather across the DP group each busy-loop iteration\n  when\
+  \ balance scheduling is enabled (requires DP>1). This is a per-step collective\n  that scales with DP size.\n- \"vllm_ascend/platform.py:1321\
+  \ passes data_parallel_size into\"\n  compilation_config.set_splitting_ops_for_v1, which affects graph splitting /\n  cudagraph\
+  \ behavior (e.g. DeepEP high-throughput disables cudagraphs when DP>1).\n- \"vllm_ascend/patch/platform/patch_parallel_config.py:26\
+  \ overrides\"\n  use_sequence_parallel_moe to drop upstream's DP>1 requirement, so on Ascend\n  FlashComm/SP MoE can run\
+  \ at DP=1 — meaning DP is not required to get SP benefits.\n- \"vllm_ascend/ascend_config.py:691 auto-enables engram dp_shared_memory\
+  \ when DP>1\"\n  (or PCP>1) under the v2 model runner, sharing host tables across DP peers to\n  avoid per-step lookup collectives.\n\
+  - \"vllm_ascend/ascend_config.py:1437 requires finegrained_tp_config module sizes to\"\n  divide data_parallel_size.\n-\
+  \ \"vllm_ascend/platform.py:1097 requires DP>1 for DyntraLB decode-side load balancing.\"\n"
+usage_locations:
+- file: vllm/config/parallel.py:129
+  context: ParallelConfig field definition; MoE sharding uses TP*PCP*DP product.
+- file: vllm/engine/arg_utils.py:1127
+  context: CLI registration of --data-parallel-size / -dp.
+- file: vllm/engine/arg_utils.py:2188
+  context: Multi-node world size = data_parallel_size * pp * tp * pcp; must divide nnodes.
+- file: vllm_ascend/worker/model_runner_v1.py:419
+  context: v1 model runner stores dp_size/dp_rank for DP-aware execution.
+- file: vllm_ascend/patch/platform/patch_balance_schedule.py:142
+  context: Per-DP-rank balance_queue for balance scheduling all_gather.
+- file: vllm_ascend/platform.py:1321
+  context: Passed to set_splitting_ops_for_v1 affecting graph splitting/cudagraph.
+- file: vllm_ascend/ascend_config.py:691
+  context: Auto-enables engram dp_shared_memory when DP>1 under v2 model runner.
+- file: vllm_ascend/ascend_config.py:1437
+  context: finegrained_tp_config module sizes must divide data_parallel_size.
+- file: vllm_ascend/platform.py:1097
+  context: DyntraLB requires data_parallel_size > 1.
+related_parameters:
+- name: --tensor-parallel-size
+  relation: MoE sharding plane = TP * PCP * DP; world size = DP * PP * TP * PCP.
+- name: --prefill-context-parallel-size
+  relation: Combined with DP in MoE sharding and world size; PCP>1 also triggers engram dp_shared_memory.
+- name: --pipeline-parallel-size
+  relation: Multiplies into total world size; must divide nnodes together with DP.
+- name: --enable-expert-parallel
+  relation: EP shards experts across the DP*TP plane; DP>1 shards expert weights across DP even with EP off.
+- name: --data-parallel-size-local
+  relation: Number of DP replicas on this node; must be consistent with total DP size.
+- name: --data-parallel-rank
+  relation: Enables external LB mode for MoE DP deployments; requires DP>1.
+- name: --dp-sync-interval
+  relation: Controls frequency of DP finish-sync all-reduces; must match across DP ranks.
+- name: --enable-balance-scheduling
+  relation: Balance scheduling requires DP>1 and adds per-step DP all_gather.
+- name: --all2all-backend
+  relation: DeepEP high-throughput disables cudagraphs when DP>1.
+- name: finegrained_tp_config
+  relation: Module TP sizes must divide data_parallel_size.
+- name: dyntra_lb_config
+  relation: Requires data_parallel_size > 1 on PD-disaggregated decode nodes.
+constraints:
+- --data-parallel-size must be an integer greater than or equal to 1.
+- When --nnodes is greater than 1, the total world size (data_parallel_size × pipeline_parallel_size × tensor_parallel_size
+  × prefill_context_parallel_size) must be evenly divisible by --nnodes.
+- When --nnodes is greater than 1, --data-parallel-backend must be mp (Ray backend is not allowed with multi-node).
+- finegrained_tp_config module TP sizes (oproj/lmhead/embedding/mlp tensor_parallel_size) must divide data_parallel_size.
+- DyntraLB (dyntra_lb_config.enabled) requires data_parallel_size > 1 and all DP ranks on a single node.
+- Engram dp_shared_memory requires data_parallel_size > 1 or prefill_context_parallel_size > 1.
+- mm_tensor_ipc='torch_shm' is not supported when data_parallel_size > 1 (or TP>1 or PP>1).
+- Engram embedding_across_dp is not supported with elastic EP when data_parallel_size > 1.
+tuning_advice:
+  summary: Increase --data-parallel-size to scale throughput and KV-cache capacity for MoE models, but keep DP small enough
+    that per-step DP sync overhead and weight replication stay acceptable on Ascend NPU.
+  suggested_values:
+  - scenario: Single-node dense model, latency-sensitive
+    value: 1
+    reason: DP>1 adds sync collectives without MoE sharding benefit; keep DP=1 and scale with TP instead.
+  - scenario: MoE model, throughput-oriented, single node with multiple NPUs
+    value: 2
+    reason: DP=2 shards expert weights across the DP×TP plane and doubles aggregate throughput while keeping DP sync overhead
+      modest.
+  - scenario: Large MoE with expert parallelism across many NPUs
+    value: 4
+    reason: Higher DP increases aggregate KV-cache and throughput; combine with --enable-expert-parallel and monitor DP sync
+      cost.
+  - scenario: PD-disaggregated decode node using DyntraLB
+    value: 2
+    reason: DyntraLB requires data_parallel_size > 1 and all DP ranks on one node; DP=2 is the minimum viable setting.
+  caveats:
+  - Verify finegrained_tp_config module sizes divide data_parallel_size before enabling fine-grained TP.
+  - When using multi-node (--nnodes > 1), ensure DP×PP×TP×PCP is divisible by nnodes and use --data-parallel-backend mp.
+  - Avoid deepep_high_throughput with DP>1 if decode cudagraphs are needed; use deepep_low_latency or allgather_reducescatter
+    instead.
+  - On Ascend, DP=1 still supports FlashComm/SP MoE, so do not raise DP solely to enable sequence parallelism.
+  quick_guide: Set --data-parallel-size to the number of model replicas you want; use >1 for MoE throughput scaling, keep
+    1 for latency-sensitive dense workloads.
+analysis_date: '2026-10-27'

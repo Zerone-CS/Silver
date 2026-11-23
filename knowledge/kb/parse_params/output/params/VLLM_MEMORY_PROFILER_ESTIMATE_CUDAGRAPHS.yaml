@@ -1,0 +1,99 @@
+name: VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS
+type: env
+category: memory
+scope: vllm
+source_file:
+- vllm/envs.py:2109
+- vllm/envs.py:317
+- vllm/v1/worker/gpu_worker.py:590
+- vllm/v1/worker/gpu_worker.py:649
+value_type: bool
+default: true
+valid_choices: 0 or 1 (any int parsed via bool(int(...)); 0/false disables, 1/true enables)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: 'Upstream vLLM (vllm/envs.py:2109) reads this env var as bool(int(...)) with default "1"
+
+  (enabled by default since v0.21.0). In the v1 GPU worker (vllm/v1/worker/gpu_worker.py:580-592),
+
+  during memory profiling, if the platform is CUDA-alike and cudagraph_mode != NONE, the worker
+
+  calls model_runner.profile_cudagraph_memory() to measure the memory that CUDA graph capture
+
+  will consume. The measured estimate is only applied to the KV-cache budget when
+
+  envs.VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS is truthy (line 588-592); otherwise the estimate
+
+  is forced to 0. When enabled, the estimated graph memory is subtracted from the available KV
+
+  cache memory, so the KV cache is sized more conservatively and graph capture does not OOM.
+
+  When disabled, the full gpu_memory_utilization budget is given to KV cache, which yields a
+
+  larger KV cache (higher potential throughput) but risks OOM during graph capture because the
+
+  graph memory is not reserved. Lines 645-666 also emit a log suggesting an adjusted
+
+  --gpu-memory-utilization when the estimate is applied.
+
+  On Ascend, vllm-ascend does not define or override this env var; the vllm-ascend docs
+
+  (tutorials/models/Dots3-Note.md:408) explicitly reference it as a knob to disable ACL graph
+
+  memory estimation when automatic profiling over-allocates KV cache and graph capture exceeds
+
+  the memory limit (worker dies with "Worker proc VllmWorker-* died unexpectedly"). So on Ascend
+
+  the effect is indirect: "it changes how much KV cache is reserved relative to ACL graph capture"
+
+  memory, trading KV capacity against graph-capture OOM risk.
+
+  '
+usage_locations:
+- file: vllm/envs.py:2109
+  context: Env var definition, default enabled (1) since v0.21.0
+- file: vllm/envs.py:317
+  context: 'Type annotation VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: bool = True'
+- file: vllm/v1/worker/gpu_worker.py:590
+  context: Gates whether cudagraph_memory_estimate is applied to KV cache budget during profiling
+- file: vllm/v1/worker/gpu_worker.py:649
+  context: Controls logging of equivalent/suggested --gpu-memory-utilization when estimate applied
+related_parameters:
+- name: --gpu-memory-utilization
+  relation: When graph estimation is enabled, the effective KV cache is smaller; docs suggest raising gpu-memory-utilization
+    to compensate
+- name: --kv-cache-memory-bytes
+  relation: Explicit KV sizing is the alternative to automatic profiling; docs recommend it over disabling this flag for stability
+- name: compilation_config.cudagraph_mode
+  relation: Graph memory estimation only runs when cudagraph_mode != NONE
+constraints:
+- The value is parsed with bool(int(...)), so only integer-like strings such as 0 or 1 are valid; non-integer values raise
+  an error at startup.
+- Graph memory estimation only takes effect when CUDA-graph-like capture is enabled (cudagraph_mode != NONE) and the platform
+  reports CUDA-alike; otherwise the estimate is zero regardless of this flag.
+tuning_advice:
+  summary: Keep enabled by default for stable graph capture; disable only as a diagnostic when automatic profiling over-allocates
+    KV and graph capture OOMs, and prefer explicit --kv-cache-memory-bytes instead.
+  suggested_values:
+  - scenario: Default Ascend deployment (v1 worker, ACL graph enabled)
+    value: 1
+    reason: Reserves ACL graph capture memory so KV cache sizing does not cause OOM during graph capture; matches upstream
+      default since v0.21.0.
+  - scenario: Automatic profiling allocates too much KV and worker dies during graph capture
+    value: 0
+    reason: Docs (Dots3-Note.md:408) suggest setting VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 to disable ACL graph memory
+      estimation as a fallback, though explicit --kv-cache-memory-bytes is the validated approach.
+  - scenario: Maximum KV cache capacity with graph capture disabled
+    value: 0
+    reason: If cudagraph_mode is NONE, graph memory estimation is irrelevant; disabling avoids any estimation overhead and
+      gives full budget to KV cache.
+  caveats:
+  - Prefer explicit --kv-cache-memory-bytes over disabling this flag for production stability on Ascend.
+  - Disabling increases KV capacity but raises OOM risk during ACL graph capture.
+  - Only integer values 0/1 are accepted; other strings cause a startup parse error.
+  quick_guide: Leave at default 1; set to 0 only to diagnose graph-capture OOM caused by over-allocated KV cache.
+analysis_date: '2026-10-27'

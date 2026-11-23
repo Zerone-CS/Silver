@@ -1,0 +1,82 @@
+name: VLLM_DEEPEP_V2_ALLOW_MULTIPLE_REDUCTION
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1958
+- vllm/envs.py:285
+- vllm/distributed/device_communicators/all2all.py:1059
+value_type: bool
+default: false
+valid_choices: 0 or 1 (parsed via int(), truthy when non-zero)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read only in vLLM upstream (vllm/envs.py:1958) and passed as the
+
+  `allow_multiple_reduction` kwarg to the DeepEP v2 all-to-all communicator in
+
+  vllm/distributed/device_communicators/all2all.py:1059 (_make_all2all_kwargs).
+
+  Per the inline comment, it "trade[s] precision for transfer size in combine" —
+
+  i.e. it lets the DeepEP v2 combine kernel perform multiple reductions, reducing
+
+  the amount of data transferred at the cost of numerical precision. This can lower
+
+  combine latency and improve throughput for MoE all-to-all dispatch/combine.
+
+  However, DeepEP is a CUDA/NVLink/RDMA-specific library (the surrounding code uses
+
+  torch.cuda, NCCL GIN queries, NVL/RDMA buffers). vllm-ascend does NOT reference
+
+  this env var anywhere in the provided context; Ascend MoE communication uses HCCL
+
+  and its own all-to-all / dispatch-combine implementations, not DeepEP. Therefore on
+
+  Ascend NPU this parameter has no runtime effect — it is only consumed by the
+
+  upstream CUDA DeepEP v2 path. Impact on Ascend is effectively none; classified low
+
+  only because it is a communication-tuning knob in the upstream codebase.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1958
+  context: Environment variable definition; parsed as bool from int, default 0 (false).
+- file: vllm/envs.py:285
+  context: 'Type annotation declaration VLLM_DEEPEP_V2_ALLOW_MULTIPLE_REDUCTION: bool = False.'
+- file: vllm/distributed/device_communicators/all2all.py:1059
+  context: Passed as allow_multiple_reduction kwarg into DeepEP v2 all-to-all kwargs.
+related_parameters:
+- name: VLLM_DEEPEP_V2_ALLOW_HYBRID_MODE
+  relation: Sibling DeepEP v2 tuning flag passed in the same _make_all2all_kwargs dict.
+- name: VLLM_DEEPEP_V2_PREFER_OVERLAP
+  relation: Sibling DeepEP v2 tuning flag passed in the same _make_all2all_kwargs dict.
+- name: VLLM_DEEPEP_BUFFER_SIZE_MB
+  relation: Related DeepEP buffer sizing parameter for the same communicator.
+- name: VLLM_ALL2ALL_BACKEND
+  relation: Selects the all-to-all backend; DeepEP v2 path must be active for this flag to matter.
+constraints:
+- Only takes effect when the DeepEP v2 all-to-all backend is selected; with other all-to-all backends it is ignored.
+- Enabling it trades numerical precision for smaller combine transfer size, so it may degrade model accuracy.
+- It is a CUDA/NVLink/RDMA DeepEP-specific option and has no effect on Ascend NPU, which uses HCCL-based communication.
+tuning_advice:
+  summary: Leave disabled on Ascend NPU; it only affects the CUDA DeepEP v2 combine path and has no Ascend effect.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1 or v2 worker)
+    value: 0
+    reason: vllm-ascend does not consume this variable; Ascend MoE communication uses HCCL, so the flag is a no-op and should
+      stay at default.
+  - scenario: CUDA GPU with DeepEP v2 and accuracy tolerance for lower combine transfer size
+    value: 1
+    reason: Upstream comment states it trades precision for transfer size in combine, which can reduce combine latency/throughput
+      cost.
+  caveats:
+  - Do not tune this expecting Ascend gains — it is not wired into vllm-ascend.
+  - On CUDA, enabling it may reduce numerical accuracy; benchmark quality before production use.
+  quick_guide: Keep at 0 on Ascend; only relevant to CUDA DeepEP v2 combine.
+analysis_date: '2026-10-27'

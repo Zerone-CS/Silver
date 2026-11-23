@@ -1,0 +1,143 @@
+name: --offload-params
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/offload.py:70
+- vllm/engine/arg_utils.py:1357
+- vllm/engine/arg_utils.py:553
+- vllm/model_executor/offloader/prefetch.py:161
+- vllm/model_executor/offloader/prefetch.py:200
+- vllm_ascend/model_executor/offloader/base.py:25
+- vllm_ascend/model_executor/offloader/prefetch.py:148
+value_type: list[str]
+default: set()
+valid_choices: any set of parameter name segments (exact dot-separated segments); empty set means offload all parameters of
+  each offloaded layer
+cli_example: --offload-params gate_up_proj down_proj
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: '--offload-params is the selective filter for the prefetch offload backend
+
+  (--offload-backend prefetch). It only takes effect when prefetch offloading is
+
+  active (offload_group_size > 0). In vllm upstream, PrefetchOffloader.wrap_modules
+
+  (vllm/model_executor/offloader/prefetch.py:200) builds a whitelist of parameter
+
+  names per offloaded layer: "if offload_params is non-empty, only parameters whose"
+
+  fully-qualified name contains one of the given segments (matched as ".{p}." inside
+
+  ".{prefix}{name}.") are offloaded; otherwise ALL parameters of the layer are
+
+  offloaded. Layers whose whitelist ends up empty are skipped entirely (line 211-212),
+
+  so the parameter directly controls how many bytes are moved to CPU and how many
+
+  H2D copies happen per forward pass.
+
+  On Ascend, vllm_ascend/model_executor/offloader/base.py:create_offloader constructs
+
+  an AscendPrefetchOffloader passing prefetch.offload_params straight through
+
+  (line 25). AscendPrefetchOffloader (vllm_ascend/model_executor/offloader/prefetch.py:148)
+
+  subclasses the upstream PrefetchOffloader and monkey-patches vllm_prefetch._ModuleOffloader
+
+  with its own _ModuleOffloader to use NZ-format static buffers, then calls
+
+  super().wrap_modules() — so the exact same segment-matching whitelist logic from
+
+  upstream applies on Ascend. The Ascend-specific effect is that offloaded weights
+
+  are staged through NZ-layout buffers and copied over HCCL/H2D streams; selecting
+
+  fewer/larger contiguous params (e.g. gate_up_proj, down_proj, w13_weight, w2_weight)
+
+  reduces the number of H2D transfers and NZ repack operations per step, which
+
+  directly affects decode latency and achievable throughput, while also freeing NPU
+
+  HBM (memory). Selecting too many params (or leaving it empty) offloads everything
+
+  and maximizes HBM savings but increases per-step transfer overhead and can starve
+
+  the compute stream if prefetch_step is too small.
+
+  '
+usage_locations:
+- file: vllm/config/offload.py:70
+  context: PrefetchOffloadConfig.offload_params field definition with segment-matching docstring
+- file: vllm/engine/arg_utils.py:1357
+  context: CLI flag --offload-params registered in OffloadConfig argument group
+- file: vllm/engine/arg_utils.py:553
+  context: EngineArgs.offload_params field sourced from PrefetchOffloadConfig
+- file: vllm/model_executor/offloader/base.py:168
+  context: create_offloader passes prefetch.offload_params into PrefetchOffloader
+- file: vllm/model_executor/offloader/prefetch.py:200
+  context: wrap_modules builds whitelist from offload_params; skips layers with no match
+- file: vllm_ascend/model_executor/offloader/base.py:25
+  context: Ascend create_offloader forwards prefetch.offload_params to AscendPrefetchOffloader
+- file: vllm_ascend/model_executor/offloader/prefetch.py:148
+  context: AscendPrefetchOffloader.__init__ accepts offload_params and passes to super()
+- file: tests/e2e/pull_request/one_card/test_cpu_weight_offload.py:128
+  context: Ascend e2e test uses offload_params {gate_up_proj, down_proj} with prefetch backend
+related_parameters:
+- name: --offload-backend
+  relation: Must be 'prefetch' (or 'auto' with offload_group_size > 0) for --offload-params to have any effect; ignored for
+    uva/noop backends
+- name: --offload-group-size
+  relation: Enables prefetch offloading; if 0, no layers are offloaded and --offload-params is inert
+- name: --offload-num-in-group
+  relation: Determines which layers within each group are offloaded; --offload-params then filters which parameters within
+    those layers
+- name: --offload-prefetch-step
+  relation: Controls how far ahead H2D copies are issued; interacts with the amount of data selected by --offload-params to
+    hide transfer latency
+- name: --cpu-offload-params
+  relation: Analogous selective filter for the UVA backend; different matching semantics (segment match on parameter names)
+    but same concept
+constraints:
+- 'Segment matching is exact on dot-separated segments: ''w13_weight'' matches ''mlp.experts.w13_weight'' but not ''mlp.experts.w13_weight_scale'',
+  and ''expert'' or ''w2'' will not match ''experts'' or ''w2_weight''.'
+- If the set is empty, ALL parameters of each offloaded layer are offloaded (no filtering).
+- Layers whose parameters do not match any segment are skipped entirely and not offloaded.
+- The parameter only has effect when prefetch offloading is active (offload_backend='prefetch' or 'auto' with offload_group_size
+  > 0); otherwise it is ignored.
+tuning_advice:
+  summary: Use --offload-params to offload only the largest, most transfer-efficient weight tensors (MLP/MoE expert weights)
+    when prefetch offloading is enabled, balancing HBM savings against H2D transfer overhead on Ascend NPU.
+  suggested_values:
+  - scenario: Dense MLP models (e.g. Llama/Qwen) with prefetch offloading on Ascend, want to free HBM with minimal latency
+      cost
+    value: '{gate_up_proj, down_proj}'
+    reason: These are the largest contiguous MLP weights; offloading only them frees the most HBM per transfer and matches
+      the Ascend e2e test configuration (test_cpu_weight_offload.py:128).
+  - scenario: MoE models with expert weights, prefetch offloading on Ascend
+    value: '{w13_weight, w2_weight}'
+    reason: MoE expert weights dominate model size; segment matching distinguishes them from their scale tensors (w13_weight_scale)
+      so only the compute weights are moved.
+  - scenario: Maximum HBM savings, latency less critical (large batch prefill or memory-bound deployment)
+    value: '{} (empty set)'
+    reason: Empty set offloads all parameters of each offloaded layer, maximizing freed HBM; combine with a larger --offload-prefetch-step
+      to hide the extra transfer latency.
+  - scenario: Latency-sensitive decode with limited HBM headroom
+    value: '{down_proj}'
+    reason: Offloading a single large weight minimizes per-step H2D volume while still freeing meaningful HBM, keeping decode
+      latency low.
+  caveats:
+  - Only effective with --offload-backend prefetch (or auto with --offload-group-size > 0); has no effect with uva or noop
+    backends.
+  - Segment matching is exact — use full segment names like 'gate_up_proj' or 'w13_weight', not partial substrings like 'w2'.
+  - On Ascend, more selected parameters means more NZ-buffer H2D copies per forward; keep the selected set small and contiguous
+    to avoid decode latency regressions.
+  - Verify offloading actually occurred (check logs / memory) since a non-matching set silently disables offloading for those
+    layers.
+  quick_guide: Set --offload-params to the largest weight segments (gate_up_proj/down_proj or w13_weight/w2_weight) when using
+    --offload-backend prefetch; leave empty only when maximum HBM savings outweigh transfer cost.
+analysis_date: '2026-10-27'

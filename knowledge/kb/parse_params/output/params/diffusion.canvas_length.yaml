@@ -1,0 +1,85 @@
+name: diffusion.canvas_length
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/config/vllm.py:621
+- vllm/model_executor/models/config.py:295
+- vllm/model_executor/models/diffusion_gemma.py:787
+- vllm/model_executor/models/diffusion_gemma.py:1084
+- vllm/v1/structured_output/__init__.py:324
+value_type: int
+default: 256
+valid_choices: positive integer; auto-derived from hf_config.canvas_length when DiffusionConfig is auto-created, falling back
+  to 256; model code falls back to 32 if diffusion_config is None
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "canvas_length is the length of the denoising canvas (block) for diffusion LLMs\n(e.g. DiffusionGemma). It\
+  \ is not a speculative-decoding parameter per se, but\nvLLM reuses it as the per-step token budget: VllmConfig.num_speculative_tokens\n\
+  (vllm/config/vllm.py:612-624) returns diffusion_config.canvas_length when no\nspeculative_config is set. This value propagates\
+  \ to:\n- \"The structured-output bitmask allocation (vllm/v1/structured_output/__init__.py:324-336),\"\n  which allocates\
+  \ max_num_seqs * (1 + canvas_length) token bitmasks — larger\n  canvas_length directly increases this host/device allocation.\n\
+  - \"The diffusion sampler (vllm/model_executor/models/diffusion_gemma.py:1084-1100),\"\n  which materializes per-request\
+  \ buffers of shape [max_num_reqs, canvas_length]\n  and, per the comment at config.py:300-301, the diffusion sampler materializes\n\
+  \  [num_seqs, canvas_length, vocab] fp32 transients. This is the dominant memory\n  cost: \"it scales linearly with canvas_length\
+  \ and vocab_size, and is why the\"\n  code caps max_num_seqs to 8 by default for this model.\n- \"The number of tokens scheduled/denoised\
+  \ per step, so larger canvas_length\"\n  amortizes per-step overhead (better throughput per denoising step) but\n  increases\
+  \ per-step compute and the fp32 transient footprint (higher latency\n  and memory pressure).\nOn Ascend NPU, the same fp32\
+  \ [num_seqs, canvas_length, vocab] transients and\nper-request canvas buffers are allocated on device; NPU HBM is typically\
+  \ more\nconstrained than H200, so the memory-bound behavior is more pronounced. No\nvllm-ascend override of canvas_length\
+  \ was found in the provided context; the\nparameter is consumed through upstream vLLM config paths.\n"
+usage_locations:
+- file: vllm/config/vllm.py:621
+  context: num_speculative_tokens returns diffusion_config.canvas_length when speculative_config is None
+- file: vllm/model_executor/models/config.py:295
+  context: Auto-creates DiffusionConfig from hf_config.canvas_length (default 256) and caps max_num_seqs to 8 due to memory
+- file: vllm/model_executor/models/diffusion_gemma.py:787
+  context: DiffusionGemmaRequestStates sized by canvas_length (fallback 32)
+- file: vllm/model_executor/models/diffusion_gemma.py:1084
+  context: Sampler allocates [max_num_reqs, canvas_length] int32 buffers and drives [num_seqs, canvas_length, vocab] fp32
+    transients
+- file: vllm/v1/structured_output/__init__.py:324
+  context: Grammar bitmask allocation sized by (1 + num_speculative_tokens) = (1 + canvas_length)
+related_parameters:
+- name: max_num_seqs
+  relation: Auto-capped to 8 for diffusion models because [num_seqs, canvas_length, vocab] fp32 transients are memory-bound;
+    larger canvas_length requires smaller max_num_seqs
+- name: speculative_config.num_speculative_tokens
+  relation: Takes precedence over canvas_length in num_speculative_tokens; canvas_length is only used when speculative_config
+    is None
+- name: diffusion_config.max_denoising_steps
+  relation: Companion diffusion parameter controlling number of denoising iterations; together with canvas_length determines
+    total work per request
+- name: max_num_batched_tokens
+  relation: Scheduling budget interacts with per-step canvas_length token count
+constraints:
+- canvas_length must be a positive integer; it is used to size tensor dimensions and bitmask allocations.
+- When DiffusionConfig is auto-created, canvas_length is read from hf_config.canvas_length with a fallback of 256.
+- If diffusion_config is None in model code, canvas_length falls back to 32, which may mismatch the intended canvas size.
+tuning_advice:
+  summary: Keep canvas_length at the model's native value; if memory-constrained on Ascend NPU, reduce max_num_seqs rather
+    than canvas_length, and only lower canvas_length if the model tolerates it.
+  suggested_values:
+  - scenario: Default DiffusionGemma deployment on Ascend NPU with adequate HBM
+    value: 256
+    reason: Matches the auto-derived hf_config.canvas_length default; preserves model-native denoising block size and throughput.
+  - scenario: Memory-constrained NPU (small HBM) or OOM during diffusion sampling
+    value: 128
+    reason: Halving canvas_length roughly halves the [num_seqs, canvas_length, vocab] fp32 transient footprint, reducing memory
+      pressure at some throughput cost.
+  - scenario: Latency-sensitive single/few-request serving
+    value: 64
+    reason: Smaller canvas reduces per-step compute and transient memory, lowering per-step latency when batching is small.
+  caveats:
+  - Prefer lowering max_num_seqs (already auto-capped to 8) before reducing canvas_length, since canvas_length affects model
+    semantics/quality.
+  - Monitor HBM usage; the fp32 [num_seqs, canvas_length, vocab] transients dominate memory on Ascend.
+  - Structured output adds a (1 + canvas_length) bitmask multiplier per sequence; account for this when enabling guided decoding.
+  quick_guide: Leave canvas_length at the model default (256); tune max_num_seqs first for memory, lower canvas_length only
+    if OOM persists.
+analysis_date: '2026-10-27'

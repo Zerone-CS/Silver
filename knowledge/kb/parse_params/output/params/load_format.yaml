@@ -1,0 +1,141 @@
+name: --load-format
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/load.py:30
+- vllm/engine/arg_utils.py:979
+- vllm/engine/arg_utils.py:1902
+- vllm/config/vllm.py:1369
+- vllm/config/vllm.py:2573
+- vllm/config/engram.py:103
+- vllm_ascend/platform.py:1622
+- vllm_ascend/model_loader/netloader/netloader.py:759
+- vllm_ascend/model_loader/rfork/rfork_loader.py:197
+- vllm_ascend/models/deepseek_v41/model.py:1034
+- vllm_ascend/spec_decode/llm_base_proposer.py:358
+value_type: str
+default: auto
+valid_choices:
+- auto
+- pt
+- safetensors
+- instanttensor
+- ipc_cache
+- npcache
+- dummy
+- tensorizer
+- runai_streamer
+- runai_streamer_sharded
+- sharded_state
+- mistral
+- modelexpress
+- netloader
+- rfork
+- fastsafetensors
+- custom plugin values
+cli_example: --load-format auto
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "--load-format selects which ModelLoader implementation is used to read checkpoint\nweights into NPU memory.\
+  \ It does NOT affect steady-state inference throughput or\nper-token latency, but it strongly affects:\n(1) Cold-start /\
+  \ engine-restart latency — the weight-loading phase. On Ascend,\n    vllm-ascend adds two Ascend-native loaders that change\
+  \ this phase dramatically:\n    - \"\\\"netloader\\\" (vllm_ascend/model_loader/netloader/netloader.py): loads weights\"\
+  \n      over the network from a peer/seed instance instead of disk. Internally it\n      deep-copies the LoadConfig, strips\
+  \ netloader-specific keys from\n      model_loader_extra_config, and forces load_config.load_format = \"auto\"\n      (line\
+  \ 759) before delegating to DefaultModelLoader. This avoids slow disk\n      reads on network/high-latency storage and can\
+  \ cut startup time substantially.\n    - \"\\\"rfork\\\" (vllm_ascend/model_loader/rfork/rfork_loader.py): builds a seed\
+  \ key\"\n      from model identity + deployment topology, fetches weights from an existing\n      seed instance via a transfer\
+  \ engine, and falls back to the default loader\n      (forcing load_format = \"auto\", line 197) if no seed is available.\
+  \ This is\n      designed for fast multi-instance scale-out / restart.\n(2) Peak host/NPU memory during load — \"dummy\"\
+  \ allocates random weights without\n    reading any checkpoint (used for profiling / memory profiling), while\n    \"safetensors\"\
+  /\"auto\" stream real weights. On Ascend DeepSeek V4.1 Engram,\n    the loader choice gates a preflight checkpoint check\
+  \ and per-table storage\n    dtype detection (vllm_ascend/models/deepseek_v41/model.py:1034,1042): when\n    load_format\
+  \ == \"dummy\" the preflight is skipped and storage dtype is inferred\n    from hardware capability rather than the checkpoint,\
+  \ avoiding a large\n    per-rank allocation (24-51 GiB) before discovering a missing index/key.\n(3) Correctness-adjacent\
+  \ behavior — vllm/config/vllm.py:1369 skips\n    maybe_untie_word_embeddings() for \"dummy\"/\"sharded_state\"/\n    \"\
+  runai_streamer_sharded\" because those formats cannot reveal the original\n    checkpoint's tied-embedding layout. This\
+  \ affects model structure, not runtime\n    speed directly.\nvllm-ascend does not globally override the default (still \"\
+  auto\"), but it adds\nthe \"netloader\" and \"rfork\" choices and enforces format restrictions for the\nAscend Engram path\
+  \ (platform.py:1622) and for dp_shared_memory (engram.py:103).\n"
+usage_locations:
+- file: vllm/config/load.py:30
+  context: LoadConfig.load_format field definition and docstring listing all formats
+- file: vllm/engine/arg_utils.py:979
+  context: CLI registration of --load-format under LoadConfig argument group
+- file: vllm/engine/arg_utils.py:1902
+  context: 'create_load_config: special-cases ''tensorizer'' to build tensorizer_config'
+- file: vllm/config/vllm.py:1369
+  context: Skips maybe_untie_word_embeddings for dummy/sharded formats
+- file: vllm/config/vllm.py:2573
+  context: Auto-overrides load_format to runai_streamer for Run:ai object-storage URIs
+- file: vllm/config/engram.py:103
+  context: dp_shared_memory requires load_format in auto/safetensors/pt
+- file: vllm_ascend/platform.py:1622
+  context: Ascend Engram requires load_format in auto/safetensors/dummy
+- file: vllm_ascend/model_loader/netloader/netloader.py:759
+  context: Netloader forces load_format='auto' before delegating to DefaultModelLoader
+- file: vllm_ascend/model_loader/rfork/rfork_loader.py:197
+  context: RFork fallback forces load_format='auto' when no seed is available
+- file: vllm_ascend/models/deepseek_v41/model.py:1034
+  context: Engram preflight checkpoint check skipped when load_format == 'dummy'
+- file: vllm_ascend/models/deepseek_v41/model.py:1042
+  context: Engram storage dtype detection skipped when load_format == 'dummy'
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:358
+  context: Draft model loading logs and uses draft_load_config.load_format
+related_parameters:
+- name: --model-loader-extra-config
+  relation: Passed to the selected loader; netloader and rfork read their settings from this JSON config
+- name: --safetensors-load-strategy
+  relation: Only meaningful when load_format is safetensors/auto; controls prefetch/parallel read strategy
+- name: --download-dir
+  relation: Directory used by loaders that download weights from HF hub
+- name: --quantization
+  relation: Netloader uses DefaultModelLoader with process_weights_after_loading when quantization is set
+- name: --speculative-config
+  relation: Draft model uses draft_load_config.load_format; fastsafetensors falls back to auto for PP>1 draft
+- name: --enable-sleep-mode
+  relation: dummy load_format is used for profiling/sleep-mode weight reload workflows
+constraints:
+- When Ascend Engram is active (DeepSeek V4.1 with engram_layer_ids), --load-format must be one of auto, safetensors, or dummy;
+  other values raise a ValueError.
+- When Engram dp_shared_memory is enabled, --load-format must be auto, safetensors, or pt, otherwise a ValueError is raised.
+- Loading a model from object storage (S3/GCS/Azure Run:ai URI) requires --load-format to be modelexpress, runai_streamer,
+  or runai_streamer_sharded; auto is silently overridden to runai_streamer, and any other value raises a ValueError.
+- The netloader loader internally forces load_format to auto before delegating to DefaultModelLoader, so the netloader-specific
+  keys must be supplied via --model-loader-extra-config, not as the effective loader format.
+- The rfork loader falls back to the default loader (forcing load_format to auto) when no seed instance is available or any
+  transfer step fails.
+tuning_advice:
+  summary: Use auto/safetensors for normal single-instance startup; use netloader or rfork on Ascend to cut cold-start/restart
+    latency in multi-instance or network-storage deployments; use dummy only for profiling.
+  suggested_values:
+  - scenario: Standard single-instance deployment with local fast storage
+    value: auto
+    reason: Default; tries safetensors and falls back to pytorch bin, works with all Ascend paths including Engram (auto/safetensors/dummy
+      allowed).
+  - scenario: Multi-instance scale-out or frequent restarts on Ascend
+    value: rfork
+    reason: RFork fetches weights from an existing seed instance via transfer engine, avoiding repeated disk reads; falls
+      back to auto if no seed is available.
+  - scenario: Network or high-latency storage on Ascend
+    value: netloader
+    reason: Netloader loads weights over the network from a peer, avoiding slow disk reads; configure via --model-loader-extra-config.
+  - scenario: Profiling / memory profiling without real weights
+    value: dummy
+    reason: Allocates random weights without reading checkpoint; skips Engram preflight and large per-rank allocation, but
+      outputs are meaningless.
+  - scenario: DeepSeek V4.1 with Engram enabled
+    value: safetensors
+    reason: Ascend Engram requires auto/safetensors/dummy; safetensors is explicit and avoids fallback ambiguity.
+  caveats:
+  - netloader and rfork require --model-loader-extra-config JSON; without it they fall back to auto and you lose the startup-speed
+    benefit.
+  - Do not use dummy for production serving — outputs are random.
+  - For Engram, only auto/safetensors/dummy are accepted; other formats raise ValueError.
+  - load_format does not affect steady-state throughput; do not expect token/sec gains from changing it.
+  quick_guide: Keep auto for normal startup; use rfork/netloader on Ascend to speed cold start; use dummy only for profiling.
+analysis_date: '2026-10-27'

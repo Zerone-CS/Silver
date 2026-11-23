@@ -1,0 +1,115 @@
+name: compilation.mode
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/compilation.py:37
+- vllm/config/compilation.py:454
+- vllm/config/vllm.py:773
+- vllm_ascend/platform.py:1188
+- vllm_ascend/platform.py:1210
+- vllm_ascend/platform.py:1216
+- vllm_ascend/worker/v2/model_runner.py:184
+value_type: int
+default: '3'
+valid_choices:
+- 0
+- 1
+- 2
+- 3
+cli_example: '--compilation-config ''{"mode": 3}'''
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'compilation.mode selects the torch.compile pipeline used for the model. On Ascend,
+
+  vllm_ascend/platform.py (around line 1216) hard-restricts the value: if mode is not
+
+  CompilationMode.NONE (0) or CompilationMode.VLLM_COMPILE (3), it logs a warning
+
+  ("NPU does not support compilation mode") and forcibly sets mode = CompilationMode.NONE.
+
+  So STOCK_TORCH_COMPILE (1) and DYNAMO_TRACE_ONCE (2) are effectively unsupported on NPU
+
+  and silently degrade to eager execution.
+
+  Additionally, when enforce_eager is true (platform.py:1210-1214), mode is forced to
+
+  CompilationMode.NONE and splitting_ops is set to [].
+
+  The mode value gates ACL graph usage in the v2 worker: "vllm_ascend/worker/v2/model_runner.py:184"
+
+  computes use_aclgraph = (cudagraph_mode != NONE) and (mode == VLLM_COMPILE or
+
+  breakable_cudagraph enabled) and not enforce_eager. Thus with mode=NONE, ACL graph
+
+  capture is disabled entirely, forcing eager execution — losing the latency/throughput
+
+  benefit of graph replay (kernel launch overhead reduction, static memory reuse).
+
+  With mode=VLLM_COMPILE, the vLLM Inductor-based backend with piecewise compilation,
+
+  shape specialization and custom passes is used, enabling ACL graph capture and
+
+  significantly reducing per-step CPU launch overhead on NPU.
+
+  The mode also interacts with cudagraph_mode: "e.g. KVPP validation (ascend_config.py:96)"
+
+  requires PIECEWISE cudagraph mode, and finegrained TP config (ascend_config.py:1371)
+
+  requires graph mode (cudagraph_mode != NONE), which in practice requires VLLM_COMPILE.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:1216
+  context: Rejects non-NONE/non-VLLM_COMPILE modes, forcing mode=NONE with a warning on NPU.
+- file: vllm_ascend/platform.py:1210
+  context: When enforce_eager is set, forces compilation mode to NONE and clears splitting_ops.
+- file: vllm_ascend/worker/v2/model_runner.py:184
+  context: use_aclgraph requires mode == VLLM_COMPILE (or breakable cudagraph) to enable ACL graph capture.
+- file: vllm_ascend/ascend_config.py:1371
+  context: Finegrained TP config requires cudagraph_mode != NONE, which depends on compilation being enabled.
+- file: vllm/config/vllm.py:773
+  context: 'Upstream: breakable cudagraph path sets compilation mode to NONE.'
+related_parameters:
+- name: enforce_eager
+  relation: If enforce_eager is true, compilation.mode is forced to NONE and splitting_ops cleared.
+- name: compilation.cudagraph_mode
+  relation: ACL graph capture requires both cudagraph_mode != NONE and mode == VLLM_COMPILE (v2 worker).
+- name: compilation.splitting_ops
+  relation: Cleared to [] when enforce_eager forces mode to NONE.
+- name: compilation.cudagraph_capture_sizes
+  relation: Only used for graph capture when cudagraph_mode != NONE and compilation is active.
+- name: additional_config.finegrained_tp_config
+  relation: oproj/mlp tensor parallel requires graph mode, which requires compilation enabled.
+constraints:
+- On NPU only CompilationMode.NONE (0) and CompilationMode.VLLM_COMPILE (3) are supported; values 1 (STOCK_TORCH_COMPILE)
+  and 2 (DYNAMO_TRACE_ONCE) are silently downgraded to NONE with a warning.
+- Setting --enforce-eager forces compilation.mode to NONE regardless of the configured value.
+- ACL graph capture in the v2 worker requires compilation.mode to be VLLM_COMPILE (or breakable cudagraph enabled).
+- KVPP requires cudagraph_mode PIECEWISE, which is only meaningful when compilation is enabled.
+- Finegrained TP (oproj_tensor_parallel_size / mlp_tensor_parallel_size) requires graph mode, i.e. cudagraph_mode != NONE,
+  which requires compilation enabled.
+tuning_advice:
+  summary: Use VLLM_COMPILE (3) on Ascend to enable ACL graph capture and piecewise compilation; avoid 1/2 which silently
+    degrade to eager.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU (default recommended)
+    value: 3
+    reason: VLLM_COMPILE is the only non-eager mode supported on NPU and enables ACL graph capture, reducing launch overhead
+      and improving decode latency/throughput.
+  - scenario: Debugging or memory-constrained startup where graph capture OOMs
+    value: 0
+    reason: NONE runs fully eager, avoiding graph capture peak memory at the cost of higher per-step overhead.
+  - scenario: Using finegrained TP or KVPP features
+    value: 3
+    reason: These features require graph mode (cudagraph_mode != NONE), which requires compilation enabled.
+  caveats:
+  - Do not set mode to 1 or 2 on Ascend — they are silently downgraded to NONE.
+  - Pair VLLM_COMPILE with an appropriate cudagraph_mode (e.g. FULL_DECODE_ONLY or PIECEWISE) to actually capture graphs.
+  - If enforce_eager is set, mode is overridden to NONE; do not combine enforce_eager with graph-dependent features.
+  quick_guide: 'Set --compilation-config ''{"mode": 3}'' (VLLM_COMPILE) on Ascend; only 0 and 3 are honored.'
+analysis_date: '2026-10-27'

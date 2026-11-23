@@ -1,0 +1,94 @@
+name: additional_config.enable_mlapo
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:609
+- vllm_ascend/ascend_config.py:443
+- tests/e2e/common/multi_node/external_dp/utils.py:185
+value_type: bool
+default: true
+valid_choices: 'true or false (lax bool coercion: "1"/"0" strings also accepted)'
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'enable_mlapo toggles MLAPO (Model Layer-wise Adaptive Parallel Optimization), an
+
+  Ascend-native fusion-operator path for MLA-based models (e.g. DeepSeek V3/V3.1/V3.2).
+
+  It is defined in vllm_ascend/ascend_config.py as a typed field of AscendConfig
+
+  (default True) and is read from the `--additional-config` JSON dict. When enabled,
+
+  vllm-ascend dispatches fused MLA operators instead of the unfused reference path,
+
+  which the docs describe as "significantly improve performance but consumes more NPU
+
+  memory". The performance gain comes from fusing the MLA attention computation
+
+  (QKV projection / RoPE / attention) into fewer NPU kernels, reducing kernel launch
+
+  overhead and intermediate tensor traffic — directly lowering prefill/decode latency
+
+  and raising throughput. The cost is higher NPU memory footprint because the fused
+
+  path keeps additional weights/workspace resident. In PD-disaggregated deployments
+
+  the docs recommend enabling MLAPO only on decode (D) nodes; the related
+
+  mlapo_keep_prefill_weights flag controls whether MLAPO prefill weights are retained
+
+  on kv_consumer D nodes (trading memory for stability, issue #11882). The legacy
+
+  VLLM_ASCEND_ENABLE_MLAPO env var is no longer supported — the config key is the
+
+  only way to set it.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:609
+  context: 'AscendConfig field definition `enable_mlapo: bool = True` (default enabled).'
+- file: vllm_ascend/ascend_config.py:443
+  context: 'Documented in AscendConfig docstring example JSON as "enable_mlapo": true.'
+- file: tests/e2e/common/multi_node/external_dp/utils.py:185
+  context: E2E test feature extraction reads additional_config.get("enable_mlapo") to tag the mlapo feature.
+related_parameters:
+- name: additional_config.mlapo_keep_prefill_weights
+  relation: Companion flag; when True keeps MLAPO prefill weights on NPU on kv_consumer D nodes, trading memory for stability.
+- name: VLLM_ASCEND_ENABLE_MLAPO
+  relation: Legacy env var that previously controlled this feature; no longer supported, use the config key instead.
+- name: additional_config.enable_kv_nz
+  relation: Both are MLA/DeepSeek-oriented optimizations; enable_kv_nz only takes effect on MLA models.
+constraints:
+- The legacy VLLM_ASCEND_ENABLE_MLAPO environment variable is no longer supported; set enable_mlapo via --additional-config
+  instead.
+- Unknown keys in additional_config are rejected (extra="forbid"), so a misspelled enable_mlapo key fails fast at startup.
+- MLAPO is an MLA-model optimization; on non-MLA models the fused path is not applicable.
+tuning_advice:
+  summary: Keep MLAPO enabled on MLA models (DeepSeek family) for the fused-operator speedup; disable only if NPU memory is
+    tight, and in PD setups enable it on decode nodes.
+  suggested_values:
+  - scenario: Single-node MLA model (DeepSeek V3/V3.1) with sufficient NPU memory
+    value: true
+    reason: Fused MLA operators significantly improve latency/throughput; default is already True.
+  - scenario: PD-disaggregated deployment
+    value: true
+    reason: Enable MLAPO on decode (D) nodes only, per the DeepSeek-V3.1 tutorial, to gain decode-side speedup without prefill
+      memory pressure.
+  - scenario: Memory-constrained NPU where OOM occurs with MLAPO
+    value: false
+    reason: Disabling MLAPO reduces NPU memory footprint at the cost of losing the fusion speedup.
+  - scenario: kv_consumer D nodes experiencing crashes from freed prefill weights
+    value: true
+    reason: 'Keep MLAPO enabled but also set mlapo_keep_prefill_weights=true to retain prefill weights and avoid the crash
+      (issue #11882).'
+  caveats:
+  - Do not rely on VLLM_ASCEND_ENABLE_MLAPO; it is deprecated and ignored.
+  - Monitor NPU memory when enabling MLAPO on memory-tight configurations.
+  quick_guide: Leave enable_mlapo=true for MLA models; disable only to save NPU memory, and in PD setups enable it on decode
+    nodes.
+analysis_date: '2026-10-27'

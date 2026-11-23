@@ -1,0 +1,73 @@
+name: VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE
+type: env
+category: compilation
+scope: vllm
+source_file:
+- vllm/envs.py:1976
+- vllm/envs.py:289
+- vllm/compilation/compiler_interface.py:757
+value_type: bool
+default: true
+valid_choices: 0 or 1 (parsed via bool(int(...)))
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var is read in vllm/compilation/compiler_interface.py:set_inductor_config().
+
+  When the compile range is a single static size (compile_range.is_single_size()),
+
+  the value is assigned to inductor config["max_autotune"]. When enabled, TorchInductor
+
+  runs an autotuning search over Triton kernel configurations (block sizes, num_warps,
+
+  num_stages) for the compiled static shapes, picking the fastest kernel variant.
+
+  This is a compile-time tuning knob: "it increases compilation time (autotune search)"
+
+  but can improve steady-state kernel latency/throughput for the tuned static shapes.
+
+  On Ascend NPU, vLLM''s TorchInductor path is largely bypassed — vllm-ascend uses its
+
+  own graph mode (ACLGraph / torch.compile via the Ascend backend) and does not rely on
+
+  Triton max_autotune for NPU kernels. No vllm-ascend override of this env var was found
+
+  in the provided context, so on Ascend its effect is minimal/neutral. It only matters
+
+  if the upstream inductor compilation path is actually exercised on the NPU backend.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1976
+  context: Definition of the env var, default enabled (1).
+- file: vllm/envs.py:289
+  context: 'Type annotation VLLM_ENABLE_INDUCTOR_MAX_AUTOTUNE: bool = True.'
+- file: vllm/compilation/compiler_interface.py:757
+  context: Sets inductor config['max_autotune'] for single-size compile ranges.
+related_parameters:
+- name: VLLM_ENABLE_INDUCTOR_COORDINATE_DESCENT_TUNING
+  relation: Companion tuning flag set alongside max_autotune in the same code block.
+- name: compilation_config.compile_sizes
+  relation: max_autotune only applies when compile_range.is_single_size() (static shapes from compile_sizes).
+constraints:
+- Only takes effect when the compile range is a single static size (compile_range.is_single_size()); dynamic/multi-size ranges
+  ignore it.
+- Value must be parseable as an integer 0 or 1 (bool(int(...))); other strings raise ValueError at env access.
+tuning_advice:
+  summary: Leave at default on Ascend; only relevant if the upstream Inductor static-shape path is used.
+  suggested_values:
+  - scenario: Default Ascend NPU deployment (ACLGraph/torch.compile Ascend backend)
+    value: 1
+    reason: Default is enabled; on Ascend the Inductor max_autotune path is largely inactive, so keeping default is safe and
+      neutral.
+  - scenario: Startup time is critical and upstream Inductor static-shape compilation is exercised
+    value: 0
+    reason: Disabling skips the autotune search, reducing compile/warmup time at possible minor steady-state kernel cost.
+  caveats:
+  - Do not expect throughput gains on Ascend from this flag; NPU kernels are not tuned via Triton max_autotune.
+  - Only affects single static compile sizes; dynamic shapes are unaffected.
+  quick_guide: Keep default (1) on Ascend; set 0 only to cut Inductor compile time when that path is active.
+analysis_date: '2026-10-27'

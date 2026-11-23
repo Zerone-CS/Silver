@@ -1,0 +1,92 @@
+name: kv_transfer.enable_permute_local_kv
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/platform.py:810
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py:1035
+- vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py:2298
+- vllm/platforms/xpu.py:365
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: 'This is an experimental flag inside --kv-transfer-config that enables HND (LBNHC) to NHD (LBHNC)
+
+  KV layout permutation during disaggregated prefill/decode KV transfer. In upstream vLLM it is read
+
+  in the NIXL connector base worker: "when the device KV cache layout is LBNHC and the flag is set,"
+
+  the host transfer buffer is allocated as LBHNC (base_worker.py:1035-1043) so that Decode/Prefill
+
+  TP_ratio > 1 is supported; otherwise the buffer is allocated with permuted shape and viewed as
+
+  logical (B,H,N,2*D) so raw NIXL transfers see NHD physical strides. It is also consulted at
+
+  base_worker.py:2298 to allow heterogeneous TP when remote is LBHNC and local is LBNHC, enabling an
+
+  additional permute on the local device KV instead of raising a RuntimeError. On Ascend, however,
+
+  vllm_ascend/platform.py:810-815 unconditionally resets this flag to False during platform config
+
+  validation, logging a warning that the parameter is "tied to incompatible backend". Therefore on
+
+  Ascend NPU the flag has no runtime effect: "the NIXL/permute path it controls is not exercised, and"
+
+  the KV transfer behavior falls back to the default (non-permuted) path. Because the flag is
+
+  neutralized, it does not change Ascend throughput, latency, or memory in practice; any impact is
+
+  limited to the upstream GPU/NIXL path that Ascend does not use.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:810
+  context: Ascend platform check resets enable_permute_local_kv to False with a warning, neutralizing the flag on NPU.
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py:1035
+  context: Upstream NIXL worker selects LBHNC host buffer layout when flag enabled and device layout is LBNHC.
+- file: vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py:2298
+  context: Upstream NIXL worker allows heterogeneous TP (remote LBHNC vs local LBNHC) via extra local permute when flag enabled.
+- file: vllm/platforms/xpu.py:365
+  context: XPU platform force-enables the flag when kv_transfer_config is present (GPU/XPU reference path, not Ascend).
+related_parameters:
+- name: kv_transfer_config
+  relation: Parent config object (--kv-transfer-config) that contains this nested field.
+- name: kv_transfer_config.kv_buffer_size
+  relation: Sibling field also reset to default (1e9) by the same Ascend platform validation block.
+- name: kv_cache_layout
+  relation: The flag only matters when device KV layout is LBNHC; it controls HND-to-NHD permutation.
+- name: tensor_parallel_size
+  relation: Flag enables Decode/Prefill TP_ratio > 1 (heterogeneous TP) in the NIXL connector.
+constraints:
+- On Ascend NPU, setting enable_permute_local_kv to True has no effect because vllm-ascend resets it to False during platform
+  config validation.
+- The flag only has meaning when the device KV cache layout is LBNHC (HND); with other layouts it is ignored.
+- In upstream NIXL, heterogeneous TP with mismatched kv_cache_layout raises a RuntimeError unless this flag is enabled and
+  remote layout is LBHNC.
+tuning_advice:
+  summary: Do not rely on this flag on Ascend NPU — vllm-ascend forcibly resets it to False, so it cannot be used to tune
+    KV transfer performance.
+  suggested_values:
+  - scenario: Ascend NPU deployment (any v1/v2 worker path)
+    value: false
+    reason: vllm-ascend platform validation resets the flag to False regardless of user input, so leaving it at the default
+      avoids a misleading warning and reflects actual behavior.
+  - scenario: Upstream GPU/NIXL disaggregated P/D with Decode/Prefill TP_ratio > 1
+    value: true
+    reason: On GPU, enabling the flag allows LBHNC host buffer layout and heterogeneous TP support in the NIXL connector;
+      this is the intended use case but does not apply to Ascend.
+  caveats:
+  - Setting this to True on Ascend produces a warning and is silently reset; do not expect any performance change.
+  - For Ascend disaggregated prefill/decode tuning, focus on Ascend-native KV transfer backends and parallelism settings rather
+    than this NIXL-specific flag.
+  quick_guide: Leave at default false on Ascend; the flag is neutralized by vllm-ascend and only affects the upstream NIXL/GPU
+    path.
+analysis_date: '2026-10-27'

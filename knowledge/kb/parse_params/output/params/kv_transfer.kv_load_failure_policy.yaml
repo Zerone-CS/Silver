@@ -1,0 +1,75 @@
+name: kv_transfer.kv_load_failure_policy
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/v1/core/sched/scheduler.py:162
+- vllm_ascend/platform.py:1158
+- vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_scheduler.py:692
+value_type: str
+default: fail
+valid_choices:
+- recompute
+- fail
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This parameter controls what the vLLM v1 scheduler does when a KV connector\nreports that remote KV blocks\
+  \ failed to load. In vllm/v1/core/sched/scheduler.py:162-163,\nthe scheduler reads kv_transfer_config.kv_load_failure_policy\
+  \ and sets\nself.recompute_kv_load_failures = (policy == \"recompute\"). When a load fails:\n- \"\\\"fail\\\" (default):\
+  \ the request is immediately terminated with an error finish\"\n  reason. No recompute work is done, so a failed load costs\
+  \ only the wasted\n  prefill/transfer attempt, but the request is lost (client must retry).\n- \"\\\"recompute\\\": the\
+  \ scheduler rolls back the request and reschedules it so the\"\n  failed blocks are recomputed locally. This preserves request\
+  \ success at the\n  cost of extra prefill compute and additional scheduling iterations, which\n  increases latency and consumes\
+  \ NPU compute that could serve other requests.\nOn Ascend, vllm_ascend/platform.py:1158 adds a validation gate: if policy\
+  \ is\n\"recompute\" and the model is hybrid (is_hybrid True), an AssertionError is\nraised at startup. The Mooncake pull\
+  \ scheduler\n(vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_scheduler.py:692)\nreads the policy only for logging\
+  \ on the producer side when a receive fails;\nit does not change the data path. So the performance effect is indirect:\n\
+  \"recompute\" trades extra NPU compute and latency for higher request success\nunder flaky KV transfer, while \"fail\" minimizes\
+  \ wasted compute but drops\nrequests on transfer errors.\n"
+usage_locations:
+- file: vllm/v1/core/sched/scheduler.py:162
+  context: Scheduler reads policy and sets recompute_kv_load_failures flag controlling reschedule-on-failure behavior.
+- file: vllm_ascend/platform.py:1158
+  context: Startup validation rejects recompute policy for hybrid attention models.
+- file: vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake/pull_scheduler.py:692
+  context: Mooncake producer-side scheduler logs the policy when a receive fails; no data-path change.
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: Policy only takes effect when a KV connector is configured (kv_transfer_config is not None).
+- name: kv_transfer_config.kv_role
+  relation: Consumer-side loads are what can fail; producer side only logs the policy.
+- name: model_config.is_hybrid
+  relation: Hybrid models cannot use recompute policy (startup assertion).
+- name: kv_transfer_config.kv_connector_extra_config
+  relation: For MultiConnector, the policy must be set on the top-level kv-transfer-config, not child connectors.
+constraints:
+- kv_load_failure_policy=recompute is not supported for hybrid attention models (e.g., DeepSeekV4, Qwen 3.5); startup raises
+  an AssertionError.
+- When using MultiConnector, kv_load_failure_policy must be configured on the top-level kv-transfer-config, not inside child
+  connectors.
+- The policy only has effect when a KV connector is configured; with no kv_transfer_config it is ignored.
+tuning_advice:
+  summary: Use fail (default) for maximum throughput on reliable KV transfer links; use recompute only on non-hybrid models
+    when transfer failures must not drop requests.
+  suggested_values:
+  - scenario: Stable HCCS/RoCE KV transfer, throughput-oriented serving
+    value: fail
+    reason: Avoids extra prefill compute and scheduling overhead; failed loads are rare so request loss is minimal.
+  - scenario: Flaky network or SSD offload where KV load failures are expected, non-hybrid model
+    value: recompute
+    reason: Reschedules failed blocks for local recompute, preserving request success at the cost of extra NPU compute and
+      latency.
+  - scenario: Hybrid attention model (DeepSeekV4, Qwen 3.5)
+    value: fail
+    reason: recompute is rejected at startup for hybrid models, so fail is the only valid choice.
+  caveats:
+  - recompute adds prefill compute and latency; monitor NPU utilization and TTFT when enabling it.
+  - For MultiConnector deployments, set the policy on the top-level kv-transfer-config.
+  - Ensure MOONCAKE_OFFLOAD_LOCAL_BUFFER_SIZE_BYTES is large enough when using fail with SSD offload to avoid BUFFER_OVERFLOW-induced
+    request failures.
+  quick_guide: Default fail for throughput; switch to recompute only on non-hybrid models with unreliable KV transfer.
+analysis_date: '2026-10-27'

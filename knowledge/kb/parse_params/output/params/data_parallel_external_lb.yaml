@@ -1,0 +1,136 @@
+name: --data-parallel-external-lb
+type: cli
+category: parallelism
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1176
+- vllm/engine/arg_utils.py:503
+- vllm/config/parallel.py:151
+- vllm/config/parallel.py:515
+- vllm/config/vllm.py:796
+- vllm/v1/engine/core.py:1074
+- vllm/v1/engine/core_client.py:152
+- vllm/v1/engine/utils.py:1268
+value_type: bool
+default: false
+valid_choices: true or false (store_true style boolean flag)
+cli_example: --data-parallel-external-lb
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This flag selects the "external" DP load-balancing mode for MoE deployments.
+
+  In vllm/v1/engine/core_client.py:152, when data_parallel_size > 1 and
+
+  data_parallel_external_lb is True, the engine client is constructed as a
+
+  DPAsyncMPClient (one client per DP rank) instead of a DPLBAsyncMPClient
+
+  (a single client that balances requests across all DP ranks). This means
+
+  request routing/balancing is delegated to an external load balancer (e.g.
+
+  a Kubernetes Service or gateway) rather than vLLM''s internal coordinator.
+
+  In vllm/v1/engine/core.py:1074, internal_dp_balancing is disabled when
+
+  external LB is set, so publish_dp_lb_stats becomes False and per-rank queue
+
+  stats are not published to the coordinator for balancing decisions.
+
+  In vllm/config/vllm.py:796, needs_dp_coordinator still returns True for MoE
+
+  models with DP > 1 even in external LB mode (wave coordination still runs in
+
+  the coordinator), so the DP coordinator process is not eliminated.
+
+  In vllm/v1/engine/utils.py:1268, remote_should_be_headless is True when
+
+  neither hybrid nor external LB is set; with external LB the remote ranks are
+
+  not headless, meaning each rank runs its own API server/frontend.
+
+  Net effect on Ascend NPU: "throughput and tail latency depend on the quality"
+
+  of the external balancer''s routing decisions (it cannot see per-rank queue
+
+  depth the way internal LB does), but it enables a "one-pod-per-rank" wide-EP
+
+  topology that scales DP across many nodes without a single internal
+
+  coordinator bottleneck. Memory footprint per process is roughly unchanged;
+
+  the main tradeoff is routing efficiency vs. horizontal scalability.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1176
+  context: CLI argument registration for --data-parallel-external-lb / -dpe
+- file: vllm/engine/arg_utils.py:2166
+  context: Validation that external LB and hybrid LB cannot both be enabled
+- file: vllm/engine/arg_utils.py:2208
+  context: Infers data_parallel_rank from node_rank when external LB with nnodes > 1
+- file: vllm/engine/arg_utils.py:2220
+  context: data_parallel_external_lb is OR-ed with data_parallel_rank being set
+- file: vllm/engine/arg_utils.py:2229
+  context: Rejects external LB for non-MoE models when DP size > 1
+- file: vllm/engine/arg_utils.py:2240
+  context: Requires a data_parallel_rank and data_parallel_size_local == 1
+- file: vllm/config/parallel.py:515
+  context: Raises if external LB set with data_parallel_size <= 1
+- file: vllm/config/vllm.py:796
+  context: needs_dp_coordinator still True for MoE DP > 1 even with external LB
+- file: vllm/v1/engine/core.py:1074
+  context: Disables internal DP balancing / stats publishing when external LB
+- file: vllm/v1/engine/core_client.py:152
+  context: Selects DPAsyncMPClient (per-rank client) vs DPLBAsyncMPClient
+- file: vllm/v1/engine/utils.py:1268
+  context: Controls whether remote ranks are headless during startup
+related_parameters:
+- name: --data-parallel-size
+  relation: Must be > 1 for external LB to be valid; raises otherwise.
+- name: --data-parallel-rank
+  relation: Setting it implicitly enables external LB; external LB requires a rank.
+- name: --data-parallel-size-local
+  relation: Must be 1 (or omitted) in external LB mode.
+- name: --data-parallel-hybrid-lb
+  relation: Mutually exclusive; cannot be enabled together with external LB.
+- name: --data-parallel-multi-port-external-lb
+  relation: Related external-LB variant that launches one API server per local DP rank.
+- name: --nnodes / --node-rank
+  relation: Used to infer data_parallel_rank for external LB across nodes.
+- name: --enable-expert-parallel
+  relation: External LB is intended for wide-EP MoE deployments.
+- name: --enable-fault-tolerance
+  relation: Fault tolerance requires external LB mode (external LB or data-parallel-rank).
+constraints:
+- --data-parallel-external-lb and --data-parallel-hybrid-lb cannot be enabled together.
+- External LB can only be set when --data-parallel-size is greater than 1.
+- External LB is only supported for MoE models; non-MoE models with DP > 1 raise an error.
+- External LB requires a data-parallel rank; set --data-parallel-rank or use --nnodes with --node-rank so it can be inferred.
+- In external LB mode --data-parallel-size-local must be 1 or omitted.
+- Fault tolerance (--enable-fault-tolerance) requires external LB mode (external LB or --data-parallel-rank).
+tuning_advice:
+  summary: Enable external LB only for large MoE wide-EP deployments where an external balancer routes to one pod per DP rank;
+    otherwise use internal/hybrid LB.
+  suggested_values:
+  - scenario: Wide-EP MoE deployment across many nodes with a Kubernetes/gateway external balancer
+    value: true
+    reason: One-pod-per-rank topology scales DP horizontally without a single internal coordinator bottleneck; requires --data-parallel-size
+      > 1, a rank, and --data-parallel-size-local 1.
+  - scenario: Single-node or small DP MoE deployment
+    value: false
+    reason: Internal/hybrid LB can use per-rank queue stats for better routing and lower tail latency.
+  - scenario: Non-MoE model deployment
+    value: false
+    reason: External LB is rejected for non-MoE models; launch independent vLLM instances instead.
+  caveats:
+  - Ensure the external balancer has health checks and even routing; vLLM will not rebalance across ranks internally.
+  - Keep --data-parallel-size-local at 1 and provide --data-parallel-rank (or --nnodes/--node-rank) to satisfy validation.
+  - On Ascend, verify HCCL connectivity across all DP ranks before relying on external routing, since each rank is an independent
+    frontend.
+  quick_guide: Use --data-parallel-external-lb only for multi-node MoE wide-EP with an external balancer; keep it off for
+    single-node or non-MoE setups.
+analysis_date: '2026-10-27'

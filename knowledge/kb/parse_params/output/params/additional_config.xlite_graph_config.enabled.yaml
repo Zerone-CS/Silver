@@ -1,0 +1,126 @@
+name: additional_config.xlite_graph_config.enabled
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1454
+- vllm_ascend/ascend_config.py:1457
+- vllm_ascend/platform.py:1192
+- vllm_ascend/platform.py:1356
+- vllm_ascend/utils.py:1469
+- vllm_ascend/xlite/xlite_model_runner.py:42
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'Enabling this flag switches the whole execution stack to the openEuler Xlite
+
+  graph backend on Ascend NPU. In vllm_ascend/platform.py:1356, when
+
+  xlite_graph_config.enabled is true and the hardware profile supports
+
+  STANDARD_WORKER_PATCHES, the worker class is replaced with
+
+  vllm_ascend.xlite.xlite_worker.XliteWorker (instead of the profile default
+
+  worker). In platform.py:1192 the compilation_config.cudagraph_mode is
+
+  rewritten: "with full_mode=false the mixed mode is kept and decode mode is"
+
+  preserved when speculative decoding is active, otherwise the mode collapses
+
+  to the mixed mode; with full_mode=true the mode is forced to CUDAGraphMode.NONE
+
+  and enforce_eager is set, disabling graph capture entirely. This directly
+
+  changes how decode steps are captured/replayed, which is the dominant factor
+
+  for decode latency and throughput on Ascend. In vllm_ascend/utils.py:1469,
+
+  enabling xlite forces cache_config.block_size down to 128 when it is larger,
+
+  which changes KV-cache memory layout and per-token memory footprint. In
+
+  vllm_ascend/worker/model_runner_v1.py:5000, xlite disables the
+
+  strided-attention KV-cache layer detection path, altering how KV cache views
+
+  are built. In vllm_ascend/xlite/xlite_model_runner.py:42 the XliteModelRunner
+
+  asserts the flag is enabled and wraps the model in an XliteWrapper, routing
+
+  forward passes through the xlite graph path (bypassed for profile/dummy runs).
+
+  Net effect: "lower per-step launch overhead and better decode latency/throughput"
+
+  via graph replay, at the cost of stricter compatibility constraints.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1454
+  context: 'Field definition enabled: bool = False inside XliteGraphConfig.'
+- file: vllm_ascend/ascend_config.py:1457
+  context: _validate_preconditions gates all spec-decode/PP/block-size checks on enabled.
+- file: vllm_ascend/platform.py:1192
+  context: Rewrites compilation_config.cudagraph_mode and enforce_eager when xlite is enabled.
+- file: vllm_ascend/platform.py:1356
+  context: Selects XliteWorker as worker_cls when enabled and hardware supports STANDARD_WORKER_PATCHES.
+- file: vllm_ascend/utils.py:1469
+  context: Forces cache_config.block_size to 128 when enabled and block_size > 128.
+- file: vllm_ascend/worker/model_runner_v1.py:5000
+  context: Disables strided-attention KV-cache layer detection when xlite is enabled.
+- file: vllm_ascend/xlite/xlite_model_runner.py:42
+  context: XliteModelRunner asserts xlite enabled and wraps model in XliteWrapper.
+- file: vllm_ascend/quantization/methods/kv_cache/turboquant/config.py:40
+  context: Raises ValueError if turboquant cache dtype is combined with xlite enabled.
+related_parameters:
+- name: additional_config.xlite_graph_config.full_mode
+  relation: Sibling flag; when true forces cudagraph_mode to NONE and enforce_eager, disabling graph capture.
+- name: compilation_config.cudagraph_mode
+  relation: Overwritten by xlite enablement in platform.py:1192.
+- name: cache_config.block_size
+  relation: Forced to 128 when xlite enabled and block_size > 128.
+- name: speculative_config.method
+  relation: Only MTP/draft_model/extract_hidden_states allowed; eagle3/dflash/dspark rejected.
+- name: parallel_config.pipeline_parallel_size
+  relation: Must be 1; xlite is incompatible with pipeline parallelism.
+- name: additional_config.enable_sparse_sfa_c8
+  relation: Turboquant SFA path rejects xlite; xlite logs error for Sparse SFA/LI C8.
+constraints:
+- xlite graph is not compatible with pipeline parallelism; pipeline_parallel_size must be 1 or a RuntimeError is raised.
+- When speculative decoding is used, only methods with a sequential causal chain (mtp, draft_model, extract_hidden_states)
+  are allowed; other methods raise RuntimeError.
+- Speculative methods with intermediate hidden states (eagle3, extract_hidden_states, dflash, dspark) raise RuntimeError under
+  xlite.
+- The turboquant KV-cache dtype cannot be combined with xlite graph mode; a ValueError is raised.
+- XliteModelRunner asserts that xlite_graph_config.enabled is true, so the worker cannot be used without enabling the flag.
+- The XliteWorker is only selected when the hardware profile supports STANDARD_WORKER_PATCHES; otherwise the default worker
+  is used.
+tuning_advice:
+  summary: Enable xlite graph mode for decode-heavy workloads to cut per-step launch overhead and improve decode latency/throughput
+    on Ascend NPU, keeping full_mode=false and block_size=128.
+  suggested_values:
+  - scenario: Decode-heavy serving with MTP speculative decoding on supported hardware
+    value: true
+    reason: Graph replay via XliteWorker reduces per-step overhead; decode mode is preserved when spec decoding is active.
+  - scenario: Default / conservative deployment
+    value: false
+    reason: Default is disabled; only enable after verifying hardware supports STANDARD_WORKER_PATCHES and constraints are
+      met.
+  - scenario: Full graph capture desired
+    value: false
+    reason: full_mode=true forces cudagraph_mode to NONE and enforce_eager, disabling graph capture; keep full_mode=false
+      for graph replay.
+  caveats:
+  - Ensure pipeline_parallel_size=1 and block_size=128 before enabling.
+  - Avoid combining with turboquant KV-cache dtype or Sparse SFA/LI C8.
+  - Only MTP-style sequential speculative methods are supported.
+  quick_guide: Set additional_config.xlite_graph_config.enabled=true with full_mode=false and block_size=128 for decode-latency
+    gains on supported Ascend hardware.
+analysis_date: '2026-10-27'

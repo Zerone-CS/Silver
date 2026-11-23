@@ -1,0 +1,109 @@
+name: --mm-encoder-fp8-scale-save-margin
+type: cli
+category: quantization
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:201
+- vllm/engine/arg_utils.py:1417
+- vllm/engine/arg_utils.py:616
+- vllm/config/model.py:410
+- vllm/model_executor/layers/attention/mm_encoder_attention.py:53
+- vllm/model_executor/layers/attention/mm_encoder_attention.py:457
+value_type: float
+default: 1.5
+valid_choices: any float > 0.0 (Field(gt=0.0))
+cli_example: --mm-encoder-fp8-scale-save-margin 1.5
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter only affects the one-shot auto-save of calibrated FP8 Q/K/V scales
+
+  for the multimodal (ViT) encoder attention. In
+
+  vllm/model_executor/layers/attention/mm_encoder_attention.py, the margin is captured
+
+  into the module-level global `_fp8_scale_save_margin` during layer init (line 457)
+
+  only when `mm_encoder_fp8_scale_save_path` is set AND dynamic FP8 scaling is active
+
+  (`_fp8_dynamic_scale`). It is then multiplied onto the observed amax-derived scales
+
+  when the amax history buffer wraps and the scales are written to the save file.
+
+  The margin does NOT change the runtime compute path: "it does not alter the FP8"
+
+  matmul/attention kernels, does not change per-token dynamic scaling during normal
+
+  inference, and does not affect memory allocation. Its only runtime effect is on the
+
+  numerical values written to the calibration JSON file, which are then used as static
+
+  scales in a subsequent run via `--mm-encoder-fp8-scale-path`. A larger margin reduces
+
+  the risk of FP8 overflow (which would cause accuracy degradation / potential
+
+  saturation) at the cost of slightly reduced quantization precision (smaller effective
+
+  dynamic range utilization). This is a correctness/accuracy knob, not a throughput knob.
+
+  There is no vllm-ascend override of this parameter in the provided context; the FP8
+
+  ViT attention path is an upstream vLLM feature (FlashInfer cuDNN backend) and is not
+
+  documented as supported on Ascend NPU.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:201
+  context: Field definition with default 1.5 and gt=0.0 constraint; docstring describes safety margin semantics.
+- file: vllm/engine/arg_utils.py:1417
+  context: CLI argument registration under MultiModalConfig argument group.
+- file: vllm/engine/arg_utils.py:616
+  context: EngineArgs field mapping to MultiModalConfig.mm_encoder_fp8_scale_save_margin.
+- file: vllm/config/model.py:410
+  context: ModelConfig InitVar for multimodal config propagation.
+- file: vllm/model_executor/layers/attention/mm_encoder_attention.py:53
+  context: Module-level global initialized from MultiModalConfig default.
+- file: vllm/model_executor/layers/attention/mm_encoder_attention.py:457
+  context: Captured into global during layer init when save path set and dynamic scaling active.
+related_parameters:
+- name: --mm-encoder-fp8-scale-save-path
+  relation: Required to be set for this margin to have any effect; without it the margin is never captured.
+- name: --mm-encoder-fp8-scale-path
+  relation: The saved (margin-scaled) scales file is consumed via this flag in subsequent runs for static scaling.
+- name: --mm-encoder-attn-dtype
+  relation: Must be set to 'fp8' to enable the FP8 ViT attention path that uses these scales.
+constraints:
+- The value must be strictly greater than 0.0 (Field(gt=0.0)); zero or negative values are rejected.
+- The margin only takes effect when --mm-encoder-fp8-scale-save-path is set and dynamic FP8 scaling is active (mm_encoder_attn_dtype='fp8'
+  with no --mm-encoder-fp8-scale-path).
+- The margin is captured once at layer init; changing it at runtime after model init has no effect.
+tuning_advice:
+  summary: 'Leave at the default 1.5 for most calibration runs; only adjust if you observe
+
+    FP8 overflow (accuracy loss) or excessive precision loss in the ViT encoder.
+
+    '
+  suggested_values:
+  - scenario: Default calibration run for a new multimodal model
+    value: 1.5
+    reason: Default provides reasonable headroom against out-of-distribution activations without sacrificing much precision.
+  - scenario: Observed accuracy degradation / FP8 saturation on ViT encoder after static-scale deployment
+    value: 2.0
+    reason: Larger margin leaves more headroom so inputs with larger activations than the calibration set do not overflow
+      FP8 range.
+  - scenario: Calibration set is known to be representative and precision is critical
+    value: 1.2
+    reason: Smaller margin better utilizes FP8 dynamic range when overflow risk is low, improving quantization precision.
+  caveats:
+  - This parameter has no effect unless --mm-encoder-fp8-scale-save-path is set together with dynamic FP8 scaling.
+  - The FP8 ViT encoder attention path relies on the FlashInfer cuDNN backend (upstream vLLM); it is not documented as supported
+    on Ascend NPU, so this parameter is effectively inert on Ascend hardware.
+  - The margin is captured into a module-level global at layer init; it cannot be changed after model initialization.
+  - The margin affects only the saved calibration file values, not the live inference compute path, so it does not change
+    throughput or memory usage.
+  quick_guide: Keep at 1.5 unless ViT FP8 accuracy issues appear; only relevant with --mm-encoder-fp8-scale-save-path on the
+    upstream FP8 ViT path.
+analysis_date: '2026-10-27'

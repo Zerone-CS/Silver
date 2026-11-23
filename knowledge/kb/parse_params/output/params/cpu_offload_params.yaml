@@ -1,0 +1,121 @@
+name: --cpu-offload-params
+type: cli
+category: memory
+scope: vllm
+source_file:
+- vllm/config/offload.py:34
+- vllm/engine/arg_utils.py:1342
+- vllm/engine/arg_utils.py:549
+- vllm/engine/arg_utils.py:2619
+- vllm/model_executor/offloader/base.py:174
+- vllm/model_executor/offloader/uva.py:35
+value_type: list[str]
+default: []
+valid_choices: Any set of parameter name segments (dot-separated exact segments); empty set means non-selective offloading
+  up to cpu_offload_gb
+cli_example: --cpu-offload-params experts
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: 'This parameter only takes effect through the UVA offload backend. In
+
+  vllm/model_executor/offloader/base.py:create_offloader, the UVAOffloader is
+
+  constructed only when offload_backend resolves to "uva" (either explicitly or
+
+  via "auto" when cpu_offload_gb > 0 and offload_group_size == 0). The set is
+
+  passed as cpu_offload_params to UVAOffloader.__init__ (uva.py:44-48) and used
+
+  during wrap_modules to decide which parameters are moved to pinned CPU memory
+
+  and accessed via zero-copy UVA views. When the set is empty, parameters are
+
+  offloaded non-selectively until cpu_offload_max_bytes (= cpu_offload_gb *
+
+  1024**3) is reached; when non-empty, only matching parameters are offloaded,
+
+  giving fine-grained control over which weights live in CPU memory.
+
+  Performance mechanism: "offloading weights to CPU frees NPU HBM (memory"
+
+  footprint reduction), but every forward pass that touches an offloaded
+
+  parameter must read it over the host-device interconnect (PCIe on GPU; on
+
+  Ascend this is the host-to-NPU path). This trades memory for latency and
+
+  bandwidth. Selecting only cold/rarely-used parameters (e.g. MoE experts that
+
+  are sparsely activated, or vision towers) minimizes the latency penalty while
+
+  still reclaiming HBM. On Ascend, UVA zero-copy semantics depend on the
+
+  platform''s unified addressing support; when UVA is unavailable or disabled via
+
+  VLLM_WEIGHT_OFFLOADING_DISABLE_UVA, the offloader falls back to a
+
+  functional_call-based on-demand move, which incurs explicit copies per call
+
+  and is slower. No vllm-ascend override of this parameter was found in the
+
+  provided context, so behavior follows upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1342
+  context: CLI argument registration under OffloadConfig group, sourced from UVAOffloadConfig.cpu_offload_params
+- file: vllm/engine/arg_utils.py:2619
+  context: EngineArgs builds UVAOffloadConfig(cpu_offload_gb=..., cpu_offload_params=self.cpu_offload_params)
+- file: vllm/model_executor/offloader/base.py:174
+  context: create_offloader passes uva.cpu_offload_params into UVAOffloader
+- file: vllm/model_executor/offloader/uva.py:44
+  context: UVAOffloader stores the segment set and uses it in wrap_modules to select parameters for CPU offload
+related_parameters:
+- name: --cpu-offload-gb
+  relation: Defines the byte budget (cpu_offload_max_bytes) for offloading; required to be > 0 for the UVA backend to activate
+    under offload_backend=auto
+- name: --offload-backend
+  relation: Must resolve to 'uva' (explicitly or via 'auto') for this parameter to have any effect
+- name: --offload-group-size
+  relation: If > 0 under offload_backend=auto, prefetch backend is chosen instead of UVA, so cpu_offload_params is ignored
+- name: --offload-params
+  relation: Analogous selective-offload parameter for the prefetch backend; distinct from cpu_offload_params
+- name: VLLM_WEIGHT_OFFLOADING_DISABLE_UVA
+  relation: Env var that disables UVA zero-copy, forcing functional_call fallback which changes offload cost
+constraints:
+- Parameter name segments must match exact dot-separated segments of the parameter name; partial segments like 'expert' or
+  'w2' will not match 'mlp.experts.w2_weight'.
+- This parameter has no effect unless the UVA offload backend is active, i.e. offload_backend is 'uva' or 'auto' with cpu_offload_gb
+  > 0 and offload_group_size == 0.
+- If the set is empty, offloading is non-selective and bounded only by cpu_offload_gb; if non-empty, only matching parameters
+  are offloaded.
+tuning_advice:
+  summary: Use --cpu-offload-params to selectively offload only cold or sparsely-used weights to CPU, reclaiming NPU HBM with
+    minimal latency cost, and always pair it with a sufficient --cpu-offload-gb budget.
+  suggested_values:
+  - scenario: MoE model where expert weights dominate HBM but are sparsely activated
+    value:
+    - experts
+    reason: Offloading expert weights frees large HBM while only the activated experts are read per token, limiting bandwidth
+      penalty.
+  - scenario: Multimodal model with a large vision tower that is not always exercised
+    value:
+    - visual
+    reason: Offloading the vision tower frees HBM and only incurs host reads when image inputs are processed.
+  - scenario: Need to offload a specific weight variant without touching similarly-named ones
+    value:
+    - experts.w2_weight
+    reason: Exact segment matching distinguishes w2_weight from w2_weight_scale, avoiding unintended offload of scale tensors.
+  - scenario: Simple memory relief without caring which parameters are offloaded
+    value: []
+    reason: Empty set offloads non-selectively up to cpu_offload_gb; simplest but may offload hot-path weights and hurt latency.
+  caveats:
+  - Ensure --cpu-offload-gb is set large enough to cover the selected parameters; otherwise offloading stops at the byte budget.
+  - Avoid selecting dense, always-used weights; the per-forward host read will dominate latency.
+  - Verify UVA availability on the Ascend platform; if disabled, expect the slower functional_call fallback.
+  quick_guide: Set --cpu-offload-params to cold/sparse weight segments (e.g. experts, visual) together with --cpu-offload-gb
+    to trade a little latency for significant NPU HBM savings.
+analysis_date: '2026-10-27'

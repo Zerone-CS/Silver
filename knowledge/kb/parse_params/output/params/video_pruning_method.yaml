@@ -1,0 +1,104 @@
+name: --video-pruning-method
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:220
+- vllm/config/multimodal.py:525
+- vllm/engine/arg_utils.py:1431
+- vllm/model_executor/models/interfaces.py:540
+- vllm/model_executor/models/qwen3_vl.py:1818
+value_type: str
+default: evs
+valid_choices:
+- evs
+- vidcom2
+cli_example: --video-pruning-method evs
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This parameter selects the video token pruning algorithm used when
+
+  --video-pruning-rate > 0. It is consumed by
+
+  MultiModalConfig.get_video_pruning_spec() (vllm/config/multimodal.py:525),
+
+  which returns (method, rate) only when video_pruning_rate is not None and > 0;
+
+  otherwise the method is inert. The selected method is stored on the model
+
+  (e.g. Qwen3VLForConditionalGeneration._init_video_pruning at
+
+  vllm/model_executor/models/qwen3_vl.py:1838) and drives how many video tokens
+
+  are dropped before the language model prefill. Fewer video tokens means a
+
+  shorter prefill sequence, which reduces prefill compute (latency) and KV cache
+
+  footprint (memory), and can raise throughput. The choice of algorithm changes
+
+  the pruning quality/aggressiveness and the compute cost of the pruning step
+
+  itself (EVS vs VidCom2 differ in how they score/select tokens), so the method
+
+  affects both the resulting token count and the overhead of the pruning pass.
+
+  On Ascend NPU this runs in the multimodal preprocessing/encoder path; the
+
+  actual token reduction benefits the NPU prefill and KV cache the same way as
+
+  on GPU. vllm-ascend does not override this parameter — the only Ascend-side
+
+  references are test fixtures setting supported_video_pruning_methods=() on
+
+  fake OPT model infos, which is unrelated to runtime behavior.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:525
+  context: get_video_pruning_spec() returns (video_pruning_method, rate) when rate > 0
+- file: vllm/config/multimodal.py:220
+  context: Field definition with default 'evs' and docstring listing evs/vidcom2
+- file: vllm/model_executor/models/qwen3_vl.py:1838
+  context: _init_video_pruning stores method/rate and enables pruning flag on the model
+- file: vllm/model_executor/models/interfaces.py:540
+  context: SupportsMultiModalPruning.supported_video_pruning_methods declares which methods a model implements (default ('evs',))
+- file: vllm/engine/arg_utils.py:1431
+  context: CLI argument registration under MultiModalConfig group
+related_parameters:
+- name: --video-pruning-rate
+  relation: Enables pruning; method has no effect unless rate > 0
+- name: --limit-mm-per-prompt
+  relation: Controls how many video items per prompt, affecting total tokens subject to pruning
+- name: --mm-processor-kwargs
+  relation: Video preprocessing settings that determine raw token count before pruning
+constraints:
+- The method only takes effect when --video-pruning-rate is set to a value greater than 0.
+- The selected method must be one the target model implements via supported_video_pruning_methods; the default interface only
+  supports 'evs', and models like Qwen3-VL additionally support 'vidcom2'.
+- Valid values are 'evs' (Efficient Video Sampling) and 'vidcom2' (Video Compression Commander).
+tuning_advice:
+  summary: Use 'evs' as the safe default; switch to 'vidcom2' only on models that explicitly support it and when higher pruning
+    quality is needed.
+  suggested_values:
+  - scenario: Default / broad model compatibility (v1 and v2 Ascend workers)
+    value: evs
+    reason: It is the default and the only method guaranteed by the SupportsMultiModalPruning interface, so it works across
+      supported models.
+  - scenario: Qwen3-VL with aggressive video token reduction where quality matters
+    value: vidcom2
+    reason: Qwen3-VL declares supported_video_pruning_methods = ('evs', 'vidcom2'); VidCom2 offers an alternative pruning
+      algorithm that may preserve more relevant tokens at a given rate.
+  - scenario: No video pruning desired
+    value: evs
+    reason: Leave the default and do not set --video-pruning-rate (or set it to 0); the method is then inert.
+  caveats:
+  - Always pair with a positive --video-pruning-rate; otherwise the method is ignored.
+  - Confirm the model lists the chosen method in supported_video_pruning_methods before using vidcom2.
+  - 'Benchmark end-to-end latency: pruning overhead vs prefill savings varies with video length and rate.'
+  quick_guide: Keep 'evs' unless the model supports 'vidcom2' and you need better pruning quality; always set --video-pruning-rate
+    > 0 to activate.
+analysis_date: '2026-10-27'

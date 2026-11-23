@@ -1,0 +1,104 @@
+name: --enable-ep-weight-filter
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1199
+- vllm/engine/arg_utils.py:510
+- vllm/config/parallel.py:176
+- vllm/model_executor/model_loader/default_loader.py:366
+value_type: bool
+default: false
+valid_choices: true or false (store_true style boolean flag)
+cli_example: --enable-ep-weight-filter
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+impact_detail: 'This flag is defined upstream in vllm (ParallelConfig.enable_ep_weight_filter, default False)
+
+  and is consumed in vllm/model_executor/model_loader/default_loader.py:_init_ep_weight_filter.
+
+  The filter only activates when ALL of the following hold: "model_config.is_moe is true,"
+
+  parallel_config.enable_expert_parallel is true, and enable_ep_weight_filter is true
+
+  (default_loader.py:363-368). When active, each rank computes its local expert id set
+
+  (mirroring FusedMoEParallelConfig.make(): ep_size = dp_size * pcp_size * tp_size,
+
+  ep_rank = dp_rank * pcp_size * tp_size + pcp_rank * tp_size + tp_rank) and skips
+
+  non-local expert tensors *before* reading them from disk. This reduces storage I/O and
+
+  host-memory pressure during model loading for MoE checkpoints with per-expert weight
+
+  tensors (DeepSeek, Mixtral, Kimi-K2.5, Hy3). It is a load-time optimization: it does not
+
+  change steady-state inference throughput or NPU compute, but it shortens startup time and
+
+  lowers peak host RAM/disk bandwidth, which matters on Ascend nodes where large MoE
+
+  checkpoints are loaded over shared storage. The filter is explicitly bypassed when EPLB
+
+  is enabled (default_loader.py:374-375) because redundant physical expert slots may map to
+
+  logical experts owned by other ranks, so the loader must see all logical expert weights.
+
+  It also has no effect on 3D fused-expert checkpoints (e.g. GPT-OSS) or non-MoE models.
+
+  No vllm-ascend override of this parameter was found in the provided context; the
+
+  vllm-ascend docs (Hy3-preview.md) recommend keeping it enabled.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1199
+  context: CLI argument registration in the parallel argument group, wired to parallel_kwargs['enable_ep_weight_filter']
+- file: vllm/engine/arg_utils.py:510
+  context: EngineArgs field enable_ep_weight_filter defaulting to ParallelConfig.enable_ep_weight_filter
+- file: vllm/config/parallel.py:176
+  context: ParallelConfig field definition with docstring describing EP weight filtering behavior
+- file: vllm/model_executor/model_loader/default_loader.py:366
+  context: Gate condition in _init_ep_weight_filter that decides whether to compute local expert ids and skip non-local expert
+    tensors
+related_parameters:
+- name: --enable-expert-parallel
+  relation: Required precondition; the filter only activates when expert parallelism is enabled
+- name: --enable-eplb
+  relation: Mutually exclusive in effect; when EPLB is enabled the filter is skipped entirely (default_loader.py:374)
+- name: --data-parallel-size
+  relation: dp_size participates in ep_size/ep_rank computation used to determine local expert ids
+- name: --tensor-parallel-size
+  relation: tp_size participates in ep_size/ep_rank computation used to determine local expert ids
+- name: --prefill-context-parallel-size
+  relation: pcp_size participates in ep_size/ep_rank computation used to determine local expert ids
+constraints:
+- The filter only takes effect when expert parallelism is enabled via --enable-expert-parallel.
+- The filter only applies to MoE models; it has no effect on non-MoE models.
+- The filter has no effect on 3D fused-expert checkpoints such as GPT-OSS.
+- When EPLB is enabled via --enable-eplb, the weight filter is skipped entirely so the loader can populate redundant expert
+  slots.
+tuning_advice:
+  summary: Enable for large per-expert MoE checkpoints under expert parallelism to cut load-time disk I/O and host memory;
+    leave off when EPLB is used or the model uses fused-expert checkpoints.
+  suggested_values:
+  - scenario: Large MoE model (DeepSeek, Mixtral, Kimi-K2.5, Hy3) served with --enable-expert-parallel on Ascend NPU
+    value: true
+    reason: Each rank reads only its own expert shard, reducing disk I/O and host-memory pressure during loading; vllm-ascend
+      Hy3 docs recommend keeping it enabled.
+  - scenario: Deployment using --enable-eplb for expert load balancing
+    value: false
+    reason: The filter is bypassed when EPLB is enabled (default_loader.py:374), so enabling it provides no benefit and may
+      confuse configuration review.
+  - scenario: Non-MoE model or fused-expert checkpoint (e.g. GPT-OSS)
+    value: false
+    reason: The filter has no effect on non-MoE models or 3D fused-expert checkpoints.
+  caveats:
+  - No steady-state throughput gain; benefit is limited to startup latency and host memory.
+  - Silently inactive under EPLB.
+  - Ensure dp/tp/pcp sizes match the actual EP partition so local expert id computation is correct.
+  quick_guide: Turn on --enable-ep-weight-filter for large per-expert MoE models with EP enabled; it speeds loading and lowers
+    host memory but does nothing under EPLB.
+analysis_date: '2026-10-27'

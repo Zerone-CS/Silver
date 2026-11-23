@@ -1,0 +1,81 @@
+name: additional_config.sfa_dcp_force_tmajor_restore
+type: nested
+category: other
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:582
+- vllm_ascend/ascend_config.py:433
+value_type: bool
+default: false
+valid_choices: true or false (lax bool coercion accepts 'true'/'false' strings)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This is a vllm-ascend-only switch declared as a typed pydantic field on the
+
+  AscendConfig dataclass (vllm_ascend/ascend_config.py:582), passed through the
+
+  --additional-config JSON blob. It is a boolean toggle whose name indicates it
+
+  forces a "T-major restore" for the SFA (sparse flash attention) path when DCP
+
+  (decode context parallelism) is active. No usage sites were found in the
+
+  provided context beyond the field declaration and the documented default in
+
+  the AscendConfig docstring example (line 433), so the exact runtime code path
+
+  it gates is not visible here. By naming and placement it controls a layout
+
+  conversion (restoring a T-major tensor layout) in the SFA/DCP attention
+
+  kernel path, which would affect per-step kernel latency and thus throughput
+
+  for sparse-attention models running with DCP enabled. Because it is a
+
+  correctness/layout guard rather than a scheduling or memory knob, its
+
+  performance effect is at most a small per-layer transpose/restore overhead
+
+  and is not expected to change memory footprint or overall throughput
+
+  materially. It has no effect on non-SFA or non-DCP configurations.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:582
+  context: Declared as a typed bool field on AscendConfig with default False.
+- file: vllm_ascend/ascend_config.py:433
+  context: Listed in the AscendConfig docstring example of all supported additional_config keys with default false.
+related_parameters:
+- name: enable_dsa_cp
+  relation: DCP/context-parallel attention path; the SFA DCP layout handling this flag toggles is only relevant when context
+    parallelism is enabled.
+- name: enable_sparse_sfa_c8
+  relation: Sparse SFA attention enablement; the T-major restore applies to the SFA attention path.
+- name: enable_sparse_sfa_turboquant
+  relation: Another SFA sparse-attention derived switch; shares the same SFA kernel path.
+constraints:
+- The key must be a boolean; unknown keys in additional_config are rejected because AscendConfig uses extra='forbid'.
+- The value is only meaningful when the SFA sparse-attention path is active with DCP/context parallelism enabled; otherwise
+  it has no effect.
+tuning_advice:
+  summary: Keep this at the default false; only enable it to work around a specific SFA+DCP layout/precision issue, accepting
+    a minor per-layer restore overhead.
+  suggested_values:
+  - scenario: Default deployment without SFA sparse attention or without DCP/context parallelism
+    value: false
+    reason: The flag has no effect outside the SFA+DCP path and adds no benefit; the default false avoids any extra layout-restore
+      work.
+  - scenario: SFA sparse attention with DCP enabled and observed layout/precision anomalies
+    value: true
+    reason: Forcing the T-major restore is intended to correct the tensor layout in this specific path; enable only when the
+      anomaly is reproduced.
+  caveats:
+  - Enabling this adds a per-layer layout restore in the SFA/DCP attention path, which can slightly increase latency.
+  - No usage site was found in the provided context; verify against your vllm-ascend version before relying on it.
+  quick_guide: Leave false by default; set true only for SFA+DCP layout/precision workarounds.
+analysis_date: '2026-10-27'

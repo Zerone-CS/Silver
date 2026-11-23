@@ -1,0 +1,130 @@
+name: --video-pruning-rate
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1428
+- vllm/engine/arg_utils.py:622
+- vllm/engine/arg_utils.py:1882
+- vllm/config/model.py:413
+- vllm/config/model.py:546
+- vllm/config/multimodal.py:215
+- vllm/config/multimodal.py:528
+- vllm/model_executor/models/interns2_mobius.py:488
+- vllm/model_executor/models/nano_nemotron_vl.py:208
+- vllm/model_executor/models/nano_nemotron_vl.py:524
+value_type: float
+default: null
+valid_choices: float in range [0.0, 1.0); pruning is enabled only when value > 0
+cli_example: --video-pruning-rate 0.5
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: 'This parameter controls how many video tokens are pruned before they enter the
+
+  language model. It is defined in vllm/config/multimodal.py:215 as
+
+  `video_pruning_rate: float | None = Field(default=None, ge=0.0, lt=1.0)` and is
+
+  consumed via `MultiModalConfig.get_video_pruning_spec()` (multimodal.py:525-530),
+
+  which returns `(method, rate)` only when `video_pruning_rate is not None and
+
+  video_pruning_rate > 0`. When enabled, model-specific processing code reduces the
+
+  number of video placeholder tokens: "e.g. nano_nemotron_vl.py:524-539 calls"
+
+  `compute_retained_tokens_count(tokens_per_frame, num_frames, q=video_pruning_rate)`
+
+  and emits a smaller `tokens_per_frame` list, so fewer video tokens are inserted into
+
+  the prompt. interns2_mobius.py:485-488 reads `is_multimodal_pruning_enabled()` and
+
+  stores `video_pruning_rate` on the model for use during the vision tower forward.
+
+  Performance mechanism on Ascend NPU: "fewer video tokens means a shorter prefill"
+
+  sequence for the language model, which directly reduces prefill compute (attention
+
+  is quadratic in sequence length) and KV-cache memory footprint for the video portion
+
+  of the prompt. This lowers time-to-first-token (latency) and raises throughput for
+
+  video workloads, and reduces NPU HBM usage for KV cache. The vision encoder still
+
+  processes the full video, so encoder cost is unchanged; the savings are on the
+
+  language-model prefill and KV cache. There is no vllm-ascend override of this
+
+  parameter in the provided context — it is an upstream vLLM multimodal feature that
+
+  flows through the standard MultiModalConfig path. Whether it takes effect depends on
+
+  the specific model implementation supporting pruning (e.g. InternS2-Mobius,
+
+  NanoNemotron-VL); models without pruning support ignore it.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:528
+  context: get_video_pruning_spec() enables pruning only when rate is not None and > 0
+- file: vllm/config/multimodal.py:522
+  context: is_multimodal_pruning_enabled() returns True when a pruning spec exists
+- file: vllm/model_executor/models/nano_nemotron_vl.py:524
+  context: Computes retained token count from video_pruning_rate to shrink placeholder tokens
+- file: vllm/model_executor/models/nano_nemotron_vl.py:208
+  context: Passes video_pruning_rate into the HF processor
+- file: vllm/model_executor/models/interns2_mobius.py:488
+  context: Stores video_pruning_rate on the model for vision-tower pruning
+- file: vllm/engine/arg_utils.py:1882
+  context: Propagates video_pruning_rate into VllmConfig/MultiModalConfig
+related_parameters:
+- name: --video-pruning-method
+  relation: Selects the pruning algorithm (evs or vidcom2) applied when video-pruning-rate > 0
+- name: --limit-mm-per-prompt
+  relation: Controls how many videos per prompt are allowed; interacts with total token budget
+- name: --max-model-len
+  relation: Pruned video tokens reduce prompt length, easing pressure on max sequence length
+- name: --mm-processor-kwargs
+  relation: Processor-level settings that may interact with video tokenization
+constraints:
+- video-pruning-rate must be in the range [0.0, 1.0); values >= 1.0 or < 0.0 are rejected by the Field(ge=0.0, lt=1.0) validator.
+- Pruning is only enabled when video-pruning-rate is greater than 0; a value of 0 or None disables pruning entirely.
+- The pruning algorithm is chosen by --video-pruning-method; setting a rate without a supported method/model has no effect.
+- The parameter only takes effect for models whose implementation supports video token pruning (e.g. InternS2-Mobius, NanoNemotron-VL);
+  other models ignore it.
+tuning_advice:
+  summary: 'Enable video token pruning on Ascend NPU for video-heavy workloads to cut
+
+    language-model prefill length and KV-cache memory; tune the rate to balance
+
+    accuracy loss against latency/throughput gains.
+
+    '
+  suggested_values:
+  - scenario: Long-video QA where latency matters and minor accuracy loss is acceptable
+    value: 0.5
+    reason: Prunes half of video tokens, roughly halving video prefill length and KV-cache for the video portion, reducing
+      TTFT and HBM usage.
+  - scenario: Conservative setting preserving most visual detail
+    value: 0.2
+    reason: Modest pruning with low accuracy risk while still reducing prefill compute and KV memory.
+  - scenario: Aggressive throughput optimization for very long videos
+    value: 0.7
+    reason: Large token reduction maximizes prefill speedup and memory savings, at higher risk of accuracy degradation.
+  - scenario: Disable pruning (default)
+    value: 0
+    reason: Keeps full video tokens; use when accuracy is critical or the model does not support pruning.
+  caveats:
+  - The vision encoder still processes the full video; savings come only from the language-model prefill and KV cache, not
+    the encoder.
+  - Higher pruning rates reduce accuracy; validate task quality before deploying aggressive values.
+  - No vllm-ascend override exists in the provided context — behavior follows upstream vLLM; verify the target model actually
+    implements pruning.
+  - Pruning only activates when the value is strictly greater than 0; setting 0 or omitting it disables the feature.
+  quick_guide: Set --video-pruning-rate to 0.2-0.5 for video workloads on Ascend to reduce prefill latency and KV memory,
+    validating accuracy.
+analysis_date: '2026-10-27'

@@ -1,0 +1,104 @@
+name: additional_config.eplb_config.stair_config.replica_search_radius
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:210
+- vllm_ascend/ascend_config.py:225
+- vllm_ascend/ascend_config.py:256
+value_type: int
+default: 8
+valid_choices: integer in [0, 32]
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'replica_search_radius is a tuning knob of the MRv2 STAIR EPLB policy in vllm-ascend
+
+  (vllm_ascend/ascend_config.py, StairConfig). It bounds how far from the greedy
+
+  extra-replica budget the FlashTree-style replica search explores at each search stage
+
+  (docstring: "Maximum distance from the greedy extra-replica budget explored at each
+
+  search stage"). It is consumed by the EPLB rebalancing planner, not by the inference
+
+  hot path directly. A larger radius widens the candidate space for replica-count
+
+  decisions, which can yield a better expert-to-rank placement (lower max-to-average
+
+  rank-load ratio, i.e. higher balance) and thus better MoE throughput on Ascend NPU by
+
+  reducing the hottest-rank bottleneck during all-to-all dispatch/combine. The cost is
+
+  more CPU-side planning work per rebalance (search time grows with radius, bounded by
+
+  replica_search_beam_size and replica_search_num_stages), which can delay rebalancing
+
+  and consume host CPU. A radius of 0 collapses the search to the greedy budget only,
+
+  minimizing planning cost but potentially producing a worse placement. The parameter
+
+  does not change NPU memory footprint or kernel behavior; its effect on runtime
+
+  performance is indirect, mediated through the quality of the EPLB placement and the
+
+  CPU time spent computing it.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:210
+  context: Docstring describing replica_search_radius as the maximum distance from the greedy extra-replica budget explored
+    at each search stage of the STAIR replica search.
+- file: vllm_ascend/ascend_config.py:225
+  context: Field definition with default value 8 in StairConfig.
+- file: vllm_ascend/ascend_config.py:256
+  context: Model validator enforcing 0 <= replica_search_radius <= 32, raising ValueError otherwise.
+related_parameters:
+- name: additional_config.eplb_config.stair_config.replica_search_num_stages
+  relation: Number of risk-ordered expert groups processed by the replica search; combined with radius it determines total
+    search breadth and planning cost.
+- name: additional_config.eplb_config.stair_config.replica_search_beam_size
+  relation: Caps the number of unique replica-count candidates kept after each stage, bounding the work a larger radius can
+    generate.
+- name: additional_config.eplb_config.stair_config.placement_search_backtrack_limit
+  relation: Controls backtracking in the constrained LPT placement that consumes the replica-count candidates produced by
+    the search.
+- name: additional_config.eplb_config.stair_config.relative_balance_threshold
+  relation: Determines when a rebalance is triggered; better placements from a larger radius interact with this hysteresis
+    threshold.
+constraints:
+- replica_search_radius must be between 0 and 32 inclusive, otherwise a ValueError is raised during config validation.
+- STAIR numeric fields must not be booleans; passing true/false raises a ValueError.
+tuning_advice:
+  summary: Keep the default 8 for most MoE deployments; raise toward 16-32 only when EPLB placement quality is the bottleneck
+    and host CPU headroom exists, lower toward 0-4 when rebalance planning latency is a concern.
+  suggested_values:
+  - scenario: Default MoE serving with EPLB enabled and balanced expert load
+    value: 8
+    reason: Default value provides a reasonable tradeoff between placement quality and planning cost; validated range and
+      docstring indicate it is the intended baseline.
+  - scenario: Highly skewed expert load where placement quality dominates throughput
+    value: 16
+    reason: A wider search radius explores more replica-count candidates around the greedy budget, potentially improving rank
+      balance and reducing hottest-rank all-to-all bottleneck, at the cost of more CPU planning time.
+  - scenario: Rebalance planning latency or host CPU is constrained
+    value: 4
+    reason: Reducing the radius shrinks the search space, lowering CPU time per rebalance while retaining some exploration
+      beyond the pure greedy budget.
+  - scenario: Minimize planning cost / debugging greedy-only behavior
+    value: 0
+    reason: Radius 0 restricts the search to the greedy extra-replica budget, the cheapest option, useful when planning overhead
+      outweighs placement gains.
+  caveats:
+  - This parameter only affects the EPLB rebalancing planner (CPU-side), not the NPU inference hot path; gains are indirect
+    via better expert placement.
+  - Larger radius increases planning time per rebalance; combined with replica_search_num_stages and replica_search_beam_size
+    it can multiply search cost.
+  - No effect if EPLB / STAIR policy is not enabled in additional_config.eplb_config.
+  - Values above 32 are rejected by the validator; values are integers only (booleans rejected).
+  quick_guide: Leave at 8; increase to 16-32 for better MoE balance if CPU headroom allows, decrease to 0-4 to cut rebalance
+    planning cost.
+analysis_date: '2026-10-27'

@@ -1,0 +1,98 @@
+name: --prefiller-ports
+type: cli
+category: other
+scope: vllm-ascend
+source_file:
+- examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:706
+- examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:347
+- examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:302
+value_type: list[int]
+default: '[8001]'
+valid_choices: Any list of valid TCP port numbers (1-65535); list length must equal the number of --prefiller-hosts
+cli_example: --prefiller-ports 7100 7101 7100 7101
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: '--prefiller-ports is NOT a vLLM engine or vllm-ascend core parameter. It is an
+
+  argparse option defined only in the example load-balancing proxy scripts
+
+  (examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py,
+
+  load_balance_proxy_layerwise_server_example.py, and the EPD variant). The proxy
+
+  is a standalone FastAPI/uvicorn process that sits in front of the P/D
+
+  (prefill/decode) disaggregated vLLM instances and routes requests to prefiller
+
+  endpoints. The value is zipped with --prefiller-hosts into
+
+  args.prefiller_instances (list of (host, port) tuples) and used by the proxy to
+
+  forward prefill requests and to fetch KV metadata. It does not touch the NPU
+
+  runtime, HCCL, CANN, or any vLLM scheduler/memory path directly. Its only
+
+  performance relevance is indirect: "correct, reachable, unique prefiller"
+
+  endpoints determine whether the proxy can dispatch prefill work without
+
+  retries/timeouts (--max-retries, --retry-delay), which affects end-to-end
+
+  latency and effective throughput of the disaggregated deployment. Misconfigured
+
+  ports cause connection failures and retry backoff, not NPU-level slowdowns.
+
+  '
+usage_locations:
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py:706
+  context: Validates len(prefiller_hosts) == len(prefiller_ports) and zips into prefiller_instances for request routing
+- file: examples/disaggregated_prefill_v1/load_balance_proxy_layerwise_server_example.py:347
+  context: Layerwise proxy validates host/port count match and builds prefiller_instances
+- file: examples/epd_disaggregated/epd_load_balance_proxy_layerwise_server_example.py:302
+  context: EPD proxy validates prefiller host/port count match alongside pd/decoder/encoder groups
+- file: tests/e2e/conftest.py:648
+  context: DisaggPDProxy builds --prefiller-ports CLI args from prefiller_ports list for e2e tests
+- file: tools/docs_codegen/converters.py:489
+  context: Docs codegen expands routing.groups.prefiller into --prefiller-ports values
+related_parameters:
+- name: --prefiller-hosts
+  relation: Must have the same list length; zipped pairwise into prefiller_instances
+- name: --decoder-ports
+  relation: Sibling option for decoder instances; same count-match validation
+- name: --max-retries
+  relation: Number of retries when a prefiller endpoint is unreachable
+- name: --retry-delay
+  relation: Base backoff delay for retries against prefiller endpoints
+constraints:
+- The number of --prefiller-ports values must exactly equal the number of --prefiller-hosts values, otherwise the proxy raises
+  ValueError at startup.
+- Each prefiller host-port pair must be unique and reachable by the proxy, per the disaggregated prefill documentation.
+- Ports must be valid TCP ports between 1 and 65535.
+tuning_advice:
+  summary: 'Set --prefiller-ports to the exact list of ports each prefiller vLLM instance
+
+    listens on, one entry per --prefiller-hosts entry, ensuring uniqueness and
+
+    reachability to avoid proxy retry latency.
+
+    '
+  suggested_values:
+  - scenario: Single prefiller instance (default dev setup)
+    value: '[8001]'
+    reason: Matches the default single --prefiller-hosts entry; simplest working configuration.
+  - scenario: Multi-node P/D disaggregation with multiple prefiller replicas
+    value: '[7100, 7101, 7100, 7101]'
+    reason: 'Documented example: two ports per prefiller host across two hosts, giving four host-port pairs; each pair must
+      be unique and reachable.'
+  - scenario: Layerwise proxy deployment
+    value: '[8001]'
+    reason: Layerwise proxy requires a non-wildcard proxy host reachable by decoders; keep prefiller ports aligned with the
+      actual prefiller listen ports.
+  caveats:
+  - Always keep the port list length equal to the host list length; the proxy aborts with ValueError otherwise.
+  - Verify each prefiller port is actually listening before starting the proxy to avoid retry-induced latency.
+  quick_guide: List one reachable, unique port per prefiller host; count must match --prefiller-hosts.
+analysis_date: '2026-10-27'

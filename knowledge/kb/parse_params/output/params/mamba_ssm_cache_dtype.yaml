@@ -1,0 +1,152 @@
+name: --mamba-ssm-cache-dtype
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/cache.py:174
+- vllm/engine/arg_utils.py:737
+- vllm/engine/arg_utils.py:1303
+- vllm/engine/arg_utils.py:2112
+- vllm/model_executor/layers/mamba/mamba_utils.py:68
+- vllm/model_executor/layers/mamba/mamba_utils.py:82
+- vllm/model_executor/layers/mamba/mamba_mixer.py:470
+- vllm/model_executor/layers/mamba/mamba_mixer2.py:1175
+- vllm/model_executor/layers/mamba/gdn/base.py:57
+- vllm/config/vllm.py:1351
+value_type: str
+default: auto
+valid_choices:
+- auto
+- float16
+- bfloat16
+- float32
+cli_example: --mamba-ssm-cache-dtype float16
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: 'This parameter controls the torch dtype of the SSM (state-space model) state tensor
+
+  in the Mamba cache, while the conv state remains governed by --mamba-cache-dtype.
+
+  It is consumed by MambaStateDtypeCalculator._mamba_state_dtype (vllm/model_executor/
+
+  layers/mamba/mamba_utils.py), which is called from get_state_dtype() in every Mamba
+
+  layer implementation: "mamba1_state_dtype (mamba_mixer.py:470), mamba2_state_dtype"
+
+  (mamba_mixer2.py:1175), and gated_delta_net_state_dtype (gdn/base.py:57). The returned
+
+  dtype tuple determines the allocation dtype of the per-layer Mamba state buffers, so
+
+  it directly changes the HBM footprint of the Mamba cache: "float32 doubles the SSM"
+
+  state size versus float16/bfloat16, which reduces the number of blocks that fit in
+
+  the KV-cache budget and therefore the achievable batch size / throughput. The dtype
+
+  also affects the precision and the cost of the recurrent state update kernels
+
+  (selective_scan / causal_conv1d style ops): fp32 state updates are more expensive
+
+  per token than fp16 on Ascend AI cores, adding decode latency, while fp16 halves
+
+  state memory traffic. When set to "auto", the SSM dtype is inherited from
+
+  --mamba-cache-dtype (which itself defaults to the model dtype), so the parameter has
+
+  no independent effect unless explicitly set. On Ascend, vllm-ascend does not define
+
+  its own override of this field; the upstream CacheConfig value flows through
+
+  unchanged, but the vllm-ascend docs constrain it to float16 on Atlas 300I DUO /
+
+  Atlas 200I Pro (310P) hardware, and the 310P e2e tests always pass
+
+  mamba_ssm_cache_dtype="float16" together with dtype="float16". There is also a hard
+
+  interaction with --enable-mamba-cache-stochastic-rounding: "vllm/config/vllm.py:1351"
+
+  raises ValueError unless the SSM cache dtype is exactly float16 when stochastic
+
+  rounding is enabled.
+
+  '
+usage_locations:
+- file: vllm/config/cache.py:174
+  context: CacheConfig field definition with docstring describing ssm-state-only semantics and auto inheritance from mamba_cache_dtype
+- file: vllm/engine/arg_utils.py:1303
+  context: CLI flag registration in the CacheConfig argument group
+- file: vllm/engine/arg_utils.py:2112
+  context: Passed into CacheConfig construction during engine args resolution
+- file: vllm/model_executor/layers/mamba/mamba_utils.py:68
+  context: MambaStateDtypeCalculator.mamba1_state_dtype / mamba2_state_dtype / _mamba_state_dtype resolve the actual torch
+    dtype for the SSM state
+- file: vllm/model_executor/layers/mamba/mamba_mixer.py:470
+  context: Mamba1 mixer get_state_dtype() feeds the dtype into state buffer allocation
+- file: vllm/model_executor/layers/mamba/mamba_mixer2.py:1175
+  context: Mamba2 mixer get_state_dtype() (also used by ReplaySSM ring append path)
+- file: vllm/model_executor/layers/mamba/gdn/base.py:57
+  context: GatedDeltaNet get_state_dtype() for hybrid Qwen3.5-style models
+- file: vllm/config/vllm.py:1351
+  context: 'Validation: stochastic rounding requires mamba_ssm_cache_dtype == float16'
+- file: tests/e2e/pull_request/one_card/_310p/test_qwen35_dense_model_310p.py:51
+  context: vllm-ascend 310P e2e test sets mamba_ssm_cache_dtype=float16 with dtype=float16
+- file: tests/e2e/pull_request/two_card/_310p/test_model_runner_v2_310p.py:112
+  context: vllm-ascend 310P v2 model runner test uses float16 SSM cache with aclgraph
+related_parameters:
+- name: --mamba-cache-dtype
+  relation: Controls the conv state dtype and, when --mamba-ssm-cache-dtype is 'auto', also determines the SSM state dtype
+- name: --dtype
+  relation: Model activation dtype; used as the fallback when both mamba cache dtypes are 'auto'. On 310P must be float16
+- name: --enable-mamba-cache-stochastic-rounding
+  relation: Requires --mamba-ssm-cache-dtype float16, otherwise VllmConfig raises ValueError
+- name: --mamba-cache-mode
+  relation: Determines whether Mamba state checkpoints are cached (prefix caching); affects how much SSM state memory is allocated
+- name: --use-replayssm
+  relation: Appends extra ReplaySSM ring buffers (activation, fp32, activation) on top of the base (conv, ssm) dtype tuple
+- name: --gpu-memory-utilization
+  relation: SSM cache dtype changes the per-block Mamba state size, which interacts with the memory budget set by gpu-memory-utilization
+constraints:
+- When --enable-mamba-cache-stochastic-rounding is set, --mamba-ssm-cache-dtype must be exactly float16 or VllmConfig validation
+  raises a ValueError.
+- On Atlas 300I DUO and Atlas 200I Pro (310P) devices only float16 is supported for --mamba-ssm-cache-dtype.
+- On Atlas 300I DUO and Atlas 200I Pro, --dtype float16 must also be set because these devices only support FP16.
+- The parameter only affects the SSM state; the conv state dtype is still controlled by --mamba-cache-dtype.
+- When set to 'auto', the SSM state dtype is inherited from --mamba-cache-dtype, so the flag has no independent effect.
+tuning_advice:
+  summary: On Ascend 310P hardware always set --mamba-ssm-cache-dtype float16; on other Ascend devices leave it 'auto' unless
+    you need to trade precision for SSM state memory.
+  suggested_values:
+  - scenario: Atlas 300I DUO / Atlas 200I Pro (310P) running Qwen3.5/Qwen3.8 hybrid Mamba models
+    value: float16
+    reason: vllm-ascend docs state only float16 is supported on 310P, and all 310P e2e tests pass mamba_ssm_cache_dtype=float16
+      together with dtype=float16.
+  - scenario: Enabling --enable-mamba-cache-stochastic-rounding
+    value: float16
+    reason: vllm/config/vllm.py:1351 raises ValueError unless the SSM cache dtype is exactly float16 when stochastic rounding
+      is enabled.
+  - scenario: Default deployment on non-310P Ascend devices (e.g. 910B/910 series) with model dtype bfloat16
+    value: auto
+    reason: Leaving it 'auto' inherits --mamba-cache-dtype (which defaults to the model dtype), avoiding an extra precision
+      loss and keeping the SSM state consistent with the rest of the cache.
+  - scenario: Memory-constrained deployment where Mamba state HBM is the bottleneck
+    value: float16
+    reason: float16 halves the SSM state footprint versus float32, allowing more blocks/batch slots within the same --gpu-memory-utilization
+      budget.
+  caveats:
+  - Setting float32 doubles the SSM state memory and increases per-token state-update cost on Ascend AI cores, reducing throughput
+    and increasing decode latency.
+  - This flag only changes the SSM state dtype; the conv state remains controlled by --mamba-cache-dtype, so setting only
+    this flag does not fully control Mamba cache memory.
+  - With 'auto' the flag is a no-op because the SSM dtype is inherited from --mamba-cache-dtype; do not expect any effect
+    from leaving it at default.
+  - vllm-ascend does not override this field in code; the upstream CacheConfig value is used directly, but the 310P platform
+    restriction to float16 comes from the vllm-ascend documentation and tests.
+  - When --use-replayssm is enabled, extra ReplaySSM ring buffers are appended with activation/fp32/activation dtypes regardless
+    of this flag, so the SSM dtype does not cover the full Mamba state memory.
+  quick_guide: Use float16 on 310P (required) and when enabling stochastic rounding; otherwise leave 'auto' to inherit from
+    --mamba-cache-dtype.
+analysis_date: '2026-10-27'

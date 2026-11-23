@@ -1,0 +1,91 @@
+name: additional_config.multistream_overlap_shared_expert
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:578
+- vllm_ascend/ascend_config.py:429
+value_type: bool
+default: false
+valid_choices: true / false
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This is a vllm-ascend-only switch declared as a typed pydantic field on AscendConfig
+
+  (vllm_ascend/ascend_config.py:578, default False). It is passed by the user through
+
+  --additional-config JSON and is validated by the pydantic dataclass (extra="forbid").
+
+  When enabled, the shared-expert branch of a MoE layer is executed on a separate
+
+  auxiliary NPU stream so that its computation can overlap with the routed-expert
+
+  (dispatch/combine + grouped GEMM) path instead of being serialized after it. On
+
+  Ascend this reduces the exposed latency of the shared-expert FFN and improves MoE
+
+  layer throughput, particularly in decode where the shared expert is a non-trivial
+
+  fraction of per-token work. The doc (additional_config.md:60) states it "only takes
+
+  effect on MoE models with shared experts" and the DeepSeek-V4-Flash tutorial
+
+  (DeepSeek-V4-Flash.md:335) recommends it to "overlap shared expert computation for
+
+  better MoE throughput". Because it only reorders/overlaps existing work rather than
+
+  changing the amount of computation, the impact is medium (throughput/latency gain,
+
+  no memory change of note). No usage sites were found in the provided extraction, so
+
+  the exact dispatch path (v1 vs v2 worker) could not be confirmed from code; the
+
+  behavior described is derived from the field definition and documentation.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:578
+  context: 'Field declaration on AscendConfig: multistream_overlap_shared_expert: bool = False'
+- file: vllm_ascend/ascend_config.py:429
+  context: Documented in the AscendConfig example dict as a supported --additional-config key
+related_parameters:
+- name: enable_shared_expert_dp
+  relation: Related shared-expert optimization; replicates shared-expert weights across TP ranks and runs them data-parallel.
+    Independent switch, can be combined with multistream_overlap_shared_expert.
+- name: multistream_dsv4_dsa_overlap
+  relation: Sibling multi-stream overlap switch (DSA overlap), default True; same multi-stream mechanism family.
+- name: multistream_engram_overlap
+  relation: Sibling multi-stream overlap switch (Engram), default hardware-dependent; same multi-stream mechanism family.
+- name: enable_expert_parallel
+  relation: MoE expert parallelism; the shared-expert overlap is only meaningful on MoE models that have shared experts.
+constraints:
+- Only takes effect on MoE models that have shared experts; on dense models or MoE models without shared experts it has no
+  effect.
+- Must be passed inside the --additional-config JSON object; unknown keys are rejected (extra="forbid"), so a typo fails fast
+  at startup.
+- Value must be a boolean (lax bool coercion accepts "true"/"false" strings).
+tuning_advice:
+  summary: Enable on MoE models with shared experts (e.g. DeepSeek-V4-Flash) to overlap shared-expert compute with routed-expert
+    work and improve MoE throughput.
+  suggested_values:
+  - scenario: MoE model with shared experts (e.g. DeepSeek-V4-Flash) on Ascend, throughput-oriented serving
+    value: true
+    reason: Documentation recommends it to overlap shared expert computation for better MoE throughput; overlaps shared-expert
+      FFN with routed-expert path on an auxiliary stream.
+  - scenario: Dense model, or MoE model without shared experts
+    value: false
+    reason: The option only takes effect on MoE models with shared experts; enabling it elsewhere provides no benefit.
+  - scenario: Latency-sensitive small-batch decode where sync overhead dominates
+    value: false
+    reason: Multi-stream overlap adds event/sync overhead that may not be amortized at very small batch sizes; benchmark before
+      enabling.
+  caveats:
+  - Benchmark with your actual batch sizes; overlap gains shrink at small batches due to stream synchronization overhead.
+  - Combine with enable_shared_expert_dp only after checking NPU memory headroom, since that switch consumes more memory.
+  quick_guide: Set multistream_overlap_shared_expert=true in --additional-config for MoE models with shared experts to overlap
+    shared-expert compute.
+analysis_date: '2026-10-27'

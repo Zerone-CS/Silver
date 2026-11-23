@@ -1,0 +1,69 @@
+name: kv_transfer.kv_buffer_size
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm_ascend/platform.py:799
+- vllm_ascend/platform.py:807
+value_type: float
+default: 1e9
+valid_choices: any positive number of bytes; on Ascend it is forcibly reset to 1e9
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'kv_buffer_size is the size (in bytes) of the buffer used by the TorchDistributedConnector
+
+  for KV cache transfer between prefill and decode instances in disaggregated P/D setups.
+
+  In vllm-ascend, platform.py (section "7. KV Transfer Config") unconditionally reads the
+
+  configured value via getattr(vllm_config.kv_transfer_config, "kv_buffer_size", 1e9) and,
+
+  if it differs from 1e9, logs a warning and resets it back to 1e9 with setattr. The code
+
+  comment explicitly states "Buffer size is primarily tied to NCCL (GPU) backends", meaning
+
+  the parameter is effectively neutralized on Ascend NPU. Because the value is always forced
+
+  to the 1GB default, user configuration has no runtime effect on Ascend — no throughput,
+
+  latency, or memory difference results from changing it. On upstream vLLM (GPU/NCCL path)
+
+  the buffer size would affect host/device memory reserved for KV transfer, but that path
+
+  is not exercised on Ascend.
+
+  '
+usage_locations:
+- file: vllm_ascend/platform.py:799
+  context: Reads current kv_buffer_size (default 1e9) to detect non-default values
+- file: vllm_ascend/platform.py:807
+  context: Resets kv_buffer_size to 1e9 when a non-default value is configured
+related_parameters:
+- name: kv_transfer_config
+  relation: Parent config object; kv_buffer_size is only relevant when KV transfer (P/D disaggregation) is enabled
+- name: enable_permute_local_kv
+  relation: Sibling KV transfer field also forcibly reset to False on Ascend in the same block
+constraints:
+- On Ascend, any kv_buffer_size value other than 1e9 is silently reset to 1e9, so custom values have no effect.
+- kv_buffer_size only matters when KV transfer / disaggregated prefill-decode is enabled via kv_transfer_config.
+tuning_advice:
+  summary: 'Do not tune kv_buffer_size on Ascend — vllm-ascend forces it to 1e9 regardless of the
+
+    configured value, so leave it at the default.
+
+    '
+  suggested_values:
+  - scenario: Any Ascend NPU deployment (v1 or v2 worker)
+    value: 1e9
+    reason: vllm_ascend/platform.py resets any non-1e9 value back to 1e9; setting anything else only produces a warning and
+      has no runtime effect.
+  caveats:
+  - Setting a custom kv_buffer_size on Ascend triggers a warning log and is silently overridden to 1e9 — no performance benefit
+    is possible.
+  - The parameter is tied to the NCCL/GPU TorchDistributedConnector path; Ascend uses its own KV transfer mechanism, so buffer
+    sizing is not user-controllable here.
+  quick_guide: Leave kv_buffer_size at the default 1e9 on Ascend; it is forcibly reset and cannot be tuned.
+analysis_date: '2026-10-27'

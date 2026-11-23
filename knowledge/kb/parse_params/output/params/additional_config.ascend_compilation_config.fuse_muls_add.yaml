@@ -1,0 +1,93 @@
+name: additional_config.ascend_compilation_config.fuse_muls_add
+type: nested
+category: compilation
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:129
+- vllm_ascend/compilation/graph_fusion_pass_manager.py:70
+value_type: bool
+default: true
+valid_choices: true or false (boolean; string values like "false" are coerced by the pydantic config validator)
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls whether the MulsAddFusionPass is registered in the Ascend
+
+  graph fusion pass manager. In vllm_ascend/compilation/graph_fusion_pass_manager.py:70,
+
+  the pass is only appended when BOTH `fuse_muls_add` is true AND the current
+
+  hardware profile supports HardwareCapability.GRAPH_MULS_ADD_FUSION. When enabled,
+
+  the pass rewrites the FX/graph IR to fuse elementwise multiply followed by add
+
+  (mul + add -> fused mul-add) into a single fused operator, reducing kernel launch
+
+  count and intermediate tensor materialization on the NPU. This lowers per-layer
+
+  elementwise overhead and memory traffic, which translates into lower latency and
+
+  higher throughput for models that contain such mul-add patterns (e.g. GLM-5 /
+
+  GLM-5.2 w8a8c8 deployments where the docs explicitly recommend enabling it).
+
+  The effect is a graph-level optimization applied at compile time; it does not
+
+  change numerical semantics. On hardware profiles that do not advertise
+
+  GRAPH_MULS_ADD_FUSION the flag is silently a no-op (the pass is not added), so
+
+  the performance benefit is hardware-dependent. The config is consumed from the
+
+  recursively validated AscendCompilationConfig (not the raw additional_config
+
+  dict), so string values such as "false" are correctly coerced to boolean False.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:129
+  context: Field definition of fuse_muls_add (default True) in AscendCompilationConfig pydantic dataclass.
+- file: vllm_ascend/compilation/graph_fusion_pass_manager.py:70
+  context: Conditionally appends MulsAddFusionPass when fuse_muls_add is true and hardware supports GRAPH_MULS_ADD_FUSION.
+- file: tests/ut/compilation/test_graph_fusion_pass_manager.py:31
+  context: Unit test verifying that fuse_muls_add="false" disables the pass and results in an empty pass list.
+related_parameters:
+- name: additional_config.ascend_compilation_config.fuse_norm_quant
+  relation: Sibling fusion pass flag; both are registered in the same GraphFusionPassManager.configure() and gated by hardware
+    capabilities.
+- name: additional_config.ascend_compilation_config.fuse_qknorm_rope
+  relation: Sibling fusion pass flag; registered in the same pass manager.
+- name: additional_config.ascend_compilation_config.enable_npugraph_ex
+  relation: Graph compilation backend; fusion passes operate on the graph that npugraph_ex compiles.
+- name: additional_config.ascend_compilation_config.enable_static_kernel
+  relation: Static kernel generation; interacts with graph fusion at compile time.
+constraints:
+- The pass is only added when the current hardware profile supports the GRAPH_MULS_ADD_FUSION capability; on unsupported hardware
+  setting it to true has no effect.
+- The value must be a boolean; string values are coerced by the pydantic config validator (e.g. "false" becomes False), so
+  pass real booleans or the documented string forms.
+tuning_advice:
+  summary: Keep fuse_muls_add enabled (default) on hardware that supports GRAPH_MULS_ADD_FUSION to fuse multiply-add elementwise
+    ops and reduce NPU kernel launches and memory traffic.
+  suggested_values:
+  - scenario: GLM-5 / GLM-5.2 w8a8c8 deployments on hardware supporting GRAPH_MULS_ADD_FUSION
+    value: true
+    reason: 'Docs explicitly recommend fuse_muls_add: true for these models; the fusion reduces elementwise overhead and improves
+      latency/throughput.'
+  - scenario: Default / general deployment on supported Ascend hardware
+    value: true
+    reason: Default is True and the pass is a safe graph-level optimization that does not change numerics.
+  - scenario: Debugging graph compilation issues or hardware without GRAPH_MULS_ADD_FUSION
+    value: false
+    reason: Disabling isolates the fusion pass for troubleshooting; on unsupported hardware it is a no-op anyway.
+  caveats:
+  - On hardware profiles that do not support GRAPH_MULS_ADD_FUSION the flag is silently ignored (pass not registered), so
+    no speedup is observed.
+  - 'The benefit is model-dependent: only graphs containing mul-then-add patterns gain from the fusion.'
+  - The config is read from the validated AscendCompilationConfig, so string values like "false" are correctly coerced; do
+    not rely on raw additional_config dict truthiness.
+  quick_guide: Leave fuse_muls_add at its default true unless debugging graph compilation or running on hardware lacking GRAPH_MULS_ADD_FUSION.
+analysis_date: '2026-10-27'

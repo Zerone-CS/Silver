@@ -1,0 +1,99 @@
+name: --safetensors-load-strategy
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:982
+- vllm/engine/arg_utils.py:451
+- vllm/engine/arg_utils.py:1916
+- vllm/config/load.py:66
+- vllm/model_executor/model_loader/default_loader.py:116
+- vllm/model_executor/model_loader/weight_utils.py:869
+value_type: str
+default: null
+valid_choices:
+- null
+- lazy
+- eager
+- prefetch
+- torchao
+cli_example: --safetensors-load-strategy eager
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: "This parameter controls how safetensors checkpoint files are read from disk into\nhost memory before being\
+  \ copied to the NPU. It affects model initialization time\n(startup latency) and host RAM usage, not steady-state token\
+  \ throughput.\n\nIn vllm/model_executor/model_loader/weight_utils.py:safetensors_weights_iterator\n(line 866+), the strategy\
+  \ is resolved as follows:\n- \"None (default): the loader probes the filesystem type via _get_fs_type and\"\n  computes\
+  \ total checkpoint size vs available RAM. If the FS is a network FS\n  (nfs/nfs4/lustre) AND the checkpoint fits within\
+  \ 90% of available RAM,\n  prefetching is enabled automatically (should_prefetch becomes true). Otherwise\n  it falls back\
+  \ to memory-mapped lazy loading.\n- \"\\\"lazy\\\": memory-mapped on-demand loading; auto-prefetch on NFS is NOT performed.\"\
+  \n- \"\\\"eager\\\": the entire file is read into CPU memory upfront (loading_desc gets\"\n  \" (eager)\" suffix), avoiding\
+  \ inefficient random reads on network filesystems\n  at the cost of higher CPU RAM.\n- \"\\\"prefetch\\\": checkpoint files\
+  \ are read into the OS page cache before workers\"\n  load them, warming the cache for high-latency/network storage.\n-\
+  \ \"\\\"torchao\\\": weights are loaded upfront then reconstructed into torchao tensor\"\n  subclasses (for torchao-quantized\
+  \ checkpoints).\n\nOn Ascend NPU, weight loading is a host-side (CPU) operation that precedes the\nH2D copy into NPU HBM;\
+  \ the strategy therefore changes startup wall-clock time\nand peak host memory, which matters for large MoE checkpoints\
+  \ (e.g. DeepSeek\nclass models) where the checkpoint may be tens to hundreds of GiB. The\nvllm-ascend docs explicitly recommend\
+  \ \"lazy\" for large models to avoid eagerly\nmaterializing the whole checkpoint (reducing peak startup memory) and \"prefetch\"\
+  \nas an alternative to multi-thread loading for warming the page cache.\n\nNote: \"vllm-ascend does not appear to override\
+  \ this parameter's semantics; the\"\nbehavior is inherited from upstream vLLM's default loader. However, the\nvllm-ascend\
+  \ docs constrain its combination with --model-loader-extra-config\nenable_multithread_load.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:982
+  context: CLI argument registration under LoadConfig group
+- file: vllm/engine/arg_utils.py:1916
+  context: Passed into LoadConfig via create_load_config
+- file: vllm/config/load.py:66
+  context: LoadConfig field definition with strategy docstring
+- file: vllm/model_executor/model_loader/default_loader.py:116
+  context: Rejects non-lazy strategy when enable_multithread_load is true
+- file: vllm/model_executor/model_loader/weight_utils.py:869
+  context: safetensors_weights_iterator resolves strategy into should_prefetch / eager read
+related_parameters:
+- name: --model-loader-extra-config
+  relation: Mutually exclusive with non-lazy strategies when enable_multithread_load is true; the default loader raises ValueError
+    for prefetch/eager/torchao combined with multithread loading.
+- name: --safetensors-prefetch-num-threads
+  relation: Tuning knob for the prefetch path (number of threads used when prefetching).
+- name: --safetensors-prefetch-block-size
+  relation: Tuning knob for the prefetch path (block size used when prefetching).
+- name: --load-format
+  relation: Strategy only applies when load_format is safetensors (default loader path).
+constraints:
+- When --model-loader-extra-config sets enable_multithread_load to true, --safetensors-load-strategy must be None or lazy;
+  prefetch, eager, and torchao raise a ValueError.
+- The auto-prefetch-on-NFS behavior only triggers when the strategy is left at its default (None); explicitly setting lazy
+  disables it.
+- Auto-prefetch on network filesystems only occurs when the total checkpoint size is at most 90% of available RAM.
+tuning_advice:
+  summary: Choose lazy for local storage and large checkpoints to minimize peak host RAM; choose eager or prefetch for network
+    filesystems (NFS/Lustre) to avoid random-read stalls, unless multi-thread loading is enabled.
+  suggested_values:
+  - scenario: Model checkpoint on local NVMe/SSD, memory-constrained host
+    value: lazy
+    reason: Memory-mapped on-demand loading avoids eagerly materializing the whole checkpoint, reducing peak startup memory
+      (recommended in vllm-ascend Dots3-Note and DeepSeek-V4.1-Flash docs).
+  - scenario: Model checkpoint on NFS/Lustre network filesystem, ample host RAM
+    value: eager
+    reason: Reads the whole file into CPU memory upfront, avoiding inefficient random reads and significantly speeding up
+      initialization on network storage.
+  - scenario: Network or high-latency storage, want to warm page cache without full eager load
+    value: prefetch
+    reason: Reads checkpoint files into the OS page cache before workers load them, speeding up loading; used as an alternative
+      to multi-thread loading in vllm-ascend docs.
+  - scenario: Using --model-loader-extra-config with enable_multithread_load=true
+    value: lazy
+    reason: The multi-thread loader only implements the default lazy strategy; any other value raises ValueError.
+  - scenario: torchao-quantized checkpoint saved as safetensors
+    value: torchao
+    reason: Required to reconstruct weights into torchao tensor subclasses during load.
+  caveats:
+  - Do not combine prefetch/eager/torchao with enable_multithread_load=true; the default loader rejects the combination.
+  - eager can exhaust host RAM for very large checkpoints; monitor available memory before enabling.
+  - Leaving the default (None) auto-enables prefetch only on NFS/Lustre when the checkpoint fits in 90% of RAM; set lazy explicitly
+    to opt out.
+  quick_guide: Local storage -> lazy; network FS with enough RAM -> eager or prefetch; never combine non-lazy with enable_multithread_load.
+analysis_date: '2026-10-27'

@@ -1,0 +1,81 @@
+name: --disable-sliding-window
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:280
+- vllm/engine/arg_utils.py:545
+- vllm/engine/arg_utils.py:924
+- vllm/engine/arg_utils.py:1850
+- vllm/config/model.py:766
+- vllm/v1/metrics/perf.py:435
+value_type: bool
+default: false
+valid_choices: true or false (boolean flag)
+cli_example: --disable-sliding-window
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+- latency
+impact_detail: "This flag controls whether the model's sliding-window attention (SWA) is honored or\ndisabled. It is defined\
+  \ in vLLM upstream (vllm/config/model.py:280) and threaded through\nEngineArgs (arg_utils.py:545, 924, 1850) into ModelConfig.\
+  \ No vllm-ascend override of this\nparameter was found in the provided context, so behavior follows upstream vLLM semantics\n\
+  on Ascend NPU.\n\nMechanism: \"When disable_sliding_window=False (default), models that declare a\"\nsliding_window (e.g.\
+  \ Mistral, Qwen2.5, Gemma2, Llama-4) use SWA. SWA bounds the KV cache\nper layer to the window size, which reduces KV cache\
+  \ memory footprint and can reduce\nattention compute for long contexts. When disable_sliding_window=True, the sliding window\n\
+  functionality is disabled and the model attends over the full context (capped to the\nsliding window size per the docstring),\
+  \ which increases KV cache memory usage and\nattention cost for long sequences.\n\nAdditional effects:\n- \"vllm/config/model.py:766:\
+  \ if the checkpoint sets sliding_window=0, vLLM auto-sets\"\n  disable_sliding_window=True and clears hf_text_config.sliding_window\
+  \ to avoid capping\n  max_model_len to 0.\n- \"vllm/v1/metrics/perf.py:435: the perf metrics parser skips SWA detection\
+  \ when\"\n  disable_sliding_window is True, so reported sliding_window/num_swa_layers metrics\n  reflect the disabled state.\n\
+  - \"vllm/v1/attention/backends/flashinfer.py:1376: some attention backends raise when\"\n  window-left differs across layers\
+  \ and suggest setting disable_sliding_window=True as a\n  fix — relevant only to GPU FlashInfer, not the Ascend attention\
+  \ backend.\n\nOn Ascend NPU, the practical impact is on KV cache sizing (memory) and attention compute\n(latency/throughput)\
+  \ for SWA-capable models with long contexts. For models without\nsliding window support, the flag is ignored.\n"
+usage_locations:
+- file: vllm/config/model.py:280
+  context: Field definition and docstring for disable_sliding_window
+- file: vllm/config/model.py:766
+  context: Auto-enables disable_sliding_window when checkpoint sliding_window == 0
+- file: vllm/engine/arg_utils.py:924
+  context: CLI argument registration --disable-sliding-window
+- file: vllm/engine/arg_utils.py:1850
+  context: Passed into ModelConfig construction
+- file: vllm/v1/metrics/perf.py:435
+  context: Perf metrics parser skips SWA detection when disabled
+related_parameters:
+- name: --max-model-len
+  relation: Disabling SWA removes the window cap on effective context; interacts with max_model_len and KV cache sizing
+- name: --gpu-memory-utilization
+  relation: KV cache memory footprint changes with SWA on/off, affecting how much cache fits under the memory budget
+- name: --attention-backend
+  relation: Some backends (e.g. FlashInfer on GPU) require uniform window-left and suggest disabling SWA; Ascend backend behavior
+    differs
+constraints:
+- If the model does not support sliding window, this argument is ignored.
+- When a checkpoint sets sliding_window to 0, vLLM automatically sets disable_sliding_window to True and clears the sliding
+  window config.
+tuning_advice:
+  summary: Leave disabled (default) for SWA-capable models to save KV cache memory and reduce long-context attention cost
+    on Ascend NPU; only enable to work around backend/window-uniformity issues.
+  suggested_values:
+  - scenario: SWA-capable model (Mistral, Qwen2.5, Gemma2, Llama-4) with long-context serving on Ascend NPU
+    value: false
+    reason: Keeping SWA enabled bounds per-layer KV cache to the window size, reducing NPU memory pressure and attention compute
+      for long sequences.
+  - scenario: Attention backend or model reports non-uniform window-left across layers and errors out
+    value: true
+    reason: Disabling SWA is the documented workaround when window-left differs across layers, at the cost of higher KV cache
+      memory and attention cost.
+  - scenario: Model without sliding window support
+    value: false
+    reason: The flag is ignored for such models, so leaving it at default avoids confusion.
+  caveats:
+  - Disabling SWA increases KV cache memory usage and attention compute for long contexts, which can reduce max concurrency
+    and throughput on Ascend NPU.
+  - No vllm-ascend-specific override of this parameter was found; behavior follows upstream vLLM semantics on Ascend.
+  - Perf metrics (sliding_window, num_swa_layers) are not reported when this flag is True, which can complicate capacity planning.
+  quick_guide: Keep default (SWA enabled) unless a backend/window-uniformity error forces you to disable it.
+analysis_date: '2026-10-27'

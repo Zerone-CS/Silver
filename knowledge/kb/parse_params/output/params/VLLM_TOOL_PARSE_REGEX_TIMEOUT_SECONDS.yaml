@@ -1,0 +1,96 @@
+name: VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1747
+- vllm/envs.py:239
+- vllm/tool_parsers/lfm2_tool_parser.py:177
+- vllm/tool_parsers/llama4_pythonic_tool_parser.py:84
+- vllm/tool_parsers/llama_tool_parser.py:98
+- vllm/tool_parsers/olmo3_tool_parser.py:94
+- vllm/tool_parsers/pythonic_tool_parser.py:79
+value_type: int
+default: 1
+valid_choices: positive integer number of seconds (no explicit upper bound enforced)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This env var sets the `timeout` argument passed to Python `re` matching calls
+
+  (`.match()` / `.finditer()`) inside vLLM''s tool-parsing plugins. It is read via
+
+  `envs.VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS` in lfm2_tool_parser.py:177,
+
+  llama4_pythonic_tool_parser.py:84, llama_tool_parser.py:98, olmo3_tool_parser.py:94,
+
+  and pythonic_tool_parser.py:79. The regex engine runs on the CPU host process
+
+  (the API server / output processor), NOT on the Ascend NPU — it is pure Python
+
+  `re` matching over the decoded model output string. Therefore it does not touch
+
+  NPU compute, HCCL, or CANN kernels at all. Its only performance relevance is
+
+  bounding worst-case CPU time spent in catastrophic-backtracking regexes during
+
+  tool-call extraction: "a too-large value lets a pathological regex block the"
+
+  output-processing thread (adding latency to that request and potentially stalling
+
+  the async output pipeline), while a too-small value causes premature `TimeoutError`,
+
+  which is caught and logged as a warning and results in the tool call being treated
+
+  as not-a-tool-call (falling back to returning raw content). There is no vllm-ascend
+
+  override of this parameter; it is inherited unchanged from upstream vLLM.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1747
+  context: Definition of the env var, parsed as int with default 1 second.
+- file: vllm/envs.py:239
+  context: 'Type stub declaration VLLM_TOOL_PARSE_REGEX_TIMEOUT_SECONDS: int = 1.'
+- file: vllm/tool_parsers/pythonic_tool_parser.py:79
+  context: Passed as timeout to TOOL_CALL_REGEX.match() during extract_tool_calls.
+- file: vllm/tool_parsers/llama_tool_parser.py:98
+  context: Passed as timeout to tool_call_start_regex.finditer() during extraction.
+- file: vllm/tool_parsers/llama4_pythonic_tool_parser.py:84
+  context: Passed as timeout to TOOL_CALL_REGEX.match() during extraction.
+- file: vllm/tool_parsers/olmo3_tool_parser.py:94
+  context: Passed as timeout to TOOL_CALL_REGEX.match() during extraction.
+- file: vllm/tool_parsers/lfm2_tool_parser.py:177
+  context: Passed as timeout to TOOL_CALL_REGEX.match() during extraction.
+related_parameters:
+- name: VLLM_REGEX_COMPILATION_TIMEOUT_S
+  relation: Sibling regex timeout for grammar/regex compilation (default 5s); both bound CPU-side regex work but for different
+    stages.
+- name: VLLM_ENFORCE_STRICT_TOOL_CALLING
+  relation: Related tool-calling behavior toggle; affects how parsed tool calls are validated, not the regex timeout itself.
+constraints:
+- The value must be a positive integer number of seconds; a non-integer string will raise a ValueError when the env var is
+  parsed.
+- The timeout only applies to tool-parsing plugins that explicitly pass it to regex calls; parsers that do not use it are
+  unaffected.
+tuning_advice:
+  summary: Leave at the default 1 second unless you observe regex-timeout warnings or pathological tool-parsing latency; this
+    is a CPU-side safety bound, not an NPU performance knob.
+  suggested_values:
+  - scenario: Default tool-calling workloads with well-behaved model output
+    value: 1
+    reason: Default of 1 second is sufficient for normal tool-call regex matching and bounds worst-case CPU time.
+  - scenario: Long model outputs or complex tool-call schemas triggering regex-timeout warnings
+    value: 3
+    reason: A modest increase reduces spurious TimeoutError warnings that cause tool calls to be dropped, at the cost of slightly
+      longer worst-case CPU blocking.
+  - scenario: Latency-sensitive serving where output-processing thread stalls must be minimized
+    value: 1
+    reason: Keeping the timeout small caps the maximum time a pathological regex can block the output-processing thread.
+  caveats:
+  - Do not treat this as an Ascend NPU tuning parameter; it does not affect NPU kernels, memory, or HCCL communication.
+  - Raising it does not improve throughput; it only changes how long a CPU regex is allowed to run before being aborted.
+  quick_guide: Keep at 1s by default; raise to ~3s only if you see regex-timeout warnings dropping tool calls.
+analysis_date: '2026-10-27'

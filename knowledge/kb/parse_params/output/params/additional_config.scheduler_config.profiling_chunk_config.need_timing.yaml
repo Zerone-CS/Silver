@@ -1,0 +1,88 @@
+name: additional_config.scheduler_config.profiling_chunk_config.need_timing
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1495
+- vllm_ascend/ascend_config.py:1498
+- vllm_ascend/patch/platform/patch_profiling_chunk.py:65
+- vllm_ascend/core/scheduler_profiling_chunk.py:446
+- vllm_ascend/core/scheduler_profiling_chunk.py:861
+value_type: bool
+default: '<computed: defaults to the value of profiling_chunk_config.enabled (False unless enabled=True)>'
+valid_choices: true | false (None is an internal sentinel meaning 'not provided')
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: "need_timing controls the \"Online Calibration\" phase of Dynamic Chunked Pipeline\nParallel (CPP) in vllm-ascend.\
+  \ It is defined only in vllm-ascend\n(vllm_ascend/ascend_config.py:1495) as `bool | None`; the after-validator\n`_validate_and_link_need_timing`\
+  \ (ascend_config.py:1498-1517) resolves None to\n`enabled`, and forces it to False (with a warning) if `enabled=False`.\n\
+  \nMechanism when True:\n- \"The NPU model runner performs synchronize-and-time calls to measure\"\n  `execution_time_ms`\
+  \ per step; `_record_execution_timing`\n  (patch_profiling_chunk.py:45-84) feeds this back into the\n  ProfilingChunkManager\
+  \ to incrementally fit the history-aware latency model.\n- \"While calibration is in progress, the scheduler branches at\"\
+  \n  scheduler_profiling_chunk.py:446 and :861 log \"[Dynamic Chunk] Online\n  calibration stage\" and keep scheduling long\
+  \ requests so more data points are\n  collected; `predict_chunk_size` returns None until the predictor is ready, so\n  chunk\
+  \ sizes are not yet dynamically reduced.\n- \"Once `_set_time_done` and `predictor.history_fitted` are both true,\"\n  patch_profiling_chunk.py:61-71\
+  \ sets need_timing=False in-process and marks\n  `_profiling_timing_done`, which propagates a `disable_profiling_timing`\
+  \ flag\n  to the worker so it stops the synchronize-and-time calls — removing the\n  pipeline stalls that timing introduces.\n\
+  \nMechanism when False:\n- \"No timing/calibration data is collected; the latency model is never refined\"\n  online. The\
+  \ scheduler falls through to the `time_budget == target_latency`\n  warning path (\"Profiling Failed. Degenerated to a fixed\
+  \ chunk size\") or\n  breaks, so dynamic chunk sizing degrades toward fixed chunking unless\n  smooth_factor is tuned to\
+  \ compensate.\n- \"Avoiding the synchronize-and-time calls removes per-step pipeline stalls,\"\n  which can help raw throughput\
+  \ but at the cost of prediction accuracy.\n\nNet effect: \"need_timing=True (the effective default when CPP is enabled)\
+  \ yields\"\nmore accurate chunk-latency fitting and better TTFT for long-prefill workloads,\nbut adds temporary synchronization\
+  \ overhead during the calibration window.\nneed_timing=False trades prediction accuracy for lower per-step overhead.\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1498
+  context: after-validator resolves None->enabled, forces False when enabled=False, validates sibling fields
+- file: vllm_ascend/patch/platform/patch_profiling_chunk.py:65
+  context: sets need_timing=False once target latency and history model are calibrated, to stop timing stalls
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:446
+  context: 'RUNNING-request scheduling branch: logs online-calibration stage when prediction unavailable and need_timing is
+    True'
+- file: vllm_ascend/core/scheduler_profiling_chunk.py:861
+  context: 'prefill scheduling branch: same online-calibration gating for dynamic chunk sizing'
+related_parameters:
+- name: additional_config.scheduler_config.profiling_chunk_config.enabled
+  relation: need_timing defaults to enabled; if enabled=False, need_timing is forced to False with a warning
+- name: additional_config.scheduler_config.profiling_chunk_config.smooth_factor
+  relation: when need_timing is disabled, smooth_factor (0.5-0.8) is used to approximate the effect of online calibration
+- name: additional_config.scheduler_config.profiling_chunk_config.max_fit_chunk
+  relation: number of chunk-time data points collected during online calibration; too few causes profiling failure
+- name: additional_config.scheduler_config.profiling_chunk_config.min_chunk
+  relation: minimum dynamic chunk size; should be smaller than --max-num-batched-tokens
+- name: --pipeline-parallel-size
+  relation: CPP (and thus need_timing) requires pipeline-parallel-size > 1
+- name: --max-num-batched-tokens
+  relation: initial chunk size for dynamic chunk calculation; TTFT of CPP is very sensitive to it
+constraints:
+- need_timing=True has no effect and is silently reset to False (with a warning) when profiling_chunk_config.enabled is False.
+- If need_timing is not explicitly set, it inherits the value of profiling_chunk_config.enabled.
+- Dynamic Chunked Pipeline Parallel (and therefore need_timing) requires --pipeline-parallel-size greater than 1.
+- max_fit_chunk must be greater than 5 or a ValueError is raised during config validation.
+tuning_advice:
+  summary: Keep need_timing enabled (the default when CPP is on) so online calibration produces accurate chunk-latency fits;
+    only disable it if you deliberately want to avoid the calibration synchronization overhead and will compensate with smooth_factor.
+  suggested_values:
+  - scenario: Standard CPP deployment with pipeline-parallel-size > 1 and long-prefill workloads
+    value: true
+    reason: Enables online calibration, yielding more accurate chunk-latency fitting and better TTFT; the timing overhead
+      is automatically removed once calibration completes.
+  - scenario: Latency-sensitive deployment where calibration synchronization stalls are unacceptable and you accept slightly
+      less accurate prediction
+    value: false
+    reason: Skips synchronize-and-time calls entirely; pair with smooth_factor 0.5-0.8 to approximate the calibration effect.
+  - scenario: CPP disabled (profiling_chunk_config.enabled=False)
+    value: false
+    reason: need_timing is forced to False anyway when enabled is False; setting it True only produces a warning.
+  caveats:
+  - Do not adjust smooth_factor while need_timing is enabled; the two mechanisms overlap.
+  - Ensure max_fit_chunk is large enough (default 30) so calibration can complete; otherwise the scheduler degenerates to
+    fixed chunking.
+  - need_timing only applies to vllm-ascend CPP; it is ignored on upstream vLLM/GPU.
+  quick_guide: Leave need_timing at its default (True when CPP is enabled); disable only if you will tune smooth_factor to
+    0.5-0.8 instead.
+analysis_date: '2026-10-27'

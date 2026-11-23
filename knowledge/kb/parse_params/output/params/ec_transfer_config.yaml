@@ -1,0 +1,101 @@
+name: --ec-transfer-config
+type: cli
+category: kv_cache
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1717
+- vllm/engine/arg_utils.py:717
+- vllm/engine/arg_utils.py:2668
+- vllm/config/vllm.py:423
+- vllm/config/vllm.py:557
+- vllm/v1/core/sched/scheduler.py:180
+- vllm/v1/engine/core.py:219
+- vllm/v1/executor/ray_executor.py:96
+- vllm/distributed/ec_transfer/ec_connector/base.py:87
+- vllm/distributed/ec_transfer/ec_connector/cpu/common.py:99
+- vllm_ascend/distributed/ec_transfer/ec_memcache_connector.py:57
+value_type: dict
+default: null
+valid_choices: JSON object matching ECTransferConfig schema (ec_role, ec_connector, ec_connector_module_path, ec_connector_extra_config,
+  etc.)
+cli_example: '--ec-transfer-config ''{"ec_role": "ec_producer", "ec_connector": "ECMemcacheConnector", "ec_connector_extra_config":
+  {"recv_buffer_tokens": 1024}}'''
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "--ec-transfer-config enables distributed encoder-cache (EC) transfer, i.e. sharing\nmultimodal encoder outputs\
+  \ (embeddings) across instances/processes instead of\nrecomputing them. When set (non-None), vLLM instantiates an EC connector:\n\
+  - \"vllm/v1/core/sched/scheduler.py:180 creates an ECConnectorFactory connector in the\"\n  SCHEDULER role, adding per-step\
+  \ metadata handling to the scheduling loop.\n- \"vllm/v1/engine/core.py:219 sets is_ec_consumer, which gates whether the\
+  \ engine runs\"\n  the sampler (a producer-only instance skips sampling work).\n- \"vllm/distributed/ec_transfer/ec_connector/base.py:87\
+  \ reads is_ec_producer/is_ec_consumer\"\n  to decide transfer direction.\nOn Ascend, vllm_ascend/distributed/ec_transfer/ec_memcache_connector.py:57\
+  \ reads\nec_transfer_config.get_from_extra_config(\"recv_buffer_tokens\", DEFAULT_RECV_BUFFER_TOKENS)\nto size the receive\
+  \ buffer used by the ECMemcacheConnector. This buffer size directly\naffects memory footprint and the amount of encoder-cache\
+  \ data that can be received per\nstep: \"too small throttles transfer throughput (more round-trips / stalls), too large\"\
+  \nwastes NPU/host memory. The connector also adds cross-instance communication overhead\n(latency) that is only worthwhile\
+  \ when encoder outputs are reused across requests.\nThe config is also folded into the VllmConfig hash (vllm/config/vllm.py:557),\
+  \ so\nchanging it invalidates cached compilation artifacts.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:1717
+  context: CLI argument registration for --ec-transfer-config (JSON parsed into ECTransferConfig)
+- file: vllm/engine/arg_utils.py:2668
+  context: Passed into VllmConfig construction
+- file: vllm/config/vllm.py:423
+  context: VllmConfig field definition (ECTransferConfig | None)
+- file: vllm/config/vllm.py:557
+  context: Included in config hash computation
+- file: vllm/v1/core/sched/scheduler.py:180
+  context: Creates EC connector in scheduler role when config is set
+- file: vllm/v1/engine/core.py:219
+  context: Determines is_ec_consumer, gating sampler execution
+- file: vllm/v1/executor/ray_executor.py:96
+  context: Raises NotImplementedError for legacy Ray executor with world_size > 1
+- file: vllm/distributed/ec_transfer/ec_connector/base.py:87
+  context: Reads is_ec_producer/is_ec_consumer for connector direction
+- file: vllm/distributed/ec_transfer/ec_connector/cpu/common.py:99
+  context: Builds EC shared mmap region; requires ec_cpu_bytes in extra config
+- file: vllm_ascend/distributed/ec_transfer/ec_memcache_connector.py:57
+  context: Ascend ECMemcacheConnector reads recv_buffer_tokens from extra config
+related_parameters:
+- name: --kv-transfer-config
+  relation: Sibling distributed-transfer config; EC transfer shares connector infrastructure and is often deployed alongside
+    KV transfer
+- name: --ec-manager-config
+  relation: Companion config controlling the encoder cache manager behavior
+- name: --max-num-batched-tokens
+  relation: Upper bound for ec_connector_extra_config.recv_buffer_tokens on Ascend
+- name: --instance-id
+  relation: Used to build the EC shared region engine_id (instance_id + dp rank)
+constraints:
+- On Ascend, ec_connector_extra_config.recv_buffer_tokens must be an integer (booleans are rejected).
+- On Ascend, ec_connector_extra_config.recv_buffer_tokens must be between MIN_RECV_BUFFER_TOKENS and scheduler_config.max_num_batched_tokens.
+- The ECMemcacheConnector requires ec_transfer_config to be set, otherwise it raises ValueError.
+- When using the CPU EC connector, ec_connector_extra_config.ec_cpu_bytes must be specified or a ValueError is raised.
+- With the legacy Ray executor and world_size > 1, setting ec_transfer_config raises NotImplementedError; use VLLM_USE_RAY_V2_EXECUTOR_BACKEND=1
+  or the multiprocessing executor.
+tuning_advice:
+  summary: Enable EC transfer only for multimodal workloads with encoder-output reuse; on Ascend size recv_buffer_tokens to
+    the expected per-step encoder-cache volume within max_num_batched_tokens.
+  suggested_values:
+  - scenario: Multimodal serving with repeated images/encoder outputs across instances
+    value: '{"ec_role": "ec_producer", "ec_connector": "ECMemcacheConnector", "ec_connector_extra_config": {"recv_buffer_tokens":
+      1024}}'
+    reason: Enables encoder-cache sharing; recv_buffer_tokens sized to a moderate per-step volume to balance memory and transfer
+      throughput.
+  - scenario: High-throughput consumer instance with large batches
+    value: '{"ec_role": "ec_consumer", "ec_connector": "ECMemcacheConnector", "ec_connector_extra_config": {"recv_buffer_tokens":
+      4096}}'
+    reason: Larger receive buffer reduces transfer round-trips; must stay <= max_num_batched_tokens.
+  - scenario: Text-only or no encoder reuse
+    value: unset
+    reason: Leave unset to avoid EC connector overhead and extra communication latency.
+  caveats:
+  - recv_buffer_tokens must not exceed max_num_batched_tokens on Ascend or startup fails.
+  - Legacy Ray executor with world_size > 1 is unsupported; use RayExecutorV2 or multiprocessing.
+  - CPU EC connector requires ec_cpu_bytes in ec_connector_extra_config.
+  quick_guide: Set --ec-transfer-config only for multimodal encoder-cache reuse; on Ascend tune recv_buffer_tokens within
+    [MIN_RECV_BUFFER_TOKENS, max_num_batched_tokens].
+analysis_date: '2026-10-27'

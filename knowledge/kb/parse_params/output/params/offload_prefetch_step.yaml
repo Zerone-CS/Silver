@@ -1,0 +1,106 @@
+name: --offload-prefetch-step
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/offload.py:66
+- vllm/engine/arg_utils.py:1353
+- vllm/engine/arg_utils.py:552
+- vllm/entrypoints/llm.py:202
+- vllm/model_executor/offloader/base.py:167
+- vllm_ascend/model_executor/offloader/base.py:24
+value_type: int
+default: 1
+valid_choices: integer >= 1 when prefetch offloading is enabled (offload_group_size > 0); Field declares ge=0 but validator
+  requires >= 1 when active
+cli_example: --offload-prefetch-step 2
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- memory
+impact_detail: 'This parameter controls how many layers ahead the prefetch offloader issues async
+
+  host-to-device (H2D) copies for CPU-offloaded model weights. It is only consumed when
+
+  the prefetch offload backend is active (offload_backend == "prefetch" or
+
+  offload_group_size > 0). In upstream vLLM, vllm/model_executor/offloader/base.py:167
+
+  passes prefetch.offload_prefetch_step as prefetch_step into PrefetchOffloader, which
+
+  uses it to pipeline weight transfers ahead of compute so that H2D copy latency is
+
+  hidden behind NPU/GPU compute of earlier layers.
+
+  On Ascend, vllm_ascend/model_executor/offloader/base.py:24 constructs an
+
+  AscendPrefetchOffloader with the same prefetch_step value (mode="cpu"), so the
+
+  parameter is honored on Ascend rather than neutralized. The mechanism is identical:
+
+  a larger prefetch_step issues more layers'' worth of async copies in advance, hiding
+
+  more transfer latency (improving latency/throughput when CPU->NPU bandwidth is the
+
+  bottleneck) but keeping more offloaded weight buffers resident on the NPU at once,
+
+  increasing device memory pressure. A value of 1 (default) prefetches only the next
+
+  layer, minimizing memory overhead but exposing more of the transfer latency.
+
+  Because the offload path is only active when prefetch offloading is explicitly
+
+  enabled, the parameter has no effect in the default (no-offload) configuration.
+
+  '
+usage_locations:
+- file: vllm/config/offload.py:66
+  context: PrefetchOffloadConfig field definition with docstring and ge=0 constraint
+- file: vllm/config/offload.py:107
+  context: OffloadConfig validator requires offload_prefetch_step >= 1 when prefetch offloading is enabled
+- file: vllm/engine/arg_utils.py:1353
+  context: CLI argument registration --offload-prefetch-step in OffloadConfig group
+- file: vllm/model_executor/offloader/base.py:167
+  context: Passed as prefetch_step to upstream PrefetchOffloader
+- file: vllm_ascend/model_executor/offloader/base.py:24
+  context: Passed as prefetch_step to AscendPrefetchOffloader (Ascend override path)
+related_parameters:
+- name: --offload-backend
+  relation: Must be 'prefetch' (or offload_group_size > 0) for this parameter to take effect; ignored otherwise
+- name: --offload-group-size
+  relation: Enables prefetch offloading; must be > 0 for prefetch_step to be validated and used
+- name: --offload-num-in-group
+  relation: Number of layers offloaded per group; combined with prefetch_step determines prefetch pipeline depth
+- name: --offload-params
+  relation: Selects which parameter segments are offloaded; affects total offloaded weight volume and thus memory impact of
+    prefetch_step
+constraints:
+- When prefetch offloading is enabled (offload_backend='prefetch' or offload_group_size > 0), offload_prefetch_step must be
+  >= 1 or a ValueError is raised.
+- The parameter only takes effect when the prefetch offload backend is active; with offload_backend='uva' the prefetch settings
+  are ignored (a warning is emitted).
+- offload_num_in_group must be <= offload_group_size for the prefetch configuration to be valid.
+tuning_advice:
+  summary: Keep the default of 1 unless CPU->NPU weight transfer latency is a measured bottleneck; then raise it cautiously
+    while monitoring NPU memory headroom.
+  suggested_values:
+  - scenario: Default / memory-constrained deployment with prefetch offloading enabled
+    value: 1
+    reason: Minimal prefetch depth keeps only the next layer's weights resident, minimizing NPU memory overhead while still
+      hiding some transfer latency.
+  - scenario: Transfer-latency-bound workload with spare NPU memory
+    value: 2
+    reason: Prefetching two layers ahead hides more H2D copy latency, improving latency/throughput, at the cost of additional
+      resident weight buffers.
+  - scenario: Aggressively hiding transfer latency on high-bandwidth hosts with ample NPU memory
+    value: 3
+    reason: Deeper prefetch pipeline further overlaps transfers with compute, but memory pressure grows proportionally; validate
+      against OOM.
+  caveats:
+  - Only meaningful when --offload-backend prefetch (or --offload-group-size > 0) is set; otherwise it is a no-op.
+  - Increasing prefetch_step raises NPU memory usage; reduce --gpu-memory-utilization or offload volume if OOM occurs.
+  - Applies to both upstream vLLM and the Ascend path (AscendPrefetchOffloader); behavior is consistent across v1/v2 worker
+    paths since offloader construction is shared.
+  quick_guide: Leave at 1; raise to 2-3 only if CPU->NPU transfer latency dominates and NPU memory headroom allows.
+analysis_date: '2026-10-27'

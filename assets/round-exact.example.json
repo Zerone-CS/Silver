@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "min_pairs": 2,
+  "confidence": 0.95,
+  "bootstrap_samples": 1000,
+  "seed": 42,
+  "scenarios": {
+    "arithmetic_smoke": {
+      "primary": {
+        "metric": "output_token_throughput",
+        "direction": "higher",
+        "min_relative_improvement": 0.0
+      },
+      "guardrails": [
+        {
+          "metric": "failure_rate",
+          "max_value": 0.0
+        }
+      ]
+    }
+  },
+  "quality_policy": {
+    "scenarios": {
+      "arithmetic_smoke": {
+        "method": "exact_match",
+        "field": "content",
+        "reference": {
+          "path": "round-exact.gold.json",
+          "sha256": "b504edc0843e3f1da7b54b03630de457068fedc4ceac9d201e5ad4d4f3a4cba9"
+        }
+      }
+    }
+  }
+}

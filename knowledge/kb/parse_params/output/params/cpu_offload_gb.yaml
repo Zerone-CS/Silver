@@ -1,0 +1,121 @@
+name: --cpu-offload-gb
+type: cli
+category: memory
+scope: both
+source_file:
+- vllm/config/offload.py:23
+- vllm/engine/arg_utils.py:1340
+- vllm/engine/arg_utils.py:2618
+- vllm/model_executor/offloader/base.py:146
+- vllm/model_executor/offloader/base.py:173
+- vllm_ascend/worker/model_runner_v1.py:5988
+- vllm_ascend/_310p/model_runner_310p.py:1005
+value_type: float
+default: 0
+valid_choices: float >= 0 (GiB per GPU)
+cli_example: --cpu-offload-gb 10
+deprecated: false
+performance_impact: high
+performance_scope:
+- memory
+- latency
+- throughput
+impact_detail: '--cpu-offload-gb selects the UVA (Unified Virtual Addressing) CPU weight-offloading
+
+  backend in vLLM upstream. In vllm/model_executor/offloader/base.py:create_offloader,
+
+  when offload_backend is "auto" and cpu_offload_gb > 0 (and prefetch offload_group_size
+
+  is 0), a UVAOffloader is created with cpu_offload_max_bytes = int(cpu_offload_gb * 1024**3).
+
+  This offloads model weights to CPU-pinned memory and accesses them via zero-copy UVA,
+
+  which requires fast CPU-GPU interconnect because part of the model is loaded from CPU
+
+  memory to GPU memory on the fly in every forward pass (per the docstring in
+
+  vllm/config/offload.py:23). On Ascend NPU this is a critical concern: the UVA zero-copy
+
+  path relies on host-device unified addressing and fast PCIe/HCCS interconnect; on Ascend
+
+  the equivalent host-to-device transfer goes over PCIe, and per-forward-pass weight
+
+  streaming adds substantial latency and reduces throughput. The primary benefit is memory:
+
+  it virtually increases NPU memory so larger models can be loaded (e.g. a 13B BF16 model
+
+  needing ~26GB on a 24GB device). vllm-ascend does NOT override the default or the
+
+  offloader selection, but it adds a hard guard: in vllm_ascend/worker/model_runner_v1.py:5988
+
+  (and the 310p variant at _310p/model_runner_310p.py:1005), may_reinitialize_input_batch
+
+  asserts cpu_offload_gb == 0 when the input batch must be re-initialized (block size
+
+  mismatch or multiple KV cache groups). So enabling CPU offload can cause an assertion
+
+  failure on Ascend when the input batch needs re-initialization. Additionally, upstream
+
+  vllm/models/deepseek_v4/amd/model.py:269 disables the DeepSeek V4 heterogeneous
+
+  shared-expert fusion path when cpu_offload_gb > 0 (weight offloading enabled), which is
+
+  a GPU-specific optimization but illustrates that offloading can disable fused kernels.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1340
+  context: CLI argument registration for --cpu-offload-gb under OffloadConfig group
+- file: vllm/engine/arg_utils.py:2618
+  context: Maps cpu_offload_gb into UVAOffloadConfig when building OffloadConfig
+- file: vllm/model_executor/offloader/base.py:146
+  context: create_offloader selects UVA backend when cpu_offload_gb > 0
+- file: vllm/model_executor/offloader/base.py:173
+  context: UVAOffloader constructed with cpu_offload_max_bytes = cpu_offload_gb * 1024**3
+- file: vllm_ascend/worker/model_runner_v1.py:5988
+  context: Asserts cpu_offload_gb == 0 before re-initializing input batch (v1 Ascend worker)
+- file: vllm_ascend/_310p/model_runner_310p.py:1005
+  context: Same assertion in 310p Ascend model runner
+related_parameters:
+- name: --offload-backend
+  relation: When set to 'auto', cpu_offload_gb > 0 selects the UVA backend; explicit 'uva' forces it regardless
+- name: --cpu-offload-params
+  relation: Selects which parameter name segments are offloaded under the UVA backend; empty means offload non-selectively
+    until cpu_offload_gb limit
+- name: --offload-group-size
+  relation: If > 0, prefetch backend takes precedence over UVA in 'auto' selection, so cpu_offload_gb is ignored for backend
+    choice
+- name: --gpu-memory-utilization
+  relation: Both control effective memory budget; offloading frees NPU memory for KV cache but adds transfer latency
+- name: --block-size
+  relation: Block size mismatch triggers input batch re-initialization, which asserts cpu_offload_gb == 0 on Ascend
+constraints:
+- --cpu-offload-gb must be >= 0 (Field(default=0, ge=0)).
+- On Ascend v1 and 310p workers, if the input batch must be re-initialized (block size mismatch or more than one KV cache
+  group), cpu_offload_gb must be 0 or an assertion error is raised.
+- When --offload-backend is 'auto' and --offload-group-size > 0, the prefetch backend is chosen and cpu_offload_gb does not
+  select the UVA backend.
+- UVA offloading requires fast CPU-GPU (host-device) interconnect because weights are streamed from CPU memory on every forward
+  pass.
+tuning_advice:
+  summary: Use --cpu-offload-gb only when the model does not fit in NPU HBM; prefer keeping weights resident and rely on quantization
+    or smaller models for throughput.
+  suggested_values:
+  - scenario: Model fits comfortably in NPU memory (normal deployment)
+    value: 0
+    reason: Default 0 disables offloading, avoiding per-forward-pass host-device weight streaming latency on Ascend.
+  - scenario: Model slightly exceeds NPU HBM and cannot be quantized
+    value: 4
+    reason: Offload a small amount (a few GiB) to fit the model while minimizing PCIe transfer overhead; verify no input-batch
+      re-initialization assertion is triggered.
+  - scenario: Large model far exceeding NPU memory, latency-tolerant batch workload
+    value: 10
+    reason: Offload more weights to CPU to fit the model; accept higher per-token latency due to PCIe weight streaming.
+  caveats:
+  - On Ascend, ensure block size and KV cache group configuration are stable so may_reinitialize_input_batch does not assert
+    cpu_offload_gb == 0.
+  - Prefer --offload-group-size (prefetch backend) over UVA cpu_offload_gb when async prefetch can hide transfer latency better.
+  - Measure end-to-end latency; UVA zero-copy on Ascend PCIe can severely degrade tokens/sec.
+  quick_guide: Keep --cpu-offload-gb 0 unless the model cannot fit in NPU memory; if needed, offload the minimum GiB and watch
+    for the Ascend input-batch re-init assertion.
+analysis_date: '2026-10-27'

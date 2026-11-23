@@ -1,0 +1,123 @@
+name: --max-logprobs
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/model.py:254
+- vllm/engine/arg_utils.py:917
+- vllm/engine/arg_utils.py:562
+- vllm/engine/arg_utils.py:1846
+- vllm/sampling_params.py:839
+- vllm/config/vllm.py:2964
+- vllm/config/parallel.py:174
+- vllm/config/speculative.py:1290
+- vllm/entrypoints/scale_out/derender/serving.py:66
+value_type: int
+default: 20
+valid_choices: Integer >= -1; -1 means no cap (all output_length * vocab_size logprobs allowed)
+cli_example: --max-logprobs 20
+deprecated: false
+performance_impact: medium
+performance_scope:
+- memory
+- throughput
+impact_detail: '--max-logprobs caps the number of top logprobs a request may return. It is defined
+
+  in vllm/config/model.py:254 as ModelConfig.max_logprobs (Field(default=20, ge=-1)),
+
+  plumbed through EngineArgs (arg_utils.py:562, 1846) into ModelConfig, and enforced
+
+  per-request in SamplingParams._validate_logprobs (sampling_params.py:839): if
+
+  max_logprobs == -1 it is replaced by the model vocab size, and any request asking for
+
+  more logprobs than the cap raises VLLMValidationError. The performance mechanism is
+
+  memory and post-processing cost: "when logprobs are requested, the sampler must gather"
+
+  and materialize top-k logprob values per output token. With -1 (no cap), a request can
+
+  ask for vocab_size logprobs per token, i.e. output_length * vocab_size floats, which
+
+  the docstring explicitly warns "may cause OOM". A larger cap therefore increases the
+
+  size of the logprobs tensor that must be gathered, copied off the NPU, and serialized
+
+  in the detokenizer/output processor, raising host-device copy volume and CPU
+
+  post-processing time. It also interacts with batch-sharded sampling: in
+
+  vllm/config/vllm.py:2964, enable_batch_sharded_sampling is rejected when
+
+  max_logprobs < 0 because the fixed-width logprobs gather cannot be sized for
+
+  vocab-size requests. On Ascend NPU the gather/copy path runs over the same
+
+  device-to-host transfer and CANN kernels as on GPU; no vllm-ascend-specific override
+
+  of this parameter was found in the provided context, so the upstream semantics apply.
+
+  The parameter does not change model compute or KV-cache sizing, so its impact is
+
+  indirect (medium) and only materializes for requests that actually request logprobs.
+
+  '
+usage_locations:
+- file: vllm/config/model.py:254
+  context: ModelConfig field definition with default 20 and ge=-1 constraint
+- file: vllm/engine/arg_utils.py:917
+  context: CLI argument registration --max-logprobs
+- file: vllm/engine/arg_utils.py:1846
+  context: Passed into ModelConfig construction from EngineArgs
+- file: vllm/sampling_params.py:839
+  context: 'Per-request validation: requested logprobs must not exceed max_logprobs (vocab size if -1)'
+- file: vllm/config/vllm.py:2964
+  context: Blocks enable_batch_sharded_sampling when max_logprobs is -1
+- file: vllm/config/parallel.py:174
+  context: enable_batch_sharded_sampling requires max_logprobs non-negative
+- file: vllm/config/speculative.py:1290
+  context: Propagated to draft model config for speculative decoding
+- file: vllm/entrypoints/scale_out/derender/serving.py:66
+  context: Bounds validation of derender payload top_logprobs against max_logprobs
+related_parameters:
+- name: --logprobs
+  relation: Per-request SamplingParams.logprobs is validated against max_logprobs; exceeding it raises an error
+- name: --logprobs-mode
+  relation: Determines whether raw/processed logprobs or logits are returned, affecting the gather cost
+- name: --enable-batch-sharded-sampling
+  relation: Cannot be enabled when max_logprobs is -1 (negative cap blocks sharded sampling)
+- name: --max-model-len
+  relation: Upper bound on output_length, which multiplies with vocab_size to size the worst-case logprobs tensor
+constraints:
+- --max-logprobs must be greater than or equal to -1 (Field ge=-1); smaller values are rejected.
+- A request whose logprobs value exceeds max_logprobs (or vocab size when max_logprobs is -1) raises VLLMValidationError.
+- enable_batch_sharded_sampling cannot be enabled when max_logprobs is -1.
+- Derender payloads with more top_logprobs than max_logprobs are rejected with an error response.
+tuning_advice:
+  summary: Keep the default cap of 20 unless clients genuinely need more; avoid -1 on Ascend to prevent OOM and preserve batch-sharded
+    sampling.
+  suggested_values:
+  - scenario: Standard OpenAI-compatible serving (default)
+    value: 20
+    reason: Matches the OpenAI Chat Completions default and bounds the logprobs gather/copy cost per token.
+  - scenario: Clients need a modest number of top logprobs (e.g. evaluation or reranking)
+    value: 50
+    reason: Raises the cap enough for typical top-k logprob use while keeping the per-token logprobs tensor small relative
+      to vocab size.
+  - scenario: Deployments using enable_batch_sharded_sampling on tensor-parallel
+    value: 20
+    reason: Batch-sharded sampling requires a non-negative max_logprobs; keeping a finite cap preserves the sharded sampling
+      path.
+  - scenario: Debugging where full-vocab logprobs are required
+    value: -1
+    reason: Only for controlled debugging; disables the cap but risks OOM and blocks batch-sharded sampling, so never use
+      in production.
+  caveats:
+  - Never set -1 in production serving; the worst-case logprobs tensor is output_length * vocab_size and can exhaust NPU/host
+    memory.
+  - Large caps increase device-to-host copy volume and detokenizer CPU time on Ascend, lowering throughput for logprob-heavy
+    workloads.
+  - A negative value silently disables enable_batch_sharded_sampling, which may reduce sampling throughput on multi-NPU tensor-parallel
+    setups.
+  quick_guide: Leave --max-logprobs at 20; raise modestly only if clients need more top logprobs, and never use -1 in production.
+analysis_date: '2026-10-27'

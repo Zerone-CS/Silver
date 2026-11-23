@@ -1,0 +1,147 @@
+name: eplb.num_redundant_experts
+type: nested
+category: parallelism
+scope: both
+source_file:
+- vllm/config/parallel.py:550
+- vllm_ascend/ascend_config.py:997
+- vllm_ascend/patch/platform/patch_fused_moe.py:140
+- vllm_ascend/eplb/core/eplb_utils.py:84
+- vllm_ascend/ops/fused_moe/routed_experts.py:324
+- vllm_ascend/models/deepseek_v4/model.py:304
+- vllm_ascend/models/deepseek_v41/model.py:185
+- vllm_ascend/models/glm5next/model.py:183
+- vllm_ascend/models/minimax_m3/minimax_m3.py:754
+- vllm_ascend/worker/v2/spec_decode/pcp_utils.py:151
+value_type: int
+default: 0
+valid_choices: Non-negative integer; total physical experts (logical + redundant) must be divisible by ep_size; with mc2_comm_alg=hierarchy,
+  logical + redundant experts must not exceed 512
+cli_example: --eplb-config.num_redundant_experts <int>
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: 'This parameter controls how many extra physical expert slots are allocated on top of the
+
+  logical experts for Expert Parallelism Load Balancing (EPLB). It is defined upstream in
+
+  vllm''s EPLBConfig and consumed by vllm-ascend in several places.
+
+
+  Memory: "In the Ascend model implementations (deepseek_v4/model.py:304, deepseek_v41/model.py:185,"
+
+  glm5next/model.py:183, minimax_m3.py:754) the value is read as
+
+  `self.n_redundant_experts = eplb_config.num_redundant_experts`, then
+
+  `n_physical_experts = n_logical_experts + n_redundant_experts` and
+
+  `n_local_physical_experts = n_physical_experts // ep_size`. Every redundant expert adds a full
+
+  set of MoE expert weights (gate/up/down projections) that must be allocated and loaded on the
+
+  NPU, so this directly increases per-rank HBM usage proportional to num_redundant_experts.
+
+
+  Throughput/latency: In vllm_ascend/patch/platform/patch_fused_moe.py:140 the Ascend EPLB config
+
+  is propagated into the upstream FusedMoE factory so redundant expert slots exist at weight
+
+  creation time; `global_num_experts = num_experts + num_redundant_experts` is passed to the
+
+  router. In vllm_ascend/eplb/core/eplb_utils.py:84 `n_redundant` feeds
+
+  `generate_global_placement(n_experts, ep_size, n_redundant, ...)`, which builds the global
+
+  expert placement map used by the EPLB rebalancing algorithm. More redundant experts give the
+
+  balancer more freedom to replicate hot experts onto under-loaded ranks, reducing MoE all-to-all
+
+  imbalance and tail latency, at the cost of extra memory and extra dispatch/combine traffic.
+
+
+  Ascend-specific: "vllm_ascend/ascend_config.py:997 uses this value in `_validate_mc2_comm_alg`"
+
+  to compute total experts for the `hierarchy` MC2 communication algorithm, which caps at 512
+
+  experts. In the v2 worker path (pcp_utils.py:151) the value is forcibly zeroed for the
+
+  replicated PCP draft model when TP=DP=1, disabling draft EPLB.
+
+  '
+usage_locations:
+- file: vllm_ascend/patch/platform/patch_fused_moe.py:140
+  context: Propagates Ascend EPLB redundancy into upstream FusedMoE factory; sets global_num_experts = num_experts + num_redundant_experts
+    for the router.
+- file: vllm_ascend/eplb/core/eplb_utils.py:84
+  context: Reads n_redundant (only when dynamic_eplb enabled) and feeds generate_global_placement to build the expert placement
+    map.
+- file: vllm_ascend/ascend_config.py:997
+  context: Validates total experts (logical + redundant) against the 512-expert cap for mc2_comm_alg=hierarchy.
+- file: vllm_ascend/models/deepseek_v4/model.py:304
+  context: Computes n_physical_experts and n_local_physical_experts for MoE weight allocation.
+- file: vllm_ascend/models/deepseek_v41/model.py:185
+  context: Same physical expert computation for DeepSeek V4.1 MoE.
+- file: vllm_ascend/models/glm5next/model.py:183
+  context: Same physical expert computation for GLM5Next MoE.
+- file: vllm_ascend/models/minimax_m3/minimax_m3.py:754
+  context: Same physical expert computation for MiniMax M3 MoE.
+- file: vllm_ascend/worker/v2/spec_decode/pcp_utils.py:151
+  context: 'v2 worker: zeroes num_redundant_experts for replicated PCP draft model when TP=DP=1.'
+- file: vllm/config/parallel.py:550
+  context: 'Upstream validation: raises if num_redundant_experts != 0 while EPLB is disabled.'
+related_parameters:
+- name: enable_eplb
+  relation: Must be True for num_redundant_experts to take effect; upstream raises if num_redundant_experts != 0 while EPLB
+    is disabled.
+- name: enable_expert_parallel
+  relation: Must be True to use EPLB; EPLB requires expert parallelism.
+- name: eplb_config.dynamic_eplb
+  relation: 'Ascend MRv1: num_redundant_experts is only honored when dynamic_eplb is enabled (eplb_utils.py:84).'
+- name: eplb_config.expert_map_path
+  relation: When set, n_redundant is derived from the recorded map (physical_count - n_experts), overriding the configured
+    value.
+- name: mc2_comm_alg
+  relation: When set to 'hierarchy', logical + redundant experts must not exceed 512.
+- name: tensor_parallel_size / data_parallel_size / prefill_context_parallel_size
+  relation: EPLB requires TP, PCP, or DP > 1; total physical experts must be divisible by ep_size.
+constraints:
+- num_redundant_experts must be 0 when EPLB is not enabled, otherwise startup raises a ValueError.
+- enable_expert_parallel must be True to use EPLB.
+- EPLB requires tensor_parallel_size, prefill_context_parallel_size, or data_parallel_size to be greater than 1.
+- The total number of physical experts (logical + redundant) must be divisible by the expert-parallel size, since n_local_physical_experts
+  = n_physical_experts // ep_size.
+- When mc2_comm_alg is 'hierarchy', the sum of logical and redundant experts must not exceed 512.
+- In Ascend MRv1, num_redundant_experts only takes effect when dynamic_eplb is enabled; otherwise it is treated as 0.
+- If both the upstream and Ascend EPLB configs specify a non-zero redundant expert count, they must match or a ValueError
+  is raised.
+tuning_advice:
+  summary: Set num_redundant_experts to a modest fraction of logical experts (e.g. ~10-25%) to improve MoE load balance on
+    Ascend, while keeping total physical experts divisible by ep_size and within HBM and the 512-expert hierarchy cap.
+  suggested_values:
+  - scenario: MRv2 (VLLM_USE_V2_MODEL_RUNNER=1) with Qwen3-30B-A3B, TP=16, EP enabled
+    value: 16
+    reason: Documented example uses --eplb-config.num_redundant_experts 16 with TP=16 to give the balancer headroom without
+      excessive memory overhead.
+  - scenario: MRv1 legacy dynamic EPLB (DYNAMIC_EPLB=true)
+    value: 16
+    reason: MRv1 honors num_redundant_experts only when dynamic_eplb is enabled; a moderate value improves SwiftBalanceEplb
+      placement.
+  - scenario: Memory-constrained deployment or small HBM headroom
+    value: 0
+    reason: Disables redundant experts, minimizing per-rank weight memory at the cost of less balancing freedom.
+  - scenario: mc2_comm_alg=hierarchy with many logical experts
+    value: 0
+    reason: Total experts must stay under 512; if logical experts are already near the cap, redundant experts must be kept
+      minimal.
+  caveats:
+  - Ensure (logical_experts + num_redundant_experts) is divisible by ep_size to avoid incorrect local expert partitioning.
+  - Monitor NPU HBM usage after increasing this value; each redundant expert replicates full MoE weights.
+  - On the v2 worker, this value is ignored for the replicated PCP draft model when TP=DP=1.
+  - If using expert_map_path, the configured value is overridden by the recorded map's physical count.
+  quick_guide: Start with ~10-25% of logical experts (e.g. 16 for a 128-expert model), keep total physical experts divisible
+    by ep_size and under 512 for hierarchy MC2, and verify HBM headroom.
+analysis_date: '2026-10-27'

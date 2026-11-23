@@ -1,0 +1,91 @@
+name: VLLM_ASCEND_BUILD_CACHE_DIR
+type: env
+category: compilation
+scope: vllm-ascend
+source_file:
+- .github/workflows/scripts/prepare_csrc_l1_restore.py:93
+- csrc/cmake/build_cache.cmake:1
+- csrc/build.sh:1
+value_type: str
+default: <computed>
+valid_choices: any absolute filesystem path; defaults to <repo>/csrc/build_cache
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This environment variable only affects the build-time (compile-time) caching of
+
+  native csrc custom operators, not runtime inference. It is read by the CMake
+
+  adapter (csrc/cmake/build_cache.cmake) and csrc/build.sh to locate the local
+
+  action cache directory used by the fine-grained csrc build cache engine
+
+  (csrc/scripts/build_cache.py). When set, it overrides the default
+
+  `<repo>/csrc/build_cache` location. Its effect is on how long a source build of
+
+  vllm-ascend takes (cold vs. warm build), by allowing reuse of previously compiled
+
+  native operator artifacts. It has no effect on the runtime throughput, latency,
+
+  or memory of an already-built vllm-ascend installation. The CI helper
+
+  prepare_csrc_l1_restore.py exports it to GITHUB_ENV so the L1 snapshot cache is
+
+  placed at a known directory. Because it only influences build wall-clock time
+
+  (developer iteration speed), runtime performance impact is low.
+
+  '
+usage_locations:
+- file: .github/workflows/scripts/prepare_csrc_l1_restore.py:93
+  context: CI helper exports VLLM_ASCEND_BUILD_CACHE_DIR into GITHUB_ENV to point the L1 build cache at a resolved cache directory.
+- file: csrc/cmake/build_cache.cmake:1
+  context: CMake adapter reads VLLM_ASCEND_BUILD_CACHE_DIR to locate the action cache; defaults to <source>/build_cache when
+    unset.
+- file: csrc/build.sh:1
+  context: Build script uses ${VLLM_ASCEND_BUILD_CACHE_DIR:-${CURRENT_DIR}/build_cache} as the default cache location.
+related_parameters:
+- name: VLLM_ASCEND_BUILD_CACHE_EVENT_LOG
+  relation: Companion env var set alongside it by CI to record cache event logs; both are exported together in prepare_csrc_l1_restore.py.
+- name: COMPILE_CUSTOM_KERNELS
+  relation: Builds that disable custom-kernel compilation do not exercise the custom-operator action cache, so this variable
+    has no effect in that case.
+constraints:
+- The value must be an absolute path; the docs instruct setting VLLM_ASCEND_BUILD_CACHE_DIR to an absolute path to override
+  the local default.
+- Builds that disable custom-kernel compilation do not exercise the custom-operator action cache, so the variable has no effect
+  for such builds.
+- Deleting the cache directory only makes the next relevant source build cold; it does not change the compiled source or CI's
+  persistent snapshot.
+tuning_advice:
+  summary: 'Point VLLM_ASCEND_BUILD_CACHE_DIR at a fast, persistent local disk to speed up
+
+    repeated source builds of native csrc operators; it does not affect runtime
+
+    inference performance.
+
+    '
+  suggested_values:
+  - scenario: Local developer doing repeated source builds
+    value: /path/to/fast-local-disk/vllm-ascend-build-cache
+    reason: A persistent absolute path on fast local storage lets the action cache survive clean builds and speeds up recompilation
+      of unchanged native operators.
+  - scenario: Default behavior (no override needed)
+    value: <unset>
+    reason: When unset, the cache defaults to <repo>/csrc/build_cache, which is sufficient for most local builds.
+  - scenario: CI pipeline
+    value: <CI-provided absolute path>
+    reason: CI supplies an explicit directory via prepare_csrc_l1_restore.py and is unaffected by the repository-local default.
+  caveats:
+  - This is build-time state only; it does not change runtime throughput, latency, or memory of the built vllm-ascend.
+  - Deleting the directory while no build is running only makes the next relevant source build cold; it does not alter compiled
+    source or CI's persistent snapshot.
+  - Builds that disable custom-kernel compilation do not use the custom-operator action cache, so setting this variable has
+    no effect there.
+  - Use an absolute path; relative paths are not the documented usage.
+  quick_guide: Set to an absolute fast-disk path to accelerate repeated native csrc builds; irrelevant to runtime inference
+    performance.
+analysis_date: '2026-10-27'

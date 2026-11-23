@@ -1,0 +1,87 @@
+name: kv_transfer_config.kv_connector_extra_config.connectors
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/kv_transfer.py:22
+- vllm/config/kv_transfer.py:163
+- vllm_ascend/patch/platform/patch_mamba_config.py:55
+value_type: list[dict]
+default: []
+valid_choices: list of dicts, each with at least a 'kv_connector' key (e.g. AscendStoreConnector, MooncakeConnector, SfaRemoteD2HConnector,
+  PreemptOffloadConnector) and optional 'kv_role', 'kv_connector_module_path', 'kv_connector_extra_config'
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "This nested field is only meaningful when kv_transfer_config.kv_connector == \"MultiConnector\".\nIt is a\
+  \ list of child connector descriptors that the MultiConnector instantiates and drives\ntogether. Each child entry carries\
+  \ its own kv_connector name, kv_role, module path and nested\nkv_connector_extra_config. Because the set of child connectors\
+  \ determines which KV transfer\nbackends are active, it directly governs the KV cache movement path between prefill and\
+  \ decode\ninstances (PD disaggregation), and thus TTFT/ITL and interconnect bandwidth usage.\n\nUpstream vLLM reads this\
+  \ list in several places:\n- \"vllm/config/kv_transfer.py:22 (hisparse_host_pool_gib) iterates connectors to find a\"\n\
+  \  HiSparseConnector child and read its host_pool_gib, which sizes a host memory pool — a\n  memory-footprint decision.\n\
+  - \"vllm/config/kv_transfer.py:163 (has_connector) scans the list to decide whether a given\"\n  connector is configured,\
+  \ which gates feature paths (e.g. layerwise transfer, sparse KV).\n\nOn Ascend, vllm-ascend reads the same list in\nvllm_ascend/patch/platform/patch_mamba_config.py:55\
+  \ (_using_kv_store): if any child is\n\"AscendStoreConnector\", the mamba cache mode alignment logic is triggered. This\
+  \ changes how\nhybrid/mamba KV cache is allocated and aligned, affecting memory usage and scheduling behavior.\nAscend tests\
+  \ (test_ascend_multi_connector.py, test_dspark_prefill_config.py,\ntest_dspark_resident_kv.py) show that the presence of\
+  \ specific children such as\nSfaRemoteD2HConnector vs MooncakeConnector changes dspark speculative-decoding KV transfer\n\
+  behavior, aux layer selection, and layerwise KV cache memory budgeting — all runtime\nperformance-relevant paths.\n\nThe\
+  \ parameter itself does not add per-token compute, but the choice and number of child\nconnectors determines transfer overhead\
+  \ (latency), achievable KV reuse (throughput), and\nhost/device memory reserved for transfer buffers (memory). Hence medium\
+  \ impact.\n"
+usage_locations:
+- file: vllm/config/kv_transfer.py:22
+  context: hisparse_host_pool_gib iterates connectors to locate HiSparseConnector and read host_pool_gib for host memory pool
+    sizing
+- file: vllm/config/kv_transfer.py:163
+  context: has_connector scans the connectors list to detect whether a named connector is configured (directly or nested)
+- file: vllm_ascend/patch/platform/patch_mamba_config.py:55
+  context: _using_kv_store checks connectors for AscendStoreConnector to trigger mamba cache mode alignment
+- file: tests/ut/kv_offload/test_dspark_prefill_config.py:92
+  context: nested MultiConnector child list determines whether SfaRemoteD2HConnector dspark KV transfer path is used
+- file: tests/ut/kv_offload/test_dspark_resident_kv.py:240
+  context: child connector selection affects layerwise KV cache memory budgeting for dspark
+related_parameters:
+- name: kv_transfer_config.kv_connector
+  relation: connectors is only read when kv_connector == 'MultiConnector'; otherwise a single synthetic entry is built from
+    kv_connector itself
+- name: kv_transfer_config.kv_role
+  relation: top-level role; child connectors may carry their own kv_role (producer/consumer) for PD disaggregation
+- name: kv_transfer_config.kv_connector_extra_config
+  relation: parent dict that contains the 'connectors' key; also holds top-level options like kv_load_failure_policy
+- name: kv_transfer_config.kv_connector_extra_config.connectors[].kv_connector_extra_config.host_pool_gib
+  relation: required when a HiSparseConnector child is present; sizes host memory pool
+constraints:
+- The 'connectors' key is only consulted when kv_connector is set to 'MultiConnector'; for any other connector it is ignored.
+- At most one HiSparseConnector may appear in the connectors list, otherwise a ValueError is raised.
+- If a HiSparseConnector child is present, its kv_connector_extra_config must contain a positive host_pool_gib value, otherwise
+  a ValueError is raised.
+- Each child entry must be a dict containing at least a 'kv_connector' key naming a registered connector.
+- When kv_load_failure_policy is needed for a P/D connector, it must be configured on the top-level MultiConnector kv-transfer-config,
+  not inside child connectors.
+tuning_advice:
+  summary: Use MultiConnector with a minimal, purpose-specific set of child connectors; on Ascend prefer AscendStoreConnector
+    for KV store and a single PD connector, and avoid redundant children.
+  suggested_values:
+  - scenario: PD disaggregation with KV store on Ascend
+    value: '[{"kv_connector": "AscendStoreConnector"}, {"kv_connector": "MooncakeConnectorV1", "kv_role": "kv_producer"}]'
+    reason: AscendStoreConnector enables KV store reuse (triggers mamba cache alignment) while a single PD connector handles
+      prefill-to-decode transfer; keeps overhead minimal.
+  - scenario: dspark speculative decoding with SFA remote D2H transfer
+    value: '[{"kv_connector": "SfaRemoteD2HConnector"}]'
+    reason: Selects the SFA dspark KV transfer path and aux layer selection used by Ascend dspark tests.
+  - scenario: HiSparse host-pool offload
+    value: '[{"kv_connector": "HiSparseConnector", "kv_connector_extra_config": {"host_pool_gib": 64}}]'
+    reason: Only one HiSparseConnector allowed; host_pool_gib must be positive and sizes the host memory pool.
+  caveats:
+  - Do not nest kv_load_failure_policy inside child connectors; set it on the top-level MultiConnector config.
+  - Avoid combining MultiConnector with PCP KVPP, which does not support KV transfer connectors.
+  - Keep the child list minimal to reduce transfer latency and memory overhead.
+  quick_guide: Set kv_connector=MultiConnector and list only the child connectors you need; on Ascend use AscendStoreConnector
+    plus one PD connector.
+analysis_date: '2026-10-27'

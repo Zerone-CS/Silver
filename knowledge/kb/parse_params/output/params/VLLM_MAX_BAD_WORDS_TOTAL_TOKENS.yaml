@@ -1,0 +1,84 @@
+name: VLLM_MAX_BAD_WORDS_TOTAL_TOKENS
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:1140
+- vllm/envs.py:114
+- vllm/v1/worker/gpu/sample/bad_words.py:19
+- vllm/v1/worker/gpu/sample/bad_words.py:57
+value_type: int
+default: 1024
+valid_choices: positive integer; must be >= the total number of tokens summed across all bad_words_token_ids in a request
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This env var bounds the per-request width of the flattened bad-word token buffer
+
+  allocated in BadWordsState.__init__ (vllm/v1/worker/gpu/sample/bad_words.py:19-26).
+
+  The buffer is a StagedWriteTensor of shape [max_num_reqs, VLLM_MAX_BAD_WORDS_TOTAL_TOKENS]
+
+  with dtype int32, so its memory footprint is
+
+  max_num_reqs * VLLM_MAX_BAD_WORDS_TOTAL_TOKENS * 4 bytes. With the default 1024 and,
+
+  e.g., 256 concurrent requests this is ~1 MB — negligible. Raising it scales the buffer
+
+  linearly; lowering it reduces memory but risks ValueError at add_request time
+
+  (bad_words.py:57-62) when a request''s flattened bad-word tokens exceed the limit.
+
+  The parameter does NOT affect the sampling hot path throughput: "apply_bad_words only"
+
+  iterates over the actual number of bad words per request, not the buffer width.
+
+  On Ascend NPU this code path is the upstream v1 GPU worker path; vllm-ascend does not
+
+  override this env var, so the same semantics apply if/when the v1 bad-words sampler is
+
+  used on NPU. Impact is limited to a small, fixed device-memory allocation.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1140
+  context: Env var definition and default (1024) via os.environ.get
+- file: vllm/envs.py:114
+  context: 'Type annotation VLLM_MAX_BAD_WORDS_TOTAL_TOKENS: int = 1024'
+- file: vllm/v1/worker/gpu/sample/bad_words.py:19
+  context: Read to size the flattened bad-word token StagedWriteTensor [max_num_reqs, max_total_tokens]
+- file: vllm/v1/worker/gpu/sample/bad_words.py:57
+  context: Read to validate that a request's flattened bad-word tokens do not exceed the limit
+related_parameters:
+- name: VLLM_MAX_NUM_BAD_WORDS
+  relation: Companion limit on the number of bad-word sequences per request; sizes the offsets buffer [max_num_reqs, VLLM_MAX_NUM_BAD_WORDS
+    + 1]
+- name: bad_words_token_ids
+  relation: Per-request sampling parameter whose flattened token count must not exceed this limit
+constraints:
+- The total number of tokens summed across all bad_words_token_ids in a single request must not exceed VLLM_MAX_BAD_WORDS_TOTAL_TOKENS,
+  otherwise a ValueError is raised.
+- The value must be a positive integer; it is parsed with int() from the environment string.
+tuning_advice:
+  summary: Leave at the default 1024 unless your workload uses very long bad-word lists; only adjust to bound memory or to
+    avoid ValueError.
+  suggested_values:
+  - scenario: Default / typical serving with short bad-word lists
+    value: 1024
+    reason: Default is sufficient for most requests and the buffer is only ~max_num_reqs × 4 KB, negligible memory.
+  - scenario: Memory-constrained deployment with many concurrent requests and short bad words
+    value: 256
+    reason: Reduces the per-request bad-word buffer width, lowering device memory, while still covering typical short bad-word
+      lists.
+  - scenario: Workloads with long bad-word sequences that hit the ValueError
+    value: 4096
+    reason: Increases the flattened token buffer width so requests with many/long bad words do not raise ValueError; memory
+      cost grows linearly.
+  caveats:
+  - Only relevant when bad_words_token_ids is actually used; otherwise the buffer is allocated but unused.
+  - Raising this value increases device memory proportional to max_num_reqs; monitor NPU HBM usage on Ascend.
+  quick_guide: Keep VLLM_MAX_BAD_WORDS_TOTAL_TOKENS at 1024 unless bad-word requests fail with ValueError or you need to trim
+    memory.
+analysis_date: '2026-10-27'

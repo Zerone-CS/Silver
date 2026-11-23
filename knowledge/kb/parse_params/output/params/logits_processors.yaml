@@ -1,0 +1,96 @@
+name: --logits-processors
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:370
+- vllm/engine/arg_utils.py:759
+- vllm/engine/arg_utils.py:963
+- vllm/v1/sample/logits_processor/__init__.py:48
+- vllm/v1/sample/logits_processor/__init__.py:88
+- vllm_ascend/worker/model_runner_v1.py:626
+- vllm_ascend/sample/rejection_sampler.py:94
+value_type: list[str]
+default: null
+valid_choices: Any list of fully-qualified class names in the form <module>:<type> (e.g. my_pkg.my_module:MyLogitsProcessor),
+  or already-loaded LogitsProcessor subclasses; also populated via entry points in group 'vllm.logits_processors'
+cli_example: --logits-processors my_pkg.my_module:MyLogitsProcessor
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "Custom logits processors are applied to the logits tensor on every sampling step,\nafter the model forward\
+  \ pass and before token selection. On Ascend this happens in\ntwo places:\n1. vllm_ascend/worker/model_runner_v1.py:621-630\
+  \ — build_logitsprocs() is called with\n   vllm_config.model_config.logits_processors to construct the LogitsProcessors\n\
+  \   container for NPUInputBatch. When the list is non-empty,\n   logitsprocs_need_output_token_ids is set to True, which\
+  \ forces the runner to keep\n   and pass output token ids into the sampling path (extra bookkeeping per step).\n2. vllm_ascend/sample/rejection_sampler.py:94-218\
+  \ — in speculative decoding,\n   apply_logits_processors() is invoked on target_logits. When\n   is_processed_logprobs_mode\
+  \ is False, the code clones raw_target_logits\n   (line 217) before applying processors because apply_logits_processors\
+  \ modifies\n   the tensor in-place; this is an extra [num_tokens, vocab_size] float32 allocation\n   and copy per step.\
+  \ The processors themselves run elementwise over the full\n   [num_tokens, vocab_size] logits tensor on the NPU, adding\
+  \ kernel launches and\n   memory traffic proportional to batch size × vocab size.\nThe cost is per-token and scales with\
+  \ the number of registered processors and the\nvocabulary size; it is not a one-time startup cost. Built-in processors\n\
+  (MinTokensLogitsProcessor, LogitBiasLogitsProcessor, MinPLogitsProcessor) are\nalways present but are cheap no-ops when\
+  \ unused; user-supplied processors add\nreal per-step work. There is no vllm-ascend-specific override of the parameter\n\
+  semantics — vllm-ascend consumes the upstream ModelConfig.logits_processors value\ndirectly.\n"
+usage_locations:
+- file: vllm/config/model.py:370
+  context: 'ModelConfig field definition; docstring: ''One or more logits processors'' fully-qualified class names or class
+    definitions'''
+- file: vllm/engine/arg_utils.py:963
+  context: CLI argument registration --logits-processors in ModelConfig argument group
+- file: vllm/v1/sample/logits_processor/__init__.py:88
+  context: _load_logitsprocs_by_fqcns resolves FQCN strings into LogitsProcessor subclasses
+- file: vllm/v1/sample/logits_processor/__init__.py:48
+  context: LOGITSPROCS_GROUP entry-point group 'vllm.logits_processors' also contributes processors
+- file: vllm_ascend/worker/model_runner_v1.py:626
+  context: build_logitsprocs() consumes model_config.logits_processors to build NPUInputBatch logitsprocs; sets logitsprocs_need_output_token_ids
+- file: vllm_ascend/sample/rejection_sampler.py:94
+  context: AscendRejectionSampler.apply_logits_processors applies processors to target_logits during spec decode
+- file: vllm/config/vllm.py:1125
+  context: sampling distribution replay (return_sampling_mask) rejects custom logits processors
+- file: vllm/config/vllm.py:2871
+  context: V2 model runner unsupported-features check rejects custom logits processors
+related_parameters:
+- name: --logprobs-mode
+  relation: When logprobs_mode is not 'processed_logprobs', the rejection sampler clones target_logits before applying processors
+    (extra allocation); processed mode avoids the clone
+- name: --speculative-config
+  relation: Custom logits processors are rejected when speculative decoding is enabled in upstream v1 (STR_SPEC_DEC_REJECTS_LOGITSPROCS);
+    vllm-ascend's AscendRejectionSampler does apply processors in spec decode
+- name: --return-sampling-mask
+  relation: Sampling distribution replay raises ValueError if custom logits processors are set
+- name: --enable-trace-replay
+  relation: V2 model runner path rejects custom logits processors as unsupported
+constraints:
+- Each entry must be either a fully-qualified class name in the form <module>:<type> or an already-loaded class that is a
+  subclass of LogitsProcessor; otherwise a ValueError is raised.
+- Pooling models do not support custom logits processors (STR_POOLING_REJECTS_LOGITSPROCS).
+- Upstream v1 rejects custom logits processors when speculative decoding is enabled (STR_SPEC_DEC_REJECTS_LOGITSPROCS).
+- Sampling distribution replay (--return-sampling-mask) raises ValueError if custom logits processors are configured.
+- The V2 model runner lists custom logits processors as an unsupported feature.
+tuning_advice:
+  summary: Use custom logits processors sparingly on Ascend; each one adds per-token elementwise work over the full vocab
+    logits, and prefer processed_logprobs mode to avoid an extra clone in spec decode.
+  suggested_values:
+  - scenario: No custom sampling constraints needed (default)
+    value: unset
+    reason: Leaving the list empty avoids all per-step processor overhead; built-in processors remain available and are cheap
+      no-ops when unused.
+  - scenario: Need a single lightweight constraint (e.g. min-tokens, logit bias)
+    value:
+    - my_pkg.my_module:MyLogitsProcessor
+    reason: One processor keeps per-step elementwise work minimal while still enforcing the constraint.
+  - scenario: Speculative decoding with custom processors on vllm-ascend
+    value:
+    - my_pkg.my_module:MyLogitsProcessor
+    reason: vllm-ascend's AscendRejectionSampler applies processors in spec decode; pair with --logprobs-mode processed_logprobs
+      to avoid the extra target_logits clone.
+  caveats:
+  - Avoid stacking many processors; each adds a full-vocab elementwise pass per sampling step on the NPU.
+  - On the V2 model runner path custom logits processors are unsupported and will be rejected.
+  - Check installed 'vllm.logits_processors' entry-point plugins — they add cost even without the CLI flag.
+  quick_guide: Only pass --logits-processors when you truly need custom sampling constraints; keep the list short and use
+    --logprobs-mode processed_logprobs with spec decode.
+analysis_date: '2026-10-27'

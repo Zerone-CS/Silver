@@ -1,0 +1,68 @@
+name: structured_outputs.enable_in_reasoning
+type: nested
+category: other
+scope: vllm
+source_file:
+- vllm/v1/structured_output/__init__.py:96
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag is read once in StructuredOutputManager.__init__ (vllm/v1/structured_output/__init__.py:96)
+
+  and stored as self.enable_in_reasoning. It gates whether the structured-output (grammar/JSON schema)
+
+  constraint is applied during the reasoning phase of a reasoning model''s output, in addition to the
+
+  final answer phase. When enabled, the grammar bitmask/FSM must be advanced and applied for reasoning
+
+  tokens as well, which adds per-token structured-output overhead (bitmask computation and logit
+
+  masking) during the reasoning segment. When disabled, structured output is only enforced after the
+
+  reasoning parser transitions out of the reasoning phase, so reasoning tokens skip grammar processing.
+
+  The effect is a modest per-token latency cost during reasoning, not a throughput or memory change.
+
+  No vllm-ascend override of this parameter was found; it is a pure upstream vLLM v1 structured-output
+
+  control with no Ascend-specific code path.
+
+  '
+usage_locations:
+- file: vllm/v1/structured_output/__init__.py:96
+  context: Read from structured_outputs_config and stored as self.enable_in_reasoning to gate grammar application during reasoning
+    phase
+related_parameters:
+- name: structured_outputs.reasoning_parser
+  relation: Must be set for reasoning-phase gating to be meaningful; without a reasoning parser there is no reasoning phase
+    to gate
+- name: structured_outputs.reasoning_parser_plugin
+  relation: Plugin providing the reasoning parser class used to detect reasoning-phase boundaries
+- name: structured_outputs.backend
+  relation: Selects the grammar backend (xgrammar/guidance/outlines) whose per-token cost is incurred when enabled in reasoning
+constraints:
+- Has no effect unless a reasoning parser is configured via structured_outputs.reasoning_parser.
+- Only relevant for reasoning models that emit a distinct reasoning phase before the final answer.
+tuning_advice:
+  summary: Leave disabled unless you specifically need grammar-constrained reasoning traces; enabling adds per-token structured-output
+    overhead during the reasoning phase.
+  suggested_values:
+  - scenario: Standard reasoning model serving where only the final answer must conform to a schema
+    value: false
+    reason: Skips grammar bitmask computation for reasoning tokens, reducing per-token latency during the (often long) reasoning
+      phase.
+  - scenario: Applications requiring the reasoning trace itself to follow a strict format
+    value: true
+    reason: Enforces the grammar during reasoning, at the cost of extra structured-output processing per reasoning token.
+  caveats:
+  - No vllm-ascend override exists; behavior is identical to upstream vLLM v1 on Ascend NPU.
+  - Enabling increases per-token structured-output work during reasoning, which can noticeably raise latency for long chain-of-thought
+    outputs.
+  - Requires a configured reasoning parser; otherwise the flag is inert.
+  quick_guide: Keep false for normal schema-constrained final answers; enable only when reasoning traces must be grammar-constrained.
+analysis_date: '2026-10-27'

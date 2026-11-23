@@ -1,0 +1,95 @@
+name: --mm-hasher-algorithm
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/config/multimodal.py:157
+- vllm/engine/arg_utils.py:1388
+- vllm/engine/arg_utils.py:600
+- vllm/config/model.py:402
+- vllm/multimodal/processing/processor.py:1385
+- vllm/multimodal/processing/processor.py:1420
+value_type: str
+default: blake3
+valid_choices:
+- blake3
+- sha256
+- sha512
+cli_example: --mm-hasher-algorithm sha256
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This parameter selects the hash function used to compute multi-modal input
+
+  hashes for the multimodal processor cache. It is read via
+
+  `self.info.ctx.get_mm_config().mm_hasher_algorithm` at several call sites in
+
+  vllm/multimodal/processing/processor.py (lines 1385, 1420) and in model
+
+  implementations (terratorch.py:226, transformers/multimodal.py:641), all
+
+  wrapped in `timing_ctx.record("get_mm_hashes")`. The hash is computed over
+
+  the raw multimodal data items to look up cached preprocessing results
+
+  (`_get_cache_missing_items`). The choice of algorithm only changes the CPU
+
+  cost of hashing each multimodal item: "blake3 is a fast modern hash, while"
+
+  sha256/sha512 are slower but FIPS-compliant. On Ascend NPU this runs on the
+
+  host CPU during multimodal preprocessing (not on the NPU), so it does not
+
+  touch device compute, HCCL, or CANN kernels. The impact is limited to
+
+  per-request preprocessing latency for multimodal inputs; for text-only
+
+  workloads it has no effect. There is no vllm-ascend override of this
+
+  parameter in the provided context.
+
+  '
+usage_locations:
+- file: vllm/config/multimodal.py:157
+  context: Field definition with default 'blake3' and docstring recommending sha256/sha512 for FIPS.
+- file: vllm/engine/arg_utils.py:1388
+  context: CLI argument registration under MultiModalConfig group.
+- file: vllm/engine/arg_utils.py:600
+  context: EngineArgs field mapping to MultiModalConfig.mm_hasher_algorithm.
+- file: vllm/config/model.py:402
+  context: ModelConfig InitVar passed through to MultiModalConfig.
+- file: vllm/multimodal/processing/processor.py:1385
+  context: Hash computation for multimodal processing (apply_hf_processor path).
+- file: vllm/multimodal/processing/processor.py:1420
+  context: Hash computation for cached HF processor path (cache lookup).
+- file: vllm/model_executor/models/transformers/multimodal.py:641
+  context: Hash computation in transformers multimodal model wrapper.
+related_parameters:
+- name: --mm-processor-cache-type
+  relation: Determines which cache (lru/shm) consumes the computed hashes; hashing is only meaningful when a cache is enabled.
+- name: --mm-processor-cache-gb
+  relation: Cache size; if 0 the cache is disabled and hashing cost is not amortized.
+constraints:
+- The value must be one of the supported hash algorithms (blake3, sha256, sha512); other values are rejected by the MMHasherAlgorithm
+  type.
+- Use sha256 or sha512 only when FIPS compliance is required, since they are slower than the default blake3.
+tuning_advice:
+  summary: Keep the default blake3 for best preprocessing speed; switch to sha256/sha512 only for FIPS-compliant deployments.
+  suggested_values:
+  - scenario: Default / performance-oriented multimodal serving on Ascend
+    value: blake3
+    reason: Fastest hash, minimizes host-side get_mm_hashes latency during multimodal preprocessing.
+  - scenario: FIPS-compliant deployment requiring approved hash functions
+    value: sha256
+    reason: FIPS-compliant and faster than sha512; acceptable host-side overhead for compliance.
+  - scenario: FIPS deployment requiring stronger digest
+    value: sha512
+    reason: FIPS-compliant with a larger digest; slightly higher CPU cost than sha256.
+  caveats:
+  - This is a host-CPU cost only; it does not change NPU compute, so do not expect throughput gains from tuning it beyond
+    preprocessing latency.
+  - Changing the algorithm invalidates existing multimodal cache entries keyed by prior hashes.
+  quick_guide: Leave at blake3 unless FIPS compliance mandates sha256/sha512.
+analysis_date: '2026-10-27'

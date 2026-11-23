@@ -1,0 +1,117 @@
+name: --mm-device-do-normalize
+type: cli
+category: model
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:1466
+- vllm/engine/arg_utils.py:627
+- vllm/config/model.py:417
+- vllm/config/model.py:550
+- vllm/config/multimodal.py:137
+- vllm/config/multimodal.py:473
+- vllm/model_executor/models/interfaces.py:186
+- vllm/model_executor/models/qwen2_5_vl.py:1258
+- vllm/model_executor/models/qwen2_vl.py:1205
+value_type: bool
+default: true
+valid_choices: true or false (BooleanOptionalAction; CLI default is None, config default is True)
+cli_example: --mm-device-do-normalize
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'This flag moves the `do_normalize` step of multimodal preprocessing (the
+
+  per-pixel mean/std normalization of image/video tensors) out of the CPU-side
+
+  HF processor and into the device (accelerator) side, executed just before the
+
+  ViT encoder. In vllm/config/multimodal.py:137 the field defaults to True with
+
+  the docstring "Move the do_normalize computation in the mm preprocessing to
+
+  before the ViT, and let the device do it, so that CPU computation can be
+
+  saved." The CLI registration at vllm/engine/arg_utils.py:1466 overrides the
+
+  argparse default to None so that "unset" is distinguishable from an explicit
+
+  value; the effective default remains True via MultiModalConfig.
+
+  The performance effect is confined to the multimodal preprocessing path: it
+
+  shifts a small elementwise normalization from CPU to the NPU, reducing CPU
+
+  preprocessing latency and host->device data movement for image/video inputs.
+
+  It does NOT affect the language-model decode path, KV cache, scheduling, or
+
+  HCCL communication, so its impact on steady-state token throughput is
+
+  negligible. It only takes effect for models that declare
+
+  `supports_mm_device_do_normalize = True` (e.g. Qwen2-VL at
+
+  vllm/model_executor/models/qwen2_vl.py:1205 and Qwen2.5-VL at
+
+  vllm/model_executor/models/qwen2_5_vl.py:1258); for all other models the
+
+  flag is inert. The value is also folded into MultiModalConfig.compute_hash()
+
+  (vllm/config/multimodal.py:473), so toggling it changes the config hash and
+
+  can invalidate compilation/prefix caches. No vllm-ascend override of this
+
+  parameter was found in the provided context; it is an upstream-only knob.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:1466
+  context: Registers --mm-device-do-normalize CLI flag with default None
+- file: vllm/engine/arg_utils.py:627
+  context: 'EngineArgs field mm_device_do_normalize: bool | None'
+- file: vllm/config/model.py:417
+  context: ModelConfig InitVar forwarded to MultiModalConfig
+- file: vllm/config/model.py:550
+  context: ModelConfig __init__ parameter
+- file: vllm/config/multimodal.py:137
+  context: MultiModalConfig field definition, default True
+- file: vllm/config/multimodal.py:473
+  context: Included in MultiModalConfig.compute_hash factors
+- file: vllm/model_executor/models/interfaces.py:186
+  context: supports_mm_device_do_normalize capability flag on SupportsMultiModal
+- file: vllm/model_executor/models/qwen2_vl.py:1205
+  context: Qwen2-VL declares supports_mm_device_do_normalize = True
+- file: vllm/model_executor/models/qwen2_5_vl.py:1258
+  context: Qwen2.5-VL declares supports_mm_device_do_normalize = True
+related_parameters:
+- name: --mm-processor-device
+  relation: Both control where multimodal preprocessing runs; --mm-processor-device selects the device for the HF fast processor
+    transform, while this flag moves only the normalize step to the device
+- name: --mm-processor-kwargs
+  relation: Preprocessing kwargs forwarded to the HF processor; interacts with where normalization is performed
+- name: --mm-tensor-ipc
+  relation: Transport for moving processed tensors; affects whether device-side preprocessing results can be carried without
+    host copies
+- name: --mm-encoder-tp-mode
+  relation: Also part of MultiModalConfig.compute_hash; both influence multimodal encoder execution
+constraints:
+- Only takes effect for models that declare supports_mm_device_do_normalize = True; for other models the flag is ignored.
+- The CLI default is None (unset), which resolves to the MultiModalConfig default of True.
+- Changing this value alters MultiModalConfig.compute_hash(), which can invalidate compilation/prefix caches.
+tuning_advice:
+  summary: Leave at the default (enabled) for supported multimodal models to offload normalization to the NPU and save CPU
+    preprocessing time.
+  suggested_values:
+  - scenario: Qwen2-VL / Qwen2.5-VL or other models declaring supports_mm_device_do_normalize on Ascend NPU
+    value: true
+    reason: Moves the do_normalize step to the device, reducing CPU preprocessing latency and host-device copies for image/video
+      inputs.
+  - scenario: Models that do not support device-side normalize
+    value: false
+    reason: The flag is inert for unsupported models; leaving it unset (default) is equivalent and avoids confusion.
+  caveats:
+  - Only affects multimodal preprocessing latency, not LLM token throughput.
+  - Changing the value changes the config hash and may invalidate caches.
+  quick_guide: Keep default (enabled) for supported VLMs; it only trims multimodal preprocessing CPU cost.
+analysis_date: '2026-10-27'

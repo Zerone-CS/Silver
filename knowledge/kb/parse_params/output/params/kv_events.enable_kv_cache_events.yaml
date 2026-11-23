@@ -1,0 +1,106 @@
+name: kv_events.enable_kv_cache_events
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/vllm.py:1824
+- vllm/v1/core/sched/scheduler.py:133
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:112
+- vllm_ascend/distributed/kv_transfer/kv_pool/kv_offload/preempt_offload/manager.py:92
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag gates whether the scheduler and KV-pool managers emit KV cache
+
+  events (BlockStored / BlockRemoved) that can be published externally (e.g. via
+
+  ZMQ) for cache-aware routing. It does NOT change the core inference compute path.
+
+  In upstream vLLM, `Scheduler.__init__` sets `self.enable_kv_cache_events` from
+
+  `kv_events_config.enable_kv_cache_events` (vllm/v1/core/sched/scheduler.py:131-134);
+
+  when enabled, the scheduler records block store/removal events on every
+
+  block allocation/free, adding per-step bookkeeping overhead on the scheduler
+
+  thread. In vllm-ascend, the same flag is read in
+
+  `vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:112`
+
+  (`self.enable_kv_events = bool(kv_event_config and kv_event_config.enable_kv_cache_events)`)
+
+  and in `preempt_offload/manager.py:92`, controlling whether the Ascend KV pool
+
+  (ascend_store / preempt-offload) tracks and emits events. When enabled, the
+
+  Ascend pool worker spawns/uses a KV send thread (`KVPoolWorker.get_kv_events`,
+
+  see tests/ut/distributed/ascend_store/test_pool_worker.py:997-1018) to collect
+
+  and forward events, which adds a background thread and event serialization cost.
+
+  The performance effect is therefore indirect: "extra CPU-side bookkeeping and"
+
+  event publishing overhead, not NPU compute. It is only meaningful when prefix
+
+  caching and/or KV transfer/offload is in use; otherwise it is a no-op.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:1824
+  context: Warns if KV cache events are on but prefix caching is disabled, or if a publisher is set while events are disabled.
+- file: vllm/v1/core/sched/scheduler.py:133
+  context: Scheduler sets enable_kv_cache_events to gate per-step block event tracking.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/pool_scheduler.py:112
+  context: Ascend KV pool scheduler reads the flag to enable event tracking in the ascend_store pool.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/kv_offload/preempt_offload/manager.py:92
+  context: Preempt-offload manager enables KV cache events for the CPU offload pool.
+- file: vllm/v1/kv_offload/tiering/fs/manager.py:141
+  context: Secondary tier only emits BlockStored events when the global flag is enabled.
+related_parameters:
+- name: kv_events_config.publisher
+  relation: If publisher is set but enable_kv_cache_events is false, vLLM warns that events will not be published.
+- name: cache_config.enable_prefix_caching
+  relation: KV cache events are only useful with prefix caching enabled; vLLM warns if events are on but prefix caching is
+    off.
+- name: kv_transfer_config
+  relation: Ascend KV pool / offload paths read this flag to decide whether to emit events for transferred/offloaded blocks.
+- name: kv_events_config.self_describing_kv_events
+  relation: Required by KVCR local G2/G3 inventory when events are enabled.
+constraints:
+- KV cache events are only meaningful when prefix caching is enabled; enabling events without --enable-prefix-caching triggers
+  a warning and yields no useful events.
+- Setting a non-null publisher while enable_kv_cache_events is false causes vLLM to warn that events are disabled and will
+  not be published.
+- KVCR local G2/G3 inventory requires self_describing_kv_events to be enabled when KV cache events are on.
+tuning_advice:
+  summary: Enable only when you need cache-aware routing/observability and prefix caching is on; otherwise leave disabled
+    to avoid scheduler and Ascend KV-pool event overhead.
+  suggested_values:
+  - scenario: Production serving without external cache-aware router
+    value: false
+    reason: No consumer for events; avoids per-step scheduler bookkeeping and Ascend KV send-thread overhead.
+  - scenario: Deployment using a cache-aware router / KV event publisher with prefix caching enabled
+    value: true
+    reason: Required to emit BlockStored/BlockRemoved events; pair with --enable-prefix-caching and a configured publisher.
+  - scenario: Ascend KV pool (ascend_store) or preempt-offload with external cache tracking
+    value: true
+    reason: Ascend pool scheduler and preempt-offload manager gate event emission on this flag; enable to expose offloaded/transferred
+      block events.
+  caveats:
+  - Always enable prefix caching together with this flag; otherwise vLLM warns and events are useless.
+  - High event volume can add measurable CPU overhead on the scheduler thread and Ascend KV send thread; monitor if enabling
+    at scale.
+  - If a publisher is configured but this flag is false, no events are published — verify both are set consistently.
+  quick_guide: Leave false unless a cache-aware router needs KV events; if enabling, also enable prefix caching and configure
+    the publisher.
+analysis_date: '2026-10-27'

@@ -1,0 +1,102 @@
+name: speculative.enforce_eager
+type: nested
+category: speculation
+scope: both
+source_file:
+- vllm/v1/spec_decode/llm_base_proposer.py:431
+- vllm/v1/spec_decode/extract_hidden_states.py:249
+- vllm/v1/worker/gpu_model_runner.py:6213
+- vllm_ascend/spec_decode/llm_base_proposer.py:239
+- vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:270
+- vllm_ascend/worker/v2/spec_decode/dflash/speculator.py:90
+- vllm_ascend/worker/v2/spec_decode/dflash2/speculator.py:132
+- vllm_ascend/worker/v2/spec_decode/dspark/speculator.py:139
+value_type: bool
+default: false
+valid_choices: true | false
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: "This nested field of --speculative-config controls whether the *draft* (speculator)\nmodel runs in eager mode,\
+  \ independently of the target model's graph mode. It is\nread in several distinct code paths:\n\nv1-ascend (vllm_ascend/spec_decode/llm_base_proposer.py:239):\n\
+  \  self.use_cuda_graph = self.runner._use_aclgraph() and not self.speculative_config.enforce_eager\nWhen enforce_eager is\
+  \ true, the draft proposer disables ACL graph capture for the\ndraft model, forcing every draft forward to run eagerly.\
+  \ This removes graph replay\noverhead savings on the draft decode path, increasing per-step latency for the\nspeculative\
+  \ draft. Additionally, GLM models are auto-forced to eager draft mode\n(lines 249-258) regardless of this flag.\n\nv2-ascend\
+  \ (autoregressive/dflash/dspark speculators): init_cudagraph_manager checks\nself.speculative_config.enforce_eager and,\
+  \ if true, sets cudagraph_mode = NONE for\nthe draft's graph manager (prefill/decode/query managers). The target model keeps\n\
+  its own cudagraph mode (e.g. FULL_DECODE_ONLY). So this flag trades draft-side graph\nreplay speed for eager execution.\n\
+  \nv2-ascend dflash2 (dflash2/speculator.py:132): enforce_eager is *mandatory* — if\nfalse, a NotImplementedError is raised\
+  \ because the _selector_walk_kernel_ascend\noperator cannot be captured in graph mode on NPU. So for dflash2, enforce_eager=true\n\
+  is required for correctness, not just a perf tradeoff.\n\nv1-upstream (llm_base_proposer.py:431, extract_hidden_states.py:249):\
+  \ when\nenforce_eager is false and the target uses PIECEWISE/FULL cudagraphs, the drafter\nuses PIECEWISE cudagraphs; otherwise\
+  \ NONE. gpu_model_runner.py:6213 also gates\ndrafter dummy_run cudagraph usage on this flag.\n\nNet effect on Ascend: \"\
+  setting enforce_eager=true disables ACL graph for the draft\"\nmodel, increasing draft-step latency and reducing end-to-end\
+  \ speculative decoding\nthroughput, but avoids graph-capture failures (e.g. dynamo fullgraph capture failure\nin draft RoPE,\
+  \ or dflash2 kernel non-capturability). Setting it false enables draft\ngraph replay for faster drafting, but may hit capture\
+  \ failures on some draft models.\n"
+usage_locations:
+- file: vllm_ascend/spec_decode/llm_base_proposer.py:239
+  context: 'v1-ascend: use_cuda_graph = runner._use_aclgraph() and not enforce_eager; disables draft ACL graph'
+- file: vllm_ascend/worker/v2/spec_decode/autoregressive/speculator.py:270
+  context: 'v2-ascend: init_cudagraph_manager forces CUDAGraphMode.NONE for draft when enforce_eager'
+- file: vllm_ascend/worker/v2/spec_decode/dflash/speculator.py:90
+  context: 'v2-ascend: dflash draft graph manager forced to NONE when enforce_eager'
+- file: vllm_ascend/worker/v2/spec_decode/dflash2/speculator.py:132
+  context: 'v2-ascend: dflash2 requires enforce_eager=true, else NotImplementedError'
+- file: vllm_ascend/worker/v2/spec_decode/dspark/speculator.py:139
+  context: 'v2-ascend: dspark draft graph manager forced to NONE when enforce_eager'
+- file: vllm/v1/spec_decode/llm_base_proposer.py:431
+  context: 'v1-upstream: drafter cudagraph mode PIECEWISE only if not enforce_eager'
+- file: vllm/v1/worker/gpu_model_runner.py:6213
+  context: 'v1-upstream: drafter dummy_run use_cudagraphs gated on not enforce_eager'
+related_parameters:
+- name: --enforce-eager
+  relation: Top-level flag forces the whole model (target) eager; nested speculative.enforce_eager only affects the draft
+    model. They are independent.
+- name: --compilation-config.cudagraph_mode
+  relation: Target model graph mode; nested enforce_eager does not change it, only the draft's mode.
+- name: --speculative-config.method
+  relation: dflash2 requires enforce_eager=true; other methods (mtp, eagle, dspark) allow either.
+- name: --speculative-config.num_speculative_tokens
+  relation: Draft graph capture sizes must be n*(num_speculative_tokens+1); eager draft avoids this constraint.
+constraints:
+- For dflash2 method on model runner V2, speculative_config.enforce_eager must be true, otherwise a NotImplementedError is
+  raised because the _selector_walk_kernel_ascend operator cannot be captured in graph mode.
+- The nested enforce_eager only affects the draft model; it does not change the target model's graph mode, so do not add a
+  top-level --enforce-eager expecting the same effect.
+- GLM series models with speculative decoding are automatically forced to eager draft mode regardless of this flag, with a
+  warning logged.
+tuning_advice:
+  summary: 'Keep speculative.enforce_eager=false for maximum draft throughput when the draft
+
+    model supports ACL graph capture; set it to true only when graph capture fails or
+
+    when using dflash2 (which mandates it).
+
+    '
+  suggested_values:
+  - scenario: dflash2 method on model runner V2 (VLLM_USE_V2_MODEL_RUNNER=1)
+    value: true
+    reason: dflash2 raises NotImplementedError without enforce_eager=true because the Ascend selector walk kernel is not graph-capturable.
+  - scenario: mtp/eagle/dspark draft on stable v1 worker with working graph capture
+    value: false
+    reason: Enables PIECEWISE ACL graph for the draft, reducing draft-step latency and improving speculative decoding throughput.
+  - scenario: Draft graph capture fails (dynamo fullgraph error, RoPE shape mismatch, stream resource errors)
+    value: true
+    reason: Falls back to eager draft execution to work around capture failures while keeping the target model's graph mode.
+  - scenario: GLM series models with speculative decoding
+    value: true
+    reason: GLM draft is auto-forced to eager mode anyway; setting it explicitly avoids confusion and matches the logged warning.
+  caveats:
+  - Do not confuse nested speculative.enforce_eager with top-level --enforce-eager; the latter forces the target model eager
+    and hurts throughput much more.
+  - Eager draft increases per-step latency; only use it when graph capture is not viable.
+  - On v2-ascend, draft graph managers are patched onto upstream modules and need the speculator ref; enforce_eager=true bypasses
+    that graph path entirely.
+  quick_guide: Set speculative.enforce_eager=true only for dflash2 or when draft graph capture fails; otherwise leave false
+    for faster drafting.
+analysis_date: '2026-10-27'

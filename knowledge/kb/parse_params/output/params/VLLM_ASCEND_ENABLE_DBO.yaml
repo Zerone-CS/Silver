@@ -1,0 +1,87 @@
+name: VLLM_ASCEND_ENABLE_DBO
+type: env
+category: scheduling
+scope: vllm-ascend
+source_file:
+- docs/source/user_guide/release_notes.md:2396
+- vllm_ascend/platform.py:918
+- vllm_ascend/platform.py:920
+- vllm_ascend/platform.py:922
+value_type: bool
+default: '0'
+valid_choices: 0 or 1 (unset defaults to disabled)
+cli_example: null
+deprecated: true
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'VLLM_ASCEND_ENABLE_DBO enables the "dual-batch overlap" (DBO) execution mode for
+
+  DeepSeek-family models on Ascend NPU, introduced in vllm-ascend PR #941. DBO is a
+
+  scheduling/execution technique that overlaps the compute of one micro-batch with the
+
+  communication (dispatch/combine, e.g. MoE all-to-all / HCCL collectives) of another
+
+  micro-batch. On Ascend this hides HCCL communication latency behind NPU compute,
+
+  improving end-to-end throughput and reducing per-token latency for large MoE models
+
+  such as DeepSeek. Because the parameter is only referenced in the release notes and
+
+  not found as a definition/usage site in the provided source context, the exact code
+
+  path (dispatcher selection, model runner batching) could not be confirmed from source;
+
+  the mechanism is inferred from the documented feature description. It is a
+
+  vllm-ascend-only env var with no upstream vLLM equivalent.
+
+
+
+  Current-source caveat: vllm_ascend/platform.py:918-922 logs that parameter=enable_dbo is currently ignored on Ascend and
+  resets it to False. VLLM_ASCEND_ENABLE_DBO is not read anywhere in the current source tree, so on current versions it should
+  be treated as a no-op.
+
+  '
+usage_locations:
+- file: docs/source/user_guide/release_notes.md:2396
+  context: 'Release note documenting that DBO for DeepSeek models is enabled by setting VLLM_ASCEND_ENABLE_DBO=1 (PR #941).'
+- file: vllm_ascend/platform.py:918
+  context: Checks parallel_config.enable_dbo and logs that it is ignored on Ascend.
+- file: vllm_ascend/platform.py:922
+  context: Resets enable_dbo to False, confirming the current Ascend path does not use it.
+related_parameters:
+- name: VLLM_ASCEND_ENABLE_FLASHCOMM1
+  relation: Both are Ascend communication-overlap optimizations; may interact when overlapping MoE communication with compute.
+- name: --enable-expert-parallel
+  relation: DBO overlaps MoE dispatch/combine communication, which is most relevant when expert parallelism is enabled.
+- name: --tensor-parallel-size
+  relation: Larger TP increases collective communication volume, making communication-compute overlap (DBO) more beneficial.
+constraints:
+- The value must be set to 1 to enable DBO; leaving it unset or 0 keeps DBO disabled.
+- DBO is documented specifically for DeepSeek-family (MoE) models; enabling it for other model architectures is not documented
+  as supported.
+- In current vllm-ascend, platform.py:918-922 explicitly resets enable_dbo to False and warns that the parameter is ignored
+  on Ascend; the env var is not read by the current source tree.
+tuning_advice:
+  summary: Enable VLLM_ASCEND_ENABLE_DBO=1 for DeepSeek MoE models to overlap communication with compute and raise throughput.
+  suggested_values:
+  - scenario: Current vllm-ascend versions
+    value: 0
+    reason: platform.py:918-922 resets enable_dbo to False; the env var is a no-op on current source.
+  - scenario: Older vllm-ascend versions where the release-note DBO feature is confirmed
+    value: 1
+    reason: Historical DBO feature; verify the version actually consumes the env var before enabling.
+  caveats:
+  - This is a vllm-ascend-only env var with no upstream vLLM equivalent; it has no effect on GPU deployments.
+  - The feature is documented for DeepSeek dual-batch overlap; verify correctness and numerical results when enabling it,
+    as overlap scheduling can expose synchronization bugs.
+  - Benefits depend on communication being a meaningful fraction of step time; on small models or low TP/EP degrees the overlap
+    gain may be marginal.
+  - Only documented in a historical release note; the code path could not be confirmed and current source marks enable_dbo
+    as ignored. Validate on your version before relying on it.
+  quick_guide: Leave unset on current vllm-ascend; platform.py warns enable_dbo is ignored. Only try 1 on versions where the
+    DBO release-note feature is confirmed.
+analysis_date: '2026-10-27'

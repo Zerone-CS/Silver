@@ -1,0 +1,92 @@
+name: VLLM_MOONCAKE_LOAD_RECV_THREADS
+type: env
+category: kv_cache
+scope: vllm
+source_file:
+- vllm/envs.py:1691
+- vllm/envs.py:234
+- vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:1653
+value_type: int
+default: 1
+valid_choices: positive integer (>= 1); values below 1 are clamped to 1 via max(1, ...)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- throughput
+- latency
+impact_detail: 'This env var controls the size of the pool of KV-load receive threads
+
+  (KVCacheStoreRecvingThread) in the Mooncake store connector worker. In
+
+  vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:1653
+
+  it is read as `self.num_recv_threads = max(1, envs.VLLM_MOONCAKE_LOAD_RECV_THREADS)`
+
+  and used to spawn a list of receive threads (`self.kv_recv_threads`). The
+
+  upstream comment explains the mechanism: "multiple receive threads let the"
+
+  per-request control overhead (Python prep + master key lookup) of one request
+
+  overlap with the RDMA transfer of another, keeping the transfer engine''s
+
+  queue pairs busy. This only matters when that per-request overhead is
+
+  significant or per-request batches are too small to saturate the link.
+
+  On Ascend NPU, this parameter is part of the Mooncake KV-store connector
+
+  (a disaggregated prefill/decode KV transfer path). It is NOT referenced in
+
+  vllm-ascend source and there is no Ascend-specific override; the value is
+
+  consumed by the upstream Mooncake store worker code. Its effect is on the
+
+  host-side KV transfer pipeline (RDMA/network), not on NPU compute kernels,
+
+  so the impact on Ascend runtime is indirect and only relevant when the
+
+  Mooncake store connector is actually used for KV offload/transfer.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1691
+  context: Env var definition and default (1) via int(os.getenv(...))
+- file: vllm/envs.py:234
+  context: 'Type annotation VLLM_MOONCAKE_LOAD_RECV_THREADS: int = 1'
+- file: vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/worker.py:1653
+  context: Sets self.num_recv_threads = max(1, envs.VLLM_MOONCAKE_LOAD_RECV_THREADS) to size the load-receive thread pool
+related_parameters:
+- name: VLLM_MOONCAKE_DISK_STAGING_USABLE_RATIO
+  relation: Sibling Mooncake store tuning knob affecting GET batch fill of the DirectIO staging buffer
+- name: VLLM_MOONCAKE_BOOTSTRAP_PORT
+  relation: Mooncake handshake port; part of the same Mooncake connector configuration
+- name: MOONCAKE_PREFERRED_SEGMENT
+  relation: Pins rank to an owner segment; affects which segment the receive threads pull from
+constraints:
+- The value is coerced with max(1, ...), so any value below 1 is effectively treated as 1.
+- Only has an effect when the Mooncake store KV connector is in use; otherwise the receive-thread pool is not created.
+tuning_advice:
+  summary: Keep at default 1 unless Mooncake KV-store transfers are bottlenecked by per-request control overhead or small
+    batches; then raise modestly (2-4).
+  suggested_values:
+  - scenario: Default / general use, or Mooncake connector not used
+    value: 1
+    reason: Default value; single receive thread is sufficient when per-request batches saturate the link or the connector
+      is unused.
+  - scenario: Mooncake KV offload with significant per-request control overhead or small per-request batches
+    value: 2
+    reason: Overlaps Python prep + master key lookup of one request with RDMA transfer of another, keeping transfer engine
+      queue pairs busy.
+  - scenario: High-throughput KV transfer where link is underutilized by single thread
+    value: 4
+    reason: More parallel receive threads can better saturate the RDMA link, but watch for thread contention and diminishing
+      returns.
+  caveats:
+  - No vllm-ascend override exists; this is an upstream vLLM Mooncake connector knob and only applies when that connector
+    is enabled.
+  - Values below 1 are clamped to 1 by max(1, ...).
+  - Excessive thread counts can cause contention and CPU overhead without improving transfer throughput.
+  quick_guide: Leave at 1; try 2-4 only if Mooncake KV transfers are bottlenecked by control overhead or small batches.
+analysis_date: '2026-10-27'

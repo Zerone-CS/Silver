@@ -1,0 +1,104 @@
+name: --cp-kv-cache-interleave-size
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1115
+- vllm/engine/arg_utils.py:494
+- vllm/config/parallel.py:361
+- vllm/config/vllm.py:3097
+- vllm_ascend/platform.py:1410
+- vllm_ascend/worker/block_table.py:32
+- vllm_ascend/worker/dcp_utils.py:161
+- vllm_ascend/worker/model_runner_v1.py:635
+- vllm_ascend/worker/npu_input_batch.py:60
+value_type: int
+default: null
+valid_choices: positive integer; must satisfy block_size % cp_kv_cache_interleave_size == 0
+cli_example: --cp-kv-cache-interleave-size 128
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "This parameter controls the interleaving granularity of the KV-cache layout across\nDecode Context Parallel\
+  \ (DCP) ranks. Per the vllm-ascend context_parallel design doc,\nfor a DCP size of dcp_size a virtual block holds block_size\
+  \ * dcp_size tokens, and\ntoken x maps to local_block_index = offset_in_virtual_block // cp_kv_cache_interleave_size\nand\
+  \ target_rank = local_block_index % dcp_size. The slot-mapping computation uses this\nlayout so each DCP rank stores only\
+  \ its local sequence shard.\n\nOn Ascend, the value is threaded through the whole DCP data path:\n- \"vllm_ascend/worker/model_runner_v1.py:635\
+  \ and :6012 pass\"\n  parallel_config.cp_kv_cache_interleave_size into NPUInputBatch / BlockTable.\n- \"vllm_ascend/worker/block_table.py:109\
+  \ stores it and uses it for slot-mapping.\"\n- \"vllm_ascend/worker/dcp_utils.py:161, :554 feed it into get_dcp_local_seq_lens\
+  \ to\"\n  compute each rank's interleave-aware local KV length (dcp_local_seq_lens and\n  dcp_local_seq_lens_cpu), which\
+  \ the attention backend consumes.\n\nThe performance effect is indirect but real: \"the interleave size determines how\"\
+  \ncontiguous each rank's KV shard is in memory and how the local sequence lengths are\ncomputed. A larger interleave size\
+  \ (up to block_size) yields more contiguous per-rank\nKV access, which improves attention kernel memory locality and reduces\
+  \ per-token\nscatter/gather overhead during decode. It also affects whether MTP (multi-token\nprediction) can be combined\
+  \ with DCP: upstream AttentionBackend exposes\nsupports_mtp_with_cp_non_trivial_interleave_size (vllm/v1/attention/backend.py:807),\n\
+  i.e. some backends only support MTP when cp_kv_cache_interleave_size > 1.\n\nvllm-ascend overrides/validates this value\
+  \ in platform.py:_validate_sfa_dcp_kv_sp:\n- \"For SFA sparse models with DCP enabled, if cp_kv_cache_interleave_size !=\
+  \ block_size\"\n  it logs a warning and forcibly overrides cp_kv_cache_interleave_size to block_size\n  (platform.py:1419-1426).\n\
+  - \"For P/D disaggregation with DCP and a KV pool (kv_transfer_config set), it raises\"\n  AssertionError if cp_kv_cache_interleave_size\
+  \ != block_size (platform.py:1408-1417).\nUpstream vllm/config/vllm.py:adjust_dcp_kv_cache_interleave_size also auto-resolves\n\
+  the value to local block_size for NIXL P/D disaggregation, and lets\ndcp_kv_cache_interleave_size override cp_kv_cache_interleave_size\
+  \ when > 1.\n"
+usage_locations:
+- file: vllm_ascend/platform.py:1410
+  context: Validates/overrides cp_kv_cache_interleave_size against block_size for SFA DCP and P/D disaggregation KV pool scenarios.
+- file: vllm_ascend/worker/block_table.py:32
+  context: BlockTable constructor accepts cp_kv_cache_interleave_size and stores it for slot-mapping.
+- file: vllm_ascend/worker/dcp_utils.py:161
+  context: Computes DCP-local CPU sequence lengths using cp_kv_cache_interleave_size.
+- file: vllm_ascend/worker/dcp_utils.py:554
+  context: Computes interleave-aware local KV length per DCP rank for attention metadata.
+- file: vllm_ascend/worker/model_runner_v1.py:635
+  context: Passes parallel_config.cp_kv_cache_interleave_size into NPUInputBatch/BlockTable.
+- file: vllm_ascend/worker/npu_input_batch.py:60
+  context: NPUInputBatch accepts cp_kv_cache_interleave_size and forwards to MultiGroupBlockTable.
+- file: vllm/config/vllm.py:3097
+  context: adjust_dcp_kv_cache_interleave_size normalizes interleave size to block_size for NIXL P/D.
+- file: vllm/v1/attention/backend.py:807
+  context: supports_mtp_with_cp_non_trivial_interleave_size gates MTP with cp_kv_cache_interleave_size > 1.
+related_parameters:
+- name: --decode-context-parallel-size
+  relation: cp_kv_cache_interleave_size only has effect when DCP is enabled (dcp_size > 1); it defines the KV sharding granularity
+    across DCP ranks.
+- name: --dcp-kv-cache-interleave-size
+  relation: Deprecated predecessor; when > 1 it overrides cp_kv_cache_interleave_size (vllm/config/vllm.py:3108-3114).
+- name: --block-size
+  relation: Must satisfy block_size % cp_kv_cache_interleave_size == 0; for SFA DCP and P/D KV pool scenarios it must equal
+    block_size.
+- name: --prefill-context-parallel-size
+  relation: PCP interacts with DCP axis layout; cp_kv_cache_interleave_size governs the DCP KV interleave.
+- name: --kv-transfer-config
+  relation: When a KV connector (NIXL) is used with DCP, interleave size is auto-adjusted to block_size.
+constraints:
+- block_size must be divisible by cp_kv_cache_interleave_size (block_size % cp_kv_cache_interleave_size == 0).
+- When DCP is enabled together with P/D disaggregation and a KV pool (kv_transfer_config set), cp_kv_cache_interleave_size
+  must equal block_size or an AssertionError is raised.
+- For SFA sparse models with DCP enabled, cp_kv_cache_interleave_size is forcibly overridden to block_size if it differs.
+- The parameter only takes effect when decode-context-parallel-size is greater than 1.
+tuning_advice:
+  summary: For DCP on Ascend, set cp_kv_cache_interleave_size to block_size (or a divisor) to maximize per-rank KV contiguity;
+    leave unset (default 1) when DCP is disabled.
+  suggested_values:
+  - scenario: DCP enabled (decode-context-parallel-size > 1), general dense models
+    value: 128
+    reason: Matches typical block_size (128) giving fully contiguous per-rank KV shards and best attention memory locality;
+      also satisfies block_size % interleave == 0.
+  - scenario: SFA sparse model with DCP enabled
+    value: 128
+    reason: vllm-ascend forces cp_kv_cache_interleave_size == block_size for SFA DCP; setting it explicitly to block_size
+      avoids the override warning.
+  - scenario: P/D disaggregation with DCP and KV pool (NIXL connector)
+    value: 128
+    reason: Must equal block_size or an AssertionError is raised; upstream also auto-resolves to local block_size.
+  - scenario: DCP disabled (decode-context-parallel-size == 1)
+    value: 1
+    reason: Parameter has no effect without DCP; default 1 is safe and avoids unnecessary layout changes.
+  caveats:
+  - Do not set a value that does not divide block_size; it will break slot-mapping.
+  - For SFA DCP and P/D KV pool scenarios the value is overridden or asserted to block_size, so manual tuning is moot there.
+  - If using MTP with DCP, prefer interleave size > 1 to keep the backend's MTP-with-non-trivial-interleave path available.
+  quick_guide: With DCP on Ascend, set --cp-kv-cache-interleave-size equal to --block-size; otherwise leave it at the default
+    1.
+analysis_date: '2026-10-27'

@@ -1,0 +1,101 @@
+name: --revision
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/config/model.py:204
+- vllm/engine/arg_utils.py:568
+- vllm/engine/arg_utils.py:894
+- vllm/engine/arg_utils.py:847
+- vllm_ascend/model_loader/rfork/identity.py:151
+- vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:36
+- vllm_ascend/patch/platform/patch_deepseek_v4_vision.py:36
+value_type: str
+default: null
+valid_choices: Any Hugging Face Hub branch name, tag name, or commit id; null means the repository default branch
+cli_example: --revision <branch-or-tag-or-commit-id>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- memory
+impact_detail: "--revision selects which checkpoint snapshot of the model repository is loaded. It does not\nchange any runtime\
+  \ scheduling, kernel selection, or NPU execution path, so it has no direct\neffect on per-token latency or steady-state\
+  \ throughput. Its performance relevance is indirect\nand comes from three places:\n1. Weight loading (startup latency):\
+  \ the revision determines which safetensors shards are\n   downloaded/read. A different revision can mean a different checkpoint\
+  \ layout (e.g. fused vs\n   unfused weights, different quantization packing), which changes model-load time and, if the\n\
+  \   layout differs, whether Ascend-specific weight post-processing (NZ format conversion, fused\n   MC2 layout) can be applied.\
+  \ This affects cold-start latency and peak host/NPU memory during\n   load, not steady-state inference.\n2. Offline resolution\
+  \ path (vllm/engine/arg_utils.py:847): when HF_HUB_OFFLINE is set, vLLM\n   calls get_model_path(self.model, self.revision)\
+  \ to rewrite the model id into a local path.\n   The revision therefore participates in resolving the local snapshot directory;\
+  \ a wrong or\n   missing revision here fails at startup rather than degrading performance.\n3. Ascend cache/transfer identity:\
+  \ vllm-ascend uses the revision as part of cache and transfer\n   fingerprints. vllm_ascend/model_loader/rfork/identity.py:151\
+  \ (_get_model_revision) prefers the\n   resolved commit hash (_commit_hash/commit_hash) over the raw --revision string,\
+  \ falling back\n   to model_config.revision. This fingerprint gates RFork weight transfer reuse: if the revision\n   differs\
+  \ between two instances, the fingerprint mismatches and the transferable-tensor reuse\n   is rejected, forcing a full reload\
+  \ instead of a fast transfer. Similarly\n   vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:36\
+  \ includes\n   revision in the model identity used for prefix-cache keying, so mismatched revisions across\n   P/D instances\
+  \ can reduce prefix-cache hit rate (indirect throughput effect).\nThe Ascend DeepSeek-V4 vision patch (patch_deepseek_v4_vision.py:36)\
+  \ merely forwards revision\ninto the upstream ModelArchConfigConvertorBase constructor; it does not alter behavior based\
+  \ on\nthe value.\n"
+usage_locations:
+- file: vllm/config/model.py:204
+  context: ModelConfig.revision field definition; docstring states it is a branch/tag/commit id, default version if unspecified.
+- file: vllm/engine/arg_utils.py:568
+  context: EngineArgs.revision defaults to ModelConfig.revision (None).
+- file: vllm/engine/arg_utils.py:894
+  context: CLI registration of --revision in the ModelConfig argument group.
+- file: vllm/engine/arg_utils.py:847
+  context: Under HF_HUB_OFFLINE, get_model_path(self.model, self.revision) rewrites the model id to a local snapshot path.
+- file: vllm_ascend/model_loader/rfork/identity.py:151
+  context: _get_model_revision prefers resolved commit hash, falls back to model_config.revision, used in RFork compatibility
+    fingerprint.
+- file: vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/dspark_prefix_cache.py:36
+  context: Revision included in model identity dict for DSpark prefix-cache keying.
+- file: vllm_ascend/patch/platform/patch_deepseek_v4_vision.py:36
+  context: Ascend DeepSeek-V4 vision config convertor forwards revision to upstream base class.
+related_parameters:
+- name: --model
+  relation: The repository whose revision is selected; --revision is meaningless without --model.
+- name: --tokenizer-revision
+  relation: Independent revision for the tokenizer; must be set separately if the tokenizer lives at a different revision.
+- name: --code-revision
+  relation: Independent revision for remote model code (trust_remote_code); not covered by --revision.
+- name: --hf-config-path
+  relation: If set, config is loaded from this path instead of the model repo; revision then only affects weights.
+- name: HF_HUB_OFFLINE
+  relation: When true, --revision is used to resolve the local snapshot path via get_model_path.
+constraints:
+- The value must be a valid Hugging Face Hub branch name, tag name, or commit id for the repository given by --model; an invalid
+  revision fails at model/config download time.
+- When HF_HUB_OFFLINE is enabled, the revision must correspond to a snapshot already present in the local HF cache, otherwise
+  model resolution fails.
+- --revision does not affect the tokenizer or remote model code; use --tokenizer-revision and --code-revision for those.
+tuning_advice:
+  summary: Pin --revision to an exact commit id for reproducible deployments and to keep Ascend RFork/prefix-cache fingerprints
+    stable across instances; it has no steady-state performance effect.
+  suggested_values:
+  - scenario: Production serving on Ascend NPU (single or multi-instance, P/D disaggregation)
+    value: <exact 40-char commit id>
+    reason: A branch or tag can move; pinning the commit keeps the RFork compatibility fingerprint (vllm_ascend/model_loader/rfork/identity.py)
+      and the DSpark prefix-cache model identity stable, so weight-transfer reuse and prefix-cache hits are not invalidated
+      by an upstream repo update.
+  - scenario: Development / quick experiments
+    value: 'null'
+    reason: Leaving it unset uses the repository default branch, which is fine when reproducibility and cross-instance cache
+      reuse are not required.
+  - scenario: Offline (HF_HUB_OFFLINE=1) deployment
+    value: <commit id matching the pre-downloaded local snapshot>
+    reason: get_model_path(model, revision) resolves the local snapshot directory by revision; it must match what was pre-downloaded
+      or startup fails.
+  caveats:
+  - Changing --revision between two Ascend instances (e.g. P and D nodes) changes the model identity used for DSpark prefix-cache
+    keying and the RFork fingerprint, which can silently reduce prefix-cache hit rate or force a full weight reload instead
+    of a fast transfer.
+  - A different revision may ship a different checkpoint layout (fused/unfused weights, quantization packing), which changes
+    model-load time and whether Ascend NZ/fused-MC2 weight post-processing applies; this affects startup latency and load-time
+    memory, not steady-state throughput.
+  - vllm-ascend's RFork identity prefers the resolved commit hash over the raw --revision string, so a moving branch name
+    can still produce a stable fingerprint as long as the resolved commit does not change.
+  quick_guide: Pin --revision to an exact commit id in production; leave unset only for experiments.
+analysis_date: '2026-10-27'

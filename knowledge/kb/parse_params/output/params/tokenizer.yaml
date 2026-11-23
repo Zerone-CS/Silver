@@ -1,0 +1,93 @@
+name: --tokenizer
+type: cli
+category: model
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:880
+- vllm/engine/arg_utils.py:440
+- vllm/config/model.py:38
+- vllm_ascend/patch/platform/patch_glm53_reasoning.py:18
+- vllm_ascend/models/deepseek_v4/mm_preprocess.py:69
+- vllm_ascend/models/glm5next/processor.py:772
+value_type: str
+default: null
+valid_choices: Any Hugging Face tokenizer repo ID or local path; if unset, the value of --model is used
+cli_example: --tokenizer <hf-repo-id-or-local-path>
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: "--tokenizer only selects which Hugging Face tokenizer artifact is loaded; it does not\nchange the NPU compute\
+  \ graph, KV cache sizing, or HCCL communication. Its runtime effect\nis confined to the CPU-side tokenization/detokenization\
+  \ path (frontend latency), not the\nmodel forward pass on Ascend NPU.\n\nIn upstream vLLM, EngineArgs.tokenizer (vllm/engine/arg_utils.py:440)\
+  \ is passed to\nModelConfig and used to build the tokenizer via transformers_utils (get_sentence_transformer_tokenizer_config,\n\
+  try_get_tokenizer_config at vllm/config/model.py:38/44). When HF_HUB_OFFLINE is set,\n__post_init__ (vllm/engine/arg_utils.py:855-864)\
+  \ rewrites the tokenizer ID to a local\npath via get_model_path, which avoids network stalls at startup — a startup-latency\n\
+  effect, not steady-state throughput.\n\nOn Ascend, the tokenizer object is consumed by several vllm-ascend code paths:\n\
+  - \"vllm_ascend/patch/platform/patch_glm53_reasoning.py:18/47 inspects tokenizer.chat_template\"\n  to decide whether GLM-5.3\
+  \ reasoning is always-on; this is a correctness/parsing concern,\n  not a perf one.\n- \"vllm_ascend/models/deepseek_v4/mm_preprocess.py:69\
+  \ deep-copies the tokenizer per\"\n  preprocessing thread (_TOKENIZER_THREAD_LOCAL) because fast tokenizers mutate\n  truncation/padding\
+  \ state; a heavier/slower tokenizer backend increases multimodal\n  preprocessing cost but does not touch NPU kernels.\n\
+  - \"vllm_ascend/models/glm5next/processor.py:772 builds AutoTokenizer.from_pretrained for\"\n  the GLM-5.3-Flash processor;\
+  \ tokenizer choice affects token expansion counts for\n  image/video, which indirectly influences prefill token volume and\
+  \ thus NPU prefill work.\n\nNet: \"low impact. The main Ascend-relevant lever is choosing a fast tokenizer backend\"\n(e.g.\
+  \ VLLM_USE_FASTOKENS=1 per GLM5.2 doc) to reduce CPU tokenization latency, and\npointing --tokenizer at a local path under\
+  \ HF_HUB_OFFLINE to avoid startup network waits.\n"
+usage_locations:
+- file: vllm/engine/arg_utils.py:880
+  context: CLI registration of --tokenizer from ModelConfig kwargs
+- file: vllm/engine/arg_utils.py:440
+  context: EngineArgs.tokenizer field sourced from ModelConfig.tokenizer
+- file: vllm/engine/arg_utils.py:855
+  context: HF_HUB_OFFLINE rewrites tokenizer ID to local path in __post_init__
+- file: vllm/config/model.py:38
+  context: ModelConfig imports tokenizer config helpers (get_sentence_transformer_tokenizer_config, try_get_tokenizer_config)
+- file: vllm_ascend/patch/platform/patch_glm53_reasoning.py:47
+  context: GLM-5.3 parser patch reads tokenizer.chat_template to detect always-on reasoning
+- file: vllm_ascend/models/deepseek_v4/mm_preprocess.py:69
+  context: Per-thread deep-copied tokenizer for concurrent multimodal preprocessing
+- file: vllm_ascend/models/glm5next/processor.py:772
+  context: AutoTokenizer.from_pretrained for GLM-5.3-Flash processor
+related_parameters:
+- name: --model
+  relation: If --tokenizer is unset, the model name/path is used as the tokenizer source
+- name: --tokenizer-mode
+  relation: Selects tokenizer behavior (e.g. deepseek_v4); must be compatible with the chosen tokenizer
+- name: --tokenizer-revision
+  relation: Pins the tokenizer revision; used when resolving the tokenizer under HF_HUB_OFFLINE
+- name: --skip-tokenizer-init
+  relation: When set, tokenizer initialization is skipped entirely, making --tokenizer irrelevant
+- name: --trust-remote-code
+  relation: May be required to load custom tokenizer classes from the tokenizer repo
+- name: VLLM_USE_FASTOKENS
+  relation: Env var enabling the fastokens backend for HF fast tokenizers to speed up tokenization/detokenization
+constraints:
+- If --skip-tokenizer-init is set, the tokenizer is not initialized and --tokenizer has no effect.
+- The tokenizer must be compatible with the model's vocabulary and special tokens; a mismatched tokenizer produces incorrect
+  token IDs and broken generation.
+- When HF_HUB_OFFLINE is enabled, --tokenizer must resolve to a locally available path or the offline rewrite via get_model_path
+  will fail.
+- Custom tokenizer classes require --trust-remote-code to be enabled.
+tuning_advice:
+  summary: Leave --tokenizer unset unless the tokenizer differs from the model; when set, prefer a local fast-tokenizer path
+    and enable VLLM_USE_FASTOKENS to minimize CPU tokenization latency on Ascend deployments.
+  suggested_values:
+  - scenario: Standard deployment where tokenizer matches the model
+    value: <unset>
+    reason: vLLM defaults to the model name/path, avoiding a redundant download and keeping tokenizer/model vocab consistent.
+  - scenario: Offline / air-gapped Ascend cluster (HF_HUB_OFFLINE=1)
+    value: /local/path/to/tokenizer
+    reason: A local path avoids the get_model_path rewrite failing and eliminates startup network stalls.
+  - scenario: High-concurrency serving where CPU tokenization is a bottleneck
+    value: /local/path/to/tokenizer (with VLLM_USE_FASTOKENS=1)
+    reason: The fastokens backend accelerates HF fast tokenizer input/output processing, reducing frontend latency per the
+      GLM5.2 doc.
+  - scenario: Model with a separate tokenizer repo (e.g. custom vocab)
+    value: <hf-tokenizer-repo-id>
+    reason: Explicitly point --tokenizer at the correct tokenizer repo when it differs from the model checkpoint.
+  caveats:
+  - Do not set --tokenizer to a mismatched vocabulary; it will corrupt token IDs and generation quality.
+  - If --skip-tokenizer-init is used, --tokenizer is ignored.
+  - For GLM-5.3, verify the tokenizer's chat_template to avoid unexpected always-on reasoning behavior.
+  quick_guide: Usually omit --tokenizer; for offline Ascend clusters set it to a local fast-tokenizer path and enable VLLM_USE_FASTOKENS.
+analysis_date: '2026-10-27'

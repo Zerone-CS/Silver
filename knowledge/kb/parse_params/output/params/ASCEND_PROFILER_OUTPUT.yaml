@@ -1,0 +1,70 @@
+name: ASCEND_PROFILER_OUTPUT
+type: env
+category: observability
+scope: vllm-ascend
+source_file:
+- docs/source/developer_guide/performance_and_debug/service_profiling_guide.md:99
+value_type: str
+default: ASCEND_PROFILER_OUTPUT
+valid_choices: Any directory name string; used as the output subfolder name inside the *ascend_pt profiling result directory
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'ASCEND_PROFILER_OUTPUT is not a runtime tuning knob — it is the name of the output
+
+  subdirectory produced by the Ascend profiling pipeline (torch_npu / CANN profiler).
+
+  Per the vllm-ascend service profiling guide, after a profiling run the generated
+
+  `*ascend_pt` directory contains an `ASCEND_PROFILER_OUTPUT` folder holding the
+
+  analysis artifacts (e.g. `analysis.db`). The parameter therefore only controls where
+
+  and under what folder name profiling data is written; it does not alter model
+
+  execution, scheduling, memory allocation, or HCCL communication behavior.
+
+  Its only indirect performance relevance is that enabling profiling itself (the
+
+  surrounding profiler configuration) adds measurement overhead to the NPU runtime,
+
+  but the folder-name value itself has no measurable effect on latency, throughput,
+
+  or memory.
+
+  '
+usage_locations:
+- file: docs/source/developer_guide/performance_and_debug/service_profiling_guide.md:99
+  context: Documents that the *ascend_pt profiling output directory contains the ASCEND_PROFILER_OUTPUT folder with analysis.db
+    and related artifacts
+related_parameters:
+- name: VLLM_TORCH_PROFILER_DIR
+  relation: Enables the profiler and sets the base output directory; ASCEND_PROFILER_OUTPUT is the subfolder name within the
+    resulting *ascend_pt directory
+- name: VLLM_ASCEND_ENABLE_PROFILER
+  relation: Ascend-side profiler enablement; must be active for profiling artifacts (and thus the ASCEND_PROFILER_OUTPUT folder)
+    to be produced
+constraints:
+- Profiling output is only generated when the Ascend profiler is enabled for the run; otherwise no ASCEND_PROFILER_OUTPUT
+  folder is created.
+- The value is used as a directory name, so it must be a valid filesystem path component.
+tuning_advice:
+  summary: This is an output-directory naming artifact of the Ascend profiler, not a performance tuning parameter; leave it
+    at default and only adjust if you need to relocate/rename profiling results.
+  suggested_values:
+  - scenario: Default profiling workflow
+    value: ASCEND_PROFILER_OUTPUT
+    reason: Default folder name expected by the vllm-ascend profiling guide and downstream analysis tooling that reads analysis.db
+      from this directory.
+  - scenario: Custom output organization / CI artifact collection
+    value: <custom-dir-name>
+    reason: Rename only when you need to distinguish profiling runs; does not affect runtime performance.
+  caveats:
+  - Enabling profiling (the surrounding profiler config) adds measurement overhead to NPU execution; the folder-name value
+    itself has no runtime cost.
+  - Changing the folder name may break scripts/tools that expect the default ASCEND_PROFILER_OUTPUT path.
+  quick_guide: Leave ASCEND_PROFILER_OUTPUT at its default; it only names the profiler output folder and does not affect NPU
+    performance.
+analysis_date: '2026-10-27'

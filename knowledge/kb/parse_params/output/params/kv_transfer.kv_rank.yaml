@@ -1,0 +1,70 @@
+name: kv_transfer.kv_rank
+type: nested
+category: kv_cache
+scope: both
+source_file:
+- vllm/config/kv_transfer.py:1
+- vllm_ascend/distributed/kv_transfer/__init__.py:1
+value_type: int
+default: 0
+valid_choices: integer rank index; 0 for prefill (producer), 1 for decode (consumer) in 1P1D
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'kv_rank is a field inside the --kv-transfer-config JSON (kv_transfer.kv_rank). It identifies
+
+  this vLLM instance''s role/rank in a disaggregated prefill-decode (PD) KV cache transfer setup.
+
+  In the documented Ascend deployment (MooncakeConnectorV1), kv_rank=0 is used on the prefill
+
+  instance with kv_role="kv_producer", and kv_rank=1 on the decode instance with
+
+  kv_role="kv_consumer". The rank is consumed by the KV connector to establish the transfer
+
+  channel and route KV blocks between producer and consumer. It does not itself change kernel
+
+  execution, but a wrong rank breaks the producer/consumer pairing, causing KV transfer to fail
+
+  or stall — which directly degrades decode latency and end-to-end throughput (or fails startup).
+
+  On Ascend the transfer uses NPU device buffers (kv_buffer_device="npu") and the connector
+
+  coordinates with HCCL/transport; correct rank assignment is required for the pipeline to work.
+
+  '
+usage_locations:
+- file: vllm_ascend/distributed/kv_transfer/__init__.py:1
+  context: KV connector factory reads kv_transfer_config (including kv_rank) to build the Ascend KV connector
+- file: vllm/config/kv_transfer.py:1
+  context: KVTransferConfig dataclass field kv_rank parsed from --kv-transfer-config JSON
+related_parameters:
+- name: kv_transfer.kv_role
+  relation: kv_rank must be consistent with kv_role (0=kv_producer/prefill, 1=kv_consumer/decode)
+- name: kv_transfer.kv_connector
+  relation: Rank semantics are defined by the connector (e.g. MooncakeConnectorV1)
+- name: kv_transfer.kv_connector_extra_config
+  relation: Contains prefill/decode dp_size and tp_size that must match the rank's instance topology
+- name: kv_transfer.kv_parallel_size
+  relation: Parallel size of the KV transfer group; rank must be within the group
+constraints:
+- 'kv_rank must be consistent with kv_role: use 0 with kv_role=kv_producer (prefill) and 1 with kv_role=kv_consumer (decode).'
+- Currently only 1P1D (one prefill, one decode) topology is supported, so only ranks 0 and 1 are meaningful.
+- The prefill and decode instances must agree on kv_connector_extra_config (dp_size/tp_size) for the transfer to succeed.
+tuning_advice:
+  summary: Set kv_rank to 0 on the prefill (producer) instance and 1 on the decode (consumer) instance; it is a correctness
+    setting, not a tuning knob.
+  suggested_values:
+  - scenario: Prefill instance in 1P1D disaggregation (kv_role=kv_producer)
+    value: 0
+    reason: Prefill produces KV cache and is rank 0 in the documented MooncakeConnectorV1 deployment.
+  - scenario: Decode instance in 1P1D disaggregation (kv_role=kv_consumer)
+    value: 1
+    reason: Decode consumes KV cache and is rank 1 in the documented deployment.
+  caveats:
+  - Only 1P1D is currently supported; do not attempt multi-rank PD topologies.
+  - Keep kv_rank, kv_role, and kv_connector_extra_config consistent across the prefill and decode pods.
+  quick_guide: kv_rank=0 for prefill/producer, kv_rank=1 for decode/consumer in a 1P1D setup.
+analysis_date: '2026-10-27'

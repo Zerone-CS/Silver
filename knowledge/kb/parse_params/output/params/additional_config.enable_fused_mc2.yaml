@@ -1,0 +1,106 @@
+name: additional_config.enable_fused_mc2
+type: nested
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:608
+- vllm_ascend/ascend_config.py:442
+- vllm_ascend/ascend_config.py:671
+- vllm_ascend/ascend_config.py:833
+- vllm_ascend/ascend_config.py:1007
+- vllm_ascend/lora/fused_moe.py:176
+value_type: int
+default: 0
+valid_choices: 0, 1, 2 (2 is normalized to 1 at validation time; final effective value is 0 or 1)
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: "enable_fused_mc2 selects the fused MoE communication-computation path on Ascend NPU.\nIt is an Ascend-only\
+  \ switch (defined in vllm_ascend/ascend_config.py, not in upstream vLLM),\nconsumed by the MoE layer to choose between the\
+  \ standard dispatch/combine ops and a single\nfused C++ operator.\n\nValue semantics (from ascend_config.py:671-677 and\
+  \ docs):\n- \"0: fused path disabled — MoE uses the unfused dispatch/combine path.\"\n- 1: \"selects dispatch_ffn_combine\
+  \ (a fused dispatch + FFN + combine op). When set to 1,\"\n  _MEGA_MOE_SUPPORTED is forced to False, so the fused path routes\
+  \ to dispatch_ffn_combine\n  rather than mega_moe (see test_fused_mc2_rolls_back_even_when_config_supported).\n- 2: \"requests\
+  \ CANN MegaMoe; the validator checks importlib.util.find_spec(\\\"cann_ops_transformer\\\")\"\n  and, if present, sets _MEGA_MOE_SUPPORTED=True\
+  \ and normalizes enable_fused_mc2 to 1.\n  If the CANN MegaMoe package is absent, _MEGA_MOE_SUPPORTED stays False and the\
+  \ value is\n  still normalized to 1 (dispatch_ffn_combine path).\n\nPerformance mechanism: \"the fused MC2 operator fuses\
+  \ the all-to-all dispatch, the expert FFN\"\ncompute, and the all-to-all combine into one kernel, eliminating intermediate\
+  \ HBM round-trips\nand overlapping HCCL communication with NPU compute. This directly reduces MoE layer latency\nand raises\
+  \ throughput on MoE models (e.g. DeepSeek, GLM, MiniMax). The fused path also\nallocates a per-rank token buffer sized by\
+  \ mega_moe_max_tokens (default 65536), so workspace\nmemory scales with that value — enabling the fused path increases device\
+  \ memory usage.\n\nThe docs (DeepSeek-V4-Pro tutorial) explicitly recommend enable_fused_mc2=1 to accelerate\ncommunication\
+  \ on Prefill nodes (A3 series). Because the fused op is a single C++ kernel,\nit cannot be patched by Ascend MoE LoRA (fused_moe.py:176\
+  \ raises if enable_fused_mc2 != 0).\n"
+usage_locations:
+- file: vllm_ascend/ascend_config.py:608
+  context: 'Field definition enable_fused_mc2: int = 0 in AscendConfig (A-family envs fallback).'
+- file: vllm_ascend/ascend_config.py:671
+  context: 'model_validator _validate_user_input_ranges: 0/1 force _MEGA_MOE_SUPPORTED=False; 2 checks cann_ops_transformer
+    and normalizes to 1.'
+- file: vllm_ascend/ascend_config.py:833
+  context: derive_and_validate asserts value in (0,1), enforces MiniMax M3 mutex, disables multistream_overlap_shared_expert,
+    and downgrades to 0 if MegaMoe unsupported by model config.
+- file: vllm_ascend/ascend_config.py:1007
+  context: Mutual exclusion with mc2_comm_alg == 'hierarchy' — raises ValueError if both set.
+- file: vllm_ascend/lora/fused_moe.py:176
+  context: Ascend MoE LoRA raises AssertionError if enable_fused_mc2 != 0 (cannot patch fused C++ op).
+- file: tests/e2e/common/multi_node/external_dp/utils.py:182
+  context: E2E harness detects fused_mc2 feature from additional_config.
+related_parameters:
+- name: mega_moe_max_tokens
+  relation: Per-rank token capacity for the fused MC2/MegaMoe path; workspace memory scales linearly with it. Only meaningful
+    when enable_fused_mc2 is 1/2.
+- name: mc2_comm_alg
+  relation: Mutually exclusive — mc2_comm_alg='hierarchy' raises ValueError if enable_fused_mc2 is non-zero.
+- name: enable_mc2_hierarchy_comm
+  relation: Deprecated alias that sets mc2_comm_alg='hierarchy', which conflicts with enable_fused_mc2.
+- name: multistream_overlap_shared_expert
+  relation: Auto-disabled (set to False with a warning) when enable_fused_mc2 == 1.
+- name: combine_quant_mode
+  relation: Forces the MC2 combine stage comm quant_mode in the fused path; 0 uses the model's own quant.
+- name: enable_prefill_mc2
+  relation: Related MC2 switch controlling mc2_token_capacity reservation for prefill batches.
+- name: enable_mlapo
+  relation: Independent MoE/MLA optimization; both can be enabled together.
+constraints:
+- enable_fused_mc2 must be 0 or 1 after normalization; value 2 is only accepted as an input and is converted to 1 (with MegaMoe
+  support detection).
+- enable_fused_mc2 cannot be combined with mc2_comm_alg='hierarchy' (or the deprecated enable_mc2_hierarchy_comm=true); a
+  ValueError is raised.
+- MiniMax M3 models do not support enable_fused_mc2=1 (dispatch_ffn_combine); use 2 to enable MegaMoe or 0 to disable.
+- Ascend MoE LoRA cannot be used when enable_fused_mc2 is non-zero; an AssertionError is raised.
+- If MegaMoe is supported by the environment but the model config does not support it, enable_fused_mc2 is silently downgraded
+  to 0 with a warning.
+- Unknown keys in additional_config are rejected (extra='forbid'); a typo in enable_fused_mc2 fails fast.
+tuning_advice:
+  summary: Enable enable_fused_mc2=1 on MoE models (especially A3 prefill nodes) to fuse dispatch/FFN/combine and overlap
+    HCCL communication with NPU compute; keep 0 for LoRA, MiniMax M3 without MegaMoe, or hierarchy communication.
+  suggested_values:
+  - scenario: MoE model (DeepSeek/GLM) on A3 series, prefill nodes, no LoRA, no hierarchy comm
+    value: 1
+    reason: Enables dispatch_ffn_combine to fuse all-to-all dispatch, expert FFN, and combine into one kernel, reducing MoE
+      latency and raising throughput; docs recommend this for A3 prefill nodes.
+  - scenario: MiniMax M3 model with CANN MegaMoe package (cann_ops_transformer) available
+    value: 2
+    reason: Value 2 requests MegaMoe; if cann_ops_transformer is found it enables MegaMoe (normalized to 1), otherwise falls
+      back to dispatch_ffn_combine. Required because MiniMax M3 rejects enable_fused_mc2=1.
+  - scenario: Using Ascend MoE LoRA, or mc2_comm_alg='hierarchy', or non-MoE model
+    value: 0
+    reason: Fused MC2 is incompatible with LoRA patching and hierarchy communication; non-MoE models gain nothing from the
+      fused MoE path.
+  - scenario: Default / conservative deployment
+    value: 0
+    reason: Default disables the fused path, avoiding extra workspace memory and compatibility constraints.
+  caveats:
+  - Tune mega_moe_max_tokens alongside enable_fused_mc2 — too small truncates tokens (precision loss), too large wastes device
+    memory.
+  - Do not set enable_fused_mc2 together with mc2_comm_alg='hierarchy'; the config validator raises an error.
+  - Enabling the fused path auto-disables multistream_overlap_shared_expert with a warning.
+  - The legacy VLLM_ASCEND_ENABLE_FUSED_MC2 env var is ignored; use the additional_config key.
+  quick_guide: Set additional_config.enable_fused_mc2=1 for MoE models on A3 to fuse MoE communication+compute; use 2 for
+    MiniMax M3 with MegaMoe; keep 0 for LoRA or hierarchy comm.
+analysis_date: '2026-10-27'

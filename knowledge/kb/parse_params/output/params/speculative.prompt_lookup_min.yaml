@@ -1,0 +1,86 @@
+name: speculative.prompt_lookup_min
+type: nested
+category: speculation
+scope: vllm
+source_file:
+- vllm/v1/spec_decode/ngram_proposer.py:15
+- vllm/v1/spec_decode/ngram_proposer_gpu.py:37
+value_type: int
+default: 1
+valid_choices: integer >= 1, must be <= prompt_lookup_max
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'prompt_lookup_min sets the minimum n-gram window length (self.min_n) used by the
+
+  NgramProposer (vllm/v1/spec_decode/ngram_proposer.py:19) and the GPU NgramGPUKernel
+
+  (vllm/v1/spec_decode/ngram_proposer_gpu.py:40). It is only consumed when the
+
+  speculative method is "ngram" (prompt-lookup decoding). The proposer searches the
+
+  existing token history for a suffix n-gram match of length between min_n and max_n,
+
+  then drafts up to num_speculative_tokens (k) tokens following the match. A smaller
+
+  min_n (e.g. 1-2) increases the chance of finding a match, producing more draft tokens
+
+  and thus higher potential acceptance/throughput, but also more spurious short matches
+
+  that are likely to be rejected, wasting verification compute. A larger min_n makes
+
+  matches rarer but higher-confidence, reducing draft count and speculative benefit.
+
+  On Ascend NPU, the ngram proposer runs on CPU (numba) in the v1 path, so this
+
+  parameter does not directly touch NPU kernels; its effect is indirect — it changes
+
+  how many draft tokens are fed into the target model''s verification pass on the NPU,
+
+  which affects NPU compute utilization and end-to-end latency/throughput. No
+
+  vllm-ascend override of this parameter was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/v1/spec_decode/ngram_proposer.py:19
+  context: CPU numba NgramProposer reads prompt_lookup_min into self.min_n for n-gram matching
+- file: vllm/v1/spec_decode/ngram_proposer_gpu.py:40
+  context: GPU NgramGPUKernel reads prompt_lookup_min into self.min_n for parallel n-gram search
+related_parameters:
+- name: speculative.prompt_lookup_max
+  relation: Upper bound of the n-gram window; prompt_lookup_min must be <= prompt_lookup_max
+- name: speculative.num_speculative_tokens
+  relation: Number of draft tokens (k) extracted after a match; combined with min_n/max_n determines draft quality
+- name: speculative.method
+  relation: Only used when method is 'ngram' (prompt-lookup decoding)
+constraints:
+- prompt_lookup_min must not be None when the ngram proposer is constructed (asserted in NgramProposer and NgramGPUKernel).
+- prompt_lookup_min must be less than or equal to prompt_lookup_max.
+- Only takes effect when speculative decoding method is 'ngram'; ignored for other speculative methods.
+tuning_advice:
+  summary: Tune prompt_lookup_min together with prompt_lookup_max to balance draft-token quantity vs. acceptance rate for
+    ngram speculative decoding on Ascend.
+  suggested_values:
+  - scenario: General text generation with repetitive/predictable content (code, structured output)
+    value: 2
+    reason: min_n=2 filters out trivial single-token matches while still finding many useful n-grams, giving a good draft/acceptance
+      balance.
+  - scenario: Highly repetitive workloads where maximum draft volume is desired
+    value: 1
+    reason: min_n=1 maximizes match opportunities and draft tokens, useful when acceptance rate is naturally high.
+  - scenario: Conservative setting to reduce wasted NPU verification compute
+    value: 3
+    reason: Higher min_n yields fewer but higher-confidence matches, reducing rejected draft tokens and wasted verification
+      passes.
+  caveats:
+  - Ensure prompt_lookup_min <= prompt_lookup_max; otherwise the proposer configuration is invalid.
+  - Measure acceptance rate on Ascend; the CPU-side ngram proposer cost is small but rejected drafts waste NPU verification
+    compute.
+  - This parameter only applies to the ngram speculative method; it has no effect for eagle/mtp/medusa.
+  quick_guide: For ngram speculation, start with prompt_lookup_min=2 and prompt_lookup_max=5, then tune based on measured
+    acceptance rate.
+analysis_date: '2026-10-27'

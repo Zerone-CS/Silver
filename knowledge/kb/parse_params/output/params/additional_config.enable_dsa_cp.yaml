@@ -1,0 +1,93 @@
+name: additional_config.enable_dsa_cp
+type: nested
+category: parallelism
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:581
+- vllm_ascend/ascend_config.py:432
+- vllm_ascend/utils.py:1589
+value_type: bool
+default: false
+valid_choices: 'true / false (lax bool coercion: string ''false''/''true'' also accepted)'
+cli_example: null
+deprecated: true
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'enable_dsa_cp enables DSA-CP (sparse-attention context parallelism) for DeepSeek V3.2 / V4
+
+  and same-architecture models. It is read via the helper vllm_ascend/utils.py:enable_dsa_cp(),
+
+  which now reads the validated AscendConfig singleton (get_ascend_config().enable_dsa_cp)
+
+  rather than bypassing validation through additional_config["enable_dsa_cp"].
+
+  When enabled, DSA-CP splits the sparse-attention (DSA / LightningIndexer) computation across
+
+  context-parallel ranks, and per the docs it automatically enables FlashComm as the all2all
+
+  backend (no need to set enable_flashcomm1 separately). This changes the attention compute and
+
+  communication pattern: "it adds all2all communication (FlashComm) but parallelizes the"
+
+  long-context sparse attention work, which can reduce prefill latency and improve throughput
+
+  for long-context DeepSeek V3.2/V4 workloads. The gate is resolved during init_ascend_config:
+
+  the flag is only honored when the model is a DSA-style model (index_topk present) AND sequence
+
+  parallelism is active (EP + TP>1 + DP>1 makes use_sequence_parallel_moe True); otherwise it is
+
+  silently downgraded to False (see tests/ut/test_ascend_config.py:1667). It is a temporary
+
+  optimization slated for removal once PCP is stable.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:581
+  context: 'Field definition enable_dsa_cp: bool = False in AscendConfig (extra=forbid pydantic dataclass).'
+- file: vllm_ascend/utils.py:1589
+  context: enable_dsa_cp() helper returns get_ascend_config().enable_dsa_cp from the validated singleton.
+- file: tests/ut/test_ascend_config.py:1667
+  context: Model/parallel gate resolved during init_ascend_config; unsupported configs downgrade to False.
+- file: tests/e2e/pull_request/four_card/context_parallel/test_accuracy.py:242
+  context: E2E accuracy test toggling enable_dsa_cp True/False with DP=2, TP=2, EP enabled.
+related_parameters:
+- name: enable_flashcomm1
+  relation: Enabling enable_dsa_cp automatically enables FlashComm (SP MoE) as the all2all backend; no need to set enable_flashcomm1
+    separately.
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: DSA-CP is supported only with ModelRunner V1; must set VLLM_USE_V2_MODEL_RUNNER=0. Enabling with V2 raises a configuration
+    error.
+- name: --enable-expert-parallel / --tensor-parallel-size / --data-parallel-size
+  relation: 'Requires sequence parallelism: EP enabled + TP>1 + DP>1 for the flag to take effect.'
+- name: prefill_context_parallel_size (PCP)
+  relation: PCP is the intended replacement; DSA-CP will be deprecated once PCP is stable.
+constraints:
+- enable_dsa_cp is supported only with ModelRunner V1; set VLLM_USE_V2_MODEL_RUNNER=0, otherwise enabling it with ModelRunner
+  V2 raises a configuration error.
+- The flag only takes effect when the model is a DSA-style model (has index_topk) and sequence parallelism is active (expert
+  parallel enabled with TP>1 and DP>1); otherwise it is silently downgraded to False.
+- Unknown keys in additional_config are rejected (extra=forbid), so a typo in enable_dsa_cp fails fast.
+tuning_advice:
+  summary: Enable DSA-CP only for long-context DeepSeek V3.2/V4 on ModelRunner V1 with EP+TP>1+DP>1; otherwise leave it off
+    and use PCP.
+  suggested_values:
+  - scenario: Long-context DeepSeek V3.2/V4 serving on ModelRunner V1 with EP enabled, TP>1 and DP>1
+    value: true
+    reason: Parallelizes sparse-attention compute across CP ranks and auto-enables FlashComm, reducing prefill latency and
+      improving throughput for long contexts.
+  - scenario: ModelRunner V2 deployment or non-DSA models
+    value: false
+    reason: DSA-CP is unsupported on V2 (raises config error) and has no effect on non-DSA models; use PCP instead.
+  - scenario: Small TP/DP topology where all2all overhead dominates
+    value: false
+    reason: FlashComm all2all communication cost may exceed the attention-parallelism benefit on small topologies.
+  caveats:
+  - Must set VLLM_USE_V2_MODEL_RUNNER=0 before enabling; V2 raises a configuration error.
+  - Enabling it automatically enables FlashComm; do not also set enable_flashcomm1.
+  - Feature is temporary and will be removed once PCP is stable; plan migration to PCP.
+  quick_guide: For long-context DeepSeek V3.2/V4 on ModelRunner V1 with EP+TP>1+DP>1, set additional_config.enable_dsa_cp=true;
+    otherwise use PCP.
+analysis_date: '2026-10-27'

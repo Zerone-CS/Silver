@@ -1,0 +1,120 @@
+name: compilation.compile_ranges_endpoints
+type: nested
+category: compilation
+scope: both
+source_file:
+- vllm/config/vllm.py:2520
+- vllm_ascend/ascend_config.py:1276
+- vllm_ascend/ascend_config.py:1280
+value_type: list[int]
+default: null
+valid_choices: list of positive integers, each > 0; values <= 1 or >= max_num_batched_tokens are dropped during post-init
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'compile_ranges_endpoints defines the boundaries of the token-count ranges that
+
+  torch.compile / Inductor will compile ahead of time. The ranges are
+
+  [1, endpoints[0]], [endpoints[0]+1, endpoints[1]], ..., [endpoints[-1]+1,
+
+  max_num_batched_tokens]. Each range becomes a separate compiled graph, so the
+
+  number of endpoints directly controls how many distinct compiled kernels exist
+
+  and how well the compiled path covers the actual batch-size distribution.
+
+
+  In upstream vLLM (vllm/config/vllm.py:2520-2528), during config post-init the
+
+  endpoints are validated (assert isinstance(x, int), assert x > 0), filtered
+
+  (only kept if x < compile_range_end and x > 1), merged with endpoints derived
+
+  from rope+kvcache and qk_norm+rope+kvcache fusion thresholds, and finally
+
+  sorted. This means the user-supplied list is not used verbatim — it is
+
+  normalized against max_num_batched_tokens and fusion thresholds.
+
+
+  On Ascend, vllm_ascend/ascend_config.py:1274-1283 provides
+
+  _get_compile_ranges / _set_compile_ranges helpers that read and write
+
+  compilation_config.compile_ranges_endpoints, and
+
+  update_compile_ranges_split_points() is a no-op (returns immediately). This
+
+  indicates the Ascend path does not perform the upstream split-point
+
+  recomputation; the endpoints are consumed as-is by the Ascend compilation
+
+  flow. The performance effect is indirect: more endpoints => more compiled
+
+  graphs => longer warmup/compilation time and larger compiled-artifact memory,
+
+  but potentially lower steady-state latency because more batch sizes hit a
+
+  precompiled graph instead of falling back to eager execution. Fewer endpoints
+
+  => faster startup and less memory, but more eager fallbacks for uncovered
+
+  batch sizes, hurting throughput/latency under variable load.
+
+  '
+usage_locations:
+- file: vllm/config/vllm.py:2520
+  context: Post-init validation, filtering against compile_range_end and fusion thresholds, then sorting of endpoints
+- file: vllm_ascend/ascend_config.py:1276
+  context: Ascend helper _get_compile_ranges reads compile_ranges_endpoints (or empty list)
+- file: vllm_ascend/ascend_config.py:1280
+  context: Ascend helper _set_compile_ranges writes compile_ranges_endpoints
+- file: vllm_ascend/ascend_config.py:1282
+  context: update_compile_ranges_split_points is a no-op on Ascend
+related_parameters:
+- name: compilation.max_num_batched_tokens
+  relation: Upper bound of the last compile range; endpoints >= this value are dropped
+- name: compilation.compile_sizes
+  relation: Single-element compile ranges [compile_sizes[i], compile_sizes[i]] complement the endpoint ranges
+- name: compilation.pass_config.fuse_qk_norm_rope_kvcache
+  relation: When enabled, its rope_kvcache_fusion_max_token_num may inject an extra endpoint
+- name: compilation.cudagraph_capture_sizes
+  relation: Cudagraph capture sizes interact with compile ranges for graph replay coverage
+constraints:
+- Each endpoint must be a positive integer greater than 0, otherwise an assertion error is raised during config post-init.
+- Endpoints less than or equal to 1 or greater than or equal to max_num_batched_tokens are silently dropped from the final
+  list.
+- The final endpoint list is always sorted ascending after post-init; user ordering is not preserved.
+tuning_advice:
+  summary: Set a small set of endpoints aligned with your actual batch-size distribution to balance compile time against steady-state
+    latency on Ascend NPU.
+  suggested_values:
+  - scenario: Stable, narrow batch-size workload (e.g. fixed serving batch)
+    value:
+    - 16
+    - 32
+    - 64
+    reason: Few endpoints keep compile/warmup time low while covering the common batch sizes.
+  - scenario: Highly variable batch sizes up to a large max_num_batched_tokens
+    value:
+    - 8
+    - 16
+    - 32
+    - 64
+    - 128
+    - 256
+    reason: More endpoints cover a wider range, reducing eager fallbacks and improving throughput under variable load.
+  - scenario: Startup-latency-sensitive deployment
+    value: []
+    reason: Empty list minimizes compilation time and memory at the cost of more eager execution.
+  caveats:
+  - Endpoints >= max_num_batched_tokens are dropped, so keep them below that value.
+  - On Ascend the split-point recomputation is skipped, so verify coverage manually against your batch distribution.
+  - Each additional endpoint adds a compiled graph, increasing warmup time and NPU memory for compiled artifacts.
+  quick_guide: Use a handful of endpoints matching your real batch sizes; more endpoints trade startup time for lower steady-state
+    latency.
+analysis_date: '2026-10-27'

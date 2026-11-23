@@ -1,0 +1,104 @@
+name: VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE
+type: env
+category: memory
+scope: vllm
+source_file:
+- vllm/envs.py:1727
+- vllm/envs.py:220
+- vllm/v1/attention/backends/flashinfer.py:109
+- vllm/v1/attention/backends/flashinfer.py:1016
+- vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py:370
+- vllm/v1/attention/backends/mla/prefill/flashinfer.py:92
+- vllm/v1/attention/backends/mla/prefill/trtllm_ragged.py:81
+value_type: int
+default: 413138944
+valid_choices: Any positive integer number of bytes; must be large enough for the FlashInfer kernel workspace (sparse MLA
+  path warns if below the computed requirement)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This env var only controls the size of a device-side scratch/workspace buffer
+
+  allocated for the FlashInfer attention backend (and its MLA variants) in vLLM
+
+  upstream. It is read in vllm/v1/attention/backends/flashinfer.py:109 (global
+
+  trtllm workspace buffer), flashinfer.py:1016 (_get_workspace_buffer, where the
+
+  configured value is used as a floor and may be grown to fit the prefill chunk
+
+  head footprint), mla/flashinfer_mla_sparse.py:370 (sparse MLA workspace, where
+
+  an explicit override below the computed requirement triggers a warning but is
+
+  still honored), and the MLA prefill wrappers (flashinfer.py:92,
+
+  trtllm_ragged.py:81) via current_workspace_manager().get_simultaneous().
+
+  The buffer is a fixed-size torch.uint8 allocation; it does not change kernel
+
+  math, so it has no direct effect on tokens/sec or latency. Its only runtime
+
+  effect is memory footprint (a larger buffer consumes more NPU HBM, reducing
+
+  KV-cache headroom) and correctness/stability (too small a buffer can cause a
+
+  workspace overflow / kernel crash in the trtllm-gen sparse MLA path).
+
+  Crucially, FlashInfer is a CUDA/NVIDIA-specific backend. vllm-ascend does not
+
+  use FlashInfer attention kernels on Ascend NPU (it uses Ascend-native
+
+  attention backends and CANN operators), and no vllm-ascend source or docs
+
+  reference this env var. Therefore on Ascend this parameter is effectively
+
+  inert — it is never read by the Ascend execution path, so it has no measurable
+
+  performance impact on NPU runtime.
+
+  '
+usage_locations:
+- file: vllm/envs.py:1727
+  context: Defines the env var, parsed as int with default 394*1024*1024 bytes.
+- file: vllm/v1/attention/backends/flashinfer.py:109
+  context: Allocates the global trtllm workspace buffer of this size on device.
+- file: vllm/v1/attention/backends/flashinfer.py:1016
+  context: Uses the value as a floor for the per-backend workspace buffer, growing it to fit prefill head footprint.
+- file: vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py:370
+  context: Honors an explicit override for the sparse MLA workspace, warning if below the computed requirement.
+- file: vllm/v1/attention/backends/mla/prefill/flashinfer.py:92
+  context: Requests a workspace buffer of this size from the workspace manager for MLA prefill.
+- file: vllm/v1/attention/backends/mla/prefill/trtllm_ragged.py:81
+  context: Requests a workspace buffer of this size for TRTLLM ragged MLA prefill.
+related_parameters:
+- name: VLLM_BATCH_INVARIANT
+  relation: When enabled, the workspace buffer size is overridden with FLASHINFER_WORKSPACE_BUFFER_SIZE_BATCH_INVARIANT instead
+    of this value.
+- name: VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR
+  relation: Sibling FlashInfer configuration env var; both only apply to the CUDA FlashInfer backend.
+- name: VLLM_FLASHINFER_ALLREDUCE_BACKEND
+  relation: Another FlashInfer-specific env var that is irrelevant on Ascend NPU.
+constraints:
+- The value must be a positive integer number of bytes; it is parsed with int() and used directly as an allocation size.
+- For the sparse MLA path, setting the value below the computed workspace requirement does not error but logs a warning and
+  may cause the trtllm-gen kernel to crash with a workspace overflow.
+tuning_advice:
+  summary: Leave this at its default on Ascend NPU; it is a CUDA FlashInfer-only scratch buffer and has no effect on the Ascend
+    execution path.
+  suggested_values:
+  - scenario: Running vLLM on Ascend NPU (vllm-ascend v1 or v2 worker)
+    value: unset (use default 394 MiB)
+    reason: vllm-ascend does not use the FlashInfer attention backend, so this env var is never read on the NPU path; setting
+      it has no performance benefit and only risks confusion.
+  - scenario: Running vLLM on NVIDIA GPU with FlashInfer sparse MLA and a workspace-overflow warning
+    value: the computed size reported in the warning (or unset to auto-compute)
+    reason: The sparse MLA path warns when an explicit override is below the computed requirement; unsetting lets vLLM compute
+      the correct size automatically.
+  caveats:
+  - Do not expect any throughput or latency change on Ascend from tuning this value.
+  - On GPU, oversizing the buffer wastes HBM that could otherwise be used for KV cache.
+  quick_guide: Ignore this on Ascend NPU — it only sizes a CUDA FlashInfer scratch buffer and is inert on the NPU path.
+analysis_date: '2026-10-27'

@@ -1,0 +1,105 @@
+name: additional_config.scheduler_config.dyntra_lb_config.end_step
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1590
+- vllm_ascend/ascend_config.py:1603
+- vllm_ascend/ascend_config.py:1605
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:332
+value_type: int
+default: -1
+valid_choices: -1 (no upper bound) or any integer >= 0 that is strictly greater than start_step
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- throughput
+- latency
+impact_detail: 'end_step is the exclusive final completed-engine-step snapshot at which the
+
+  DyntraLB (dynamic load balancing) planner may still generate a rebalancing plan.
+
+  It is read in vllm_ascend/patch/platform/patch_dyntra_lb_core.py:332
+
+  (self._lb_end_step = dyntra_lb_config.end_step) inside
+
+  DyntraLBDPEngineCoreProc._init_data_parallel, which monkey-patches the upstream
+
+  DPEngineCoreProc. The value gates the window [start_step, end_step) during which
+
+  the planner is allowed to emit modifications to per-rank block assignments
+
+  (freeze/in_blk/out_blk) that are applied before the next engine step''s normal
+
+  scheduling and model execution. When end_step = -1 (default) there is no upper
+
+  bound, so balancing can continue for the whole run; when set to a finite value,
+
+  balancing stops after that step and the DP ranks revert to the default
+
+  round-robin/static assignment. Because DyntraLB reduces DP "bubbles" (rank-load
+
+  imbalance) by moving KV-cache blocks between ranks, ending the balancing window
+
+  early can leave residual imbalance and lower decode throughput / raise tail
+
+  latency for the remainder of the run, while extending it keeps the planner
+
+  active (small per-step planning overhead) but sustains balance. The effect is
+
+  indirect (it does not itself allocate memory or change parallelism), hence
+
+  medium impact. It only matters when dyntra_lb_config.enabled is true.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1590
+  context: 'Field definition end_step: int = -1 in DyntraLBConfig dataclass.'
+- file: vllm_ascend/ascend_config.py:1603
+  context: Validator rejects end_step < -1.
+- file: vllm_ascend/ascend_config.py:1605
+  context: Validator requires end_step > start_step when end_step != -1.
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:332
+  context: Assigned to self._lb_end_step in DyntraLBDPEngineCoreProc._init_data_parallel; used to bound the step window in
+    which the planner may generate plans.
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: end_step has no effect unless enabled is true (DyntraLB scheduler/planner is only installed when enabled).
+- name: additional_config.scheduler_config.dyntra_lb_config.start_step
+  relation: Lower bound of the balancing window; end_step must be strictly greater than start_step when set.
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: The start_step/end_step interval applies in both static and dynamic modes.
+- name: additional_config.scheduler_config.dyntra_lb_config.dynamic_max_step
+  relation: In dynamic mode, balancing also stops after dynamic_max_step active steps without a new long request, independent
+    of end_step.
+- name: additional_config.scheduler_config.dyntra_lb_config.bubble_threshold
+  relation: Determines whether imbalance is large enough to trigger a plan within the [start_step, end_step) window.
+constraints:
+- end_step must be -1 or an integer greater than or equal to 0; values less than -1 raise a ValueError.
+- When end_step is not -1, it must be strictly greater than start_step, otherwise a ValueError is raised.
+- end_step only takes effect when dyntra_lb_config.enabled is true.
+tuning_advice:
+  summary: Leave end_step at -1 for production to keep DyntraLB balancing active; set a finite value only when you want to
+    freeze the assignment after a warm-up/steady-state phase.
+  suggested_values:
+  - scenario: Production serving with sustained/variable load (recommended)
+    value: -1
+    reason: No upper bound keeps the planner able to correct DP imbalance for the entire run, maximizing decode throughput
+      and minimizing tail latency.
+  - scenario: Benchmark or workload that reaches a stable steady state after a known number of steps
+    value: 1000
+    reason: A finite end_step (must be > start_step, e.g. 1000 with default start_step=250) lets balancing settle the assignment
+      and then stops planning overhead once the workload is stable.
+  - scenario: Short runs / quick validation
+    value: -1
+    reason: With few steps, a finite end_step risks cutting the balancing window too early; -1 avoids accidentally disabling
+      balancing.
+  caveats:
+  - Must be strictly greater than start_step when not -1, otherwise config validation fails at startup.
+  - Ending balancing early can leave residual DP imbalance that persists; verify with enable_diagnostics before committing
+    to a finite value.
+  - Only relevant when dyntra_lb_config.enabled is true; otherwise the value is inert.
+  quick_guide: Keep end_step=-1 unless you deliberately want to stop DyntraLB rebalancing after a fixed step; if set, ensure
+    it is greater than start_step.
+analysis_date: '2026-10-27'

@@ -1,0 +1,94 @@
+name: VLLM_USE_RAY_V2_EXECUTOR_BACKEND
+type: env
+category: parallelism
+scope: vllm
+source_file:
+- vllm/envs.py:918
+- vllm/envs.py:65
+- vllm/v1/executor/abstract.py:62
+- vllm/v1/executor/ray_executor.py:104
+- vllm/distributed/weight_transfer/sharded_rdt_engine.py:320
+value_type: bool
+default: true
+valid_choices: 0 or 1 (boolean int)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This env var only takes effect when --distributed-executor-backend is set to "ray".
+
+  In vllm/v1/executor/abstract.py:62, Executor.get_class() branches on
+
+  envs.VLLM_USE_RAY_V2_EXECUTOR_BACKEND: when truthy it selects RayExecutorV2
+
+  (MQ-based executor), otherwise it falls back to the legacy RayDistributedExecutor
+
+  (compiled-graph backend). The choice of executor changes the orchestration and
+
+  inter-worker communication mechanism (MQ vs Ray Compiled Graph DAG), which can
+
+  affect dispatch latency and scheduling overhead in multi-node Ray deployments.
+
+  It does NOT change the actual model compute kernels, so on Ascend NPU the
+
+  per-token matmul/attention cost is unaffected; only the Ray orchestration layer
+
+  differs. Note the default is inconsistent between the runtime getter
+
+  (vllm/envs.py:918 defaults to "1") and the type stub (vllm/envs.py:65 declares
+
+  False); the runtime getter governs actual behavior, so RayExecutorV2 is the
+
+  effective default. No vllm-ascend override of this variable was found in the
+
+  provided context; vllm-ascend deployments typically use the "mp" backend rather
+
+  than "ray", in which case this variable has no effect at all.
+
+  '
+usage_locations:
+- file: vllm/v1/executor/abstract.py:62
+  context: Selects RayExecutorV2 vs RayDistributedExecutor when distributed_executor_backend == 'ray'
+- file: vllm/v1/executor/ray_executor.py:104
+  context: Legacy Ray executor raises NotImplementedError for EC connector with world_size > 1, instructing to set this var
+    to 1
+- file: vllm/distributed/weight_transfer/sharded_rdt_engine.py:320
+  context: sharded_rdt weight transfer backend requires this var to be 1 so workers are RayExecutorV2 actors with tensor transport
+- file: examples/rl/rdt_vllm_serve.py:79
+  context: Example sets VLLM_USE_RAY_V2_EXECUTOR_BACKEND=1 when launching serve with sharded_rdt
+related_parameters:
+- name: --distributed-executor-backend
+  relation: This env var is only consulted when the backend is 'ray'; ignored for 'mp', 'uni', 'external_launcher'
+- name: VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE
+  relation: Only relevant to the legacy RayDistributedExecutor (compiled-graph) path, i.e. when this var is 0
+- name: VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM
+  relation: Compiled-graph overlap feature only applies to the legacy Ray executor path
+- name: VLLM_USE_RAY_WRAPPED_PP_COMM
+  relation: PP communicator wrapping for the legacy Ray compiled-graph path
+constraints:
+- This variable only has an effect when --distributed-executor-backend is set to 'ray'; it is ignored for 'mp', 'uni', and
+  'external_launcher' backends.
+- The legacy Ray executor (this var = 0) raises NotImplementedError when an EC transfer connector is configured with world_size
+  > 1; set this var to 1 or use the multiprocessing executor instead.
+- The sharded_rdt weight transfer backend requires distributed_executor_backend='ray' and this variable set to 1, otherwise
+  a ValueError is raised at engine construction.
+tuning_advice:
+  summary: Leave at default (1, RayExecutorV2) when using the ray backend; irrelevant for the common Ascend 'mp' backend.
+  suggested_values:
+  - scenario: Multi-node Ray deployment on Ascend with --distributed-executor-backend ray
+    value: 1
+    reason: Uses the MQ-based RayExecutorV2, the effective upstream default, and is required for sharded_rdt weight transfer
+      and EC connectors with world_size > 1.
+  - scenario: Legacy Ray compiled-graph features needed (e.g. VLLM_USE_RAY_COMPILED_DAG_* tuning)
+    value: 0
+    reason: Falls back to RayDistributedExecutor which is the only path honoring the compiled-graph channel/overlap env vars.
+  - scenario: Single-node or mp-backend Ascend deployment
+    value: 1
+    reason: Variable is ignored when backend is not 'ray'; keep default to avoid surprises if backend changes.
+  caveats:
+  - Only meaningful with --distributed-executor-backend ray; Ascend users on 'mp' see no effect.
+  - Legacy executor path cannot handle EC connectors with world_size > 1.
+  quick_guide: Keep default 1 unless you specifically need the legacy Ray compiled-graph executor.
+analysis_date: '2026-10-27'

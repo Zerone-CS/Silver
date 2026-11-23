@@ -1,0 +1,84 @@
+name: compilation.local_cache_dir
+type: nested
+category: compilation
+scope: vllm
+source_file:
+- vllm/compilation/backends.py:1079
+- vllm/compilation/decorators.py:553
+- vllm/compilation/wrapper.py:339
+value_type: str
+default: <computed>
+valid_choices: any filesystem path string; empty string forces recomputation
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: "compilation.local_cache_dir is a runtime-computed field on CompilationConfig that\npoints to the per-rank\
+  \ directory where torch.compile / inductor / AOT-compiled\nartifacts are stored and loaded from. It is NOT a user-facing\
+  \ CLI flag; it is set\ninternally by vLLM's compilation backends:\n- \"In vllm/compilation/backends.py:1077-1079, VllmBackend\
+  \ builds\"\n  local_cache_dir = os.path.join(cache_dir, f\"rank_{rank}_{dp_rank}\", self.prefix)\n  where cache_dir is either\
+  \ the user-provided compilation_config.cache_dir or a\n  hash-derived path under VLLM_CACHE_ROOT/torch_compile_cache/<hash>.\
+  \ The hash is\n  computed from env_hash, config_hash, code_hash, compiler_hash (backends.py:1063-1069),\n  so any change\
+  \ to environment, config, model code, or compiler invalidates the cache.\n- \"In vllm/compilation/decorators.py:545-553,\
+  \ the AOT-compile path sets\"\n  local_cache_dir to a hash-level directory shared across ranks on the same node,\n  and\
+  \ points TORCHINDUCTOR_CACHE_DIR at {cache_dir}/inductor_cache.\n- \"In vllm/compilation/wrapper.py:335-339, local_cache_dir\
+  \ is reset to \\\"\\\" when\"\n  data_parallel_size changes so the hash is recomputed.\nPerformance mechanism: \"a warm\
+  \ local_cache_dir lets vLLM skip recompilation of\"\ntorch graphs and reload AOT artifacts from disk, drastically reducing\
+  \ startup\nlatency (compilation can take minutes for large models). A cold/missing cache\nforces full recompilation, increasing\
+  \ time-to-first-token and startup time.\nOn Ascend NPU, vllm-ascend does not define or override this field; it inherits\n\
+  the upstream vLLM behavior. However, the actual compiled artifacts on Ascend are\nproduced by torch_npu's inductor backend\
+  \ / CANN graph compilation, so cache\nreuse effectiveness depends on torch_npu and CANN version stability — a CANN\nupgrade\
+  \ changes compiler_hash and invalidates the cache. The cache is per-rank\n(rank_{rank}_{dp_rank}), so on multi-NPU nodes\
+  \ each rank maintains its own\nsubdirectory, increasing disk usage proportionally to world size.\n"
+usage_locations:
+- file: vllm/compilation/backends.py:1077
+  context: VllmBackend computes per-rank local_cache_dir under cache_dir/rank_{rank}_{dp_rank}/{prefix} and creates it
+- file: vllm/compilation/backends.py:1082
+  context: disable_cache (CompilationMode.NONE or VLLM_DISABLE_COMPILE_CACHE) gates whether the cache dir is actually used
+- file: vllm/compilation/decorators.py:553
+  context: AOT compile path sets local_cache_dir to a hash-level dir shared across ranks and sets TORCHINDUCTOR_CACHE_DIR
+- file: vllm/compilation/wrapper.py:339
+  context: local_cache_dir reset to empty string when data_parallel_size changes to force hash recomputation
+related_parameters:
+- name: compilation.cache_dir
+  relation: Parent directory; local_cache_dir is derived from cache_dir plus rank/dp_rank and prefix
+- name: VLLM_CACHE_ROOT
+  relation: Root under which the hash-derived torch_compile_cache directory is created when cache_dir is not provided
+- name: VLLM_DISABLE_COMPILE_CACHE
+  relation: When set, disables use of the compile cache entirely, making local_cache_dir irrelevant
+- name: compilation.mode
+  relation: CompilationMode.NONE disables compilation and thus cache usage
+- name: TORCHINDUCTOR_CACHE_DIR
+  relation: Set to {cache_dir}/inductor_cache in the AOT path; inductor writes kernels there
+- name: data_parallel_size
+  relation: Changing it resets local_cache_dir to force a new hash
+constraints:
+- local_cache_dir is computed internally and is not settable via CLI; users influence it only indirectly through compilation.cache_dir
+  and VLLM_CACHE_ROOT.
+- The cache directory must be writable by the process; os.makedirs is called on it and failure to create it will raise.
+- When VLLM_DISABLE_COMPILE_CACHE is set or compilation mode is NONE, the cache directory is not used for reuse.
+- The cache key includes env_hash, config_hash, code_hash and compiler_hash, so any change to environment variables, compilation
+  config, model code, or compiler version invalidates the cache.
+tuning_advice:
+  summary: Keep the compile cache warm and on fast local storage; avoid unnecessary config/env changes that invalidate the
+    hash.
+  suggested_values:
+  - scenario: Repeated restarts / production serving on Ascend NPU
+    value: Persist VLLM_CACHE_ROOT (or set compilation.cache_dir) to a fast local NVMe path and reuse it across restarts
+    reason: Warm cache lets vLLM reload AOT/inductor artifacts instead of recompiling, cutting startup latency dramatically.
+  - scenario: Multi-NPU single node
+    value: Point cache_dir to a node-local fast disk shared by all ranks
+    reason: Each rank writes rank_{rank}_{dp_rank} subdirs; local disk avoids network FS contention while keeping per-rank
+      caches.
+  - scenario: Debugging or benchmarking cold-start
+    value: Set VLLM_DISABLE_COMPILE_CACHE=1 to bypass cache
+    reason: Forces fresh compilation to measure true cold-start cost or avoid stale artifacts.
+  caveats:
+  - Do not change CANN/torch_npu versions between runs if you want cache reuse; compiler_hash will change.
+  - Ensure the cache directory has enough space for world_size × per-rank artifacts.
+  - Changing data_parallel_size resets local_cache_dir and forces recompilation.
+  quick_guide: Persist VLLM_CACHE_ROOT to fast local disk and keep CANN/torch_npu versions stable to maximize compile-cache
+    reuse on Ascend.
+analysis_date: '2026-10-27'

@@ -1,0 +1,84 @@
+name: --dp-rpc-port
+type: cli
+category: communication
+scope: vllm-ascend
+source_file:
+- examples/external_online_dp/launch_online_dp.py:15
+- tools/docs_codegen/converters.py:351
+- tests/e2e/common/multi_node/external_dp/external_dp_config.py:49
+value_type: str
+default: '12345'
+valid_choices: any valid TCP port number (1-65535)
+cli_example: --dp-rpc-port 12321
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: '--dp-rpc-port is a helper-script argument defined only in the vllm-ascend
+
+  example launcher examples/external_online_dp/launch_online_dp.py (argparse
+
+  line 15, default 12345). It is NOT a vLLM engine parameter and is not read by
+
+  vLLM or vllm-ascend runtime code. The value is captured into dp_rpc_port
+
+  (line 28) and passed positionally as $6 to run_dp_template.sh (line 41), which
+
+  forwards it to the vLLM server as the data-parallel RPC port used for
+
+  cross-rank coordination in external DP / PD-disaggregation deployments.
+
+  Because it only selects which TCP port the DP master RPC endpoint binds to,
+
+  it has no direct effect on compute, memory, or token throughput. Its only
+
+  performance-relevant role is indirect: "a wrong or conflicting port causes"
+
+  connection failures/retries during DP rank handshaking, which can delay
+
+  startup or stall request routing. The tools/docs_codegen/converters.py mapping
+
+  (line 351) and the external_dp_config.py NodeInfo/RankInfo fields (lines 49,
+
+  94) simply propagate the same value into generated templates and test
+
+  harnesses.
+
+  '
+usage_locations:
+- file: examples/external_online_dp/launch_online_dp.py:15
+  context: argparse definition of --dp-rpc-port with default 12345
+- file: examples/external_online_dp/launch_online_dp.py:28
+  context: reads args.dp_rpc_port into local variable
+- file: examples/external_online_dp/launch_online_dp.py:41
+  context: passes dp_rpc_port as positional arg $6 to run_dp_template.sh
+- file: tools/docs_codegen/converters.py:351
+  context: maps dp_rpc_port config field to --dp-rpc-port flag for generated docs
+- file: tests/e2e/common/multi_node/external_dp/external_dp_config.py:49
+  context: NodeInfo.dp_rpc_port field for external DP topology config
+related_parameters:
+- name: --dp-address
+  relation: Together they form the DP master RPC endpoint (address + port); both must be reachable by all DP ranks.
+- name: --dp-size
+  relation: All DP ranks connect to the same RPC port on the master node; the port must be shared across the whole DP group.
+- name: --vllm-start-port
+  relation: Separate port range for each vLLM engine instance; must not collide with the DP RPC port.
+constraints:
+- The value must be a valid TCP port number that is free on the DP master node.
+- All nodes/ranks in the same data-parallel group must use the same --dp-rpc-port value so they connect to the same RPC endpoint.
+- The DP RPC port must not collide with --vllm-start-port or the per-rank engine ports derived from it.
+tuning_advice:
+  summary: Pick a fixed, free TCP port shared by all DP ranks; it does not affect throughput, only DP coordination connectivity.
+  suggested_values:
+  - scenario: Default single-cluster external DP / PD-disaggregation deployment
+    value: '12321'
+    reason: Matches the documented DeepSeek-V3.1 examples and avoids the default 12345 which may clash with other services.
+  - scenario: Port 12321 already occupied on the master node
+    value: '12345'
+    reason: Script default; use any free port as long as every rank in the DP group uses the same value.
+  caveats:
+  - This is an example-launcher argument, not a vLLM engine flag; it has no effect on NPU compute or memory.
+  - A mismatched or occupied port causes DP rank connection failures and startup stalls rather than a throughput change.
+  - Ensure the chosen port is open across nodes (firewall/security groups) for multi-node external DP.
+  quick_guide: Set the same free TCP port (e.g. 12321) on every DP rank's launch_online_dp.py invocation.
+analysis_date: '2026-10-27'

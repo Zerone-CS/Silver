@@ -1,0 +1,80 @@
+name: attention.flash_attn_version
+type: nested
+category: hardware
+scope: vllm
+source_file:
+- vllm/engine/arg_utils.py:2521
+- vllm/v1/attention/backends/fa_utils.py:115
+- vllm/model_executor/models/config.py:240
+value_type: int
+default: null
+valid_choices: 2, 3, or 4 (FlashAttention major version); null means auto-select by platform
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This parameter selects which FlashAttention library version (FA2/FA3/FA4) the
+
+  upstream vLLM FLASH_ATTN backend uses. It is consumed in
+
+  vllm/v1/attention/backends/fa_utils.py:get_flash_attn_version(), where the
+
+  platform default is chosen by CUDA compute capability (SM90 -> FA3, SM100 -> FA4,
+
+  else FA2) and then overridden by attention_config.flash_attn_version if set.
+
+  It also influences model-specific backend selection (e.g. Gemma4 heterogeneous
+
+  head dims in vllm/model_executor/models/config.py:240) and is force-set to 2
+
+  for TurboQuant cache dtype in vllm/engine/arg_utils.py:2521.
+
+  On Ascend NPU this parameter has NO effect: "vllm-ascend does not use the"
+
+  upstream FlashAttention CUDA kernels. Ascend attention is implemented via
+
+  CANN-native operators (e.g. torch_npu scaled_dot_product_attention / npu_fused_infer_attention_score)
+
+  dispatched through vllm-ascend''s own attention backend, and the FLASH_ATTN
+
+  backend / fa_utils version selection path is not exercised on NPU. No
+
+  definition or override of flash_attn_version exists in vllm-ascend. Therefore
+
+  setting it does not change Ascend runtime latency, throughput, or memory.
+
+  '
+usage_locations:
+- file: vllm/v1/attention/backends/fa_utils.py:115
+  context: get_flash_attn_version() overrides platform-default FA version with the configured value
+- file: vllm/engine/arg_utils.py:2521
+  context: Forces flash_attn_version to 2 when cache dtype is turboquant_*
+- file: vllm/model_executor/models/config.py:240
+  context: Gemma4 heterogeneous head-dim logic checks flash_attn_version to pick FA4 vs TRITON_ATTN
+related_parameters:
+- name: attention.backend
+  relation: flash_attn_version is only meaningful when the FLASH_ATTN backend is selected
+- name: cache_config.cache_dtype
+  relation: turboquant_* cache dtypes force flash_attn_version to 2
+constraints:
+- Only valid when the flash-attention backend is selected; it has no effect with other attention backends.
+- Valid values are 2, 3, or 4; FA3 is not usable on Blackwell (SM100+) and falls back to FA4 or FA2.
+- FA3 and FA4 cannot be used with ALiBi; the code falls back to FA2.
+- TurboQuant cache dtype is incompatible with FlashAttention >= 3 and forces the version to 2.
+tuning_advice:
+  summary: Irrelevant on Ascend NPU — vllm-ascend does not use upstream FlashAttention kernels, so leave it unset.
+  suggested_values:
+  - scenario: Running on Ascend NPU (vllm-ascend)
+    value: unset
+    reason: Ascend attention uses CANN-native operators, not the CUDA FlashAttention library; this parameter has no runtime
+      effect and should be left at its default (auto).
+  - scenario: Running on NVIDIA GPU with the FLASH_ATTN backend
+    value: 3
+    reason: On Hopper (SM90) FA3 is the platform-preferred version and is selected automatically; only set explicitly to override.
+  caveats:
+  - vllm-ascend does not define or override this parameter; the upstream FLASH_ATTN/fa_utils path is not exercised on NPU.
+  - Setting this on Ascend will not change latency, throughput, or memory usage.
+  quick_guide: On Ascend, ignore this parameter — it only affects CUDA FlashAttention version selection.
+analysis_date: '2026-10-27'

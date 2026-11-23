@@ -1,0 +1,81 @@
+name: HCCL_OP_EXPANSION_MODE
+type: env
+category: communication
+scope: vllm-ascend
+source_file:
+- vllm_ascend/patch/platform/patch_minimax_m2_config.py:118
+- vllm_ascend/patch/platform/patch_minimax_m2_config.py:120
+- vllm_ascend/device/device_op.py:1231
+- vllm_ascend/patch/__init__.py:478
+value_type: str
+default: <unset>
+valid_choices: AIV, CCU_SCHED, or other HCCL expansion modes; unset means HCCL default behavior
+cli_example: null
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+impact_detail: "HCCL_OP_EXPANSION_MODE controls how HCCL collective communication operators are\nexpanded/executed on Ascend\
+  \ NPU. Two concrete code paths in vllm-ascend read it:\n\n1. vllm_ascend/device/device_op.py:1231 (npu_mm_reduce_scatter_base):\
+  \ if the env var\n   equals \"CCU_SCHED\", the comm_mode passed to torch_npu.npu_mm_reduce_scatter_base is\n   switched\
+  \ from the default \"ai_cpu\" to \"ccu\". This changes the fused matmul +\n   reduce-scatter (MC2) communication scheduling\
+  \ path, directly affecting the latency\n   and bandwidth utilization of tensor-parallel/expert-parallel all-reduce-style\n\
+  \   collectives during decode.\n\n2. vllm_ascend/patch/platform/patch_minimax_m2_config.py:118-127: for MiniMax-M2 on\n\
+  \   NPU with ACL graph capture enabled (enforce_eager=False), if the user has not set\n   the variable, vllm-ascend auto-sets\
+  \ HCCL_OP_EXPANSION_MODE=AIV and logs it. If the\n   user set a non-AIV value, a warning is emitted that ACL graph shape\
+  \ coverage may be\n   reduced. AIV expansion offloads collective op execution to AIV (vector) cores, which\n   improves\
+  \ multi-card communication bandwidth and, critically, improves the number of\n   graph shapes that can be captured/replayed\
+  \ under ACL graph mode — a direct\n   throughput/latency effect for graph-mode inference.\n\nDocumentation (optimization_and_tuning.md,\
+  \ graph_mode.md, DeepSeek-V3.1.md, Dots3-Note.md)\nrecommends AIV as a general performance optimization: \"\\\"Expands collective\
+  \ communication\"\noperators to AIV cores to improve multi-card communication bandwidth.\" So this is a\nhigh-impact communication\
+  \ tuning knob on Ascend.\n"
+usage_locations:
+- file: vllm_ascend/device/device_op.py:1231
+  context: Reads env var; if CCU_SCHED, sets comm_mode='ccu' for npu_mm_reduce_scatter_base (MC2 fused matmul+reduce-scatter).
+- file: vllm_ascend/patch/platform/patch_minimax_m2_config.py:118
+  context: Reads env var during ModelConfig._verify_cuda_graph patch for MiniMax-M2 on NPU.
+- file: vllm_ascend/patch/platform/patch_minimax_m2_config.py:120
+  context: Auto-sets HCCL_OP_EXPANSION_MODE=AIV when unset for MiniMax-M2 ACL graph capture.
+- file: vllm_ascend/patch/__init__.py:478
+  context: 'Documents the patch rationale: HCCL op expansion mode affects graph shape coverage.'
+related_parameters:
+- name: enforce_eager
+  relation: The MiniMax-M2 auto-set of AIV only triggers when enforce_eager is False (ACL graph capture enabled).
+- name: compilation_config.cudagraph_mode
+  relation: AIV expansion improves ACL graph shape coverage; interacts with graph capture mode selection.
+- name: HCCL_BUFFSIZE
+  relation: Companion HCCL tuning env var frequently set together in docs/tests for communication performance.
+- name: enable_expert_parallel
+  relation: CCU_SCHED mode affects the MC2 reduce-scatter path used in EP/TP collectives.
+constraints:
+- For MiniMax-M2 on NPU with ACL graph capture enabled, a value other than AIV triggers a warning that ACL graph shape coverage
+  may be reduced.
+- The CCU_SCHED special handling only applies to the npu_mm_reduce_scatter_base (MC2) path; other collectives are unaffected
+  by that branch.
+- The variable must be set before HCCL/process initialization to take effect; setting it after communicator init has no effect.
+tuning_advice:
+  summary: Set HCCL_OP_EXPANSION_MODE=AIV for multi-card NPU inference to improve collective communication bandwidth and ACL
+    graph shape coverage; use CCU_SCHED only when targeting the MC2 reduce-scatter path.
+  suggested_values:
+  - scenario: General multi-card (TP/EP) inference on Ascend NPU, especially with ACL graph capture enabled
+    value: AIV
+    reason: Docs and e2e tests (Qwen3, DeepSeek-V3.1, GLM5, Kimi-K3, MiniMax) consistently set AIV; it expands collectives
+      to AIV cores to improve multi-card bandwidth and graph shape coverage.
+  - scenario: MiniMax-M2 with enforce_eager=False on NPU
+    value: AIV
+    reason: vllm-ascend auto-sets AIV for this case; explicitly setting it avoids the warning and guarantees graph shape coverage.
+  - scenario: Workloads dominated by fused matmul + reduce-scatter (MC2) where CCU scheduling is desired
+    value: CCU_SCHED
+    reason: device_op.py switches comm_mode to 'ccu' for npu_mm_reduce_scatter_base, selecting the CCU scheduling path for
+      MC2 collectives.
+  - scenario: Single-card / no collective communication
+    value: <unset>
+    reason: Without multi-card collectives the expansion mode has no meaningful effect.
+  caveats:
+  - For MiniMax-M2 the value is auto-forced to AIV when unset; overriding with a non-AIV value logs a warning about reduced
+    ACL graph shape coverage.
+  - Set the variable before launching the process (export in shell or os.environ before LLM init); late assignment is ineffective.
+  - CCU_SCHED only alters the MC2 reduce-scatter path; verify correctness and performance for your specific model/topology.
+  quick_guide: export HCCL_OP_EXPANSION_MODE=AIV before launching multi-card NPU inference.
+analysis_date: '2026-10-27'

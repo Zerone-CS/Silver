@@ -1,0 +1,116 @@
+name: --enable-eplb
+type: cli
+category: parallelism
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:1233
+- vllm/config/parallel.py:183
+- vllm/config/parallel.py:527
+- vllm_ascend/platform.py:984
+- vllm_ascend/platform.py:1008
+- vllm_ascend/patch/platform/patch_eplb.py:255
+- vllm_ascend/patch/platform/patch_fused_moe.py:88
+- vllm_ascend/worker/v2/eplb.py:53
+- vllm_ascend/worker/v2/model_runner.py:194
+value_type: bool
+default: false
+valid_choices:
+- true
+- false
+cli_example: --enable-eplb
+deprecated: false
+performance_impact: high
+performance_scope:
+- throughput
+- latency
+- memory
+impact_detail: "EPLB (Expert Parallelism Load Balancer) dynamically rebalances MoE expert placement\nacross EP ranks to reduce\
+  \ the \"hot expert\" imbalance that throttles MoE decode/prefill\nthroughput. On Ascend the behavior is heavily overridden\
+  \ by vllm-ascend:\n\n- \"Upstream vLLM (vllm/config/parallel.py:527) only allows EPLB on CUDA-alike platforms\"\n  and requires\
+  \ enable_expert_parallel=True plus TP*PCP*DP > 1. vllm-ascend patches the\n  platform check via a _CudaAlikeEplbPlatformProxy\
+  \ (patch_eplb.py:242-279) so NPU passes\n  the is_cuda_alike() gate.\n- \"vllm-ascend only supports upstream EPLB through\
+  \ Model Runner V2. In platform.py:1008,\"\n  if enable_eplb is set while NOT using v2 model runner, it raises\n  \"Upstream\
+  \ EPLB is only supported by Model Runner V2 on Ascend.\" So on MRv1 the flag is\n  effectively unusable (MRv1 uses legacy\
+  \ DYNAMIC_EPLB / EXPERT_MAP_RECORD env controls).\n- \"When enabled on MRv2, vllm-ascend forces asynchronous EPLB (platform.py:994-1000):\"\
+  \n  synchronous EPLB is unsupported and use_async is normalized to True with a warning.\n  Async movement overlaps expert\
+  \ rearrangement with compute, avoiding a full stop-the-world\n  stall, which is the main throughput benefit.\n- \"The communicator\
+  \ is auto-selected (patch_eplb.py:255-275): HIXL if a local binding is\"\n  available, otherwise torch_gloo. This adds cross-rank\
+  \ communication overhead for load\n  statistics and expert movement.\n- \"patch_fused_moe.py:88-146 adapts the MoE router\
+  \ to Ascend EPLB state and propagates\"\n  num_redundant_experts into the upstream FusedMoE factory so redundant expert\
+  \ slots are\n  allocated at weight-load time. This increases per-rank expert memory (redundant experts)\n  but improves\
+  \ balance.\n- \"v2/eplb.py:53-66 builds AscendEplbState and an EPLB policy (STAIR by default on Ascend)\"\n  that records\
+  \ per-expert load and periodically rearranges experts; this adds per-step\n  bookkeeping overhead but reduces tail latency\
+  \ from imbalanced experts.\nNet: \"enabling EPLB trades extra memory (redundant experts) and some communication/bookkeeping\"\
+  \noverhead for substantially better MoE throughput and lower tail latency under skewed expert\nrouting.\n"
+usage_locations:
+- file: vllm/config/parallel.py:527
+  context: 'Upstream validation: requires CUDA-alike platform, enable_expert_parallel, and TP*PCP*DP > 1.'
+- file: vllm_ascend/platform.py:1008
+  context: Raises if enable_eplb set without Model Runner V2 on Ascend.
+- file: vllm_ascend/platform.py:984
+  context: 'MRv2 path: validates communicator, forces use_async=True, rejects elastic EP.'
+- file: vllm_ascend/patch/platform/patch_eplb.py:255
+  context: Auto-selects hixl/torch_gloo communicator when enable_eplb and communicator unset.
+- file: vllm_ascend/patch/platform/patch_fused_moe.py:88
+  context: Adapts MoE router to Ascend EPLB state; propagates num_redundant_experts.
+- file: vllm_ascend/worker/v2/eplb.py:53
+  context: Builds AscendEplbState and EPLB policy; records load and rearranges experts.
+- file: vllm_ascend/worker/v2/model_runner.py:194
+  context: Constructs AscendEPLBController with ascend eplb_config when enable_eplb.
+related_parameters:
+- name: --enable-expert-parallel
+  relation: 'Required: enable_expert_parallel must be True to use EPLB.'
+- name: --eplb-config
+  relation: Configures window_size, step_interval, num_redundant_experts, use_async, policy, communicator.
+- name: --eplb-config.num_redundant_experts
+  relation: Number of redundant physical experts; drives extra memory and balance quality.
+- name: --eplb-config.use_async
+  relation: Forced to True on Ascend MRv2; synchronous EPLB unsupported.
+- name: --eplb-config.communicator
+  relation: Auto-selected (hixl/torch_gloo) when unset; only torch_gloo or hixl allowed on Ascend.
+- name: --enable-elastic-ep
+  relation: 'Mutually exclusive: async EPLB not supported with elastic EP on Ascend.'
+- name: DYNAMIC_EPLB
+  relation: MRv1 legacy env control; must be unset when using --enable-eplb with MRv2.
+- name: EXPERT_MAP_RECORD
+  relation: MRv1 legacy env control; must be unset when using --enable-eplb with MRv2.
+- name: VLLM_USE_V2_MODEL_RUNNER
+  relation: Must be enabled (MRv2) for --enable-eplb to work on Ascend.
+constraints:
+- enable_expert_parallel must be True to use EPLB.
+- EPLB requires tensor, prefill-context, or data parallelism (TP*PCP*DP > 1).
+- On Ascend, --enable-eplb is only supported with Model Runner V2; using it with MRv1 raises an error.
+- DYNAMIC_EPLB and EXPERT_MAP_RECORD are Model Runner V1 controls and must be unset when using --enable-eplb with Model Runner
+  V2.
+- Async EPLB is not supported with elastic EP on Ascend; combining them raises an error.
+- On Ascend the eplb_config.communicator must be torch_gloo or hixl (or unset for auto-selection).
+- additional_config.eplb_config.load_collection_phase requires --enable-eplb.
+- EPLB for Medusa speculative decoding is not supported.
+tuning_advice:
+  summary: 'Enable --enable-eplb only on Model Runner V2 with expert parallelism for large MoE models
+
+    where expert routing is skewed; pair with redundant experts and async STAIR policy to
+
+    trade memory for throughput and lower tail latency.
+
+    '
+  suggested_values:
+  - scenario: Large MoE model (e.g. Qwen3-30B-A3B, DeepSeek) with skewed expert routing on MRv2
+    value: true
+    reason: Rebalances hot experts across EP ranks, improving MoE throughput and tail latency.
+  - scenario: Small MoE or balanced routing where imbalance is negligible
+    value: false
+    reason: EPLB adds redundant-expert memory and communication/bookkeeping overhead with little balance gain.
+  - scenario: Model Runner V1 deployment
+    value: false
+    reason: Upstream --enable-eplb is unsupported on Ascend MRv1; use legacy DYNAMIC_EPLB/EXPERT_MAP_RECORD instead.
+  caveats:
+  - On Ascend, --enable-eplb requires Model Runner V2 (VLLM_USE_V2_MODEL_RUNNER=1); MRv1 raises an error.
+  - Synchronous EPLB is unsupported on Ascend; use_async is forced to True with a warning.
+  - Redundant experts (num_redundant_experts) consume additional per-rank NPU memory; size them against available HBM.
+  - Communicator auto-selects HIXL when available, else torch_gloo; HIXL requires a valid local binding on every EPLB rank.
+  - Async EPLB cannot be combined with elastic EP on Ascend.
+  - All DP workers must use identical enable_eplb and eplb_config settings or startup fails on config hash mismatch.
+  quick_guide: Use --enable-eplb with --enable-expert-parallel on MRv2 for large MoE models; leave off for MRv1 or balanced
+    small MoE.
+analysis_date: '2026-10-27'

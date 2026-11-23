@@ -1,0 +1,113 @@
+name: additional_config.eplb_config.eplb_heat_collection_stage
+type: nested
+category: scheduling
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:295
+- vllm_ascend/ascend_config.py:329
+- vllm_ascend/worker/model_runner_v1.py:596
+value_type: str
+default: all
+valid_choices:
+- all
+- prefill
+- decode
+cli_example: null
+deprecated: false
+performance_impact: medium
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This field is read only in the v1 (MRv1) worker path. In
+
+  vllm_ascend/worker/model_runner_v1.py:596 it is stored on the model runner as
+
+  self.eplb_heat_collection_stage, but only when dynamic_eplb is enabled
+
+  (guarded by `if self.dynamic_eplb:` at line 579). The value controls which
+
+  request stage (prefill, decode, or both) contributes to the expert-heat
+
+  statistics that the EplbProcess/EplbUpdator use to compute a new expert
+
+  placement map. The runner also computes self.eplb_pd_thresholds =
+
+  max_num_reqs * uniform_decode_query_len (line 599) as the token-count
+
+  threshold used to classify a batch as prefill vs decode. Because prefill
+
+  iterations process many tokens while decode iterations process few, the
+
+  expert workload distribution differs between stages; collecting heat from
+
+  both stages can mask the imbalance of the stage whose latency you care about.
+
+  Restricting collection to a single stage yields a more targeted expert map,
+
+  which can improve MoE load balance and thus reduce tail latency/throughput
+
+  loss for that stage, at the cost of potentially worse balance for the other
+
+  stage. The parameter does not itself add runtime overhead beyond the
+
+  existing heat-collection path; its effect is indirect, through the quality
+
+  of the rebalanced expert map. It has no effect when dynamic_eplb is false
+
+  (static EPLB / expert_map_path only) and is not used by the MRv2 path, which
+
+  instead uses load_collection_phase.
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:295
+  context: Field definition with default "all" in EplbConfig pydantic dataclass.
+- file: vllm_ascend/ascend_config.py:329
+  context: model_validator rejects values outside ["all", "prefill", "decode"].
+- file: vllm_ascend/worker/model_runner_v1.py:596
+  context: Stored on the v1 model runner when dynamic_eplb is enabled; used to gate which stage contributes expert heat.
+related_parameters:
+- name: additional_config.eplb_config.dynamic_eplb
+  relation: Must be true for this field to have any effect; the value is only read inside the `if self.dynamic_eplb:` block.
+- name: additional_config.eplb_config.load_collection_phase
+  relation: MRv2 counterpart; controls which batch phase contributes to the upstream EPLB expert-load window. Use this instead
+    of eplb_heat_collection_stage on MRv2.
+- name: additional_config.eplb_config.expert_heat_collection_interval
+  relation: Determines how many forward iterations of heat are collected; interacts with stage selection to shape the expert
+    map.
+- name: additional_config.eplb_config.eplb_policy_type
+  relation: The balancing policy that consumes the collected heat; stage selection changes the input distribution the policy
+    sees.
+- name: additional_config.eplb_config.num_redundant_experts
+  relation: Number of redundant experts available for rebalancing; the benefit of stage-targeted heat depends on this.
+constraints:
+- eplb_heat_collection_stage must be one of "all", "prefill", or "decode"; any other value raises a ValueError at startup.
+- This field only takes effect when dynamic_eplb is true (and DYNAMIC_EPLB or EXPERT_MAP_RECORD env var is set to true); otherwise
+  it is ignored.
+- This field is MRv1-only; on the MRv2 path use load_collection_phase instead.
+tuning_advice:
+  summary: 'In prefill-decode aggregation scenarios with dynamic EPLB enabled on MRv1,
+
+    set this to the stage whose latency you are optimizing ("prefill" or
+
+    "decode") to get a more targeted expert map; otherwise leave it at "all".
+
+    '
+  suggested_values:
+  - scenario: PD-aggregated deployment optimizing decode latency (MRv1, dynamic_eplb=true)
+    value: decode
+    reason: Decode iterations process few tokens and have a distinct expert workload; collecting heat only from decode targets
+      the rebalance at the stage whose tail latency matters.
+  - scenario: PD-aggregated deployment optimizing prefill/TTFT (MRv1, dynamic_eplb=true)
+    value: prefill
+    reason: Prefill iterations process many tokens per step; restricting heat collection to prefill yields a map tuned for
+      prefill throughput.
+  - scenario: Mixed or unknown workload, or default operation
+    value: all
+    reason: Default; collects heat from both stages and is the safest general choice when no single stage dominates.
+  caveats:
+  - Only effective when dynamic_eplb is true and DYNAMIC_EPLB/EXPERT_MAP_RECORD env vars are set; otherwise silently ignored.
+  - MRv2 users should configure load_collection_phase instead.
+  - Restricting to one stage can degrade balance for the other stage; validate end-to-end latency for both stages.
+  quick_guide: 'MRv1 + dynamic EPLB: pick the stage you are optimizing ("prefill" or "decode"), else keep "all".'
+analysis_date: '2026-10-27'

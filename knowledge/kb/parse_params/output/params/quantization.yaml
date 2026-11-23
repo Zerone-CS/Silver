@@ -1,0 +1,129 @@
+name: --quantization
+type: cli
+category: quantization
+scope: both
+source_file:
+- vllm/engine/arg_utils.py:900
+- vllm/engine/arg_utils.py:576
+- vllm/engine/arg_utils.py:832
+- vllm_ascend/platform.py:101
+- vllm_ascend/platform.py:322
+- vllm_ascend/patch/platform/patch_minimax_m2_config.py:66
+value_type: str
+default: null
+valid_choices: Platform-dependent; on Ascend NPU the supported list is [ascend, compressed-tensors, fp8, deepseek_v4_fp8,
+  modelopt_mxfp8, mxfp8] (vllm_ascend/platform.py supported_quantization), with 'ascend' appended to argparse choices at runtime
+cli_example: --quantization ascend
+deprecated: false
+performance_impact: high
+performance_scope:
+- latency
+- throughput
+- memory
+impact_detail: '--quantization selects the weight/activation quantization scheme, which determines
+
+  which GEMM/attention kernels are dispatched on the Ascend NPU and how much HBM the
+
+  weights occupy. It is resolved in vllm/engine/arg_utils.py:832 via
+
+  resolve_quantization_config(self.quantization, self.quantization_config) and then
+
+  validated against current_platform.supported_quantization.
+
+  vllm-ascend overrides the upstream platform list: NPUPlatform.supported_quantization
+
+  (vllm_ascend/platform.py:101) is [ASCEND_QUANTIZATION_METHOD, COMPRESSED_TENSORS_METHOD,
+
+  FP8_METHOD, "deepseek_v4_fp8", "modelopt_mxfp8", "mxfp8"]. Because "ascend" is not a
+
+  native upstream choice, NPUPlatform.pre_register_and_update (platform.py:322) appends
+
+  ASCEND_QUANTIZATION_METHOD to the argparse choices of --quantization so that
+
+  `vllm serve --quantization ascend` parses. This is the primary Ascend-native path:
+
+  it routes linear/MoE layers to Ascend quantized operators (W8A8 / W4A8 etc.), which
+
+  on Da Vinci hardware run on the Cube unit with int8/fp8 inputs — typically a large
+
+  throughput and memory win versus bf16, at some accuracy cost.
+
+  The scheme also gates other subsystems: "e.g. AscendConfig._check_mooncake_c8_kv_cache_quant"
+
+  (ascend_config.py:1040) raises when C8 KV-cache quantization is combined with
+
+  MooncakeConnector on GQA models, and EPLB requires the MoE quantization method to
+
+  expose a complete expert-weight movement layout (docs). FP8 quantized attention is
+
+  explicitly unsupported by the NPU FA3 backend (flash_attention.md:146), so choosing
+
+  fp8 with FA3 will not get the expected kernel.
+
+  vllm-ascend also silently overrides the user''s choice in one case:
+
+  patch_minimax_m2_config.py:66 (_disable_fp8) detects an fp8 MiniMax-M2 checkpoint on
+
+  NPU and sets cfg.quantization = None, loading dequantized bf16 weights instead — so
+
+  the requested fp8 quantization is neutralized for that model.
+
+  '
+usage_locations:
+- file: vllm/engine/arg_utils.py:900
+  context: 'CLI flag registration: model_group.add_argument("--quantization", "-q", ...)'
+- file: vllm/engine/arg_utils.py:832
+  context: resolve_quantization_config(self.quantization, self.quantization_config) builds the effective quant config
+- file: vllm_ascend/platform.py:101
+  context: NPUPlatform.supported_quantization defines the Ascend-allowed quantization methods
+- file: vllm_ascend/platform.py:322
+  context: pre_register_and_update appends 'ascend' to --quantization argparse choices
+- file: vllm_ascend/patch/platform/patch_minimax_m2_config.py:66
+  context: _disable_fp8 sets cfg.quantization = None for fp8 MiniMax-M2 checkpoints on NPU
+- file: vllm_ascend/ascend_config.py:1040
+  context: C8 KV-cache quantization + MooncakeConnector on GQA raises ValueError
+related_parameters:
+- name: --quantization-config
+  relation: Provides per-layer-kind QuantSpecs and ignore patterns; auto-populated from online shorthand when --quantization
+    is one of ONLINE_QUANT_SHORTHAND_NAMES
+- name: --kv-cache-dtype
+  relation: Separate KV-cache quantization; C8/int8 KV quant interacts with weight quant (Mooncake C8 check) and is widened
+    by vllm-ascend patch_kv_cache_dtype
+- name: --dtype
+  relation: Used to determine weight dtype only when no quantization is detected
+- name: --allow-deprecated-quantization
+  relation: Gates use of deprecated quantization method names
+- name: --kernel-config (linear_backend/moe_backend)
+  relation: Kernel backend selection is keyed by quantization scheme (linear_backend_per_quant)
+constraints:
+- The chosen method must appear in NPUPlatform.supported_quantization on Ascend, otherwise startup validation fails.
+- On Ascend, 'ascend' is only accepted because vllm-ascend appends it to the argparse choices at runtime; it is not a native
+  upstream vLLM choice.
+- C8 KV-cache quantization combined with MooncakeConnector on GQA models raises a ValueError; disable C8 KV quant or use MooncakeLayerwiseConnector.
+- The NPU FA3 attention backend does not support FP8 quantized attention.
+- EPLB requires the selected MoE quantization method to expose a complete expert-weight movement layout.
+tuning_advice:
+  summary: Use --quantization ascend for Ascend-native W8A8/W4A8 kernels to cut HBM and boost throughput; otherwise let it
+    auto-detect from the checkpoint.
+  suggested_values:
+  - scenario: Ascend NPU with a bf16/fp16 checkpoint, want max throughput and lower memory
+    value: ascend
+    reason: Routes linear/MoE layers to Ascend quantized operators (Cube int8/fp8 GEMMs), reducing weight HBM and increasing
+      tokens/sec.
+  - scenario: Pre-quantized checkpoint (compressed-tensors / fp8 / mxfp8)
+    value: compressed-tensors
+    reason: Matches the checkpoint's stored quantization so weights load without dequantization; use fp8/mxfp8/modelopt_mxfp8
+      for those specific formats.
+  - scenario: Unquantized model, no accuracy budget for quantization
+    value: unset
+    reason: Leave unset so vLLM reads quantization_config from the model config; if absent, weights load in --dtype (bf16)
+      with no quantization.
+  caveats:
+  - On Ascend, 'ascend' is only valid because vllm-ascend patches the argparse choices; do not assume it works on upstream
+    GPU builds.
+  - FP8 MiniMax-M2 checkpoints are silently dequantized to bf16 on NPU — do not expect fp8 speedups there.
+  - C8 KV-cache quantization with MooncakeConnector on GQA models raises at startup.
+  - FP8 quantized attention is not supported by the NPU FA3 backend.
+  quick_guide: On Ascend, set --quantization ascend for native quantized kernels; otherwise leave unset to auto-detect from
+    the checkpoint.
+analysis_date: '2026-10-27'

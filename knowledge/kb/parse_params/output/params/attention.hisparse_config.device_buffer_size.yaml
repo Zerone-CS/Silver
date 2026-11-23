@@ -1,0 +1,85 @@
+name: attention.hisparse_config.device_buffer_size
+type: nested
+category: kv_cache
+scope: vllm
+source_file:
+- 'vllm/config/attention.py: HiSparseConfig definition (not present in provided context; referenced via tests/test_config.py)'
+- tests/test_config.py:404
+value_type: int
+default: <computed>
+valid_choices: positive integer; physical allocation rounded up to the GPU cache block size of the active backends
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- memory
+impact_detail: 'This parameter belongs to the upstream vLLM HiSparse attention configuration
+
+  (AttentionConfig.hisparse_config). It controls the per-request hot-buffer row
+
+  count on the device (GPU/NPU) for the HiSparse connector, including the
+
+  newest-token slot. The default is computed as one top-k per decode query plus
+
+  one top-k of LRU slack, and the physical allocation is rounded up to the
+
+  active backend''s cache block size.
+
+
+  No definition or usage of this parameter was found in the vllm-ascend repo,
+
+  and no vllm-ascend documentation references it. The only usage site in the
+
+  provided context is an upstream unit test (tests/test_config.py:404) that
+
+  verifies the value is preserved through VllmConfig construction when the
+
+  HiSparseConnector is used. There is no evidence that vllm-ascend overrides,
+
+  patches, or reads this field, so on Ascend NPU it only matters if the
+
+  HiSparse attention/connector path is actually exercised (which is not
+
+  documented as supported on Ascend). Its effect is a device-memory sizing
+
+  knob for the HiSparse hot buffer; it does not alter the core attention
+
+  compute path on Ascend. Hence low impact for Ascend runtime.
+
+  '
+usage_locations:
+- file: tests/test_config.py:404
+  context: Constructs HiSparseConfig(device_buffer_size=512) and asserts the value is preserved on VllmConfig.attention_config.hisparse_config
+related_parameters:
+- name: attention_config.hisparse_config (top-k / LRU slack)
+  relation: Default device_buffer_size is derived from top-k per decode query plus one top-k of LRU slack
+- name: kv_transfer_config.kv_connector (HiSparseConnector)
+  relation: Only relevant when the HiSparse connector is selected; the buffer sizes the device-side hot pool used by that
+    connector
+- name: kv_transfer_config.kv_connector_extra_config.host_pool_gib
+  relation: Companion host-pool sizing knob for the HiSparse connector
+constraints:
+- The value must be a positive integer number of rows; it includes the newest-token slot.
+- The physical allocation is rounded up to the GPU cache block size selected from the active backends, so the effective buffer
+  may be larger than the requested value.
+- This parameter is only meaningful when the HiSparse attention/connector path is enabled; otherwise it has no effect.
+tuning_advice:
+  summary: Leave at the computed default unless running the HiSparse connector; on Ascend this parameter is not documented
+    as supported, so avoid relying on it for tuning.
+  suggested_values:
+  - scenario: Default HiSparse deployment (upstream GPU reference)
+    value: <computed>
+    reason: The default (one top-k per decode query plus one top-k of LRU slack) is sized to cover decode queries without
+      eviction; overriding risks under- or over-allocating the hot buffer.
+  - scenario: Ascend NPU deployment
+    value: <computed>
+    reason: No vllm-ascend code reads or overrides this field and HiSparse is not documented for Ascend; keep the default
+      and do not tune it for NPU performance.
+  caveats:
+  - No definition or usage of this parameter exists in vllm-ascend; it is an upstream-only knob and has no demonstrated Ascend-specific
+    behavior.
+  - The physical allocation is rounded up to the backend cache block size, so memory usage may exceed the nominal value.
+  - Increasing the buffer raises per-request device memory for the HiSparse hot pool; on memory-constrained NPUs this could
+    reduce available KV cache.
+  quick_guide: Keep the computed default; this is an upstream HiSparse-only memory knob with no Ascend-specific tuning value.
+analysis_date: '2026-10-27'

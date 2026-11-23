@@ -1,0 +1,96 @@
+name: additional_config.scheduler_config.dyntra_lb_config.enable_diagnostics
+type: nested
+category: observability
+scope: vllm-ascend
+source_file:
+- vllm_ascend/ascend_config.py:1587
+- vllm_ascend/patch/platform/patch_dyntra_lb_core.py:329
+- vllm_ascend/patch/platform/patch_engine_core.py:38
+- vllm_ascend/core/dyntra_lb_scheduler.py:68
+value_type: bool
+default: false
+valid_choices: true or false
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag only toggles verbose diagnostic logging for the DyntraLB (dynamic load
+
+  balancing) feature. In vllm_ascend/patch/platform/patch_dyntra_lb_core.py:329 it is
+
+  read into `self._lb_enable_diagnostics` and then passed as the third argument to
+
+  `_print_rank_0(...)` calls (lines 341-348) that emit per-rank configuration and
+
+  workload-collection messages. In patch_engine_core.py:38 it gates a single
+
+  `dyntra_print_rank_0("Enable DyntraLB DP load balancing.", ...)` message when the
+
+  DyntraLB DPEngineCoreProc is installed. In core/dyntra_lb_scheduler.py:68 the
+
+  `diagnostics_enabled()` helper reads the raw additional_config dict to decide whether
+
+  to emit diagnostic output independently of DyntraLB activation. None of these paths
+
+  alter scheduling decisions, KV-cache block allocation, HCCL communication, or the
+
+  planner logic itself — they only add log lines. The performance effect is therefore
+
+  indirect and small: "extra host-side string formatting and logging I/O on the DP"
+
+  ranks, which can add minor CPU overhead and log volume during long runs but does not
+
+  change NPU compute, memory, or communication behavior. The docs explicitly state it
+
+  is for "feature validation and debugging only" and "should remain disabled in
+
+  production."
+
+  '
+usage_locations:
+- file: vllm_ascend/ascend_config.py:1587
+  context: 'Field definition `enable_diagnostics: bool = False` in DyntraLBConfig pydantic model.'
+- file: vllm_ascend/patch/platform/patch_dyntra_lb_core.py:329
+  context: Read into `self._lb_enable_diagnostics` during `_init_data_parallel`; used to gate `_print_rank_0` diagnostic messages.
+- file: vllm_ascend/patch/platform/patch_engine_core.py:38
+  context: Passed to `dyntra_print_rank_0` when installing DyntraLBDPEngineCoreProc.
+- file: vllm_ascend/core/dyntra_lb_scheduler.py:68
+  context: '`diagnostics_enabled()` reads the raw additional_config dict to enable diagnostic output independently of DyntraLB
+    activation.'
+related_parameters:
+- name: additional_config.scheduler_config.dyntra_lb_config.enabled
+  relation: Diagnostics only produce output when DyntraLB is active (or when diagnostics_enabled() is checked); enabling diagnostics
+    without DyntraLB has little effect.
+- name: additional_config.scheduler_config.dyntra_lb_config.mode
+  relation: Diagnostic logs report the selected mode; docs recommend static mode + diagnostics for troubleshooting runs.
+- name: additional_config.scheduler_config.dyntra_lb_config.start_step
+  relation: Docs recommend start_step=0 together with enable_diagnostics=true for short troubleshooting runs.
+constraints:
+- The value must be a boolean; the diagnostics_enabled() helper only treats the literal Python value `True` as enabled.
+- Diagnostics output is only meaningful when DyntraLB is enabled via dyntra_lb_config.enabled; otherwise the flag has no observable
+  effect on scheduling.
+tuning_advice:
+  summary: Keep enable_diagnostics=false in production; enable it only for short troubleshooting or functional validation
+    runs of DyntraLB.
+  suggested_values:
+  - scenario: Production serving with DyntraLB enabled
+    value: false
+    reason: Avoids extra per-rank logging overhead and log volume; docs state it should remain disabled in production.
+  - scenario: Short troubleshooting / functional validation of DyntraLB (with mode=static, start_step=0)
+    value: true
+    reason: Emits verbose per-rank configuration and workload-collection logs to confirm every Decode rank enters the same
+      collection steps and requests complete without persistent KV-waiting states.
+  - scenario: A/B performance comparison against DyntraLB disabled
+    value: false
+    reason: Docs step 4 requires turning diagnostics off before measuring throughput and latency so logging overhead does
+      not skew results.
+  caveats:
+  - Diagnostics only add log lines; they do not affect NPU compute, memory, or HCCL communication.
+  - Leaving diagnostics on during long production runs increases log volume and host-side CPU overhead on all DP ranks.
+  - The flag is read both from the parsed Ascend config and directly from the raw additional_config dict, so it must be set
+    under additional_config.scheduler_config.dyntra_lb_config.
+  quick_guide: Leave enable_diagnostics=false in production; set it to true only for short DyntraLB validation runs, then
+    turn it off before benchmarking.
+analysis_date: '2026-10-27'

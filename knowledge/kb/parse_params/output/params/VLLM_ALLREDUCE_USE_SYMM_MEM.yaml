@@ -1,0 +1,94 @@
+name: VLLM_ALLREDUCE_USE_SYMM_MEM
+type: env
+category: communication
+scope: vllm
+source_file:
+- vllm/envs.py:1856
+- vllm/envs.py:266
+- vllm/distributed/device_communicators/cuda_communicator.py:62
+- vllm/distributed/device_communicators/symm_mem.py:102
+value_type: bool
+default: true
+valid_choices: 0 or 1 (boolean)
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+- throughput
+impact_detail: 'This flag controls whether vLLM uses PyTorch symmetric memory (torch_symm_mem) for
+
+  all-reduce in the CUDA device communicator. In vllm/distributed/device_communicators/
+
+  cuda_communicator.py:62, `use_torch_symm_mem = envs.VLLM_ALLREDUCE_USE_SYMM_MEM` is
+
+  read only for the "tp" group (line 51-57 disables it for non-TP groups such as ETP).
+
+  When enabled, a SymmMemCommunicator is constructed (symm_mem.py) which allocates a
+
+  symmetric buffer via torch_symm_mem.empty and rendezvous, and can use multicast
+
+  (NVLink/NVLS-style) all-reduce for small-to-medium message sizes, reducing all-reduce
+
+  latency versus NCCL. If symmetric memory initialization fails (RuntimeError) or
+
+  multicast_ptr == 0, the communicator is disabled and falls back to NCCL — the warning
+
+  at symm_mem.py:102 explicitly suggests setting VLLM_ALLREDUCE_USE_SYMM_MEM=0 to
+
+  suppress it. It is also force-disabled under VLLM_BATCH_INVARIANT (symm_mem.py:114-115)
+
+  and overridden to "0" by override_envs_for_invariance (batch_invariant.py:1142).
+
+  On Ascend NPU, this code path lives in the CUDA device communicator and relies on
+
+  torch_symm_mem / NVLink multicast, which are CUDA-specific. vllm-ascend uses HCCL
+
+  for collective communication and does not route TP all-reduce through this CUDA
+
+  SymmMemCommunicator, so this flag has no effect on Ascend runtime performance.
+
+  No vllm-ascend override or usage of this env var was found in the provided context.
+
+  '
+usage_locations:
+- file: vllm/distributed/device_communicators/cuda_communicator.py:62
+  context: Reads envs.VLLM_ALLREDUCE_USE_SYMM_MEM to decide use_torch_symm_mem for the TP group
+- file: vllm/distributed/device_communicators/symm_mem.py:102
+  context: Warning message suggests setting VLLM_ALLREDUCE_USE_SYMM_MEM=0 when symmetric memory init fails
+- file: vllm/model_executor/determinism/batch_invariant.py:1142
+  context: Forces VLLM_ALLREDUCE_USE_SYMM_MEM=0 when batch invariance is enabled
+related_parameters:
+- name: VLLM_BATCH_INVARIANT
+  relation: When enabled, symmetric-memory all-reduce is force-disabled (set to 0)
+- name: VLLM_ALLREDUCE_USE_FLASHINFER
+  relation: Alternative all-reduce backend selection in the same communicator
+- name: VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC
+  relation: Alternative all-reduce backend selection in the same communicator
+constraints:
+- Symmetric-memory all-reduce is only applied to the tensor-parallel (tp) group; it is disabled for other groups such as ETP.
+- If symmetric memory initialization fails or multicast is unsupported, the communicator is disabled and falls back to NCCL
+  regardless of this flag.
+- When VLLM_BATCH_INVARIANT is enabled, this flag is overridden to 0 and symmetric-memory all-reduce is not used.
+tuning_advice:
+  summary: 'Leave at default on Ascend NPU — this flag only affects the CUDA symmetric-memory
+
+    all-reduce path and has no effect on HCCL-based communication in vllm-ascend.
+
+    '
+  suggested_values:
+  - scenario: Running on Ascend NPU (v1 or v2 worker)
+    value: '0'
+    reason: The CUDA SymmMemCommunicator path is not used on Ascend; setting 0 avoids any CUDA-specific init attempts and
+      is harmless.
+  - scenario: Running on CUDA GPUs with NVLink and small TP all-reduce messages
+    value: '1'
+    reason: Enables symmetric-memory multicast all-reduce, reducing all-reduce latency for small/medium messages.
+  - scenario: Enabling VLLM_BATCH_INVARIANT for deterministic outputs
+    value: '0'
+    reason: Batch invariance forces this to 0; set explicitly to avoid confusion.
+  caveats:
+  - No performance benefit on Ascend NPU; do not expect latency/throughput changes from this flag there.
+  - On CUDA, if init fails the flag silently falls back to NCCL — check logs for the warning.
+  quick_guide: 'Ascend NPU: no effect (HCCL path); CUDA: keep default 1 unless init fails or batch invariance is on.'
+analysis_date: '2026-10-27'

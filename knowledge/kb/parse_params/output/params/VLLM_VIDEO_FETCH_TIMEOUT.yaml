@@ -1,0 +1,91 @@
+name: VLLM_VIDEO_FETCH_TIMEOUT
+type: env
+category: other
+scope: vllm
+source_file:
+- vllm/envs.py:950
+- vllm/envs.py:72
+- vllm/envs.py:2309
+- vllm/multimodal/media/connector.py:574
+- vllm/multimodal/media/connector.py:604
+value_type: int
+default: 30
+valid_choices: positive integer (seconds); no explicit upper bound enforced
+cli_example: null
+deprecated: false
+performance_impact: low
+performance_scope:
+- latency
+impact_detail: 'VLLM_VIDEO_FETCH_TIMEOUT is read in vllm/envs.py (default 30 seconds) and passed as
+
+  fetch_timeout to load_from_url / load_from_url_async in
+
+  vllm/multimodal/media/connector.py (lines 574 and 604) when fetching video media from
+
+  HTTP or base64 data URLs for multimodal models. It is a network I/O timeout, not a
+
+  compute or NPU-side parameter: "it does not touch HCCL, CANN, KV cache, scheduling, or"
+
+  any Ascend device code path. Its only runtime effect is bounding how long the API
+
+  server / preprocessing layer waits for a remote video download before failing. On
+
+  Ascend NPU this behaves identically to upstream vLLM — no vllm-ascend override,
+
+  monkey-patch, or config patch was found for this variable. Impact on throughput/latency
+
+  is indirect and only materializes for video-input workloads where remote fetches are
+
+  slow; for text-only or image-only serving it is inert. It does not affect NPU memory
+
+  or compute throughput.
+
+  '
+usage_locations:
+- file: vllm/envs.py:950
+  context: Environment variable definition with default 30 seconds
+- file: vllm/envs.py:72
+  context: 'Type annotation VLLM_VIDEO_FETCH_TIMEOUT: int = 30'
+- file: vllm/envs.py:2309
+  context: Listed in the set of environment variables propagated to worker processes
+- file: vllm/multimodal/media/connector.py:574
+  context: Synchronous video fetch passes fetch_timeout=envs.VLLM_VIDEO_FETCH_TIMEOUT to load_from_url
+- file: vllm/multimodal/media/connector.py:604
+  context: Async video fetch passes fetch_timeout=envs.VLLM_VIDEO_FETCH_TIMEOUT to load_from_url_async
+related_parameters:
+- name: VLLM_IMAGE_FETCH_TIMEOUT
+  relation: Sibling media fetch timeout for images (default 5s)
+- name: VLLM_AUDIO_FETCH_TIMEOUT
+  relation: Sibling media fetch timeout for audio (default 10s)
+- name: VLLM_MEDIA_FETCH_MAX_RETRIES
+  relation: Retry count for media fetches; each retry quadruples the timeout, so effective wait scales with this value
+- name: VLLM_MEDIA_CACHE
+  relation: Media download cache; when enabled, repeated video URLs avoid re-fetching and reduce timeout exposure
+- name: VLLM_MAX_MEDIA_DOWNLOAD_SIZE_MB
+  relation: Caps single remote media download size; large videos may need longer timeouts to complete within the size limit
+constraints:
+- The value must be a positive integer number of seconds; a non-integer or non-numeric value will raise an error when the
+  env var is parsed.
+- The timeout only applies to video media fetched from HTTP or base64 data URLs; local file paths are not subject to it.
+tuning_advice:
+  summary: Leave at the 30s default for typical video workloads; raise it only when fetching large videos over slow networks,
+    and pair with media caching to avoid repeated fetches.
+  suggested_values:
+  - scenario: Default / text-only or image-only serving
+    value: 30
+    reason: Default is sufficient and the variable is inert when no video URLs are fetched.
+  - scenario: Large video files or slow/high-latency networks (e.g. cross-region object storage)
+    value: 120
+    reason: Upstream tests raise it to 120 on ROCm to tolerate network delays and slower video processing; the same reasoning
+      applies to Ascend deployments with slow remote media.
+  - scenario: Latency-sensitive serving where fast failure is preferred
+    value: 10
+    reason: Fail fast on unreachable video URLs so requests do not hold server resources; combine with VLLM_MEDIA_CACHE to
+      avoid re-fetching.
+  caveats:
+  - Increasing this value does not improve NPU throughput; it only extends the wait for remote video downloads.
+  - Because retries multiply the timeout, keep VLLM_MEDIA_FETCH_MAX_RETRIES modest when using a large timeout.
+  - Enable VLLM_MEDIA_CACHE so repeated video URLs are served from cache and the timeout is rarely hit.
+  quick_guide: Keep 30s by default; raise to ~120s for large videos on slow networks, lower to ~10s for fail-fast latency-sensitive
+    serving.
+analysis_date: '2026-10-27'

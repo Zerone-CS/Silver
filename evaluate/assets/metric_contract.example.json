@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "objective": "finite_batch_effective_output_throughput",
+  "measurement_mode": "finite_batch",
+  "output_source": "server_usage.completion_tokens",
+  "output_semantics_to_verify": "Check deployed server reasoning, special-token and stop-token accounting; do not assume visible-text retokenization.",
+  "success_rule": "HTTP 200, normal SSE DONE, stop/length finish, final usage, supported payload consistent with count",
+  "failure_rule": "Partial outputs from failed requests do not contribute effective tokens; failure time remains in full run window.",
+  "zero_output_rule": "A completed stop/length response with actual usage zero and no payload can succeed but has no TTFT sample.",
+  "window": "Before worker launch to completion and collection of all selected requests, excluding prior DNS resolution and separate warmup.",
+  "clock": "client_perf_counter",
+  "ttft": "Actual HTTP call start to first nonempty content or reasoning SSE event, successful requests only.",
+  "e2e": "Actual HTTP call start to terminal state, successful requests only.",
+  "arrival_lag": "Saved separately; not included in TTFT/E2E. Extend metrics if SLO begins at scheduled arrival.",
+  "token_itl": "unavailable",
+  "quantile": "linear_interpolation",
+  "client_policy": "Record and match actual client_measurement_policy_sha256 within each scenario's comparison.",
+  "warmup": "Task-specific separate workload outside scoring window; verify readiness and drain before scoring.",
+  "quality_and_slo": "Declare task-specific quality scope and all comparison guards before formal trials. This example does not establish them."
+}
