@@ -32,4 +32,10 @@ def verify_stream(stream_path, request, recorded_output):
                 "stream_done_received", "final_usage_received"):
         require(state[key] == request[key], "request record and SSE disagree: " + key)
     require(len(state["output_event_ts"]) == len(request["output_event_ts"]), "SSE event count differs")
+    facts = {"first_channel_event": state.get("first_channel_event", {}),
+             "server_content_tokens": state.get("server_content_tokens")}
+    for key, value in facts.items():
+        if key in request:
+            require(request[key] == value, "request record and SSE disagree: " + key)
     require(recorded_output == {k: "".join(v) for k, v in channels.items()}, "output differs from retained SSE")
+    return facts

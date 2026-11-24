@@ -28,6 +28,7 @@
 | `run_id`, `request_id`, `requested_max_tokens` | 对应 manifest 和 workload。全部请求 ID 及配额须逐一对应 |
 | `planned_send_ts`, `send_start_ts`, `end_ts` | 均在窗口内，依次不减，成功和失败均有记录 |
 | `response_open_ts`, `first_output_ts`, `last_output_ts`, `output_event_ts` | 前三项可为 null。最后一项为非空载荷事件时间数组，首末元素与首末输出时间对应。无事件时数组为空、首末为 null |
+| `first_channel_event`, `server_content_tokens` | 新采集器记录两个输出通道各自首次非空事件在 `output_event_ts` 中的零基下标，缺失通道无下标。可见内容 token 数取自服务端最终 usage 的显式扩展字段，缺失记为 null |
 | `actual_prompt_tokens`, `actual_output_tokens`, `token_count_source` | 实测非负整数或 null，计数来源为 `server_usage` 或 null |
 | `final_status`, `finish_reason`, `stream_done_received`, `final_usage_received`, `error` | 终态 success/error/timeout/cancelled，两项 received 为布尔值。失败保留错误原因 |
 

@@ -94,7 +94,7 @@ def stable_result(report):
                          for pair in comparison["pairs"]],
         "scenarios": comparison["scenarios"],
         "metrics": {row["manifest"]["run_id"]: row["metrics"] for row in comparison["validated_inputs"]},
-        "quality": {run_id: {key: value for key, value in result.items() if key not in ("scorer", "python")}
+        "quality": {run_id: {key: value for key, value in result.items() if key not in ("scorer", "python", "run_path")}
                     for run_id, result in report["quality"].items()},
         "goodput": report.get("goodput", {}),
     }
@@ -171,9 +171,22 @@ def summary(manifest):
 def replay(directory):
     directory = directory.resolve(strict=True)
     manifest = evidence.read_object(plain_file(directory / "bundle.json", directory))
-    evidence.require(manifest["schema_version"] == 1 and manifest["verifier"] == assessor_identity(),
+    evidence.require(manifest["schema_version"] in (1, 2) and manifest["verifier"] == assessor_identity(),
                      "bundle needs its exact evaluator release and manifest hash")
     evidence.require(payload_files(directory) == manifest["files_sha256"], "evidence archive bytes changed")
+    if manifest["schema_version"] == 2:
+        from scripts import round_archive
+        if manifest.get("kind") == "baseline_recovery":
+            from scripts import recovery_archive
+            record = evidence.read_object(directory / "payload/recovery-export.json")
+            result = recovery_archive.audit(record, round_archive.ArchivedFiles(directory))
+            evidence.require(result == manifest["result"], "recovery replay differs from sealed outcome")
+            return result
+        evidence.require(manifest["kind"] == "closed_round", "unknown evidence bundle type")
+        row = round_archive.read_export(directory / "payload/round-export.json")
+        result = round_archive.audit(row, round_archive.ArchivedFiles(directory, manifest["aliases"]))
+        evidence.require(result == manifest["result"], "round replay differs from sealed outcome")
+        return result
     run_checks(directory, manifest, strict=True)
     return summary(manifest)
 
@@ -184,11 +197,28 @@ def main(argv=None):
     command = actions.add_parser("pack")
     command.add_argument("--spec", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
+    command = actions.add_parser("pack-round", help="seal a closed round and its registered evidence")
+    command.add_argument("--round-export", type=Path, required=True)
+    command.add_argument("--source-root", type=Path, action="append", required=True)
+    command.add_argument("--output", type=Path, required=True)
+    command = actions.add_parser("pack-recovery", help="seal only a verified baseline recovery")
+    command.add_argument("--recovery-export", type=Path, required=True)
+    command.add_argument("--source-root", type=Path, action="append", required=True)
+    command.add_argument("--output", type=Path, required=True)
     command = actions.add_parser("verify")
     command.add_argument("--bundle", type=Path, required=True)
     options = parser.parse_args(argv)
     try:
-        result = pack(options.spec, options.output) if options.action == "pack" else replay(options.bundle)
+        if options.action == "pack-recovery":
+            from scripts import recovery_archive
+            result = recovery_archive.pack(options.recovery_export, options.source_root, options.output)
+        elif options.action == "pack-round":
+            from scripts.round_archive import pack as pack_round
+            result = pack_round(options.round_export, options.source_root, options.output)
+        elif options.action == "pack":
+            result = pack(options.spec, options.output)
+        else:
+            result = replay(options.bundle)
     except (OSError, KeyError, TypeError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 2

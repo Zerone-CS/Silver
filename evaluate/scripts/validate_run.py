@@ -227,6 +227,17 @@ def validate(manifest, requests):
             else:
                 check(first is None and last is None,
                       prefix + " empty output events require null first/last_output_ts")
+        if isinstance(policy, dict) and policy.get("channel_evidence_version") == 1:
+            indices = request.get("first_channel_event")
+            check(isinstance(indices, dict) and set(indices) <= {"content", "reasoning_content"}
+                  and events_ok and all(integer(i) and i < len(event_times) for i in indices.values())
+                  and (min(indices.values(), default=None) == (0 if event_times else None)),
+                  prefix + ".first_channel_event must identify the first nonempty events")
+            count = request.get("server_content_tokens")
+            total = request.get("actual_output_tokens")
+            check("server_content_tokens" in request and (count is None or
+                  (integer(count) and integer(total) and count <= total)),
+                  prefix + ".server_content_tokens must be null or within the final completion count")
         maximum = request.get("requested_max_tokens")
         check(integer(maximum, 1), prefix + ".requested_max_tokens must be a positive integer")
         for key in ("actual_output_tokens", "actual_prompt_tokens"):
@@ -308,6 +319,9 @@ def validate(manifest, requests):
         "in_flight_integral_request_s": integral,
         "summed_request_residence_s": residence_sum,
     }
+    if isinstance(policy, dict) and policy.get("channel_evidence_version") == 1:
+        lags = [request["send_start_ts"] - request["planned_send_ts"] for request in requests]
+        metrics.update(send_lag_p99_s=quantile(lags, 0.99), send_lag_max_s=max(lags))
     if not ttft:
         warnings.append("TTFT is unavailable: no successful request has a nonempty output payload")
     elif len(ttft) < len(successes):
@@ -406,6 +420,13 @@ def inspect_run(run_dir):
                 if len(value) != len(requests) or set(workload_by_id) != set(request_by_id):
                     errors.append("workload and request records must have equal lengths and identical request_id sets")
                 for identity in workload_by_id.keys() & request_by_id.keys():
+                    if isinstance(manifest, dict) and isinstance(manifest.get("client_measurement_policy"), dict):
+                        if manifest["client_measurement_policy"].get("mode") == "open_loop":
+                            offset = workload_by_id[identity].get("arrival_offset_ms")
+                            origin = manifest.get("start_ts")
+                            if (not number(offset) or offset < 0 or not number(origin)
+                                    or request_by_id[identity].get("planned_send_ts") != origin + offset / 1000):
+                                errors.append("planned send time differs from arrival schedule for request_id=" + identity)
                     quota = workload_by_id[identity].get("output_tokens")
                     measured_quota = request_by_id[identity].get("requested_max_tokens")
                     if type(quota) is not type(measured_quota) or quota != measured_quota:

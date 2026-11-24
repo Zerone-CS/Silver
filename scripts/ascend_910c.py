@@ -5,24 +5,25 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import socket
 import subprocess
 import sys
 from dataclasses import dataclass
+from tempfile import NamedTemporaryFile
 import time
 from urllib.request import Request, urlopen
+from typing import Optional
+
+from scripts import site_model_snapshot
 
 SYSTEM_MOUNTS = {
     "/usr/local/Ascend/driver": "/usr/local/Ascend/driver",
     "/usr/local/dcmi": "/usr/local/dcmi",
     "/usr/local/bin/npu-smi": "/usr/local/bin/npu-smi",
 }
-MODEL_FILES = (
-    "config.json", "configuration.json", "generation_config.json", "model.safetensors",
-    "tokenizer.json", "tokenizer_config.json", "vocab.json",
-)
 PROFILER = {"profiler": "torch", "torch_profiler_dir": "/profiles", "torch_profiler_with_stack": False,
             "ignore_frontend": True, "torch_profiler_use_gzip": False}
 
@@ -39,6 +40,7 @@ class SiteConfig:
     sibling_dies: tuple
     packages: dict
     lock_dir: Path
+    model_store_dir: Optional[Path] = None
 
     @classmethod
     def load(cls, path):
@@ -46,7 +48,7 @@ class SiteConfig:
         doc = read(path)
         expected = {"schema_version", "image", "model_dir", "model", "port", "card",
                     "die", "chip", "sibling_dies", "packages", "lock_dir"}
-        require(set(doc) == expected and doc["schema_version"] == 1, "Invalid site configuration")
+        require(set(doc) in (expected, expected | {"model_store_dir"}) and doc["schema_version"] == 1, "Invalid site configuration")
         require(re.fullmatch(r"sha256:[0-9a-f]{64}", doc["image"]), "Pin the Docker image by image ID")
         require(re.fullmatch(r"[a-zA-Z0-9_.-]+", doc["model"]), "Invalid served model name")
         require(type(doc["port"]) is int and 1024 <= doc["port"] <= 65535, "Invalid local port")
@@ -61,8 +63,10 @@ class SiteConfig:
                 "Pin the installed package versions")
         paths = (Path(doc["model_dir"]), Path(doc["lock_dir"]))
         require(all(p.is_absolute() and ":" not in str(p) for p in paths), "Supply absolute host paths")
+        store = Path(doc["model_store_dir"]) if "model_store_dir" in doc else None
+        require(store is None or (store.is_absolute() and ":" not in str(store)), "Invalid model snapshot store")
         return cls(doc["image"], paths[0], doc["model"], doc["port"], doc["card"],
-                   doc["die"], doc["chip"], siblings, doc["packages"], paths[1])
+                   doc["die"], doc["chip"], siblings, doc["packages"], paths[1], store)
 
     @property
     def base_url(self):
@@ -96,8 +100,12 @@ def read(path):
 
 
 def write(path, value):
-    with path.open("x", encoding="utf-8") as f:
-        f.write(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    # Publish complete receipts; readers must never mistake a partial write for an existing action.
+    payload = (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    with NamedTemporaryFile(dir=path.parent) as temporary:
+        temporary.write(payload)
+        temporary.flush()
+        os.link(temporary.name, path)
 
 
 def utc():
@@ -198,6 +206,20 @@ class Site:
         self.name = "inferopt-910c-" + hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
         self.owner = hashlib.sha256(str(self.root).encode()).hexdigest()
 
+        self.model_store = (settings.model_store_dir or self.root.parent / ".inferopt-model-snapshots").resolve()
+        require(self.model_store != self.root and self.root not in self.model_store.parents,
+                "model snapshot store must be outside the experiment workspace")
+        self.model_receipt = self.root / "model-snapshot.json"
+
+    def frozen_model(self, environment=None):
+        if environment is not None:
+            require(isinstance(environment.get("model_hashes"), dict) and environment["model_hashes"],
+                    "site has no frozen model identity; initialize a new site workspace")
+        environment = environment or {}
+        return site_model_snapshot.freeze(self.settings.model_dir, self.model_store, self.model_receipt,
+                                          environment.get("model_hashes", {}),
+                                          environment.get("model_snapshot_sha256"))
+
     def initialize(self):
         settings = self.settings
         require(optional_container(self.name) is None, "Site already has a container")
@@ -208,12 +230,13 @@ class Site:
             sock.bind(("127.0.0.1", settings.port))
         images = json.loads(cmd("docker", "image", "inspect", settings.image))
         require(len(images) == 1 and images[0]["Id"] == settings.image, "Pinned image missing")
+        snapshot = self.frozen_model()
         self.root.joinpath("deployments").mkdir(exist_ok=True)
         write(self.root / "preflight.json", {"host": socket.gethostname(), "card": card,
               "container_name": self.name, "image_id": settings.image, "repo_digests": images[0].get("RepoDigests")})
         env = {"host": socket.gethostname(), "physical_device": settings.die, "card": settings.card,
                "image_id": settings.image, "model": settings.model, "packages": settings.packages,
-               "model_hashes": {name: sha(settings.model_dir / name) for name in MODEL_FILES},
+               "model_hashes": snapshot["files_sha256"], "model_snapshot_sha256": snapshot["content_sha256"],
                "client_python": sys.version, "npu_smi": next((line.strip() for line in card["npu_smi"].splitlines()
                                                             if "npu-smi" in line), None)}
         write(self.root / "environment.json", env)
@@ -243,7 +266,9 @@ class Site:
         write(directory / "prelaunch-card.json", card_snapshot(self.settings, set(), False))
         require(optional_container(self.name) is None, "Refusing to replace existing container")
         plan = read(config)
-        mounts = {**SYSTEM_MOUNTS, "/model": str(settings.model_dir), "/site/no-think.jinja": str(self.template)}
+        snapshot = self.frozen_model(read(self.root / "environment.json"))
+        model_mount = self.model_store / snapshot["content_sha256"]
+        mounts = {**SYSTEM_MOUNTS, "/model": str(model_mount), "/site/no-think.jinja": str(self.template)}
         argv = ["docker", "run", "--pull=never", "-d", "--name", self.name, "--label",
                 f"inferopt.owner={self.owner}", "--label", f"inferopt.deployment={label}",
                 "--shm-size", "4g", "-p", f"127.0.0.1:{settings.port}:8000"]
@@ -326,7 +351,10 @@ class Live:
         require(not item["HostConfig"]["Privileged"] and all(x["PathInContainer"] == x["PathOnHost"] for x in devices),
                 "Unexpected container privileges")
         mounts = {x["Destination"]: x for x in item["Mounts"]}
-        for dest, path in {"/model": self.settings.model_dir, "/site/no-think.jinja": self.site.template}.items():
+        snapshot = read(self.site.model_receipt)
+        model_mount = site_model_snapshot.verify(self.site.model_store, snapshot,
+                                                  Path("/proc") / str(item["State"]["Pid"]) / "root/model")
+        for dest, path in {"/model": model_mount, "/site/no-think.jinja": self.site.template}.items():
             require(not mounts[dest]["RW"] and Path(mounts[dest]["Source"]).resolve() == path.resolve(),
                     f"Deployment mount mismatch for {dest}")
         effective = {"image_id": item["Image"], "argv": item["Config"]["Cmd"],
@@ -335,7 +363,8 @@ class Live:
                      "chat_template_sha256": sha(self.site.template)}
         require(effective == read(self.config), "Live launch configuration differs from frozen plan")
         ident = {"schema_version": 1, "instance_id": f"{self.cid}:{item['State']['StartedAt']}:{item['State']['Pid']}",
-                 "base_url": self.site.base_url, "model": self.site.model, "effective_config": effective, "implementation_sha256": None}
+                 "base_url": self.site.base_url, "model": self.site.model, "model_snapshot_sha256": snapshot["content_sha256"],
+                 "effective_config": effective, "implementation_sha256": None}
         return ident
 
     def assert_isolated(self, label=None):
@@ -389,24 +418,27 @@ class Live:
         write(self.directory / "packages.json", packages)
         write(self.directory / "models.json", models)
         write(self.directory / "observation.json", observation)
+        write(self.directory / "model-snapshot.json", read(self.site.model_receipt))
         write(self.evidence, {"verified": True, "scope": "Live container ID, image digest, argv, template mount, parsed startup settings and model endpoint",
                               "observation": "observation.json",
-                              "evidence": ["observation.json", "startup.log", "models.json", "packages.json"]})
+                              "evidence": ["observation.json", "startup.log", "models.json", "packages.json", "model-snapshot.json"]})
 
-    def warmup(self, dataset, concurrency, rounds=1):
+    def warmup(self, dataset, concurrency, rounds=1, *, entire_dataset=False):
         jobs = [json.loads(line) for line in Path(dataset).read_text().splitlines() if line.strip()]
         require(jobs and concurrency >= 1 and rounds >= 1, "Invalid warmup workload")
+        selected = jobs if entire_dataset else jobs[:concurrency]
         results = []
         def infer(job):
             reply = http(self.site.base_url, "/chat/completions", {"model": self.site.model, "stream": False, "temperature": 0,
                          "seed": 42, "max_tokens": job["output_tokens"],
                          "messages": [{"role": "user", "content": job["prompt_text"]}]}, timeout=80)
-            require(reply.get("model") == self.site.model and reply.get("choices"), "Warmup did not complete")
+            require(reply.get("model") == self.site.model and reply.get("id") and reply.get("choices")
+                    and reply["choices"][0].get("finish_reason") in ("length", "stop"), "Warmup did not complete")
             return {"request_id": job["request_id"], "response_id": reply["id"], "usage": reply.get("usage"),
                     "finish_reason": reply["choices"][0].get("finish_reason")}
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             for _ in range(rounds):
-                results.append(list(pool.map(infer, jobs[:concurrency])))
+                results.append(list(pool.map(infer, selected)))
         write(self.directory / f"warmup-{time.time_ns()}.json", {"dataset": str(dataset), "concurrency": concurrency,
                                                               "captured_at": utc(), "results": results})
         return results

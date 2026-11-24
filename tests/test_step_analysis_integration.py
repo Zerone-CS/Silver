@@ -195,6 +195,16 @@ class StepAnalysisIntegration(unittest.TestCase):
             self.assertEqual(measured["wall_s"], wall)
             self.assertEqual(measured["output_tokens_per_s"], output / wall)
 
+    def test_missing_visible_count_preserves_both_rates_in_diagnostic_comparison(self):
+        report = self.invoke(compare_command(self.demo, self.output) +
+                             ["--token-source", "server_content_tokens", "--first-output-channel", "content",
+                              "--max-e2e-s", "10"])
+        rows = report["comparison"]["rows"]
+        self.assertIsNone(rows["goodput"]["baseline"])
+        self.assertIsNone(rows["goodput"]["candidate"])
+        self.assertEqual(rows["qualified_requests_per_s"]["baseline"], 0.1)
+        self.assertEqual(rows["qualified_server_completion_tokens_per_s"]["candidate"], 2)
+
     def test_exact_quality_goodput_replays_content_and_retains_external_tokens(self):
         gold = self.temp / "gold.json"
         gold.write_text(json.dumps({"r1": "intentionally different answer"}), encoding="utf-8")

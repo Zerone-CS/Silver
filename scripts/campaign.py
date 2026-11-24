@@ -148,6 +148,12 @@ def view(state, row):
               "deployment_last_verified": state["deployed"], "active_round": bool(row)}
     if budget is not None:
         result["device_budget"] = budget
+    if "site_release" in state:
+        result["site_release"] = state["site_release"]
+        if state["site_release"]["status"] == "pending":
+            result.update(next_action="attach_release", phase="awaiting_site_release",
+                          round=state["site_release"]["round"])
+    result["max_retries"] = state.get("max_retries", 1)
     if state.get("goal_tps") is not None:
         result["goal"] = {"scenario": state["goal_scenario"], "metric": state.get("goal_metric", RAW_THROUGHPUT),
                           "target": state["goal_tps"]}
@@ -180,7 +186,7 @@ def initial_goal(runs, contract, scenario, target, metric=RAW_THROUGHPUT, distin
 
 
 def init(db, a):
-    from scripts.round_evidence import goodput_rules, measure_goodput, quality_rules, score_run, validate_policy, verify_deployment
+    from scripts.round_evidence import goodput_metrics, goodput_rules, measure_goodput, quality_rules, score_run, validate_policy, verify_deployment
     require(a.max_rounds > 0 and (not a.single or a.max_rounds == 1),
             "max-rounds must be positive; --single requires exactly one round")
     require(a.max_retries >= 0, "max-retries cannot be negative")
@@ -197,6 +203,7 @@ def init(db, a):
     goodput_by_scenario = goodput_rules(contract, rules)
     cases, runs, endpoints = {}, [], {}
     baseline = None
+    model_snapshots = set()
     for path in a.baseline_run:
         path = path.resolve(strict=True)
         checked = validate_run.inspect_run(path)
@@ -208,20 +215,24 @@ def init(db, a):
         require(baseline is None or baseline == observed, "initial runs mix deployments")
         external = {}
         deploy = verify_deployment(path, m, observed, external)
+        model_snapshots.add(deploy.get("model_snapshot_sha256"))
         name = m["scenario"]
         require(name in rules, "baseline scenario is absent from contract")
         spec = contract["scenarios"][name]
-        quality = score_run(path, checked, rules[name], external)
+        stream_facts = {}
+        quality = score_run(path, checked, rules[name], external, stream_facts=stream_facts)
         require(quality["passed"] and checked["metrics"]["n_success"] > 0, "initial baseline failed quality")
         if name in goodput_by_scenario:
-            goodput = measure_goodput(path, checked, goodput_by_scenario[name], quality)
-            checked["metrics"][compare_trials.GOODPUT_METRIC] = goodput["output_tokens_per_s"]
+            goodput = measure_goodput(path, checked, goodput_by_scenario[name], quality, stream_facts=stream_facts)
+            checked["metrics"].update(goodput_metrics(goodput))
         metrics = [r["metric"] for r in spec["guardrails"]]
         if spec["primary"] is not None:
             metrics.append(spec["primary"]["metric"])
         if "goodput_primary" in spec:
             metrics.append(spec["goodput_primary"]["metric"])
-        require(all(key in checked["metrics"] for key in metrics), "metric absent from baseline: " + name)
+        if a.goal_tps is not None and name == a.goal_scenario:
+            metrics.append(goal_metric)
+        require(all(checked["metrics"].get(key) is not None for key in metrics), "metric absent from baseline: " + name)
         baseline = observed
         case = {key: m[key] for key in (*compare_trials.IDENTITIES, "measurement_mode")}
         endpoint = {"base_url": m["base_url"], "model": m["client_measurement_policy"]["model"]}
@@ -244,9 +255,11 @@ def init(db, a):
              "endpoint": next(iter(endpoints.values())), "initial_runs": runs,
              "count": 0, "max_retries": a.max_retries, "max_rounds": a.max_rounds, "single": a.single,
              "goal_tps": a.goal_tps, "goal_scenario": a.goal_scenario, "goal_metric": goal_metric,
-             "require_trial_plan": a.require_trial_plan,
+             "require_trial_plan": a.require_trial_plan, "require_confirmation_clock": a.require_trial_plan,
              "deadline": time.time() + a.hours * 3600 if a.hours is not None else None,
              "deployed": None, "stop_requested": None, "stopped": None}
+    require(len(model_snapshots) == 1, "initial deployments disagree on model snapshot")
+    state["model_snapshot_sha256"] = model_snapshots.pop()
     state["deployed"] = {"identity": baseline, "instance_id": deploy["instance_id"],
                          "source": "last supplied calibration run", "run_id": runs[-1]["run_id"]}
     if a.device_budget is not None:
@@ -281,6 +294,11 @@ def begin(state, a):
     state["count"] = a.round
     return {"schema_version": 1, "campaign_id": state["campaign_id"], "scope": state["scope"],
             "round": a.round, "scenario": a.scenario, "baseline": state["baseline"], "candidate": None,
+            "acceptance_protocol": {"contract": state["contract"], "cases": state["cases"],
+                                    "endpoint": state["endpoint"], "single": state["single"],
+                                    "model_snapshot_sha256": state.get("model_snapshot_sha256"),
+                                    "require_trial_plan": state.get("require_trial_plan", False),
+                                    "require_confirmation_clock": state.get("require_confirmation_clock", False)},
             "phase": "baseline_profile", "profile_policy": policy, "hypothesis": "",
             "evidence": {"evidence_files": [state["contract"], ref] + state["contract_sources"], "profiles": {}, "assessments": []}}
 
@@ -317,6 +335,7 @@ def profile(db, state, row, a):
     profiles = row["evidence"]["profiles"]
     require(not any(p["run_id"] == report["run_id"] for p in profiles.values()), "duplicate profile run")
     profiles[side] = {"path": str(a.bundle.resolve(strict=True)), "run_id": report["run_id"],
+                      "binding": row["challenge"],
                       "manifest_sha256": report["manifest_sha256"], "spec_sha256": report["spec_sha256"]}
     options = diagnosis_options(a)
     if options:
@@ -472,6 +491,11 @@ def assess(db, state, row, a):
             require(not instances.intersection(slot["instance_id"] for slot in result["execution"]["slots"]),
                     "confirmation reuses a discovery deployment instance")
         evidence["evidence_files"].append(plan)
+    if phase == "confirm":
+        result["confirmation_order"] = trial_plan.confirmation_order(
+            evidence["assessments"][0].get("execution"), result.get("execution"),
+            required=row.get("acceptance_protocol", {}).get("require_confirmation_clock", False))
+    result["registration"] = {"stage": phase, "pairs": row["schedule"], "binding": row["challenge"]}
     evidence["assessments"].append(result)
     if result["recommendation"] != "adopt":
         row["phase"] = "restore"
@@ -526,6 +550,12 @@ def review_evidence(row):
             trial_plan.load_plan(execution["plan"]["path"])
 
 
+def check_closure_model(row, observation):
+    expected = row.get("acceptance_protocol", {}).get("model_snapshot_sha256")
+    if expected is not None:
+        require(observation.get("model_snapshot_sha256") == expected, "closure model differs from the measured model")
+
+
 def close_round(state, row, a):
     from scripts.round_evidence import check_observation
     require(a.observation.strip(), "record an observation/reason for this decision")
@@ -544,17 +574,36 @@ def close_round(state, row, a):
         require(row["candidate"] is not None, "no planned candidate to revert")
     chosen = row["candidate"] if a.decision == "adopt" else row["baseline"]
     obs = check_observation(a.deployment, chosen, **state["endpoint"])
+    check_closure_model(row, obs)
     receipt, health_ref = load_object(a.health)
     require(fingerprint(a.deployment) == row.get("last_probe"), "deployment observation was superseded")
     require(health_ref == row.get("last_health"), "health receipt was not issued for the current transition")
     verify_health(receipt, state, row, a.deployment, obs)
+    action = getattr(a, "site_action", None)
+    if action is not None:
+        require(state.get("device_budget"), "site closure needs the registered device budget")
+        ledger = device_budget.Budget(state["device_budget"]["path"]).audit()
+        require(ledger["pending"] == [action], "site closure must name the active cleanup lease")
+        lease = next(item for item in ledger["leases"] if item["action_id"] == action)
+        directory = a.deployment.resolve(strict=True).parent
+        require(lease["cleanup"] and directory.name == action and directory.parent.name == "deployments"
+                and a.health.resolve(strict=True).parent == directory, "closure lease and observation directory differ")
+        container, container_ref = load_object(directory / "container.json")
+        require(container["label"] == action and obs["instance_id"].split(":", 1)[0] == container["id"],
+                "closure observation is for another container")
+        release = {"status": "pending", "round": row["round"], "action_id": action, "container": container_ref,
+                   "claim": {key: lease[key] for key in ("host", "boot_id", "devices", "start_mono_ns")}}
+        row["site_release"] = state["site_release"] = release
+        row["evidence"]["evidence_files"].append(container_ref)
     now = time.time()
+    row["closure_binding"] = {"challenge": row["challenge"], "challenge_time": row["challenge_time"]}
     row.update(decision=a.decision, observation=a.observation, phase="closed", closed_at=now,
                final_deployment={"identity": chosen, "instance_id": obs["instance_id"],
                                  "observation": fingerprint(a.deployment), "verified_at": now})
     row["evidence"]["evidence_files"].extend([fingerprint(a.deployment), health_ref])
     state.update(deployed=row["final_deployment"], baseline=chosen)
     if reason:
+        row["stop_reason"] = reason
         state["stopped"] = reason
     elif a.decision == "adopt" and state["goal_tps"] is not None:
         comparison = row["evidence"]["assessments"][-1]["comparison"]
@@ -562,19 +611,19 @@ def close_round(state, row, a):
         metric = state.get("goal_metric", RAW_THROUGHPUT)
         rates = [r["metrics"][metric] for r in comparison["validated_inputs"]
                  if r["manifest"]["run_id"] in ids]
-        if rates and min(rates) >= state["goal_tps"]:
+        if rates and all(rate is not None and rate >= state["goal_tps"] for rate in rates):
             state["stopped"] = "goal_reached"
     if not state["stopped"] and state["count"] == state["max_rounds"]:
         state["stopped"] = "round_budget"
 
 
-def verify_health(receipt, state, row, deployment, obs):
+def verify_health(receipt, state, row, deployment, obs, *, original_ref=None, latest=None):
     probe = obs.get("round_probe", {})
     require(probe.get("challenge") == row["challenge"] and probe.get("campaign_id") == state["campaign_id"]
             and probe.get("round") == row["round"], "refresh deployment observation for this phase")
     require(receipt.get("campaign_id") == state["campaign_id"] and receipt.get("round") == row["round"]
             and receipt.get("challenge") == row["challenge"]
-            and receipt.get("deployment") == fingerprint(deployment), "health receipt belongs to another deployment or round")
+            and receipt.get("deployment") == (original_ref or fingerprint(deployment)), "health receipt belongs to another deployment or round")
     require(receipt.get("instance_id") == obs["instance_id"] and receipt.get("base_url") == obs["base_url"],
             "health receipt endpoint or instance mismatch")
     reply = receipt.get("response")
@@ -590,7 +639,7 @@ def verify_health(receipt, state, row, deployment, obs):
     require(isinstance(message, dict) and message.get("role") == "assistant"
             and any(isinstance(message.get(k), str) and message[k].strip()
                     for k in ("content","reasoning_content")), "health reply lacks assistant output")
-    require(row["challenge_time"] <= receipt.get("at", 0) <= time.time() + 1,
+    require(row["challenge_time"] <= receipt.get("at", 0) <= (time.time() + 1 if latest is None else latest),
             "health receipt predates the latest transition")
 
 
@@ -642,6 +691,45 @@ def get_round(db, number):
     return json.loads(result[0]) if result else None
 
 
+def verify_closure_release(recorded, lease, proof, ref, directory):
+    claim = recorded["claim"]
+    require(lease["action_id"] == recorded["action_id"] == directory.name
+            and set(claim) == {"host", "boot_id", "devices", "start_mono_ns"}
+            and all(lease[k] == v for k, v in claim.items())
+            and lease["cleanup"] is True and lease["end_mono_ns"] is not None
+            and lease["proof_path"] == ref["path"] and lease["proof_sha256"] == ref["sha256"]
+            and Path(ref["path"]).parent == directory and proof.get("action_id") == recorded["action_id"]
+            and proof.get("free") is True and proof.get("site_evidence", {}).get("processes_on_card") == {}
+            and all(proof[k] == lease[k] for k in ("host", "boot_id", "devices"))
+            and lease["start_mono_ns"] < proof["observed_mono_ns"] <= lease["end_mono_ns"],
+            "release evidence does not match this closure")
+
+
+def attach_release(db, state, number):
+    row = get_round(db, number)
+    require(row and row["phase"] == "closed" and row.get("site_release"), "no site closure to reconcile")
+    recorded = row["site_release"]
+    ledger = device_budget.Budget(state["device_budget"]["path"]).audit()
+    action = recorded["action_id"]
+    lease = next((item for item in ledger["leases"] if item["action_id"] == action), None)
+    require(lease and lease["cleanup"] and lease["end_mono_ns"] is not None
+            and all(lease[k] == v for k, v in recorded["claim"].items()), "closure lease is pending or changed")
+    proof, ref = load_object(lease["proof_path"])
+    directory = Path(row["final_deployment"]["observation"]["path"]).parent
+    verify_closure_release(recorded, lease, proof, ref, directory)
+    release = {**recorded, "status": "released", "lease": lease, "proof": ref}
+    if recorded["status"] == "released":
+        require(recorded == release, "recorded release changed")
+        return release
+    require(state.get("site_release") == recorded, "latest site closure differs")
+    row["site_release"] = state["site_release"] = release
+    row["evidence"]["evidence_files"].append(ref)
+    db.execute("UPDATE rounds SET data=? WHERE id=?", (encode(row), number))
+    db.execute("UPDATE campaign SET state=? WHERE id=1", (encode(state),))
+    event(db, number, "attach-release", {"action_id": action, "proof": ref})
+    return release
+
+
 def transition(db, a):
     if a.command == "init":
         return init(db, a)
@@ -657,8 +745,14 @@ def transition(db, a):
     if a.command == "export":
         result = get_round(db, a.round)
         require(result and result["phase"] == "closed", "round has not closed")
+        if a.recovery_only:
+            from scripts import recovery_archive
+            return recovery_archive.export(result)
         review_evidence(result)
         return result
+    if a.command == "attach-release":
+        return attach_release(db, state, a.round)
+    require(state.get("site_release", {}).get("status") != "pending", "attach the previous site release before continuing")
     require(not state["stopped"], "campaign already stopped: " + str(state["stopped"]))
     if a.command == "stop":
         reason = stop_reason(state, device_status(state)) or a.reason
@@ -732,11 +826,13 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
     commands = {}
-    for name in ("init","status","begin","profile","plan","schedule","stamp","retry","assess","observe","health","close","stop","history","export"):
+    for name in ("init","status","begin","profile","plan","schedule","stamp","retry","assess","observe","health","close","attach-release","stop","history","export"):
         cmd = commands[name] = sub.add_parser(name)
         cmd.add_argument("--campaign", type=Path, required=True, help="campaign directory (local SQLite)")
-        if name in ("begin","profile","plan","schedule","stamp","retry","assess","observe","health","close","export"):
+        if name in ("begin","profile","plan","schedule","stamp","retry","assess","observe","health","close","attach-release","export"):
             cmd.add_argument("--round", type=int, required=True)
+    commands["export"].add_argument("--recovery-only", action="store_true",
+                                    help="verify and export baseline restoration after revert or abandon")
     cmd = commands["init"]
     cmd.add_argument("--contract", type=Path, required=True)
     cmd.add_argument("--scope", required=True, help="model, hardware and workload applicability")
@@ -784,6 +880,7 @@ def parser():
     commands["close"].add_argument("--decision", choices=("adopt","revert","abandon"), required=True)
     commands["close"].add_argument("--observation", required=True)
     commands["close"].add_argument("--health", type=Path, required=True)
+    commands["close"].add_argument("--site-action", help="910C cleanup lease to attest after the final observation")
     commands["stop"].add_argument("--reason", help="user stop or documented exhaustion of directions")
     return p
 

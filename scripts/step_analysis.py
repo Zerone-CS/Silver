@@ -45,15 +45,17 @@ def emit(text, output):
 
 def goodput(run, report, args):
     """Score only when the caller supplies a quality or individual-request SLO policy."""
-    thresholds = {"max_ttft_s": args.max_ttft_s, "max_e2e_s": args.max_e2e_s,
-                  "min_request_score": args.min_request_score}
-    for name, value in thresholds.items():
-        if value is not None:
-            require(math.isfinite(value) and value >= 0, name + " must be finite and nonnegative")
+    overrides = {key: getattr(args, key, None) for key in
+                 ("max_ttft_s", "max_e2e_s", "min_request_score", *round_evidence.GOODPUT_SEMANTICS)}
+    thresholds = {key: value for key, value in overrides.items() if value is not None}
+    for name in ("max_ttft_s", "max_e2e_s", "min_request_score"):
+        if name in thresholds:
+            require(math.isfinite(thresholds[name]) and thresholds[name] >= 0,
+                    name + " must be finite and nonnegative")
     if args.min_request_score is not None:
         require(args.quality_contract and 0 < args.min_request_score <= 1,
                 "--min-request-score requires a quality contract and a threshold in (0,1]")
-    if not args.quality_contract and all(v is None for v in thresholds.values()):
+    if not args.quality_contract and not thresholds:
         return None
     checked = read_diagnostic(run)
     core_hashes = {Path(ref["path"]).name: ref["sha256"] for ref in report["benchmark_sources"]}
@@ -62,13 +64,24 @@ def goodput(run, report, args):
     quality = None
     contract_digest = None
     inputs = {}
+    facts = None
     if args.quality_contract:
         path = args.quality_contract.resolve(strict=True)
         contract, contract_digest = compare_trials.read_json(path)
         inputs[str(path)] = contract_digest
-        rule = round_evidence.quality_rules(path, contract, inputs)[checked["manifest"]["scenario"]]
-        quality = round_evidence.score_run(run, checked, rule, inputs)
-    report = round_evidence.measure_goodput(run, checked, thresholds, quality)
+        scenario = checked["manifest"]["scenario"]
+        rules = round_evidence.quality_rules(path, contract, inputs)
+        if scenario in contract.get("goodput_policy", {}).get("scenarios", {}):
+            frozen = round_evidence.goodput_rules(contract, rules)[scenario]
+            for key, value in thresholds.items():
+                default = round_evidence.GOODPUT_SEMANTICS[key][0] if key in round_evidence.GOODPUT_SEMANTICS else None
+                require(frozen.get(key, default) == value, "diagnostic override differs from frozen goodput policy: " + key)
+            thresholds = frozen
+        facts = {}
+        quality = round_evidence.score_run(run, checked, rules[scenario], inputs, stream_facts=facts)
+    elif thresholds.get("first_output_channel", "any") != "any" or thresholds.get("token_source") == "server_content_tokens":
+        facts = round_evidence.diagnostic_stream_facts(run, checked, inputs)
+    report = round_evidence.measure_goodput(run, checked, thresholds, quality, stream_facts=facts)
     for name, digest in core_hashes.items():
         require(profile.file_hash(run / name) == digest, "benchmark changed during goodput verification: " + name)
     return {**report, "quality_contract_sha256": contract_digest, "quality_evaluation": quality,
@@ -149,6 +162,9 @@ def compare(a, b):
         require(a["goodput"].get("quality_contract_sha256") == b["goodput"].get("quality_contract_sha256"),
                 "goodput quality policy mismatch")
         rows["goodput"] = relation(a["goodput"]["output_tokens_per_s"], b["goodput"]["output_tokens_per_s"])
+        for metric in ("qualified_requests_per_s", "qualified_server_completion_tokens_per_s"):
+            if metric in a["goodput"] and metric in b["goodput"]:
+                rows[metric] = relation(a["goodput"][metric], b["goodput"][metric])
     evidence = [s for s in (a, b) if s["coverage"]["status"] != "complete"]
     if evidence:
         notes.append("Incomplete request/step reconciliation. Inspect coverage.issues and unresolved per side.")
@@ -206,7 +222,8 @@ def markdown_pair(report):
     lines = ["# 诊断运行 A/B 对照", "", "| 指标 | A | B | B − A | B / A |", "|---|---:|---:|---:|---:|"]
     labels = {"N": "成功请求的输出 token", "T": "整批墙钟（s）", "K": "逻辑 step 数",
               "R": "逻辑 step/s", "Y_bar": "有效 token/step", "token_coverage": "token 关联比例",
-              "output_token_throughput": "有效输出 token/s", "goodput": "满足约束的输出 token/s"}
+              "output_token_throughput": "有效输出 token/s", "goodput": "满足约束的输出 token/s",
+              "qualified_requests_per_s": "合格请求/s", "qualified_server_completion_tokens_per_s": "合格请求的服务端 completion token/s"}
     for name, row in report["comparison"]["rows"].items():
         cells = ["—" if x is None else format(x, ".7g") for x in row.values()]
         lines.append("| " + " | ".join([labels.get(name, name), *cells]) + " |")
@@ -245,6 +262,8 @@ def cli(argv=None):
         cmd.add_argument("--min-request-score", type=float)
         cmd.add_argument("--max-ttft-s", type=float)
         cmd.add_argument("--max-e2e-s", type=float)
+        for key, choices in round_evidence.GOODPUT_SEMANTICS.items():
+            cmd.add_argument("--" + key.replace("_", "-"), choices=choices)
     one.add_argument("--run", type=Path)
     for flag in ("sources", "bundle", "timeline-map"):
         one.add_argument("--" + flag, type=Path)

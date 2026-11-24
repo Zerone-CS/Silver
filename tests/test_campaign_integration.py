@@ -335,6 +335,7 @@ class CampaignIntegrationTests(unittest.TestCase):
         self.assertEqual(final["stop_reason"], "goal_reached")
         exported = self.campaign_cmd("export", "--round", 1)
         self.assertEqual(exported["final_deployment"]["identity"], exported["candidate"])
+        self.assertIn("reverted or abandoned", self.campaign_cmd("export", "--round", 1, "--recovery-only", fail=True))
         self.assertEqual(len(exported["evidence"]["assessments"]), 2)
         self.assertEqual(exported["evidence"]["step_comparison"], comparison)
         result = json.loads(self.call(EXPERIENCE, "add", "--db", self.db, "--campaign", self.campaign, "--round", 1))
@@ -370,6 +371,9 @@ class CampaignIntegrationTests(unittest.TestCase):
         self.campaign_cmd("close", "--round", 1, "--decision", "adopt", "--observation", "stop", *receipt, fail=True)
         result = self.campaign_cmd("close", "--round", 1, "--decision", "abandon", "--observation", "stop", *receipt)
         self.assertEqual(result["stop_reason"], "user requested stop")
+        recovery = self.campaign_cmd("export", "--round", 1, "--recovery-only")
+        self.assertEqual(recovery["decision"], "abandon")
+        self.assertIsNone(recovery["candidate"])
         self.assertEqual(self.campaign_cmd("status")["next_action"], "stopped")
         self.call(EXPERIENCE, "add", "--db", self.db, "--campaign", self.campaign, "--round", 1)
         item = json.loads(self.call(EXPERIENCE, "search", "--db", self.db, "--decision", "abandon"))[0]["round_record"]
@@ -410,7 +414,17 @@ class CampaignIntegrationTests(unittest.TestCase):
     def test_frozen_trial_plan_checks_independent_confirmation_and_goodput_target(self):
         self.fixture_clock = True
         contract = json.loads(self.contract.read_bytes())
-        contract["goodput_policy"] = {"scenarios": {"offline": {"max_ttft_s": 1, "max_e2e_s": 1}}}
+        scorer = self.root / "score.py"
+        scorer.write_text('''import json, sys
+items = json.load(sys.stdin)["items"]
+scores = {r["request_id"]: int(r["status"] == "success" and r["output"]["content"] == r["reference"]) for r in items}
+print(json.dumps({"schema_version": 1, "scores": scores}))
+''')
+        contract["quality_policy"]["scenarios"]["offline"] = {
+            "method": "python_score_v1", "min_mean_score": 1, "timeout_s": 4,
+            "reference": contract["quality_policy"]["scenarios"]["offline"]["reference"],
+            "scorer": {"path": scorer.name, "sha256": hashlib.sha256(scorer.read_bytes()).hexdigest()}}
+        contract["goodput_policy"] = {"scenarios": {"offline": {"max_ttft_s": 1, "max_e2e_s": 1, "min_request_score": 1}}}
         write(self.contract, contract)
         meter = self.root / "device-budget.sqlite"
         self.call(BUDGET, "init", "--db", meter, "--limit-die-seconds", 800)
@@ -457,15 +471,52 @@ class CampaignIntegrationTests(unittest.TestCase):
                 self.campaign_cmd("stamp", "--round", 1, "--run-dir", run, "--metadata", metadata,
                                   "--output", stamped)
                 self.collect(deployment, run, metadata=stamped)
+            if stage == "screen":
+                last_screen = work / plan["slots"][-1]["path"] / "manifest.json"
+                screen_end = json.loads(last_screen.read_bytes())["client_run_order"]["end_ns"]
+            else:
+                # Each batch remains internally ordered and all instance IDs
+                # remain fresh. Only the screen/confirmation boundary overlaps.
+                target = work / plan["slots"][0]["path"] / "manifest.json"
+                original = target.read_bytes()
+                interrupted = json.loads(original)
+                interrupted["client_run_order"]["start_ns"] = screen_end - 1
+                write(target, interrupted)
+                error = self.campaign_cmd("assess", "--round", 1, "--evidence", pairs_file, fail=True)
+                self.assertIn("screen must finish", error)
+                target.write_bytes(original)
             self.assertEqual(self.campaign_cmd("assess", "--round", 1, "--evidence", pairs_file)["next_action"], expected)
         self.server.deployment = json.loads((self.root / "candidate/observation.json").read_bytes())
         health = self.health("candidate", "qualified-output-health.json")
         state = self.campaign_cmd("close", "--decision", "adopt", "--observation", "goodput gain", "--round", 1, *health)
         self.assertEqual(state["stop_reason"], "goal_reached")
-        assessments = self.campaign_cmd("export", "--round", 1)["evidence"]["assessments"]
+        exported = self.campaign_cmd("export", "--round", 1)
+        assessments = exported["evidence"]["assessments"]
         execution = assessments[-1]["execution"]
         self.assertTrue(execution["independent_deployments"])
         self.assertEqual(execution["orders"]["offline"]["AB"], execution["orders"]["offline"]["BA"])
+
+        # Relocate the complete evidence, then remove the original site path.
+        from scripts import evidence_bundle, round_archive
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as dest, patch.object(evidence_bundle, "assessor_identity",
+                                                                  return_value={"release_id": "fixture"}):
+            bundle = Path(dest).resolve() / "sealed"
+            export_file = write(self.root / "round-export.json", exported)
+            result = round_archive.pack(export_file, [self.root], bundle)
+            self.assertEqual(result["stage_recommendations"], ["adopt", "adopt"])
+            self.assertEqual(result["confirmation_order"], "verified")
+            self.assertEqual(result["device_release"], "unverified")
+            hidden = self.root.with_name(self.root.name + "-hidden")
+            self.root.rename(hidden)
+            try:
+                self.assertEqual(evidence_bundle.replay(bundle), result)
+                exported["evidence"]["assessments"].pop()
+                aliases = json.loads((bundle / "bundle.json").read_bytes())["aliases"]
+                with self.assertRaisesRegex(ValueError, "adoption lacks required passing stages"):
+                    round_archive.audit(exported, round_archive.ArchivedFiles(bundle, aliases))
+            finally:
+                hidden.rename(self.root)
 
     def test_goodput_goal_does_not_stop_at_raw_throughput_goal(self):
         contract = json.loads(self.contract.read_bytes())
@@ -528,6 +579,37 @@ class CampaignIntegrationTests(unittest.TestCase):
         self.assertEqual(self.campaign_cmd("history")[-1]["details"]["step_analysis_review_error"],
                          result["step_analysis_review_error"])
         self.assertIn(missing.name, self.campaign_cmd("export", "--round", 1, fail=True))
+        record = self.campaign_cmd("export", "--round", 1, "--recovery-only")
+        self.assertNotIn("evidence", record)
+        self.assertEqual(record["stop_reason"], "diagnostic source lost")
+        self.assertIn(missing.name, record["step_analysis_review_error"])
+        from scripts import evidence_bundle, recovery_archive, round_archive
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as destination, patch.object(evidence_bundle, "assessor_identity",
+                                                                      return_value={"release_id": "fixture"}):
+            bundle = Path(destination).resolve() / "recovery"
+            exported = write(self.root / "recovery.json", record)
+            verified = recovery_archive.pack(exported, [self.root], bundle)
+            self.assertEqual((verified["comparison"], verified["device_release"]), ("not_verified", "unverified"))
+            self.assertIs(verified["baseline_restored"], True)
+            self.assertNotIn("recommendation", verified)
+            self.assertEqual(len(evidence_bundle.payload_files(bundle)), 3)
+            with self.assertRaisesRegex(ValueError, "reverted or abandoned"):
+                recovery_archive.audit(dict(record, decision="adopt"), round_archive.ArchivedFiles(bundle))
+            with self.assertRaisesRegex(ValueError, "wrong final deployment"):
+                recovery_archive.audit(dict(record, baseline=record["candidate"]), round_archive.ArchivedFiles(bundle))
+            originals = Path(record["last_health"]["path"])
+            raw_health = originals.read_bytes()
+            originals.unlink()
+            try:
+                self.assertEqual(evidence_bundle.replay(bundle), verified)
+                self.campaign_cmd("export", "--round", 1, "--recovery-only", fail=True)
+                archived = round_archive.ArchivedFiles(bundle)(originals)
+                archived.write_bytes(archived.read_bytes() + b"\n")
+                with self.assertRaisesRegex(ValueError, "archive bytes changed"):
+                    evidence_bundle.replay(bundle)
+            finally:
+                originals.write_bytes(raw_health)
         missing.write_bytes(original)
         exported = self.campaign_cmd("export", "--round", 1)
         self.assertEqual(exported["evidence"]["step_analysis_review_error"], result["step_analysis_review_error"])

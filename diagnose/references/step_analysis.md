@@ -19,7 +19,7 @@ python3 -B scripts/step_analysis.py compare --baseline "$A" --candidate "$B" --f
 
 并发运行时，请求的单次 E2E 可以互相重叠。整批 T 包括受测窗口内的排队、失败和尾部排空；逐请求 E2E 另作分位数或 SLO。推测生成中的草稿、被拒 token、重算和重复的 TP rank 记录都可能消耗时间，这些工作可单独观测。N 始终取本次成功响应的最终用量。基准支持的输出通道与 EOS 规则随固定的客户端策略一起保存。[测量契约](../../evaluate/references/measurement_contract.md)
 
-若业务另要求正确答案或逐请求时限，传入 `--quality-contract`、`--max-ttft-s` 或 `--max-e2e-s`。此时报告另给 goodput，即同时达标的成功请求所交付的 token 数除以同一个 T。使用可信的 `python_score_v1` 时还要通过 `--min-request-score` 指定单题阈值；确切匹配直接按每题答案判定。评分读取原始 benchmark 目录中的请求、SSE 和输出文件。[质量约定](../../references/round_evidence.md)
+若业务另要求正确答案或逐请求时限，传入 `--quality-contract`、`--max-ttft-s` 或 `--max-e2e-s`。此时报告另给 goodput，即同时达标的成功请求所交付的 token 数除以同一个 T。可用 `--latency-origin`、`--first-output-channel` 和 `--token-source` 选择与正式验收一致的口径。若质量契约已冻结本场景的 goodput 规则，诊断自动采用该规则，命令行与契约不一致会被拒绝。使用可信的 `python_score_v1` 时还要通过 `--min-request-score` 指定单题阈值；确切匹配直接按每题答案判定。评分读取原始 benchmark 目录中的请求、SSE 和输出文件。[质量约定](../../references/round_evidence.md)
 
 ## 选择观测和验证假设
 

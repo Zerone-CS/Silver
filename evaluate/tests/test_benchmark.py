@@ -338,6 +338,31 @@ class BenchmarkTests(unittest.TestCase):
         request = json.loads((self.run_dir / records[0]["raw_request_path"]).read_text())
         self.assertIs(request["ignore_eos"], True)
 
+    def test_conflicting_final_usage_fails_before_overwriting_counts(self):
+        record = {"finish_reason": "stop", "final_usage_received": False, "first_channel_event": {"content": 0}}
+        usage = {"prompt_tokens": 5, "completion_tokens": 3, "completion_tokens_details": {"content_tokens": 1}}
+        event = {"choices": [], "usage": usage}
+        benchmark.consume_event(json.dumps(event), 1, record, {})
+        benchmark.consume_event(json.dumps(event), 2, record, {})
+        usage["completion_tokens_details"]["content_tokens"] = 2
+        with self.assertRaisesRegex(benchmark.StreamError, "conflicting_final_usage"):
+            benchmark.consume_event(json.dumps(event), 3, record, {})
+        self.assertEqual(record["server_content_tokens"], 1)
+
+    def test_invalid_event_does_not_create_a_channel_index(self):
+        record = {"finish_reason": None, "output_event_ts": []}
+        event = {"choices": [{"delta": {"content": "x", "tool_calls": ["y"]}}]}
+        with self.assertRaisesRegex(benchmark.StreamError, "unsupported_tool_output"):
+            benchmark.consume_event(json.dumps(event), 1, record, {"content": []})
+        self.assertNotIn("first_channel_event", record)
+
+    def test_reported_content_count_requires_observed_content(self):
+        record = {"finish_reason": "stop", "final_usage_received": False}
+        event = {"usage": {"prompt_tokens": 2, "completion_tokens": 2,
+                           "completion_tokens_details": {"content_tokens": 1}}}
+        with self.assertRaisesRegex(benchmark.StreamError, "content_token_count_disagrees_with_stream"):
+            benchmark.consume_event(json.dumps(event), 1, record, {})
+
     def test_open_loop_preserves_schedule_and_reports_client_backlog(self):
         status, manifest, records = self.invoke(["normal", "normal"],
                                                ["--mode", "open_loop", "--workers", "1"],

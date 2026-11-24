@@ -47,7 +47,25 @@ python3 -B scripts/round_evidence.py describe-run /campaign/runs/short-baseline-
 }
 ```
 
-一个请求只有在终态成功、质量达标、TTFT 和端到端时延都不超过各自上限时，其全部服务端最终 `completion_tokens` 才计入分子。两项时延都从实际发起请求计时。缺少首个输出时间的请求不计入，达到阈值恰好相等的请求仍可计入。分母沿用整批墙钟，包含批次内所有请求的等待和执行时间。
+一个请求只有在终态成功、质量达标、TTFT 和端到端时延都不超过各自上限时，其全部服务端最终 `completion_tokens` 才计入分子。默认从实际发送开始计时，TTFT 取 content 或 reasoning_content 中最先到达的非空输出。缺少首个输出时间的请求不计入，达到阈值恰好相等的请求仍可计入。分母沿用整批墙钟，包含批次内所有请求的等待和执行时间。
+
+每个 `goodput_policy.scenarios` 条目可另外冻结以下字段。
+
+| 字段 | 取值和含义 |
+|---|---|
+| `latency_origin` | 默认 `send_start`。对开环流量设 `planned_arrival` 可从计划到达时刻计算 TTFT 和 E2E，计划时刻按冻结 workload 的 `arrival_offset_ms` 核验。 |
+| `first_output_channel` | 默认 `any`。前端仅显示最终答案时可选 `content`。测思考通道时可选 `reasoning_content`。缺少指定通道首输出的请求不满足 TTFT。 |
+| `token_source` | 默认 `server_completion_tokens`，使用最终 `usage.completion_tokens`。若端点明确提供可见内容 token 数 `usage.completion_tokens_details.content_tokens`，可选 `server_content_tokens`。这是对支持该扩展的端点的约定。 |
+
+三项选择彼此独立。可按可见答案的首字验时，并按全部服务端完成 token 计产出。例如，开环可见首字 500 ms、完成 1 s 的策略可写成如下形式。
+
+```json
+{"max_ttft_s":0.5,"max_e2e_s":1.0,"latency_origin":"planned_arrival","first_output_channel":"content","token_source":"server_completion_tokens"}
+```
+
+启用新口径或使用新采集器时，逐运行报告给出合格请求/s（`qualified_requests_per_s`）和对应的服务端完成 token/s（`qualified_server_completion_tokens_per_s`）。可将 `qualified_requests_per_s` 声明为场景主指标或护栏。选择 `server_content_tokens` 后，若有合格请求缺少该字段，报告保留缺少计数的请求 ID，可见 token/s 记为 null，依赖该数值的收益或护栏无法通过。采集器从同一最终 SSE usage 读取计数，并对相互矛盾的重复最终计数报错。
+
+新采集器提供整批实际发送滞后的 `send_lag_p99_s` 和 `send_lag_max_s`，可在正式护栏预先设置 `max_value`。历史数据沿用当时的默认口径，也可根据归档 SSE 和原始非空输出事件时间按新通道重放；可见 token 计数仍须有服务端原件支持。
 
 - `exact_match` 和 `exact_match_rate` 以每条请求的指定输出字段和金标准精确匹配作为逐请求质量条件。
 - `python_score_v1` 在该场景的 `goodput_policy` 中另设 `min_request_score`，取值大于 0 且至多为 1。逐条得分达到此下限即通过逐请求质量条件，原质量规则的 `min_mean_score` 仍参与整个 run 的验收。

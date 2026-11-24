@@ -4,6 +4,7 @@
 import argparse
 from contextlib import ExitStack, contextmanager
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -56,19 +57,59 @@ def parse_case(spec, scenario):
                  "invalid site case settings")
     row = obj["scenarios"][scenario]
     required = {"dataset", "concurrency"}
-    allowed = required | {"warmup_rounds", "mode", "workers", "seed", "temperature", "top_p", "timeout"}
+    allowed = required | {"warmup_rounds", "warmup_dataset", "mode", "workers", "seed", "temperature", "top_p", "timeout"}
     host.require(required <= row.keys() <= allowed, "invalid options for site case " + scenario)
     dataset = (spec.parent / row["dataset"]).resolve(strict=True)
     parallelism = row["concurrency"]
     workers = row.get("workers", parallelism)
     warmups = row.get("warmup_rounds", 1)
-    host.require(all(type(v) is int and v >= 1 for v in (parallelism, workers, warmups))
-                 and workers >= parallelism, "invalid worker count or warmup")
+    host.require(all(type(v) is int and v >= 1 for v in (parallelism, workers)) and workers >= parallelism
+                 and type(warmups) is int and warmups >= 0, "invalid worker count or warmup")
+    source = row.get("warmup_dataset")
+    if "warmup_dataset" in row:
+        host.require(warmups > 0 and isinstance(source, dict) and set(source) in ({"path", "sha256"}, {"path", "sha256", "shared_prefix"})
+                     and isinstance(source["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", source["sha256"])
+                     and isinstance(source["path"], str) and source["path"], "invalid warmup dataset reference")
+        if "shared_prefix" in source:
+            rule = source["shared_prefix"]
+            host.require(isinstance(rule, dict) and set(rule) == {"characters", "matching_requests"}
+                         and type(rule["characters"]) is int and rule["characters"] > 0
+                         and type(rule["matching_requests"]) is int and rule["matching_requests"] >= 0,
+                         "invalid character-prefix overlap rule")
+        source = {**source, "path": (spec.parent / source["path"]).resolve(strict=True)}
     options = {"model": None, "dataset": dataset, "concurrency": parallelism, "workers": workers,
                "mode": row.get("mode", "closed_loop"), "seed": row.get("seed", 42),
                "temperature": row.get("temperature", 0), "top-p": row.get("top_p", 1),
                "timeout": row.get("timeout", 60)}
-    return options, warmups
+    return options, warmups, source
+
+
+def prepare_warmup(live, options, rounds, source):
+    """Snapshot inputs before sending any requests. Return portable policy and local evidence."""
+    concurrency = options["concurrency"]
+    policy = {"rounds": rounds, "concurrency": concurrency, "mode": "no_workload_warmup"}
+    artifacts = []
+    results = []
+    if rounds:
+        entire = source is not None
+        dataset = source["path"] if entire else options["dataset"]
+        payload = dataset.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        host.require(not entire or digest == source["sha256"], "warmup dataset differs from its frozen digest")
+        local = live.directory / "warmup-input.jsonl"
+        with local.open("xb") as stream:
+            stream.write(payload)
+        policy.update(mode="explicit_dataset" if entire else "measured_first_concurrency", dataset_sha256=digest)
+        if entire and "shared_prefix" in source:
+            warm = [round_evidence.benchmark.strict_json(line) for line in payload.splitlines() if line.strip()]
+            measured = [round_evidence.benchmark.strict_json(line) for line in options["dataset"].read_bytes().splitlines()
+                        if line.strip()]
+            policy["shared_prefix"] = round_evidence.warmup_overlap(warm, measured, source["shared_prefix"])
+        results = live.warmup(local, concurrency, rounds, entire_dataset=entire)
+        artifacts.append(local.name)
+    receipt = live.directory / "warmup-receipt.json"
+    host.write(receipt, {"policy": policy, "round_results": results})
+    return policy, artifacts + [receipt.name]
 
 
 def invoke(script, *args, log=None, codes=(0,), timeout=None):
@@ -104,7 +145,7 @@ def attest_free(site, action_id, budget, directory, outcome):
     observed = time.monotonic_ns()
     hostname, boot_id, devices = machine(site)
     proof = directory / f"device-release-{observed}.json"
-    host.write(proof, {"host": hostname, "boot_id": boot_id, "devices": devices, "free": True,
+    host.write(proof, {"action_id": action_id, "host": hostname, "boot_id": boot_id, "devices": devices, "free": True,
                        "observed_mono_ns": observed, "site_evidence": raw})
     return budget.release(action_id, time.monotonic_ns(), proof, outcome)
 
@@ -129,15 +170,28 @@ def work_deadline(seconds):
 def collect(site, live, request):
     run = site_path(site.root, request.run)
     run.parent.mkdir(parents=True, exist_ok=True)
-    options, warmups = parse_case(request.case, request.scenario)
+    options, warmups, warmup_source = parse_case(request.case, request.scenario)
     options["model"] = site.model
-    live.warmup(options["dataset"], options["concurrency"], warmups)
+    warmup_policy, artifacts = prepare_warmup(live, options, warmups, warmup_source)
+    metric = live.directory / "site-metric.json"
+    metric_input = host.read(request.metric)
+    host.require(isinstance(metric_input, dict) and "site_warmup_policy" not in metric_input,
+                 "site_warmup_policy is generated by the site worker")
+    host.write(metric, {**metric_input, "site_warmup_policy": warmup_policy})
+    env = host.read(site.root / "environment.json")
+    snapshot = host.read(live.directory / "model-snapshot.json")
+    environment = live.directory / "site-environment.json"
+    host.write(environment, {**env, "model_hashes": snapshot["files_sha256"],
+                             "model_snapshot_sha256": snapshot["content_sha256"]})
+    proof = host.read(live.evidence)
+    evidence = live.directory / "measurement-evidence.json"
+    host.write(evidence, {**proof, "evidence": proof["evidence"] + artifacts})
     live.assert_isolated("benchmark-before")
     meta = live.directory / "metadata.unbound.json"
     diagnostic = request.profile_spec is not None
     invoke(ROOT / "evaluate/scripts/prepare_metadata.py", "--scenario", request.scenario,
-           "--config", live.config, "--environment", site.root / "environment.json",
-           "--metric-contract", request.metric, "--config-evidence", live.evidence, "--output", meta,
+           "--config", live.config, "--environment", environment,
+           "--metric-contract", metric, "--config-evidence", evidence, "--output", meta,
            "--profiler-enabled", "on" if diagnostic else "off",
            "--run-purpose", "diagnostic" if diagnostic else "performance", timeout=10)
     if request.campaign:
@@ -220,19 +274,37 @@ def measure(site, request):
 
 
 def reconcile(site, budget, action):
+    host.require(re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", action), "invalid action ID")
+    directory = site.root / "deployments" / action
     with lock_card(site.settings):
         state = budget.status()
-        host.require(state["pending"] == [action], "action does not match the pending lease")
-        lease = next(row for row in state["leases"] if row["action_id"] == action)
-        host.require((lease["host"], lease["boot_id"], lease["devices"]) == machine(site),
-                     "pending lease belongs to another host, boot, or device")
-        host.require(re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", action), "invalid action ID")
-        directory = site.root / "deployments" / action
-        directory.mkdir(exist_ok=True)
-        site.stop(action, directory)
-        charge = attest_free(site, action, budget, directory, "reconciled_interruption")
-        host.write(directory / "reconciled-action.json", charge)
-        return charge
+        charge = next((row for row in state["leases"] if row["action_id"] == action), None)
+        host.require(charge is not None, "action does not match a registered lease")
+        if charge["end_mono_ns"] is None:
+            host.require(state["pending"] == [action], "action does not match the pending lease")
+            host.require((charge["host"], charge["boot_id"], charge["devices"]) == machine(site),
+                         "pending lease belongs to another host, boot, or device")
+            directory.mkdir(exist_ok=True)
+            site.stop(action, directory)
+            charge = attest_free(site, action, budget, directory, "reconciled_interruption")
+        host.require(Path(charge["proof_path"]).parent == directory, "release proof belongs to another site")
+        host.require(host.sha(Path(charge["proof_path"])) == charge["proof_sha256"], "release proof changed")
+        if charge["outcome"] == "reconciled_interruption":
+            path = directory / "reconciled-action.json"
+            if path.exists():
+                host.require(host.read(path) == charge, "reconciled charge changed")
+            else:
+                host.write(path, charge)
+    context = directory / "closure-context.json"
+    if context.exists():
+        target = host.read(context)
+        campaign = site_path(site.root, target["campaign"])
+        control = ROOT / "scripts/campaign.py"
+        state = json.loads(invoke(control, "status", "--campaign", campaign))
+        release = state.get("site_release", {})
+        if release.get("round") == target["round"] and release.get("action_id") == action:
+            invoke(control, "attach-release", "--campaign", campaign, "--round", target["round"])
+    return charge
 
 
 def main():

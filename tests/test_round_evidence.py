@@ -182,6 +182,77 @@ class RoundEvidenceTests(unittest.TestCase):
         self.assertEqual(result["recommendation"], "revert")
         self.assertEqual(result["comparison"]["scenarios"]["offline"]["primary"]["status"], "passed")
 
+    def test_visible_first_output_uses_replayed_channel_positions(self):
+        self.build()
+        self.goodput_contract(max_ttft_s=4, first_output_channel="content")
+        result = self.evaluate()
+        for side, run in self.runs.items():
+            row = load(run / "requests.jsonl")
+            self.assertEqual(row["first_channel_event"], {"reasoning_content": 0, "content": 1})
+            measured = result["goodput"][row["run_id"]]
+            self.assertEqual(measured["qualifying_output_tokens"], 7 if side.startswith("candidate") else 0)
+        # Correct-looking timestamps do not justify moving a content event earlier than the SSE bytes.
+        row["first_channel_event"]["content"] = 0
+        save(run / "requests.jsonl", row)
+        with self.assertRaisesRegex(ValueError, "first_channel_event"):
+            self.evaluate()
+
+    def test_content_counts_require_explicit_usage_and_do_not_hide_request_goodput(self):
+        self.build()
+        self.goodput_contract(max_ttft_s=10, token_source="server_content_tokens")
+        unavailable = self.evaluate()
+        self.assertEqual(unavailable["recommendation"], "defer")
+        for report in unavailable["goodput"].values():
+            self.assertIsNone(report["output_tokens_per_s"])
+            self.assertGreater(report["qualified_requests_per_s"], 0)
+            self.assertGreater(report["qualified_server_completion_tokens_per_s"], 0)
+            self.assertEqual(report["missing_content_token_request_ids"], ["r0"])
+        contract = load(self.contract)
+        contract["scenarios"]["offline"]["primary"]["metric"] = "qualified_requests_per_s"
+        save(self.contract, contract)
+        self.assertEqual(self.evaluate()["recommendation"], "adopt")
+        self.goodput_contract(max_ttft_s=10, token_source="server_content_tokens")
+        for run in self.runs.values():
+            stream = run / "raw/00000000.sse"
+            text = stream.read_text()
+            self.assertIn('"completion_tokens": 7', text)
+            stream.write_text(text.replace('"completion_tokens": 7',
+                                          '"completion_tokens": 7, "completion_tokens_details": {"content_tokens": 3}'))
+            record = load(run / "requests.jsonl")
+            record["server_content_tokens"] = 3
+            save(run / "requests.jsonl", record)
+        available = self.evaluate()
+        self.assertEqual(available["recommendation"], "adopt")
+        self.assertTrue(all(report["qualifying_output_tokens"] == 3 for report in available["goodput"].values()))
+
+    def test_open_loop_planned_latency_and_legacy_sse_reconstruction(self):
+        self.build()
+        run = self.runs["candidate0"]
+        manifest = load(run / "manifest.json")
+        policy = manifest["client_measurement_policy"]
+        policy.pop("channel_evidence_version")
+        policy["mode"] = "open_loop"
+        manifest["client_measurement_policy_sha256"] = gate.validate_run.canonical_hash(policy)
+        workload = load(run / "workload.json")
+        workload[0]["arrival_offset_ms"] = 0
+        manifest["workload_sha256"] = gate.validate_run.canonical_hash(workload)
+        save(run / "manifest.json", manifest)
+        save(run / "workload.json", workload)
+        record = load(run / "requests.jsonl")
+        record.pop("first_channel_event")
+        record.pop("server_content_tokens")
+        record["send_start_ts"] += 0.4
+        save(run / "requests.jsonl", record)
+        checked = gate.validate_run.inspect_run(run)
+        self.assertTrue(checked["valid"], checked["errors"])
+        thresholds = {"max_e2e_s": 4.8, "max_ttft_s": 4, "first_output_channel": "content"}
+        self.assertEqual(gate.measure_goodput(run, checked, thresholds, None)["qualifying_output_tokens"], 7)
+        thresholds["latency_origin"] = "planned_arrival"
+        self.assertEqual(gate.measure_goodput(run, checked, thresholds, None)["excluded_request_ids"]["e2e"], ["r0"])
+        record["planned_send_ts"] += 0.1
+        save(run / "requests.jsonl", record)
+        self.assertFalse(gate.validate_run.inspect_run(run)["valid"])
+
     def test_goodput_zero_baseline_defers_relative_gate(self):
         self.build()
         self.goodput_contract(max_e2e_s=5)

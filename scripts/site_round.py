@@ -25,11 +25,11 @@ def call(campaign, command, *args, round_number=None):
 
 
 def retain(path, data):
-    if path.exists():
-        host.require(host.read(path) == data, "frozen inputs changed: " + str(path))
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
         host.write(path, data)
+    except FileExistsError:
+        host.require(host.read(path) == data, "frozen inputs changed: " + str(path))
 
 
 def profile_spec(site, path, run, prefix, requirements):
@@ -103,11 +103,33 @@ class Round:
                      "deployment failed or overran its reserved interval: " + str(path))
         return receipt["measurement"]
 
+    def attempt(self, base, *, diagnostic=False):
+        """Reuse a complete measurement, or allocate a fresh attempt after verified release."""
+        ledger = self.budget.audit()
+        leases = {lease["action_id"]: lease for lease in ledger["leases"]}
+        for index in range(self.max_retries + 1):
+            suffix = "" if index == 0 else f"-attempt-{index + 1}"
+            action = base + suffix
+            directory = self.site.root / "deployments" / action
+            lease = leases.get(action)
+            if lease is None:
+                host.require(not directory.exists(), "deployment exists without a registered lease: " + action)
+                return action, suffix
+            host.require(lease["end_mono_ns"] is not None, "reconcile pending device action: " + action)
+            host.require(Path(lease["proof_path"]).parent == directory, "lease belongs to another site: " + action)
+            if (diagnostic and lease["outcome"] == "collected" and not lease["action_overrun"]
+                    and (directory / "action-receipt.json").is_file()
+                    and not (directory / "profile-rejection.json").exists()):
+                return action, suffix
+        raise ValueError("site attempt limit reached for " + base + "; original attempts retained")
+
     def profile(self, side):
-        request = self.request(self.label + "-profile-" + side, side)
-        request.run = self.round_dir / "diagnostic" / side
-        request.profile_spec = self.round_dir / f"profile-{side}.json"
-        return request, profile_spec(self.site, request.profile_spec, request.run, side, self.requirements)
+        action, suffix = self.attempt(self.label + "-profile-" + side, diagnostic=True)
+        request = self.request(action, side)
+        prefix = side + suffix
+        request.run = self.round_dir / "diagnostic" / prefix
+        request.profile_spec = self.round_dir / f"profile-{prefix}.json"
+        return request, profile_spec(self.site, request.profile_spec, request.run, prefix, self.requirements)
 
     def execute_plan(self, registered):
         plan = Path(registered["path"])
@@ -127,10 +149,13 @@ class Round:
             "restore": ("revert", "baseline"),
             "close_at_baseline": ("abandon", "baseline"),
         }[action]
-        request = self.request(self.label + "-closure", side)
+        closure, _ = self.attempt(self.label + "-closure")
+        request = self.request(closure, side)
         request.reserve_die_seconds = 0
 
         def promotion(live):
+            host.write(live.directory / "closure-context.json",
+                       {"round": self.round_number, "campaign": str(self.campaign)})
             observation = live.directory / "round-observation.json"
             health = live.directory / "round-health.json"
             self.control("observe", "--output", observation, "--", sys.executable,
@@ -138,18 +163,24 @@ class Round:
                          "--site", self.a.site, "--template", self.site.template, "--action", request.action)
             self.control("health", "--side", side, "--deployment", observation, "--output", health)
             self.control("close", "--decision", decision, "--deployment", observation, "--health", health,
+                         "--site-action", request.action,
                          "--observation", reason or f"{action} after formal comparison; device lease ends after health")
             return {"decision": decision, "config": str(live.config), "health": str(health)}
 
         receipt = site_910c.with_device(self.site, request, promotion, cleanup=True)
         host.require(not receipt["error"], "closing did not verify the final deployment: " + str(receipt["error"]))
-        exported = self.control("export")
-        retain(self.round_dir / "round-export.json", exported)
+        return self.finish(self.round_number)
+
+    def finish(self, number):
+        release = call(self.campaign, "attach-release", round_number=number)
+        exported = call(self.campaign, "export", round_number=number)
+        archive = self.campaign / f"round-{number:03d}" / "round-export.json"
         if self.a.experience_db:
             site_910c.invoke(ROOT / "scripts/experience.py", "add", "--db", self.a.experience_db,
-                             "--campaign", self.campaign, "--round", self.round_number)
-        return {"round": self.round_number, "decision": decision, "export": str(self.round_dir / "round-export.json"),
-                "budget": self.budget.status(), "deployment_release": receipt["proof_path"]}
+                             "--campaign", self.campaign, "--round", number)
+        retain(archive, exported)
+        return {"round": number, "decision": exported["decision"], "export": str(archive),
+                "budget": self.budget.status(), "site_release": release, "deployment_release": release["proof"]["path"]}
 
     def drive(self):
         ledger = self.budget.audit()
@@ -159,6 +190,11 @@ class Round:
         policy = state.get("device_budget")
         host.require(policy and Path(policy["path"]).resolve() == self.budget.path,
                      "site worker must use the campaign's registered device budget")
+        release = state.get("site_release")
+        if release:
+            number = release["round"]
+            if release["status"] == "pending" or not (self.campaign / f"round-{number:03d}" / "round-export.json").exists():
+                return self.finish(number)
         if state["next_action"] in ("stop", "stopped"):
             if state["next_action"] == "stop":
                 state = call(self.campaign, "stop")
@@ -169,6 +205,7 @@ class Round:
                 state["export"] = str(archived)
             return state
         self.round_number = state["round"]
+        self.max_retries = state["max_retries"]
         self.label = f"round-{self.round_number:03d}"
         self.round_dir = self.campaign / self.label
         self.round_dir.mkdir(exist_ok=True)
@@ -200,7 +237,12 @@ class Round:
             elif action in ("baseline_profile", "candidate_profile"):
                 req, _ = self.profile(action.split("_")[0])
                 measured = self.receipt(req)
-                self.control("profile", "--bundle", measured["profile_bundle"])
+                try:
+                    self.control("profile", "--bundle", measured["profile_bundle"])
+                except RuntimeError as error:
+                    retain(self.site.root / "deployments" / req.action / "profile-rejection.json",
+                           {"action": req.action, "bundle": measured["profile_bundle"], "error": str(error)})
+                    raise
             elif action == "plan":
                 self.control("plan", "--hypothesis", self.proposal["hypothesis"],
                              "--prediction", self.proposal["prediction"], "--change", self.change,

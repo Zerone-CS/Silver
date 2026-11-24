@@ -44,8 +44,8 @@ def reference(path, base):
     return {"path": os.path.relpath(path, base), "sha256": sha(path)}
 
 
-def resolve_reference(ref, base):
-    path = (base / ref["path"]).resolve(strict=True)
+def resolve_reference(ref, base, locate=round_evidence.local_path):
+    path = locate(base / ref["path"])
     require(sha(path) == ref["sha256"], "sealed trial input changed: " + str(path))
     return path
 
@@ -81,14 +81,31 @@ def require_common_clock(rows):
     require(len(clocks) == 1, "runs mix client clock domains")
 
 
-def calibrate(contract_path, baseline_run_paths):
+def confirmation_order(screen, confirmation, *, required):
+    """Compare verified measurement windows across the two planned batches."""
+    screen_slots = screen["slots"] if screen else []
+    confirm_slots = confirmation["slots"] if confirmation else []
+    slots = screen_slots + confirm_slots
+    if not screen_slots or not confirm_slots or not all(
+        slot.get("order_window", {}).get("hostname") and slot["order_window"].get("boot_id") for slot in slots
+    ):
+        require(not required, "confirmation needs an identified clock for every screen and confirmation slot")
+        return "unverified"
+    require_common_clock(slots)
+    last_screen_end = max(slot["order_window"]["end_ns"] for slot in screen_slots)
+    first_confirmation_start = min(slot["order_window"]["start_ns"] for slot in confirm_slots)
+    require(last_screen_end <= first_confirmation_start, "screen must finish before independent confirmation begins")
+    return "verified"
+
+
+def calibrate(contract_path, baseline_run_paths, *, locate=round_evidence.local_path):
     """Use one benchmark run per independent A/A deployment and scenario."""
-    contract_path = Path(contract_path).resolve(strict=True)
+    contract_path = locate(contract_path)
     contract = read(contract_path)
-    baseline_run_paths = sorted(Path(path).resolve(strict=True) for path in baseline_run_paths)
+    baseline_run_paths = [locate(path) for path in sorted(map(Path, baseline_run_paths))]
     require(bool(baseline_run_paths), "A/A baseline runs required")
-    round_evidence.validate_policy(contract_path)
-    quality_rules = round_evidence.quality_rules(contract_path, contract, {})
+    round_evidence.validate_policy(contract_path, locate)
+    quality_rules = round_evidence.quality_rules(contract_path, contract, {}, locate)
     goodput_rules = round_evidence.goodput_rules(contract, quality_rules)
     rows = {scenario: [] for scenario in contract["scenarios"]}
     cases, sources = {}, {}
@@ -108,26 +125,23 @@ def calibrate(contract_path, baseline_run_paths):
         baseline = identity
         case = round_evidence.case_of(manifest)
         require(cases.setdefault(scenario, case) == case, f"A/A case drift in {scenario}")
-        deployment = round_evidence.verify_deployment(path, manifest, identity, sources)
-        verdict = round_evidence.score_run(path, checked, quality_rules[scenario], sources)
+        deployment = round_evidence.verify_deployment(path, manifest, identity, sources, locate)
+        stream_facts = {}
+        verdict = round_evidence.score_run(path, checked, quality_rules[scenario], sources, stream_facts=stream_facts)
         require(verdict["passed"], "A/A quality failed for " + str(path))
         values = checked["metrics"]
         require(values["n_success"] > 0, "A/A calibration requires successful requests")
+        if scenario in goodput_rules:
+            report = round_evidence.measure_goodput(path, checked, goodput_rules[scenario], verdict,
+                                                    stream_facts=stream_facts)
+            values.update(round_evidence.goodput_metrics(report))
         for guard in contract["scenarios"][scenario]["guardrails"]:
-            if guard["metric"] == compare_trials.GOODPUT_METRIC:
-                continue
-            observed = values[guard["metric"]]
+            observed = values.get(guard["metric"])
             require(observed is not None
                     and guard.get("min_value", -float("inf")) <= observed <= guard.get("max_value", float("inf")),
-                    "A/A violates absolute guard " + guard["metric"])
-        if scenario in goodput_rules:
-            values[compare_trials.GOODPUT_METRIC] = round_evidence.measure_goodput(
-                path, checked, goodput_rules[scenario], verdict)["output_tokens_per_s"]
-            for guard in contract["scenarios"][scenario]["guardrails"]:
-                if guard["metric"] == compare_trials.GOODPUT_METRIC:
-                    observed = values[guard["metric"]]
-                    require(guard.get("min_value", -float("inf")) <= observed <= guard.get("max_value", float("inf")),
-                            "A/A violates an absolute goodput guard")
+                    "A/A violates or lacks evidence for absolute guard " + guard["metric"])
+        require(all(values.get(metric) is not None for metric in metric_rules(contract["scenarios"][scenario])),
+                "A/A lacks evidence for a declared primary metric in " + scenario)
         rows[scenario].append({"path": str(path), "run_id": run_id,
                                "instance_id": deployment["instance_id"], "start_ts": manifest["start_ts"],
                                "end_ts": manifest["end_ts"], "source_hashes": checked["source_hashes"],
@@ -156,7 +170,9 @@ def calibrate(contract_path, baseline_run_paths):
         characterization[scenario] = measures
     floor = max(4, contract["min_pairs"])
     floor += floor % 2
-    return {"schema_version": 1, "contract_sha256": sha(contract_path), "baseline_identity": baseline,
+    runtime = str(Path(sys.executable).resolve())
+    return {**({"scorer_runtime": runtime} if runtime in sources else {}),
+            "schema_version": 1, "contract_sha256": sha(contract_path), "baseline_identity": baseline,
             "case_identity": cases, "runs": rows, "sources": sources, "variability": characterization,
             "recommended_confirm_blocks": floor + 2 * max(tiers),
             "planning_rule": "At least four balanced blocks, plus two per observed noise tier. "
@@ -164,10 +180,27 @@ def calibrate(contract_path, baseline_run_paths):
                              "This heuristic is not a power calculation."}
 
 
-def validate_calibration(contract_path, calibration_path):
+def validate_calibration(contract_path, calibration_path, *, locate=round_evidence.local_path):
     report = read(calibration_path)
     paths = [sample["path"] for rows in report["runs"].values() for sample in rows]
-    fresh = calibrate(contract_path, paths)
+    fresh = calibrate(contract_path, paths, locate=locate)
+    if locate is not round_evidence.local_path:
+        for samples in report["runs"].values():
+            for sample in samples:
+                sample["path"] = str(locate(sample["path"]))
+        sources = report["sources"]
+        original_runtime = report.get("scorer_runtime")
+        report["sources"] = {str(locate(path)): digest for path, digest in sources.items()}
+        if original_runtime:
+            # Verify the original interpreter bytes, then compare the
+            # recomputed measurements produced with the replay interpreter.
+            archived = str(locate(original_runtime))
+            require(sha(archived) == report["sources"].pop(archived), "original scorer runtime changed")
+            runtime = fresh["scorer_runtime"]
+            report["sources"][runtime] = fresh["sources"][runtime]
+            report["scorer_runtime"] = runtime
+    if "scorer_runtime" not in report:
+        fresh.pop("scorer_runtime", None)
     # The first Linux reports predate the explicit order-window summary.
     # Recompute and return it even when the input preserved the older shape.
     for name, samples in report["runs"].items():
@@ -234,13 +267,13 @@ def make_plan(contract_path, directory, stage, *, seed=None, blocks=None, calibr
     return plan
 
 
-def load_plan(plan_path, *, contract_path=None, pairs_path=None, stage=None):
+def load_plan(plan_path, *, contract_path=None, pairs_path=None, stage=None, locate=round_evidence.local_path):
     plan_path = Path(plan_path).resolve(strict=True)
     plan = read(plan_path)
     compare_trials.version(plan, "trial plan")
     directory = plan_path.parent
-    actual_contract = resolve_reference(plan["contract"], directory)
-    actual_pairs = resolve_reference(plan["pairs"], directory)
+    actual_contract = resolve_reference(plan["contract"], directory, locate)
+    actual_pairs = resolve_reference(plan["pairs"], directory, locate)
     require(contract_path is None or actual_contract == Path(contract_path).resolve(strict=True),
             "trial plan is for another comparison contract")
     require(pairs_path is None or actual_pairs == Path(pairs_path).resolve(strict=True),
@@ -248,8 +281,8 @@ def load_plan(plan_path, *, contract_path=None, pairs_path=None, stage=None):
     require(stage is None or plan["stage"] == stage, "trial plan is for another stage")
     require(actual_pairs.parent == directory, "planned pair list must be next to the plan")
     contract = read(actual_contract)
-    aa_source = resolve_reference(plan["calibration"], directory) if plan["calibration"] else None
-    aa = validate_calibration(actual_contract, aa_source) if aa_source is not None else None
+    aa_source = resolve_reference(plan["calibration"], directory, locate) if plan["calibration"] else None
+    aa = validate_calibration(actual_contract, aa_source, locate=locate) if aa_source is not None else None
     blocks = check_blocks(contract, plan["stage"], plan["blocks_per_scenario"], aa)
     future = plan.get("future_confirm_blocks")
     require(future is None or (plan["stage"] == "screen" and aa is not None),
@@ -263,9 +296,9 @@ def load_plan(plan_path, *, contract_path=None, pairs_path=None, stage=None):
     return plan, aa
 
 
-def verify_execution(plan_path, assessment):
+def verify_execution(plan_path, assessment, *, locate=round_evidence.local_path):
     plan_path = Path(plan_path).resolve(strict=True)
-    plan, aa = load_plan(plan_path)
+    plan, aa = load_plan(plan_path, locate=locate)
     pairing_hash = assessment["fingerprints"]["evidence_sha256"]
     require(pairing_hash == plan["pairs"]["sha256"]
             and assessment["fingerprints"]["contract_sha256"] == plan["contract"]["sha256"],
@@ -292,7 +325,7 @@ def verify_execution(plan_path, assessment):
         original = read(source_manifest)
         require(all(original[k] == manifest[k] for k in ("run_id", "start_ts", "end_ts")),
                 "assessment clock or run ID differs from original benchmark")
-        observed = round_evidence.verify_deployment(Path(path), original, run["identity"], {})
+        observed = round_evidence.verify_deployment(Path(path), original, run["identity"], {}, locate)
         require(observed["instance_id"] == run["instance_id"],
                 "assessment deployment ID differs from original deployment")
         checks.append({**slot, "run_id": run["run_id"], "instance_id": run["instance_id"],

@@ -19,6 +19,12 @@ from evaluate.scripts import benchmark, compare_trials, validate_run
 from evaluate.scripts.replay import verify_stream
 
 ROUND_POLICIES = ("quality_policy", "goodput_policy")
+GOODPUT_SEMANTICS = {
+    "latency_origin": ("send_start", "planned_arrival"),
+    "first_output_channel": ("any", "content", "reasoning_content"),
+    "token_source": ("server_completion_tokens", "server_content_tokens"),
+}
+REQUEST_GOODPUT = "qualified_requests_per_s"
 
 def require(condition, reason):
     if not condition:
@@ -98,12 +104,71 @@ def check_attachments(report_path, document, sealed, index, locate=local_path):
     return files
 
 
+def warmup_overlap(warm, measured, rule):
+    # Count measured prompts whose first N Unicode characters occurred in warmup.
+    # Tokenizer boundaries and actual cache hits are separate observables.
+    length = rule["characters"]
+    prefixes = {job["prompt_text"][:length] for job in warm if len(job["prompt_text"]) >= length}
+    observed = sum(job["prompt_text"][:length] in prefixes for job in measured)
+    require(observed == rule["matching_requests"], "warmup shared prefix count differs from contract")
+    return {"characters": length, "matching_requests": observed, "measured_requests": len(measured)}
+
+
+def verify_site_inputs(run, inputs, observation, details, artifacts, index):
+    environment = inputs["environment"]
+    snapshot_id = environment.get("model_snapshot_sha256")
+    policy = inputs["metric_contract"].get("site_warmup_policy")
+    if snapshot_id is None and policy is None and "model_snapshot_sha256" not in details:
+        return  # Older and non-site runs use their original evidence contract.
+    require(policy is not None and snapshot_id is not None and snapshot_id == details.get("model_snapshot_sha256"),
+            "site observation and run environment disagree on model snapshot")
+    from scripts.site_model_snapshot import content_id
+    receipt = observation.parent / "model-snapshot.json"
+    require(receipt in artifacts, "site model snapshot receipt is missing")
+    snapshot = read_object(receipt)
+    hashes = environment.get("model_hashes")
+    require(isinstance(hashes, dict) and hashes and snapshot.get("files_sha256") == hashes
+            and snapshot.get("content_sha256") == content_id(hashes) == snapshot_id,
+            "site model snapshot receipt disagrees with environment")
+    receipt = observation.parent / "warmup-receipt.json"
+    require(receipt in artifacts, "site warmup receipt is missing")
+    warmup = read_object(receipt)
+    results = warmup.get("round_results")
+    require(warmup.get("policy") == policy and isinstance(results, list) and len(results) == policy["rounds"],
+            "site warmup receipt differs from measurement contract")
+    if policy["mode"] == "no_workload_warmup":
+        require(policy["rounds"] == 0, "unexpected workload warmup requests")
+        return
+    source = observation.parent / "warmup-input.jsonl"
+    require(source in artifacts and index[str(source)] == policy["dataset_sha256"],
+            "site warmup dataset differs from frozen bytes")
+    with source.open(encoding="utf-8") as stream:
+        warm = [benchmark.strict_json(line) for line in stream if line.strip()]
+    if "shared_prefix" in policy:
+        measured, _ = compare_trials.read_json(run / "workload.json")
+        require(warmup_overlap(warm, measured, policy["shared_prefix"]) == policy["shared_prefix"],
+                "reported warmup overlap differs from measured workload")
+    selected = [job["request_id"] for job in warm]
+    require(policy["mode"] in ("explicit_dataset", "measured_first_concurrency") and policy["rounds"] >= 1,
+            "invalid site warmup mode or number of rounds")
+    if policy["mode"] == "measured_first_concurrency":
+        measured, _ = compare_trials.read_json(run / "workload.json")
+        require(measured == warm, "measured workload changed after selecting warmup requests")
+        selected = selected[:policy["concurrency"]]
+    require(selected and all([row["request_id"] for row in batch] == selected for batch in results),
+            "site warmup responses do not match the frozen request schedule")
+    require(all(row.get("response_id") and row.get("finish_reason") in ("length", "stop")
+                for batch in results for row in batch), "site warmup has an incomplete response")
+
+
 def verify_deployment(run, manifest, identity, index, locate=local_path):
     metadata = read_object(run / "metadata.json")
     sources = compare_trials.obj(metadata.get("source_inputs"), "metadata.source_inputs")
+    inputs = {}
     for name in ("config", "environment", "metric_contract"):
         path = source_file(index, sources.get(name), run, locate)
-        require(validate_run.canonical_hash(read_object(path)) == manifest[name + "_sha256"],
+        inputs[name] = read_object(path)
+        require(validate_run.canonical_hash(inputs[name]) == manifest[name + "_sha256"],
                 name + " source content differs from run identity")
     config_document = source_file(index, sources.get("config_evidence"), run, locate)
     evidence = read_object(config_document)
@@ -113,6 +178,7 @@ def verify_deployment(run, manifest, identity, index, locate=local_path):
             "expected separate observed config snapshot and supporting service evidence")
     details = check_observation(observation, identity, base_url=manifest["base_url"],
                                 model=manifest["client_measurement_policy"]["model"])
+    verify_site_inputs(run, inputs, observation, details, artifacts, index)
     if identity.get("implementation_sha256"):
         require(manifest.get("implementation_verified") is True, "running implementation lacks verified evidence")
         impl = metadata["implementation_identity"]
@@ -166,12 +232,12 @@ def quality_rules(contract_path, contract, index, locate=local_path):
     return result
 
 
-def validate_policy(contract_path):
-    path = Path(contract_path).resolve(strict=True)
+def validate_policy(contract_path, locate=local_path):
+    path = locate(contract_path)
     contract = read_object(path)
     compare_trials.validate_contract({k: v for k, v in contract.items() if k not in ROUND_POLICIES})
     index = {}
-    goodput_rules(contract, quality_rules(path, contract, index))
+    goodput_rules(contract, quality_rules(path, contract, index, locate))
     return [{"path": name, "sha256": sha} for name, sha in sorted(index.items())]
 
 
@@ -186,7 +252,7 @@ def goodput_rules(contract, quality_by_scenario):
                 "goodput_policy must cover at least one declared scenario and no unknown scenarios")
     for name, spec in contract["scenarios"].items():
         gates = [spec.get("primary"), spec.get("goodput_primary"), *spec["guardrails"]]
-        if any(rule and rule["metric"] == compare_trials.GOODPUT_METRIC for rule in gates):
+        if any(rule and rule["metric"] in (compare_trials.GOODPUT_METRIC, REQUEST_GOODPUT) for rule in gates):
             require(name in policies, "goodput metric requires goodput_policy for scenario " + name)
     parsed = {}
     for name, policy in policies.items():
@@ -195,8 +261,16 @@ def goodput_rules(contract, quality_by_scenario):
         if quality_by_scenario[name][0]["method"] == "python_score_v1":
             fields += ("min_request_score",)
         compare_trials.obj(policy, where)
-        compare_trials.keys(policy, fields, where)
+        compare_trials.keys(policy, (*fields, *(key for key in GOODPUT_SEMANTICS if key in policy)), where)
         parsed[name] = {key: compare_trials.number(policy[key], where + "." + key, 0) for key in fields[:2]}
+        for key, choices in GOODPUT_SEMANTICS.items():
+            if key in policy:
+                require(policy[key] in choices, where + "." + key + " must be one of " + ", ".join(choices))
+                parsed[name][key] = policy[key]
+        # Request goodput is an explicit opt-in even for legacy collectors.
+        spec = contract["scenarios"][name]
+        if any(r and r["metric"] == REQUEST_GOODPUT for r in (spec.get("primary"), *spec["guardrails"])):
+            parsed[name].setdefault("token_source", GOODPUT_SEMANTICS["token_source"][0])
         if "min_request_score" in policy:
             minimum = compare_trials.number(policy["min_request_score"], where + ".min_request_score", 0, 1)
             require(minimum > 0, where + ".min_request_score must be positive")
@@ -254,7 +328,7 @@ def external_scores(policy, items, index):
             "item_sha256": {item["request_id"]: validate_run.canonical_hash(item) for item in items}}
 
 
-def score_run(run, validated, rule, index):
+def score_run(run, validated, rule, index, *, stream_facts=None):
     run = Path(run).resolve(strict=True)
     manifest = validated["manifest"]
     workload, workload_sha = compare_trials.read_json(run / "workload.json")
@@ -282,7 +356,9 @@ def score_run(run, validated, rule, index):
         output = read_object(raw["output_path"])
         if row["final_status"] == "success":
             require(row.get("http_status") == 200, "successful request lacks recorded HTTP 200")
-            verify_stream(raw["raw_response_path"], row, output)
+            facts = verify_stream(raw["raw_response_path"], row, output)
+            if stream_facts is not None:
+                stream_facts[request_id] = facts
         if external:
             scorer_items[request_id] = {
                 "request_id": request_id, "prompt_text": job["prompt_text"], "reference": gold[request_id],
@@ -303,7 +379,23 @@ def score_run(run, validated, rule, index):
     return result
 
 
-def measure_goodput(run, validated, thresholds, quality):
+def diagnostic_stream_facts(run, validated, index):
+    """Reconstruct channel evidence from the same originals when no scorer is requested."""
+    workload, digest = compare_trials.read_json(run / "workload.json")
+    require(digest == validated["source_hashes"]["workload.json"], "workload changed after verification")
+    requests = {row["request_id"]: row for row in validate_run.read_verified_requests(run, validated)}
+    facts = {}
+    for i, job in enumerate(workload):
+        key = job["request_id"]
+        row = requests[key]
+        if row["final_status"] == "success":
+            stream = record_file(index, run / ("raw/%08d.sse" % i))
+            output = record_file(index, run / ("raw/%08d.output.json" % i))
+            facts[key] = verify_stream(stream, row, read_object(output))
+    return facts
+
+
+def measure_goodput(run, validated, thresholds, quality, *, stream_facts=None):
     """Count final output from requests satisfying every supplied requirement."""
     scores = quality.get("scores") if quality is not None else None
     wrong = set(quality.get("mismatch_or_failure_ids", ())) if quality is not None else set()
@@ -313,27 +405,64 @@ def measure_goodput(run, validated, thresholds, quality):
     else:
         require(minimum is None, "min_request_score requires a graded per-request scorer")
     ttft, e2e = thresholds.get("max_ttft_s"), thresholds.get("max_e2e_s")
+    origin = thresholds.get("latency_origin", "send_start")
+    channel = thresholds.get("first_output_channel", "any")
+    source = thresholds.get("token_source", "server_completion_tokens")
+    policy = validated.get("manifest", {}).get("client_measurement_policy", {})
+    if origin == "planned_arrival":
+        require(policy.get("mode") == "open_loop", "planned_arrival requires a verified open-loop arrival schedule")
+    if stream_facts is None and (channel != "any" or source == "server_content_tokens"):
+        stream_facts = diagnostic_stream_facts(Path(run), validated, {})
     excluded = {reason: [] for reason in ("failed", "quality", "ttft", "e2e")}
     qualified = []
-    count = 0
+    missing_content_counts = []
+    server_tokens = content_tokens = 0
     for request in validate_run.read_verified_requests(run, validated):
         key = request["request_id"]
         if request["final_status"] != "success":
             excluded["failed"].append(key)
             continue
         quality_failed = key in wrong or (scores is not None and scores[key] < minimum)
-        first, start = request["first_output_ts"], request["send_start_ts"]
+        first = request["first_output_ts"]
+        if channel != "any":
+            event = stream_facts[key]["first_channel_event"].get(channel)
+            first = None if event is None else request["output_event_ts"][event]
+        start = request["planned_send_ts"] if origin == "planned_arrival" else request["send_start_ts"]
         late_first = ttft is not None and (first is None or first - start > ttft)
         late_end = e2e is not None and request["end_ts"] - start > e2e
         for reason, failed in (("quality", quality_failed), ("ttft", late_first), ("e2e", late_end)):
             if failed:
                 excluded[reason].append(key)
-        if not (quality_failed or late_first or late_end):
-            qualified.append(key)
-            count += request["actual_output_tokens"]
+        if quality_failed or late_first or late_end:
+            continue
+        qualified.append(key)
+        server_tokens += request["actual_output_tokens"]
+        if source == "server_content_tokens":
+            content = stream_facts[key]["server_content_tokens"]
+            if content is None:
+                missing_content_counts.append(key)
+            else:
+                content_tokens += content
     wall = validated["metrics"]["wall_s"]
-    return {"thresholds": thresholds, "qualifying_request_ids": qualified, "excluded_request_ids": excluded,
-            "qualifying_output_tokens": count, "wall_s": wall, "output_tokens_per_s": count / wall}
+    count = server_tokens if source == "server_completion_tokens" else content_tokens
+    if missing_content_counts:
+        count = None
+    result = {"thresholds": thresholds, "qualifying_request_ids": qualified, "excluded_request_ids": excluded,
+              "qualifying_output_tokens": count, "wall_s": wall,
+              "output_tokens_per_s": count / wall if count is not None else None}
+    if policy.get("channel_evidence_version") == 1 or any(key in thresholds for key in GOODPUT_SEMANTICS):
+        result.update(latency_origin=origin, first_output_channel=channel, token_source=source,
+                      qualified_requests_per_s=len(qualified) / wall,
+                      qualified_server_completion_tokens_per_s=server_tokens / wall,
+                      missing_content_token_request_ids=missing_content_counts)
+    return result
+
+
+def goodput_metrics(report):
+    metrics = {compare_trials.GOODPUT_METRIC: report["output_tokens_per_s"]}
+    if REQUEST_GOODPUT in report:
+        metrics[REQUEST_GOODPUT] = report[REQUEST_GOODPUT]
+    return metrics
 
 
 def native_contract(contract, baseline, candidate):
@@ -392,12 +521,14 @@ def _assess(contract_path, evidence_path, baseline_identity, candidate_identity,
                 for name, sha in validated["source_hashes"].items():
                     record_file(index, run / name, sha)
                 deployment = verify_deployment(run, manifest, identity, index, locate)
-                quality_result = score_run(run, validated, rules[scenario], index)
+                stream_facts = {}
+                quality_result = score_run(run, validated, rules[scenario], index, stream_facts=stream_facts)
                 quality[manifest["run_id"]] = quality_result
                 if scenario in goodput_by_scenario:
-                    report = measure_goodput(run, validated, goodput_by_scenario[scenario], quality_result)
+                    report = measure_goodput(run, validated, goodput_by_scenario[scenario], quality_result,
+                                             stream_facts=stream_facts)
                     goodput[manifest["run_id"]] = report
-                    validated["metrics"][compare_trials.GOODPUT_METRIC] = report["output_tokens_per_s"]
+                    validated["metrics"].update(goodput_metrics(report))
                 # The native comparator reads quality from the manifest. Give it the
                 # post-run verdict in a derived in-memory copy; leave originals intact.
                 manifest["quality_status"] = "pass" if quality_result["passed"] else "fail"

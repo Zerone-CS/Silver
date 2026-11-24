@@ -272,7 +272,7 @@ def consume_event(data, received_ts, record, output):
         delta = choice.get("delta", {})
         if not isinstance(delta, dict):
             raise StreamError("invalid_delta")
-        has_output = False
+        emitted = {}
         for channel in ("content", "reasoning_content"):
             value = delta.get(channel)
             if value is not None and not isinstance(value, str):
@@ -280,11 +280,13 @@ def consume_event(data, received_ts, record, output):
             if value:
                 if record["finish_reason"] is not None:
                     raise StreamError("output_after_finish")
-                output[channel].append(value)
-                has_output = True
+                emitted[channel] = value
         if delta.get("tool_calls") or delta.get("function_call"):
             raise StreamError("unsupported_tool_output")
-        if has_output:
+        if emitted:
+            for channel, value in emitted.items():
+                record.setdefault("first_channel_event", {}).setdefault(channel, len(record["output_event_ts"]))
+                output[channel].append(value)
             record["output_event_ts"].append(received_ts)
             if record["first_output_ts"] is None:
                 record["first_output_ts"] = received_ts
@@ -299,6 +301,16 @@ def consume_event(data, received_ts, record, output):
             record["finish_reason_ts"] = received_ts
     if payload.get("usage") is not None:
         prompt, completion = parse_usage(payload["usage"])
+        details = payload["usage"].get("completion_tokens_details")
+        content_tokens = details.get("content_tokens") if isinstance(details, dict) else None
+        if content_tokens is not None and (not is_int(content_tokens) or not 0 <= content_tokens <= completion):
+            raise StreamError("invalid_content_token_count")
+        if content_tokens is not None and (content_tokens > 0) != ("content" in record.get("first_channel_event", {})):
+            raise StreamError("content_token_count_disagrees_with_stream")
+        if record["final_usage_received"] and (prompt, completion, content_tokens) != (
+                record["actual_prompt_tokens"], record["actual_output_tokens"], record.get("server_content_tokens")):
+            raise StreamError("conflicting_final_usage")
+        record["server_content_tokens"] = content_tokens
         record["actual_prompt_tokens"] = prompt
         record["actual_output_tokens"] = completion
         record["token_count_source"] = "server_usage"
@@ -383,6 +395,7 @@ def run_request(index, item, body, args, endpoint, addresses, tls_context,
         "planned_send_ts": planned, "send_start_ts": send_start,
         "send_lag_s": max(0.0, send_start - planned),
         "response_open_ts": None, "first_output_ts": None, "last_output_ts": None,
+        "first_channel_event": {}, "server_content_tokens": None,
         "finish_reason_ts": None, "final_usage_ts": None, "stream_done_ts": None,
         "end_ts": None, "final_status": "error", "finish_reason": None,
         "requested_max_tokens": item["output_tokens"],
@@ -472,11 +485,25 @@ def measurement_policy(args):
         "run_window": "before_worker_start_through_all_request_completion_including_arrival_wait_and_client_collection",
         "output_count": "server_usage.completion_tokens_only_for_successful_requests",
         "output_events": "nonempty_content_or_reasoning_content_SSE_data_events_not_tokens",
+        "channel_evidence_version": 1,
         "success": "HTTP_200_SSE_DONE_stop_or_length_final_usage_supported_output",
         "arrival_policy": "preserve_open_loop_schedule_record_actual_send_lag_no_drop",
         "sse_max_line_bytes": MAX_SSE_LINE, "sse_max_event_bytes": MAX_SSE_EVENT,
         "raw_artifact_io": "buffered_per_request_stream_write_in_measured_client_path",
     }
+
+
+def client_clock_domain():
+    # Linux boot identity makes CLOCK_MONOTONIC comparable across collectors.
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    if boot_id:
+        return {"clock": "host_monotonic_ns", "hostname": socket.gethostname(), "boot_id": boot_id}
+    return None
 
 
 def execute(args):
@@ -550,6 +577,9 @@ def execute(args):
     if args.mode == "open_loop":
         order.sort(key=lambda index: (workload[index]["arrival_offset_ms"], index))
     cancel_event = threading.Event()
+    order_window = client_clock_domain()
+    if order_window is not None:
+        order_window["start_ns"] = time.monotonic_ns()
     start_ts = time.perf_counter()
     manifest["start_ts"] = start_ts
     # A provisional manifest is immutable evidence of an incomplete run. The
@@ -579,6 +609,8 @@ def execute(args):
     finally:
         executor.shutdown(wait=True)
     manifest["end_ts"] = time.perf_counter()
+    if order_window is not None:
+        manifest["client_run_order"] = {**order_window, "end_ns": time.monotonic_ns()}
     if len(records) != len(workload):
         raise RuntimeError("incomplete_request_accounting")
     with (run_dir / "manifest.json").open("xb") as handle:

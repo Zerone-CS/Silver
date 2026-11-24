@@ -22,6 +22,7 @@ CONTEXT_KEYS = {
     "workload_family", "scenario", "workload_sha256", "measurement_mode", "concurrency",
     "requests", "input_p50_tokens", "output_p50_tokens", "max_ttft_s", "max_e2e_s",
     "min_request_score", "quality_method", "primary_metric", "goodput_primary",
+    "latency_origin", "first_output_channel", "token_source",
 }
 
 
@@ -45,6 +46,8 @@ def export_round(directory, number):
         raise ValueError("unsupported campaign export schema")
     if type(record.get("round")) is not int or record["round"] != number or record.get("decision") not in DECISIONS:
         raise ValueError("campaign export must identify the requested completed round")
+    if record.get("site_release", {}).get("status") == "pending":
+        raise ValueError("site release is pending; retry archiving after attaching the release proof")
     for field in ("campaign_id", "scope"):
         if not isinstance(record.get(field), str) or not record[field].strip():
             raise ValueError("missing export field: " + field)
