@@ -83,7 +83,21 @@ python3 -B scripts/round_evidence.py describe-run /campaign/runs/short-baseline-
 
 `goodput_primary` 的指标固定为 `goodput`，方向固定为 `higher`。若把 `goodput` 直接设为 `primary`，只使用这一项作为主指标。
 
-若基线为 0 token/s，该对的相对效应未定义，依赖相对 goodput 的判定保持待确认。绝对下限可用 `min_value` 约束候选。goodput 的逐请求时限与 p99 的批次护栏分别填写。正式发现与独立确认都以关闭 profiler 的原件重放和复算，沿用同一份契约。
+若基线请求能成功完成，但没有请求同时通过质量和时限要求，goodput 可以是 0 token/s。可在采集前给 `primary` 或 `goodput_primary` 登记绝对达标目标。下例要求每个候选批次达到 20 合格 token/s。
+
+```json
+{
+  "primary": {"metric": "goodput", "direction": "higher", "min_value": 20},
+  "guardrails": [
+    {"metric": "output_token_throughput", "direction": "higher", "max_relative_regression": 0.03},
+    {"metric": "failure_rate", "max_value": 0.0}
+  ]
+}
+```
+
+每个正式配对须满足「基线 < 20 ≤ 候选」，单位为合格输出 token/s。筛选和独立确认都须达到登记的配对数，所有护栏与质量检查照常执行。A/A 允许观测到零，用各次 goodput 的绝对跨度与登记目标规划重复数。任一侧缺少可核验的 goodput 时，该配对无法通过。绝对达标规则只报告观测到的过线结果。相对效应和相应置信区间只用于预先选择了相对规则的比较。正数 `min_value` 和 `min_relative_improvement` 在同一主指标规则中只能选一个。
+
+如果目标是维持原本已达到的水平，可将 `min_value` 放在护栏中。正式校准要求基线也满足该护栏。原有相对 goodput 规则继续要求正的 A/A 中位数，相对比较遇到基线为零的配对会返回待确认。goodput 的逐请求时限与 p99 的批次护栏分别填写。
 
 ## 使用本地任务评分程序
 

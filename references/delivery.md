@@ -59,7 +59,7 @@ python3 -B scripts/device_budget.py audit --db "$R/leases.sqlite"
 
 ### 结轮与设备释放
 
-910C 执行器在实验实例在线时核验配置和健康，保存本轮决策及最后观测到的实例。此时导出中的 `site_release.status` 为 `pending`。停止实验容器并复查设备后，控制器从登记的预算账本核对同一动作、主机启动、设备、容器及原始释放证明，更新为 `released`，再写最终导出和经验索引。生产服务上线可依据单独的部署流程验收。
+910C 执行器创建任务时自动冻结 `require_site_release=true`。手动创建同类任务时，在 `campaign.py init` 同时提供 `--require-site-release` 和 `--device-budget`。所有结轮入口都须通过 `--site-action` 绑定本轮活动的清理租约。实验实例在线时核验配置和健康，随即保存性能决策。此时 `site_release.status` 为 `pending`，整轮离线报告显示 `round_closure=awaiting_site_release`。停止实验容器并复查设备后，控制器从登记的账本核对同一动作、主机启动、设备、容器及原始释放证明，更新为 `released`，才能完成站点交付、进入下一轮和写入经验索引。旧任务沿用创建时的约定。生产服务上线可依据单独的部署流程验收。
 
 中断后先看 `campaign.py status` 的 `next_action` 及 `site_release.action_id`。设备账仍有未释放动作时，用上面的 `reconcile` 命令核实现场并补挂回执。设备已归还时可重新执行原 `site_round.py` 命令完成导出，也可执行 `campaign.py attach-release --campaign "$R/campaign" --round N` 补挂。重复补挂对同一证明返回同一结论。旧导出缺少 `site_release` 时，现场释放情况需查当时站点原件。
 

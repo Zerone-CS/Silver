@@ -10,7 +10,7 @@
 
 ## 运行一个受控 Round
 
-910C 站点为每轮固定模型和预热输入。整轮证据包支持搬离站点后重算 A/A、正式对照和独立确认，同时核对最终配置的健康回执与设备释放记录。[交付手册](references/delivery.md)
+910C 站点为每轮固定模型和预热输入。整轮证据包支持搬离站点后重算 A/A、正式对照和独立确认。如果中途更换过批次，报告会列出剔除理由和可复核程度。新建的 910C 任务在健康检查后保存性能裁决，取得匹配的设备释放回执后完成交付并写入经验库。[交付手册](references/delivery.md)
 
 [操作手册](references/round_control.md)包含初始化、采集、采纳、恢复和预算停止。可先运行下面的回环验收。它启动本机 HTTP 模拟服务，使用合成 trace，贯穿真实 CLI、计分、独立确认、部署核验和经验库。
 
@@ -18,7 +18,7 @@
 python3 -B -m unittest discover -s tests -p test_campaign_integration.py -v
 ```
 
-正式 A/B 可按逐请求质量、TTFT 和端到端时限复算 goodput，并将其作为主指标或保护项。也可要求 goodput 与原主指标分别达到各自的最小收益，其他护栏照常验收。[goodput 验收规则](references/round_evidence.md#按逐请求-goodput-验收)
+正式 A/B 可按逐请求质量、TTFT 和端到端时限复算 goodput，并将其作为主指标或保护项。基线 goodput 为零时，可事前登记候选必须达到的合格输出 token/s。原吞吐目标和其他护栏可同时验收。[goodput 验收规则](references/round_evidence.md#按逐请求-goodput-验收)
 
 ## 复算吞吐和定位变化
 

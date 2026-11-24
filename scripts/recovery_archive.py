@@ -18,7 +18,7 @@ def export(row):
     record = {key: row[key] for key in FIELDS}
     protocol = row["acceptance_protocol"]
     record.update(schema_version=1, kind=KIND, acceptance_protocol={
-        k: protocol[k] for k in ("endpoint", "model_snapshot_sha256") if k in protocol})
+        k: protocol[k] for k in ("endpoint", "model_snapshot_sha256", "require_site_release") if k in protocol})
     for key in ("site_release", "stop_reason"):
         if key in row:
             record[key] = row[key]
@@ -36,7 +36,7 @@ def audit(record, locate):
     ev.require(record["decision"] in ("abandon", "revert"), "recovery-only requires a reverted or abandoned round")
     reason = ev.compare_trials.text(record["observation"], "closure observation")
     protocol = record["acceptance_protocol"]
-    ev.require(set(protocol) in ({"endpoint"}, {"endpoint", "model_snapshot_sha256"})
+    ev.require({"endpoint"} <= set(protocol) <= {"endpoint", "model_snapshot_sha256", "require_site_release"}
                and set(protocol["endpoint"]) == {"base_url", "model"}, "incomplete recovery endpoint policy")
     for key, value in protocol["endpoint"].items():
         ev.compare_trials.text(value, "endpoint." + key)

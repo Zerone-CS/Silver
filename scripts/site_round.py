@@ -68,7 +68,7 @@ class Round:
     def setup(self):
         if not (self.campaign / "campaign.sqlite").exists():
             args = ["--contract", self.a.contract, "--scope", self.a.scope, "--max-rounds", self.a.max_rounds,
-                    "--require-trial-plan", "--device-budget", self.a.budget,
+                    "--require-trial-plan", "--require-site-release", "--device-budget", self.a.budget,
                     "--minimum-device-seconds", self.a.max_seconds]
             if self.a.goal_tps is not None:
                 args += ["--goal-metric", self.a.goal_metric, "--goal-tps", self.a.goal_tps,
@@ -187,6 +187,9 @@ class Round:
         host.require(not ledger["pending"], "reconcile pending device action: " + ", ".join(ledger["pending"]))
         self.setup()
         state = call(self.campaign, "status")
+        # Pre-policy campaigns can finish under their original terms.
+        host.require(state.get("require_site_release", True),
+                     "a new 910C campaign must be initialized with --require-site-release")
         policy = state.get("device_budget")
         host.require(policy and Path(policy["path"]).resolve() == self.budget.path,
                      "site worker must use the campaign's registered device budget")

@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import campaign, experience, site_910c, site_round
+from scripts import campaign, experience, recovery_archive, round_archive, site_910c, site_round
 from scripts.device_budget import Budget
 
 
@@ -46,15 +46,16 @@ class SiteClosureTests(unittest.TestCase):
         with closing(sqlite3.connect(self.campaign / "campaign.sqlite")) as db, db:
             return campaign.transition(db, opts)
 
-    def record_closure(self):
+    def record_closure(self, *, strict=True, site_action=True):
         config = {"parameter": 4}
         side = {"config_sha256": campaign.validate_run.canonical_hash(config), "implementation_sha256": None}
         endpoint = {"base_url": "http://localhost:9000/v1", "model": "test"}
         instance = "fixture-id:started:11"
         obs = self.directory / "round-observation.json"
+        policy = {"require_site_release": True} if strict else {}
         obs.write_text(json.dumps({"schema_version": 1, "effective_config": config,
                                    "instance_id": instance, "implementation_sha256": None, **endpoint,
-                                   "round_probe": {"round": 1, "campaign_id": "fixture", "challenge": "token"}}))
+                                   "round_probe": {"round": 1, "campaign_id": "fixture", "challenge": "token", **policy}}))
         health = self.directory / "round-health.json"
         health.write_text(json.dumps({"campaign_id": "fixture", "round": 1, "challenge": "token", "at": time.time(),
                                       "request": {"messages": [{"role": "user", "content": "Reply OK. Request token"}]},
@@ -66,9 +67,9 @@ class SiteClosureTests(unittest.TestCase):
         (self.directory / "closure-context.json").write_text(json.dumps({"round": 1, "campaign": str(self.campaign)}))
         state = {"campaign_id": "fixture", "count": 1, "stopped": None, "stop_requested": None, "deadline": None,
                  "device_budget": {"path": str(self.budget.path), "minimum_next_die_seconds": 10},
-                 "endpoint": endpoint, "max_rounds": 1, "goal_tps": None, "max_retries": 1}
+                 "endpoint": endpoint, "max_rounds": 1, "goal_tps": None, "max_retries": 1, **policy}
         row = {"schema_version": 1, "campaign_id": "fixture", "scope": "test", "round": 1, "phase": "restore",
-               "acceptance_protocol": {"endpoint": endpoint},
+               "acceptance_protocol": {"endpoint": endpoint, **policy},
                "challenge": "token", "challenge_time": 0, "last_probe": campaign.fingerprint(obs),
                "last_health": campaign.fingerprint(health), "baseline": side, "candidate": side,
                "evidence": {"profiles": {}, "assessments": [], "evidence_files": []}}
@@ -79,15 +80,56 @@ class SiteClosureTests(unittest.TestCase):
             db.execute("INSERT INTO campaign VALUES (1,?)", (json.dumps(state),))
             db.execute("INSERT INTO rounds VALUES (1,?)", (json.dumps(row),))
         return self.cmd("close", "--round", 1, "--decision", "revert", "--deployment", obs, "--health", health,
-                        "--observation", "restored fixture", "--site-action", self.action)
+                        "--observation", "restored fixture", *(["--site-action", self.action] if site_action else []))
+
+    def test_site_policy_rejects_manual_close_without_action(self):
+        with self.assertRaisesRegex(ValueError, "active cleanup --site-action"):
+            self.record_closure(site_action=False)
+        with self.assertRaisesRegex(ValueError, "round has not closed"):
+            self.cmd("export", "--round", 1)
+
+    def test_old_campaign_can_close_without_a_site_lease(self):
+        self.record_closure(strict=False, site_action=False)
+        exported = self.cmd("export", "--round", 1)
+        self.assertEqual(round_archive.release_status(exported, Path), "unverified")
+        self.assertNotIn("require_site_release", exported["acceptance_protocol"])
+
+    def test_new_site_campaign_always_requests_the_release_policy(self):
+        driver = object.__new__(site_round.Round)
+        driver.campaign = self.campaign
+        driver.a = SimpleNamespace(contract=self.root / "contract", scope="test", max_rounds=2, budget=self.budget.path,
+                                   max_seconds=10, goal_tps=None, baseline_run=[self.root / "baseline"])
+        with patch.object(site_round, "call") as call:
+            driver.setup()
+        args = campaign.parser().parse_args(["init", "--campaign", str(self.campaign), *map(str, call.call_args.args[2:])])
+        self.assertTrue(args.require_site_release)
+        args.device_budget = None
+        with self.assertRaisesRegex(ValueError, "registered --device-budget"):
+            campaign.init(None, args)
 
     def test_pending_to_reconciled_to_archived(self):
         status = self.record_closure()
         self.assertEqual((status["round"], status["next_action"]), (1, "attach_release"))
         self.assertEqual(self.cmd("export", "--round", 1)["site_release"]["status"], "pending")
-        from scripts import evidence_bundle, recovery_archive
+        from scripts import evidence_bundle
         pending = self.cmd("export", "--round", 1, "--recovery-only")
         self.assertEqual(recovery_archive.audit(pending, Path)["device_release"], "pending")
+        self.assertTrue(pending["acceptance_protocol"]["require_site_release"])
+        omitted = dict(pending)
+        omitted.pop("site_release")
+        with self.assertRaisesRegex(ValueError, "required site release record is missing"):
+            recovery_archive.audit(omitted, Path)
+        with patch.object(experience, "campaign_output", return_value=omitted), \
+             self.assertRaisesRegex(ValueError, "requires a verified site release"):
+            experience.export_round(self.campaign, 1)
+        with self.assertRaisesRegex(ValueError, "pending cleanup claim"):
+            recovery_archive.audit(dict(pending, site_release=dict(pending["site_release"], claim={})), Path)
+        # The health probe also carries the frozen policy, so dropping the flag
+        # and receipt together cannot downgrade this to a generic recovery.
+        with self.assertRaisesRegex(ValueError, "frozen release policy"):
+            recovery_archive.audit(dict(omitted, acceptance_protocol={"endpoint": pending["acceptance_protocol"]["endpoint"]}), Path)
+        with self.assertRaisesRegex(ValueError, "attach the previous site release"):
+            self.cmd("begin", "--round", 2, "--scenario", "test", "--profile-policy", self.root / "policy.json")
         mismatch = dict(pending["acceptance_protocol"], model_snapshot_sha256="a" * 64)
         with self.assertRaisesRegex(ValueError, "closure model differs"):
             recovery_archive.audit(dict(pending, acceptance_protocol=mismatch), Path)

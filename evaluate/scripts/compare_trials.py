@@ -135,7 +135,13 @@ def digest(value, where):
 def validate_metric_rule(rule, kind, where):
     obj(rule, where)
     if kind == "primary":
-        keys(rule, ("metric", "direction", "min_relative_improvement"), where)
+        if "min_value" in rule:
+            keys(rule, ("metric", "direction", "min_value"), where)
+            if (rule["metric"] != GOODPUT_METRIC or rule["direction"] != "higher"
+                    or number(rule["min_value"], where + ".min_value", 0) <= 0):
+                fail(where + " absolute primary requires higher goodput and a positive min_value")
+        else:
+            keys(rule, ("metric", "direction", "min_relative_improvement"), where)
     else:
         allowed = {"metric", "direction", "max_relative_regression", "min_value", "max_value"}
         if set(rule) - allowed or "metric" not in rule:
@@ -369,7 +375,8 @@ def bootstrap(values, samples, confidence, rng):
 
 def evaluate_rule(rule, kind, pairs, contract, scenario, rng):
     metric = rule["metric"]
-    relative = kind == "primary" or "max_relative_regression" in rule
+    attainment = kind == "primary" and "min_value" in rule
+    relative = "min_relative_improvement" in rule or "max_relative_regression" in rule
     result = {"metric": metric, "direction": rule.get("direction"), "kind": kind,
               "rule": rule, "paired_values": [], "missing_or_undefined": [],
               "status": "inconclusive", "observed_violations": []}
@@ -390,7 +397,7 @@ def evaluate_rule(rule, kind, pairs, contract, scenario, rng):
             value = pair[side]["metrics"].get(metric)
             item[side] = value
             if value is None:
-                if relative or side == "candidate":
+                if relative or attainment or side == "candidate":
                     undefined.append(side + " metric is missing or null")
             else:
                 number(value, "{}.{}.{}".format(scenario, side, metric), 0)
@@ -406,6 +413,10 @@ def evaluate_rule(rule, kind, pairs, contract, scenario, rng):
                                                    "reason": "; ".join(undefined)})
             continue
         defined_absolute_pairs += 1
+        if attainment and not item["baseline"] < rule["min_value"] <= item["candidate"]:
+            result["observed_violations"].append({"pair_index": pair["pair_index"], "constraint": "target_crossing",
+                                                  "baseline": item["baseline"], "candidate": item["candidate"],
+                                                  "target": rule["min_value"]})
         if not relative:
             continue
         baseline, candidate = float(item["baseline"]), float(item["candidate"])
@@ -430,8 +441,9 @@ def evaluate_rule(rule, kind, pairs, contract, scenario, rng):
                                                   "constraint": "max_relative_regression",
                                                   "relative_regression": effect})
     result["n_defined_pairs"] = len(effects) if relative else defined_absolute_pairs
-    result["mean_relative_improvement" if kind == "primary" else "mean_relative_regression"] = (
-        stable_mean(effects) if effects else None)
+    if not attainment:
+        result["mean_relative_improvement" if kind == "primary" else "mean_relative_regression"] = (
+            stable_mean(effects) if effects else None)
     result["confidence_interval"] = None
     enough = result["n_defined_pairs"] >= contract["min_pairs"]
     if enough and relative:
@@ -441,9 +453,16 @@ def evaluate_rule(rule, kind, pairs, contract, scenario, rng):
         result["status"] = "violated"
         result["reason"] = "at least one eligible observed candidate violates a declared absolute or relative limit"
     elif result["missing_or_undefined"]:
-        result["reason"] = "some declared pairs have no eligible, defined relative effect"
+        result["reason"] = ("some declared pairs lack eligible goodput observations" if attainment
+                            else "some declared pairs have no eligible, defined relative effect")
     elif not enough:
         result["reason"] = "fewer independent pairs than contract.min_pairs"
+    elif attainment:
+        if result["observed_violations"]:
+            result["reason"] = "the absolute goodput target was not crossed in every declared pair"
+        else:
+            result["status"] = "passed"
+            result["reason"] = "every observed baseline was below the target and every candidate met it"
     elif kind == "primary":
         if strictly_above(result["confidence_interval"]["lower"], rule["min_relative_improvement"]):
             result["status"] = "passed"
@@ -556,6 +575,11 @@ def compare(contract_path, trial_path):
     for scenario in sorted(grouped):
         pairs = grouped[scenario]
         spec = contract["scenarios"][scenario]
+        if any(rule and "min_value" in rule for rule in (spec["primary"], spec.get("goodput_primary"))):
+            report["method"]["name"] = "predeclared_paired_rules"
+            report["method"]["absolute_goodput_primary"] = (
+                "Every observed eligible pair must satisfy baseline < min_value <= candidate in token/s. "
+                "This target-crossing rule has no relative effect or bootstrap interval.")
         current = {"n_pairs": len(pairs), "min_pairs": contract["min_pairs"],
                    "primary": None, "guardrails": [], "issues": []}
         if not pairs:

@@ -52,7 +52,7 @@ def resolve_reference(ref, base, locate=round_evidence.local_path):
 
 def metric_rules(spec):
     rules = [spec[key] for key in ("primary", "goodput_primary") if spec.get(key) is not None]
-    return {rule["metric"]: rule["min_relative_improvement"] for rule in rules} or {RAW_THROUGHPUT: 0.10}
+    return {rule["metric"]: rule for rule in rules} or {RAW_THROUGHPUT: {"min_relative_improvement": 0.10}}
 
 
 def clock_window(manifest):
@@ -158,26 +158,34 @@ def calibrate(contract_path, baseline_run_paths, *, locate=round_evidence.local_
         require(all(l["end_ns"] <= r["start_ns"] for l, r in zip(ordered, ordered[1:])),
                 "A/A runs overlap on the measurement clock in " + scenario)
         measures = {}
-        for metric, economic_effect in metric_rules(contract["scenarios"][scenario]).items():
+        for metric, rule in metric_rules(contract["scenarios"][scenario]).items():
             values = [sample["metrics"][metric] for sample in samples]
             center = statistics.median(values)
-            require(center > 0, f"A/A median is nonpositive for relative metric {metric} in {scenario}")
-            spread = (max(values) - min(values)) / center
-            relevance = max(economic_effect, 0.01)
+            span = max(values) - min(values)
+            if "min_value" in rule:
+                # Sample A/A noise in token/s; a zero baseline is a valid observation.
+                spread, relevance = span, rule["min_value"]
+                measures[metric] = {"median": center, "absolute_range": span, "min_value": relevance, "samples": values}
+            else:
+                require(center > 0, f"A/A median is nonpositive for relative metric {metric} in {scenario}")
+                spread, relevance = span / center, max(rule["min_relative_improvement"], 0.01)
+                measures[metric] = {"median": center, "relative_range": spread,
+                                    "min_effect_for_planning": relevance, "samples": values}
             tiers.append(int(spread > relevance) + int(spread > 2 * relevance))
-            measures[metric] = {"median": center, "relative_range": spread,
-                                "min_effect_for_planning": relevance, "samples": values}
         characterization[scenario] = measures
     floor = max(4, contract["min_pairs"])
     floor += floor % 2
     runtime = str(Path(sys.executable).resolve())
-    return {**({"scorer_runtime": runtime} if runtime in sources else {}),
-            "schema_version": 1, "contract_sha256": sha(contract_path), "baseline_identity": baseline,
-            "case_identity": cases, "runs": rows, "sources": sources, "variability": characterization,
-            "recommended_confirm_blocks": floor + 2 * max(tiers),
-            "planning_rule": "At least four balanced blocks, plus two per observed noise tier. "
-                             "Tiers compare A/A relative range with one and two times the effect target. "
-                             "This heuristic is not a power calculation."}
+    result = {**({"scorer_runtime": runtime} if runtime in sources else {}),
+              "schema_version": 1, "contract_sha256": sha(contract_path), "baseline_identity": baseline,
+              "case_identity": cases, "runs": rows, "sources": sources, "variability": characterization,
+              "recommended_confirm_blocks": floor + 2 * max(tiers),
+              "planning_rule": "At least four balanced blocks, plus two per observed noise tier. "
+                               "Tiers compare A/A relative range with one and two times the effect target. "
+                               "This heuristic is not a power calculation."}
+    if any("absolute_range" in measurement for measures in characterization.values() for measurement in measures.values()):
+        result["planning_rule"] += " Absolute goodput targets compare the A/A range in token/s to the positive target."
+    return result
 
 
 def validate_calibration(contract_path, calibration_path, *, locate=round_evidence.local_path):

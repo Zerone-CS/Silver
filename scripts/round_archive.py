@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from diagnose.scripts.profile import verify_bundle
-from scripts import campaign, round_evidence as ev, trial_plan
+from scripts import campaign, device_budget, retry_evidence, round_evidence as ev, trial_plan
 
 require = ev.require
 
@@ -51,6 +51,10 @@ def reference_paths(row, archived):
     """Only include the registered artifacts, the profile bundle, and A/A inputs."""
     evidence = row["evidence"]
     yield from evidence["evidence_files"]
+    for attempt in evidence.get("invalid_attempts", []):
+        if attempt.get("snapshot"):
+            yield attempt["snapshot"]
+            yield from retry_evidence.files(attempt["snapshot"], archived)
     for profile in evidence["profiles"].values():
         root = Path(profile["path"])
         yield {"path": root / "manifest.json", "sha256": profile["manifest_sha256"]}
@@ -149,9 +153,12 @@ def checked(ref, locate):
 
 def release_status(row, locate):
     release = row.get("site_release", {})
+    require(isinstance(release, dict), "malformed site release")
     status = release.get("status", "unverified")
     if status == "unverified":
         require("site_release" not in row, "malformed site release")
+        require(not row.get("acceptance_protocol", {}).get("require_site_release"),
+                "required site release record is missing")
         return status
     require(status in ("pending", "released"), "unknown site release status")
     action = release["action_id"]
@@ -163,6 +170,13 @@ def release_status(row, locate):
             and container["label"] == action and row["final_deployment"]["instance_id"].startswith(container["id"] + ":")
             and release["round"] == row["round"], "closure action and container differ")
     if status == "pending":
+        claim = release.get("claim")
+        require(isinstance(claim, dict) and set(claim) == {"host", "boot_id", "devices", "start_mono_ns"},
+                "missing or malformed pending cleanup claim")
+        device_budget.label(claim["host"], "host")
+        device_budget.label(claim["boot_id"], "boot ID")
+        device_budget.devices_of(claim["devices"])
+        device_budget.tick(claim["start_mono_ns"])
         return status
     ref = release["proof"]
     proof = ev.read_object(checked(ref, locate))
@@ -288,10 +302,12 @@ def audit(row, locate):
     require(decision in ("adopt", "abandon", "revert"), "unknown closure decision")
     if decision == "adopt":
         require(stages == ["adopt"] * (1 if protocol["single"] else 2), "adoption lacks required passing stages")
+    released = verify_closure(row, locate)
+    closure = "awaiting_site_release" if protocol.get("require_site_release") and released == "pending" else "verified"
     return {"campaign_id": row["campaign_id"], "round": row["round"], "decision": decision,
             "comparison": "recomputed" if stages else "not_measured", "stage_recommendations": stages,
-            "confirmation_order": confirmation_order,
-            "round_closure": "verified", "final_health": "verified", "device_release": verify_closure(row, locate)}
+            "confirmation_order": confirmation_order, "invalid_attempts": retry_evidence.review(row, locate),
+            "round_closure": closure, "final_health": "verified", "device_release": released}
 
 
 def verify_closure(row, locate):

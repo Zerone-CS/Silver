@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from evaluate.scripts import benchmark, compare_trials, validate_run
 from evaluate.scripts.prepare_metadata import load_object
-from scripts import device_budget, trial_plan
+from scripts import device_budget, retry_evidence, trial_plan
 
 COMMAND_ERRORS = (OSError, ValueError, TypeError, KeyError, IndexError, OverflowError, csv.Error,
                   sqlite3.Error, subprocess.SubprocessError, http.client.HTTPException)
@@ -148,6 +148,8 @@ def view(state, row):
               "deployment_last_verified": state["deployed"], "active_round": bool(row)}
     if budget is not None:
         result["device_budget"] = budget
+    if "require_site_release" in state:
+        result["require_site_release"] = state["require_site_release"]
     if "site_release" in state:
         result["site_release"] = state["site_release"]
         if state["site_release"]["status"] == "pending":
@@ -178,6 +180,9 @@ def initial_goal(runs, contract, scenario, target, metric=RAW_THROUGHPUT, distin
         for sample in metrics:
             if name == scenario and sample[metric] < target:
                 return False
+            for primary in (spec.get("primary"), spec.get("goodput_primary")):
+                if primary and "min_value" in primary and sample[primary["metric"]] < primary["min_value"]:
+                    return False
             for guard in spec["guardrails"]:
                 value = sample.get(guard["metric"])
                 if value is None or value < guard.get("min_value", -math.inf) or value > guard.get("max_value", math.inf):
@@ -190,6 +195,8 @@ def init(db, a):
     require(a.max_rounds > 0 and (not a.single or a.max_rounds == 1),
             "max-rounds must be positive; --single requires exactly one round")
     require(a.max_retries >= 0, "max-retries cannot be negative")
+    require(not a.require_site_release or a.device_budget is not None,
+            "--require-site-release needs a registered --device-budget")
     if a.hours is not None:
         require(math.isfinite(a.hours) and 0 < a.hours < 1e6, "invalid hour budget")
     require((a.goal_tps is None) == (a.goal_scenario is None),
@@ -256,6 +263,7 @@ def init(db, a):
              "count": 0, "max_retries": a.max_retries, "max_rounds": a.max_rounds, "single": a.single,
              "goal_tps": a.goal_tps, "goal_scenario": a.goal_scenario, "goal_metric": goal_metric,
              "require_trial_plan": a.require_trial_plan, "require_confirmation_clock": a.require_trial_plan,
+             "require_site_release": a.require_site_release,
              "deadline": time.time() + a.hours * 3600 if a.hours is not None else None,
              "deployed": None, "stop_requested": None, "stopped": None}
     require(len(model_snapshots) == 1, "initial deployments disagree on model snapshot")
@@ -282,7 +290,7 @@ def init(db, a):
     for run in runs:
         db.execute("INSERT INTO used_runs VALUES(?,?)", (run["run_id"], run["requests_hash"]))
     db.execute("INSERT INTO campaign VALUES(1,?)", (encode(state),))
-    event(db, 0, "init", {"contract": contract_ref, "cases": cases})
+    event(db, 0, "init", {"contract": contract_ref, "cases": cases, "require_site_release": a.require_site_release})
     return view(state, None)
 
 
@@ -296,8 +304,10 @@ def begin(state, a):
             "round": a.round, "scenario": a.scenario, "baseline": state["baseline"], "candidate": None,
             "acceptance_protocol": {"contract": state["contract"], "cases": state["cases"],
                                     "endpoint": state["endpoint"], "single": state["single"],
+                                    "require_retry_snapshot": True,
                                     "model_snapshot_sha256": state.get("model_snapshot_sha256"),
                                     "require_trial_plan": state.get("require_trial_plan", False),
+                                    "require_site_release": state.get("require_site_release", False),
                                     "require_confirmation_clock": state.get("require_confirmation_clock", False)},
             "phase": "baseline_profile", "profile_policy": policy, "hypothesis": "",
             "evidence": {"evidence_files": [state["contract"], ref] + state["contract_sources"], "profiles": {}, "assessments": []}}
@@ -422,6 +432,7 @@ def schedule(db, state, row, a):
                 "schedule lacks required pairs for " + name)
     db.executemany("INSERT INTO reserved_paths VALUES(?)", [(path,) for path in paths])
     row["schedule"] = ref
+    row["scheduled_slots"] = paths
     row["phase"] = "assess" if row["phase"] == "schedule" else "confirm"
 
 
@@ -517,29 +528,40 @@ def retry(db, state, row, a):
     try:
         assess(db, state, json.loads(encode(row)), argparse.Namespace(evidence=Path(registered["path"])))
     except (OSError, ValueError, TypeError, KeyError, sqlite3.IntegrityError) as exc:
-        failure = str(exc)
+        failure, error_type = str(exc), type(exc).__name__
     else:
         raise ValueError("registered trial is valid; record its measured outcome with assess")
     finally:
         db.execute("ROLLBACK TO retry_check")
         db.execute("RELEASE retry_check")
-    original_paths = {str((Path(registered["path"]).parent / pair[side]).resolve())
-                      for pair in trial["pairs"] for side in ("baseline", "candidate")}
+    old_slots = map(Path, retry_evidence.slots(registered, trial))
+    slot_paths = [str(path.parent.resolve() / path.name) for path in old_slots]
+    require(row.get("scheduled_slots", slot_paths) == slot_paths,
+            "retired slot no longer resolves under its registered parent")
+    original_paths = set(slot_paths)
+    require(all(db.execute("SELECT 1 FROM reserved_paths WHERE path=?", (path,)).fetchone()
+                for path in original_paths), "retired slot differs from its registered path")
     new_trial, _ = load_object(a.evidence)
     compare_trials.validate_trial(new_trial, load_object(state["contract"]["path"])[0])
     new_paths = {str((a.evidence.resolve().parent / pair[side]).resolve()) for pair in new_trial["pairs"]
                  for side in ("baseline", "candidate")}
     require(original_paths.isdisjoint(new_paths), "retry needs entirely new directories")
+    attempt = {"schedule": registered, "paths": sorted(original_paths), "reason": a.reason, "error": failure,
+               "error_type": error_type, "stage": row["phase"], "binding": row["challenge"]}
+    if row.get("trial_plan"):
+        attempt["plan"] = row["trial_plan"]
     row["phase"] = "schedule_confirmation" if row["phase"] == "confirm" else "schedule"
     schedule(db, state, row, a)
-    attempts.append({"schedule": registered, "paths": sorted(original_paths), "reason": a.reason, "error": failure})
-    row["evidence"]["evidence_files"].append(registered)
+    attempt["snapshot"] = retry_evidence.capture(a.campaign, attempt, trial)
+    attempts.append(attempt)
+    row["evidence"]["evidence_files"].extend([registered, attempt["snapshot"]])
 
 
 def review_evidence(row):
     from diagnose.scripts.profile import verify_bundle
     verify_files(row["evidence"]["evidence_files"])
     review_step_analyses(row["evidence"])
+    retry_evidence.review(row)
     for recorded in row["evidence"]["profiles"].values():
         checked = verify_bundle(Path(recorded["path"]))
         require(checked["valid"] and checked["manifest_sha256"] == recorded["manifest_sha256"]
@@ -559,6 +581,11 @@ def check_closure_model(row, observation):
 def close_round(state, row, a):
     from scripts.round_evidence import check_observation
     require(a.observation.strip(), "record an observation/reason for this decision")
+    action = getattr(a, "site_action", None)
+    required = state.get("require_site_release", False)
+    require(row.get("acceptance_protocol", {}).get("require_site_release", False) is required,
+            "round release policy differs from campaign initialization")
+    require(not required or action, "site release is required; close with the active cleanup --site-action")
     reason = stop_reason(state, device_status(state))
     if a.decision == "adopt":
         require(row["phase"] == "accept", "adoption requires complete successful assessment")
@@ -579,7 +606,6 @@ def close_round(state, row, a):
     require(fingerprint(a.deployment) == row.get("last_probe"), "deployment observation was superseded")
     require(health_ref == row.get("last_health"), "health receipt was not issued for the current transition")
     verify_health(receipt, state, row, a.deployment, obs)
-    action = getattr(a, "site_action", None)
     if action is not None:
         require(state.get("device_budget"), "site closure needs the registered device budget")
         ledger = device_budget.Budget(state["device_budget"]["path"]).audit()
@@ -619,6 +645,9 @@ def close_round(state, row, a):
 
 def verify_health(receipt, state, row, deployment, obs, *, original_ref=None, latest=None):
     probe = obs.get("round_probe", {})
+    release_policy = row.get("acceptance_protocol", {}).get("require_site_release", False)
+    require(type(release_policy) is bool and probe.get("require_site_release", False) is release_policy,
+            "closure observation differs from the frozen release policy")
     require(probe.get("challenge") == row["challenge"] and probe.get("campaign_id") == state["campaign_id"]
             and probe.get("round") == row["round"], "refresh deployment observation for this phase")
     require(receipt.get("campaign_id") == state["campaign_id"] and receipt.get("round") == row["round"]
@@ -652,6 +681,8 @@ def observe(state, row, a):
     require(isinstance(obj, dict) and "effective_config" in obj, "observer must emit a deployment object")
     obj["round_probe"] = {"campaign_id": state["campaign_id"], "round": row["round"],
                          "challenge": row["challenge"], "at": time.time(), "argv": argv}
+    if state.get("require_site_release"):
+        obj["round_probe"]["require_site_release"] = True
     with a.output.open("x", encoding="utf-8") as handle:
         handle.write(encode(obj) + "\n")
     return fingerprint(a.output)
@@ -745,6 +776,11 @@ def transition(db, a):
     if a.command == "export":
         result = get_round(db, a.round)
         require(result and result["phase"] == "closed", "round has not closed")
+        if state.get("require_site_release"):
+            from scripts import round_archive
+            require(result["acceptance_protocol"].get("require_site_release") is True,
+                    "export lacks the campaign's frozen release policy")
+            round_archive.release_status(result, Path)
         if a.recovery_only:
             from scripts import recovery_archive
             return recovery_archive.export(result)
@@ -845,6 +881,8 @@ def parser():
     cmd.add_argument("--goal-tps", type=float)
     cmd.add_argument("--goal-metric", choices=(RAW_THROUGHPUT, compare_trials.GOODPUT_METRIC))
     cmd.add_argument("--require-trial-plan", action="store_true")
+    cmd.add_argument("--require-site-release", action="store_true",
+                     help="require a bound cleanup lease and verified proof before completing site delivery")
     cmd.add_argument("--device-budget", type=Path, help="initialized site device-budget SQLite ledger")
     cmd.add_argument("--minimum-device-seconds", type=float, default=0,
                      help="minimum remaining die-seconds for new work")

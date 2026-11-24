@@ -46,8 +46,11 @@ def export_round(directory, number):
         raise ValueError("unsupported campaign export schema")
     if type(record.get("round")) is not int or record["round"] != number or record.get("decision") not in DECISIONS:
         raise ValueError("campaign export must identify the requested completed round")
-    if record.get("site_release", {}).get("status") == "pending":
+    release_status = record.get("site_release", {}).get("status")
+    if release_status == "pending":
         raise ValueError("site release is pending; retry archiving after attaching the release proof")
+    if record.get("acceptance_protocol", {}).get("require_site_release") and release_status != "released":
+        raise ValueError("this campaign requires a verified site release before archiving")
     for field in ("campaign_id", "scope"):
         if not isinstance(record.get(field), str) or not record[field].strip():
             raise ValueError("missing export field: " + field)

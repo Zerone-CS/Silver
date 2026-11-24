@@ -69,11 +69,13 @@ python3 scripts/campaign.py assess --campaign "$C" --round "$N" --evidence "$D/d
 
 需要跟踪每轮有效输出归属或慢步时，在 A、B 各自的 `profile` 命令上加 `--step-sources 文件` 或 `--timeline-map 文件`。若映射引用原始 SSE，再给 `--diagnostic-run 原始benchmark目录`，其四份核心原件须与 bundle 相同。单侧报告保存在 campaign 的 `diagnosis/`，两侧均登记后另存对照。结轮导出中的 `evidence.profiles` 和 `evidence.step_comparison` 给出路径与 SHA-256。[逐步诊断手册](../diagnose/references/step_analysis.md)
 
-若返回 `schedule_confirmation`，换用新的 confirmation.json、目录与 metadata，重复 schedule → stamp → benchmark → assess。若某批因中断或证据无效需要替换，用 `retry --reason 原因 --evidence 新清单`。控制器会先复验旧批次，完整有效的批次必须先记录结果；无效批次保留原清单与缺失原因，每轮额外次数由 init 的 `--max-retries` 限定，默认一次。诊断采集失败可用新目录补采。时间预算耗尽后只允许收尾。
+若返回 `schedule_confirmation`，换用新的 confirmation.json、目录与 metadata，重复 schedule → stamp → benchmark → assess。若某批因中断或证据无效需要替换，用 `retry --reason 原因 --evidence 新清单`。控制器会先复验旧批次，完整有效的批次必须先记录结果；无效批次保留原清单、缺失项、验证器异常以及各登记运行目录中已有普通文件的快照，每轮额外次数由 init 的 `--max-retries` 限定，默认一次。诊断采集失败可用新目录补采。时间预算耗尽后只允许收尾。
+
+重试以后，`pack-round` 会随轮次携带冻结的文件和摘要。离线 `verify` 的 `invalid_attempts` 单列每一次剔除。 `reproduced` 表示从封存字节独立证实了足以拒绝该批次的判据，例如运行绑定不符或请求账本校验失败。`recorded_missing` 表示已核对封存清单里的缺件，文件在现场缺失的成因仍需查当时的运行记录。`unverified` 表示现有原件不足以独立复核，例如缺旧版快照，或异常依赖未封存的外部部署状态。报告同时保留登记人给出的理由和当时的错误；评审可分别核对该判据与申请理由。
 
 ## A/A 校准与平衡确认
 
-先在固定场景里用两次以上独立启动收集 A/A 原始运行，一次部署每场景提交一批。保持客户端、部署和预热策略相同。校准脚本核验配置身份、质量、绝对护栏及运行归属，报告 A/A 中位值和相对极差。确认默认至少四个配对，超过契约最小收益门槛的一倍、两倍时分别建议增加两对。确认配对数保持偶数。这是按可观测波动安排重复次数的保守规则，区间解释仍需要现场独立性与环境稳定性的证据。
+先在固定场景里用两次以上独立启动收集 A/A 原始运行，一次部署每场景提交一批。保持客户端、部署和预热策略相同。校准脚本核验配置身份、质量、绝对护栏及运行归属，报告 A/A 中位值。相对收益规则按相对极差规划。登记绝对 goodput 目标时按最大值与最小值的差（合格 token/s）规划，允许基线为零。确认默认至少四个配对，波动超过对应规划门槛的一倍、两倍时分别建议增加两对。确认配对数保持偶数。这是按可观测波动安排重复次数的保守规则，区间解释仍需要现场独立性与环境稳定性的证据。
 
 ```bash
 python3 scripts/trial_plan.py calibrate --contract "$CONTRACT" --out "$D/aa.json" \

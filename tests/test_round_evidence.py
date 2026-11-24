@@ -292,6 +292,70 @@ class RoundEvidenceTests(unittest.TestCase):
         self.assertEqual(measured["goodput_primary"]["status"], "regressed")
         self.assertEqual(measured["goodput_primary"]["mean_relative_improvement"], -1)
 
+    def test_absolute_goodput_crossing_from_zero_retains_other_gates(self):
+        self.build()
+        contract = self.goodput_contract(max_e2e_s=5)
+        spec = contract["scenarios"]["offline"]
+        raw = {**spec["primary"], "metric": "output_token_throughput"}
+        floor = {"metric": "goodput", "direction": "higher", "min_value": 7 / 5}
+        spec.update(primary=raw, goodput_primary=floor)
+        save(self.contract, contract)
+        report = self.evaluate()
+        self.assertEqual(report["recommendation"], "adopt")
+        result = report["comparison"]["scenarios"]["offline"]["goodput_primary"]
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual([(p["baseline"], p["candidate"]) for p in result["paired_values"]], [(0, 7 / 5)] * 2)
+        self.assertIsNone(result["confidence_interval"])
+        self.assertNotIn("mean_relative_improvement", result)
+        spec["guardrails"].append({"metric": "output_token_throughput", "max_value": 1})
+        save(self.contract, contract)
+        self.assertEqual(self.evaluate()["recommendation"], "revert")
+
+    def test_absolute_goodput_needs_every_pair_to_cross_observed_target(self):
+        self.build()
+        contract = self.goodput_contract(max_ttft_s=10)
+        spec = contract["scenarios"]["offline"]
+        floor = {"metric": "goodput", "direction": "higher", "min_value": 1}
+        spec["primary"] = floor
+        for target in (7 / 10, 2):
+            with self.subTest(target=target):
+                floor["min_value"] = target
+                save(self.contract, contract)
+                report = self.evaluate()
+                self.assertEqual(report["recommendation"], "defer")
+                primary = report["comparison"]["scenarios"]["offline"]["primary"]
+                self.assertEqual(len(primary["observed_violations"]), 2)
+        floor["min_value"] = 1
+        contract["goodput_policy"]["scenarios"]["offline"]["token_source"] = "server_content_tokens"
+        save(self.contract, contract)
+        report = self.evaluate()
+        self.assertEqual(report["recommendation"], "defer")
+        primary = report["comparison"]["scenarios"]["offline"]["primary"]
+        self.assertEqual(primary["n_defined_pairs"], 0)
+        self.assertEqual(len(primary["missing_or_undefined"]), 2)
+
+    def test_absolute_goodput_contract_rejects_ambiguous_targets(self):
+        contract = self.goodput_contract()
+        for extra in ({"direction": "lower"}, {"min_value": 0}, {"min_value": -1},
+                      {"metric": "request_throughput"}, {"min_relative_improvement": 0.01}):
+            with self.subTest(extra=extra):
+                contract["scenarios"]["offline"]["primary"] = {
+                    "metric": "goodput", "direction": "higher", "min_value": 1, **extra}
+                save(self.contract, contract)
+                with self.assertRaises(ValueError):
+                    gate.validate_policy(self.contract)
+
+    def test_initial_absolute_goodput_target_still_applies_when_raw_goal_is_met(self):
+        from scripts.campaign import initial_goal
+
+        contract = self.goodput_contract()
+        contract["scenarios"]["offline"]["primary"] = {"metric": "goodput", "direction": "higher", "min_value": 20}
+        runs = [{"scenario": "offline", "metrics": {"output_token_throughput": 50, "goodput": g, "failure_rate": 0}}
+                for g in (20, 0)]
+        self.assertFalse(initial_goal(runs, contract, "offline", 50))
+        runs[1]["metrics"]["goodput"] = 20
+        self.assertTrue(initial_goal(runs, contract, "offline", 50))
+
     def test_goodput_policy_is_required_and_validated_per_scenario(self):
         valid = self.goodput_contract()
         gate.validate_policy(self.contract)

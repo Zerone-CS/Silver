@@ -44,7 +44,7 @@
 
 **配对比较。** `compare_trials.py` 读取预定的 [比较契约](../assets/comparison_contract.example.json) 和 `trial.json`。后者含 `schema_version: 1` 以及 `pairs` 数组，每项为 `scenario, baseline, candidate`，两条路径相对 trial 文件，指向独立的校验报告。工具拒绝复用同一物理文件、有效 run ID 或相同请求记录。各对和跨重复的身份要求见 [比较与交付](measurement_contract.md#比较与交付)。
 
-- 契约含 `min_pairs, confidence, bootstrap_samples, seed, scenarios` 及 `schema_version: 1`。每个场景声明 `primary` 和 `guardrails`，纯保护场景可用 `primary: null`，至少一个场景有主指标。主指标含 `metric, direction, min_relative_improvement`，方向为 higher/lower。保护项可设 `min_value/max_value`，相对退化同时传 `direction, max_relative_regression`。失败率上限需显式声明，基线为零时使用绝对界限。
+- 契约含 `min_pairs, confidence, bootstrap_samples, seed, scenarios` 及 `schema_version: 1`。每个场景声明 `primary` 和 `guardrails`，纯保护场景可用 `primary: null`，至少一个场景有主指标。相对主指标含 `metric, direction, min_relative_improvement`，方向为 higher/lower。对方向为 higher 的 goodput 主指标，可用正数 `min_value` 登记绝对目标，每对须满足「基线 < 目标 ≤ 候选」。保护项可设 `min_value/max_value`，相对退化同时传 `direction, max_relative_regression`。失败率上限需显式声明，基线为零时使用绝对界限。
 - 对每个指标和场景，工具按独立配对 run 重采样，估计配对相对效应的等权均值和百分位 bootstrap 区间。各主指标区间下界须严格超过约定收益，每项保护条件均须通过。每个符合资格的候选观测都检查约定上/下限。小样本区间、逐指标置信水平及预设重复数均不能保证未来全部场景表现。
 - 读取 `input_valid, recommendation, reasons, errors, mechanism_status`。有效输入另含 `method, scenarios, pairs, validated_inputs` 及两份输入的 hash。诊断 run、开启 profiler、质量未通过或配置未核验均不能晋级。有合格观测违反保护条件或主指标区间表明回退时建议 `revert`，全部合格且逐项通过时建议 `adopt`，其他情况 `defer`。输入错误可产生 `input_valid=false, recommendation=defer` 的错误报告。工具保留 `mechanism_status=unresolved`。
 

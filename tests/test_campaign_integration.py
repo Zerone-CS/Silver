@@ -411,6 +411,41 @@ class CampaignIntegrationTests(unittest.TestCase):
             for run in result["comparison"]["validated_inputs"]:
                 self.assertEqual(run["metrics"]["goodput"], run["metrics"]["output_token_throughput"])
 
+    def register_interrupted_screen(self, calibration):
+        work = self.root / "interrupted-screen"
+        plan = json.loads(self.call(PLAN, "plan", "--out", work, "--contract", self.contract,
+                                    "--stage", "screen", "--calibration", calibration, "--seed", 41))
+        self.campaign_cmd("schedule", "--round", 1, "--evidence", work / "pairs.json", "--plan", work / "plan.json")
+        partial = work / plan["slots"][0]["path"]
+        partial.mkdir(parents=True)
+        write(partial / "manifest.started.json", {"schema_version": 1, "run_id": "interrupted-fixture"})
+
+    def close_site_with_release(self, meter):
+        from scripts.device_budget import Budget
+
+        site = Budget(meter)
+        action = "fixture-closure"
+        directory = self.root / "deployments" / action
+        directory.mkdir(parents=True)
+        site.claim(action, "loopback", "fixture", ["fixture-die"], time.monotonic_ns(), 30, cleanup=True)
+        write(directory / "container.json", {"id": "fixture-id", "label": action})
+        self.server.deployment = json.loads((self.root / "candidate/observation.json").read_bytes())
+        self.server.deployment["instance_id"] = "fixture-id:started:1"
+        health = self.health("candidate", directory / "round-health.json")
+        args = ("--decision", "adopt", "--observation", "measured goodput reached the target", "--round", 1, *health)
+        self.campaign_cmd("close", *args, fail=True)
+        pending = self.campaign_cmd("close", *args, "--site-action", action)
+        self.assertEqual(pending["next_action"], "attach_release")
+        self.call(EXPERIENCE, "add", "--db", self.db, "--campaign", self.campaign, "--round", 1, fail=True)
+        proof = write(directory / "release.json", {
+            "action_id": action, "host": "loopback", "boot_id": "fixture", "devices": ["fixture-die"],
+            "free": True, "observed_mono_ns": time.monotonic_ns(), "site_evidence": {"processes_on_card": {}}})
+        site.release(action, time.monotonic_ns(), proof, "collected")
+        self.campaign_cmd("attach-release", "--round", 1)
+        self.assertEqual(self.campaign_cmd("status")["stop_reason"], "goal_reached")
+        self.call(EXPERIENCE, "add", "--db", self.db, "--campaign", self.campaign, "--round", 1)
+        return self.campaign_cmd("export", "--round", 1)
+
     def test_frozen_trial_plan_checks_independent_confirmation_and_goodput_target(self):
         self.fixture_clock = True
         contract = json.loads(self.contract.read_bytes())
@@ -424,12 +459,13 @@ print(json.dumps({"schema_version": 1, "scores": scores}))
             "method": "python_score_v1", "min_mean_score": 1, "timeout_s": 4,
             "reference": contract["quality_policy"]["scenarios"]["offline"]["reference"],
             "scorer": {"path": scorer.name, "sha256": hashlib.sha256(scorer.read_bytes()).hexdigest()}}
-        contract["goodput_policy"] = {"scenarios": {"offline": {"max_ttft_s": 1, "max_e2e_s": 1, "min_request_score": 1}}}
+        contract["scenarios"]["offline"]["goodput_primary"] = {"metric": "goodput", "direction": "higher", "min_value": 10}
+        contract["goodput_policy"] = {"scenarios": {"offline": {"max_ttft_s": 0.15, "max_e2e_s": 1, "min_request_score": 1}}}
         write(self.contract, contract)
         meter = self.root / "device-budget.sqlite"
         self.call(BUDGET, "init", "--db", meter, "--limit-die-seconds", 800)
         self.begin("--require-trial-plan", "--goal-scenario", "offline", "--goal-tps", 10,
-                   "--goal-metric", "goodput", "--device-budget", meter)
+                   "--goal-metric", "goodput", "--device-budget", meter, "--require-site-release")
         start = self.campaign_cmd("status")
         self.assertEqual(start["goal"]["metric"], "goodput")
         self.assertEqual(start["device_budget"]["remaining_die_seconds"], 800)
@@ -445,6 +481,7 @@ print(json.dumps({"schema_version": 1, "scores": scores}))
         aa = json.loads(self.call(PLAN, "calibrate", "--contract", self.contract, "--out", calibration,
                                   "--baseline-run", initial_run, "--baseline-run", other_run))
         self.assertGreaterEqual(aa["recommended_confirm_blocks"], 4)
+        self.assertEqual([r["metrics"]["goodput"] for r in aa["runs"]["offline"]], [0, 0])
         self.profile("baseline")
         change = self.root / "change.txt"
         change.write_text("Remove mock delay and restore 0.20 s on rollback.", encoding="utf-8")
@@ -452,14 +489,19 @@ print(json.dumps({"schema_version": 1, "scores": scores}))
                           "--prediction", "response arrival accelerates", "--change", change,
                           "--config", self.root / "candidate/config.json")
         self.profile("candidate")
+        self.register_interrupted_screen(calibration)
         for stage, expected in (("screen", "schedule_confirmation"), ("confirm", "accept")):
             work = self.root / stage
             plan = json.loads(self.call(PLAN, "plan", "--out", work, "--contract", self.contract,
                                         "--stage", stage, "--calibration", calibration, "--seed", 41))
             pairs_file, plan_file = work / "pairs.json", work / "plan.json"
-            absent = self.campaign_cmd("schedule", "--round", 1, "--evidence", pairs_file, fail=True)
-            self.assertIn("frozen --plan", absent)
-            self.campaign_cmd("schedule", "--round", 1, "--evidence", pairs_file, "--plan", plan_file)
+            if stage == "screen":
+                self.campaign_cmd("retry", "--round", 1, "--evidence", pairs_file, "--plan", plan_file,
+                                  "--reason", "collector interrupted before producing the registered measurements")
+            else:
+                absent = self.campaign_cmd("schedule", "--round", 1, "--evidence", pairs_file, fail=True)
+                self.assertIn("frozen --plan", absent)
+                self.campaign_cmd("schedule", "--round", 1, "--evidence", pairs_file, "--plan", plan_file)
             for index, slot in enumerate(plan["slots"]):
                 is_baseline = slot["side"] == "baseline"
                 deployment = f"{stage}-instance-{index:02d}"
@@ -486,11 +528,7 @@ print(json.dumps({"schema_version": 1, "scores": scores}))
                 self.assertIn("screen must finish", error)
                 target.write_bytes(original)
             self.assertEqual(self.campaign_cmd("assess", "--round", 1, "--evidence", pairs_file)["next_action"], expected)
-        self.server.deployment = json.loads((self.root / "candidate/observation.json").read_bytes())
-        health = self.health("candidate", "qualified-output-health.json")
-        state = self.campaign_cmd("close", "--decision", "adopt", "--observation", "goodput gain", "--round", 1, *health)
-        self.assertEqual(state["stop_reason"], "goal_reached")
-        exported = self.campaign_cmd("export", "--round", 1)
+        exported = self.close_site_with_release(meter)
         assessments = exported["evidence"]["assessments"]
         execution = assessments[-1]["execution"]
         self.assertTrue(execution["independent_deployments"])
@@ -506,7 +544,8 @@ print(json.dumps({"schema_version": 1, "scores": scores}))
             result = round_archive.pack(export_file, [self.root], bundle)
             self.assertEqual(result["stage_recommendations"], ["adopt", "adopt"])
             self.assertEqual(result["confirmation_order"], "verified")
-            self.assertEqual(result["device_release"], "unverified")
+            self.assertEqual(result["device_release"], "released")
+            self.assertEqual([a["verification"] for a in result["invalid_attempts"]], ["recorded_missing"])
             hidden = self.root.with_name(self.root.name + "-hidden")
             self.root.rename(hidden)
             try:
